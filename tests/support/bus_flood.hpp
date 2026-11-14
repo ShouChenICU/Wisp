@@ -33,6 +33,8 @@ public:
             }
         });
     }
+    // If hold() timed out, the handler may still be parked for up to
+    // kWaitMs, and unsubscribe() blocks until it returns.
     ~BusFlood() {
         release();
         bus_.unsubscribe(id_);
@@ -59,13 +61,17 @@ public:
         }
     }
 
-    // Lets the hold handler return. A no-op while not held.
+    // Lets the hold handler return. A no-op while not held. Reports a
+    // handler that gave up waiting once, however often it is called.
     void release() {
         if (held_) {
             held_ = false;
             gate_.give();
         }
-        EXPECT_FALSE(timed_out_.load()) << "BusFlood: held past " << kWaitMs << " ms";
+        if (timed_out_.load() && !reported_) {
+            reported_ = true;
+            ADD_FAILURE() << "BusFlood: held past " << kWaitMs << " ms";
+        }
     }
 
 private:
@@ -75,6 +81,7 @@ private:
     os::Semaphore gate_{1, 0};
     bool held_ = false;  // touched only by the test thread
     std::atomic<bool> timed_out_{false};
+    bool reported_ = false;  // touched only by the test thread
 };
 
 }  // namespace wisp::test

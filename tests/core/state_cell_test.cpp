@@ -51,11 +51,10 @@ using Peer = wisp::core::cell_detail::CellTestPeer;
 
 namespace {
 
-// Long enough that a correct run never reaches it, short enough that a
-// wrong one fails the test instead of hanging the binary. Shorter than the
-// cell's release bound (kReleaseWaitLimitMs, 3 s, in state_cell.cpp): a
-// run left blocked on a gate by a failed test ends before a misused
-// teardown waiting for that run gives up and aborts the whole binary.
+// A correct run reaches each gate in milliseconds; a wrong one fails the
+// test at this bound instead of hanging. 2000 because it must stay below
+// the cell's release bound (kReleaseWaitLimitMs, 3 s, in state_cell.cpp),
+// so a failed teardown test reports instead of aborting the binary.
 constexpr uint32_t kGateMs = 2000;
 
 // Declared after a test's threads (and before it starts them): on every
@@ -290,8 +289,10 @@ TEST_F(StateCell, SlowSubscriberGetsExactlyOneMoreCallWithTheLastValue) {
         }
         inside.fetch_sub(1);
     });
+    std::thread setter;
+    GateAndJoin guard(gate, {&setter});
     ASSERT_TRUE(entered.take(kGateMs));
-    std::thread setter([&] {
+    setter = std::thread([&] {
         for (int i = 1; i <= 1000; ++i) {
             c.set(i);
         }
@@ -381,13 +382,15 @@ TEST_F(StateCell, UnsubscribeFromAnotherThreadWaitsOnlyForItsOwnCallback) {
         entered.give();
         gate.take(kGateMs);
     });
+    std::atomic<bool> returned{false};
+    std::thread t;
+    GateAndJoin guard(gate, {&t});
     ASSERT_TRUE(entered.take(kGateMs));
     CellSubscription sb = c.subscribe(b.callback());
     sb.reset();  // B is queued behind A's run: returns without waiting for it
     EXPECT_FALSE(sb);
 
-    std::atomic<bool> returned{false};
-    std::thread t([&] {
+    t = std::thread([&] {
         sa.reset();
         returned = true;
     });
@@ -795,39 +798,47 @@ TEST_F(StateCell, MirrorEventsFollowRevisionOrderUnderConcurrentSetters) {
 }
 
 TEST_F(StateCell, SubscribersConvergeOnASaturatedBus) {
-    MirrorLog log(bus);
-    Cell<int> c(bus, 0, &mirror_to_bus);
+    // Its own bus, so the queue capacity the assertions rely on is the one
+    // given here rather than EventBus's default.
+    constexpr size_t kQueue = 64;
+    EventBus small(kQueue);
+    ASSERT_TRUE(small.start().is_ok());
+    MirrorLog log(small);
+    Cell<int> c(small, 0, &mirror_to_bus);
     std::atomic<int> bus_last{-1};
     CellSubscription on_bus = c.subscribe([&](const int& v) { bus_last = v; });
     Recorder on_md_rec;
     CellSubscription on_md = c.subscribe(on_md_rec.callback(), &md);
-    ASSERT_TRUE(bus.wait_idle(1000));
+    ASSERT_TRUE(small.wait_idle(1000));
     ASSERT_EQ(bus_last.load(), 0);
 
-    BusFlood f(bus);
+    // Every change below happens on a bus already saturated: the slot is
+    // scheduled into a full bus, not queued before the overflow.
+    BusFlood f(small);
     f.hold();
-    std::thread setter([&] {
-        for (int i = 1; i <= 100; ++i) {
-            c.set(i);
-        }
-    });
     f.flood(10000);
-    setter.join();
+    ASSERT_GT(small.dropped(), 0u);
+    for (int i = 1; i <= 100; ++i) {
+        c.set(i);
+    }
     // Held: nothing on the bus has run since hold().
     EXPECT_EQ(bus_last.load(), 0);
     f.release();
 
-    ASSERT_TRUE(bus.wait_idle(5000));
-    EXPECT_GT(bus.dropped(), 0u);
+    ASSERT_TRUE(small.wait_idle(5000));
     // A subscription is a slot: coalesced, never dropped, so it ends at
     // the last value however full the bus was.
     EXPECT_EQ(bus_last.load(), 100);
     md.run_all();
     EXPECT_EQ(on_md_rec.last(), 100);
-    // A mirror is an ordinary event: while the dispatcher was held only a
-    // queue's worth (64) of all 10 100 publishes could survive, so some
-    // of the 100 changes were never seen on the bus.
-    EXPECT_LT(log.events().size(), 100u);
+    // A mirror is an ordinary event: each was published into the full
+    // queue, which drops its oldest, so exactly the last kQueue changes
+    // survive, in order, ending with the final value.
+    std::vector<std::pair<int, int>> expected;
+    for (int after = 100 - static_cast<int>(kQueue) + 1; after <= 100; ++after) {
+        expected.emplace_back(after - 1, after);
+    }
+    EXPECT_EQ(log.events(), expected);
 }
 
 TEST_F(StateCell, WaitIdleCoversTheLastSlot) {
