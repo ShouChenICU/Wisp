@@ -190,13 +190,9 @@ Value DeviceRegistry::manifest(const std::string& board) const {
 
 std::vector<RoleGap> main_role_gaps(const DeviceRegistry& registry) {
     using hal::Interface;
-    static constexpr Interface kWithMain[] = {
-        Interface::Display, Interface::Touch,    Interface::Power,   Interface::Clock,
-        Interface::Imu,     Interface::AudioOut, Interface::AudioIn, Interface::Wifi,
-    };
     const auto devices = registry.all();
     std::vector<RoleGap> gaps;
-    for (Interface iface : kWithMain) {
+    for (Interface iface : hal::kInterfacesWithMain) {
         RoleGap gap{iface, {}};
         bool has_main = false;
         for (const auto& device : devices) {

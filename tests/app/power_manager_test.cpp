@@ -279,7 +279,7 @@ private:
 // *live* `!pm.standby()` read fresh on the UI thread, and
 // PowerManager::set_power_key_owned(true) hands this wiring (not
 // PowerManager's own generic "any button wakes it" subscriber)
-// exclusive control over what "button.power" does.
+// exclusive control over what the power key (`key`) does.
 class PowerKeyWiring {
 public:
     PowerKeyWiring(EventBus& bus, UiRuntime& ui, PowerManager& pm, std::string key = "button.power")

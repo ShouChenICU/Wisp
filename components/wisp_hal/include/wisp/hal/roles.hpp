@@ -51,6 +51,14 @@ inline constexpr const char* kNavBack = "nav_back";
 
 namespace wisp::hal {
 
+// The interfaces whose devices portable code looks up by role main (the
+// "main" rows of the table above). Kept beside the vocabulary so the two
+// cannot drift; core::main_role_gaps() checks a registry against it.
+inline constexpr Interface kInterfacesWithMain[] = {
+    Interface::Display, Interface::Touch,    Interface::Power,   Interface::Clock,
+    Interface::Imu,     Interface::AudioOut, Interface::AudioIn, Interface::Wifi,
+};
+
 // caps "role": a string, or a list of strings (a device serving two
 // purposes, e.g. one key that is both the power and the talk key);
 // anything else, including non-string list items and empty strings, is

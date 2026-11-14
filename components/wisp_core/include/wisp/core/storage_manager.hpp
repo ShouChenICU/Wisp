@@ -361,10 +361,10 @@ public:
     // (SceneWiring::storage_status_async() in wisp_app).
     StorageStatus status() const;
 
-    // Forwards to storage.sd's hal::Storage::set_standby() (a no-op if "storage.sd"
-    // isn't registered, or if its implementation doesn't override the
+    // Forwards to the card's hal::Storage::set_standby() (a no-op if there
+    // is no card, or if its implementation doesn't override the
     // hal::Storage default) -- see that method's doc comment. A no-op
-    // for "storage.int": internal flash has no background polling to
+    // for the internal medium: internal flash has no background polling to
     // pause in the first place. Called by PowerManager on enter_standby()
     // (standby=true) and exit_standby() (standby=false); does not change
     // sd_online_ or publish any event -- refresh() keeps running exactly
@@ -426,7 +426,7 @@ private:
     // calls(); bumped by checked_path().
     mutable std::atomic<uint64_t> calls_{0};
 
-    // True once init() has found "storage.int" and created its
+    // True once init() has found the internal medium and created its
     // directories; roots()/write_atomic()/read_file() all refuse to do
     // anything (StorageUnavailable) while this is false, rather than
     // operating on empty int_mount_/sd_mount_ strings.

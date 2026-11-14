@@ -63,9 +63,9 @@
 // Any button event resets the idle clock and, while the screen is off,
 // wakes the device (spec 6.7/8 of the foundation spec), except the power
 // key (PowerManagerDeps::power_key) once set_power_key_owned(true) handed
-// that key to its owner. With a UiRuntime, touch activity resets the idle clock too
-// (UiRuntime::set_touch_activity_cb(), which only fires when there is a
-// touch device).
+// that key to its owner. With a UiRuntime, touch activity resets the idle
+// clock too (UiRuntime::set_touch_activity_cb(), which only fires when
+// there is a touch device).
 
 #include <atomic>
 #include <cstdint>

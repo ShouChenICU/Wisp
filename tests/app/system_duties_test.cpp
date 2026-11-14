@@ -144,7 +144,6 @@ TEST_F(SystemDutiesTest, PowerKeyWithoutSelfCheck) {
     EXPECT_FALSE(pm->standby());
 }
 
-// A factory reset and a firmware update both ask over the home screen.
 // Spec 2.3: the power key is the key with role power, whatever its id.
 TEST_F(SystemDutiesTest, PowerKeyWithAnotherIdTurnsTheScreenOff) {
     boot({.power_key_id = "button.side"});
@@ -161,6 +160,7 @@ TEST_F(SystemDutiesTest, PowerKeyWithAnotherIdTurnsTheScreenOff) {
     EXPECT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
 }
 
+// A factory reset and a firmware update both ask over the home screen.
 TEST_F(SystemDutiesTest, ResetAndFirmwareDialogs) {
     UiNetOptions opts;
     opts.with_server = true;
