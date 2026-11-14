@@ -356,21 +356,22 @@ void SceneToolIndexObserver::on_manifest(const core::SceneManifest& manifest) {
 }
 
 Result<void> SceneToolIndexObserver::load_installed() {
-    // One worker job reads every scene.json and rebuilds the index; the
-    // worker serialises it against installs still in flight. run_sync runs
-    // inline before the worker starts (boot) and on its thread otherwise.
-    return worker_.run_sync(
-        [this] {
-            auto manifests = repo_.manifests();
-            if (!manifests) {
-                WLOG_W(kTag, "scene tool index not loaded: %s", manifests.error().message.c_str());
-                return;
-            }
-            for (const core::SceneManifest& m : manifests.value()) {
-                index_.replace_scene(m.id, m.name, m.tools);
-            }
-        },
-        os::kForever);
+    // manifests() reads each scene.json in a job of its own and parses it
+    // here, on the caller (the agent's start), which may wait. An install
+    // or remove can land between two of those jobs, and its scene.state
+    // event may be handled before this applies the older manifest, so
+    // whatever the repository says changed meanwhile is read again by a
+    // refresh() job queued after this.
+    uint64_t since = 0;
+    (void)repo_.changed_since(0, since);
+    auto manifests = repo_.manifests();
+    if (!manifests) return Result<void>::err(manifests.error().code, manifests.error().message);
+    for (const core::SceneManifest& m : manifests.value()) {
+        index_.replace_scene(m.id, m.name, m.tools);
+    }
+    uint64_t now = 0;
+    for (const std::string& id : repo_.changed_since(since, now)) refresh(id);
+    return Result<void>::ok();
 }
 
 void SceneToolIndexObserver::on_event(const core::Event& event) {

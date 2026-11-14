@@ -55,7 +55,21 @@
 // reads in jobs of at most kIoChunk and fails with Busy if a replace or
 // remove lands in between. Every other method holds the lock for its one
 // job. A SceneStore's own writes under data/ do not take this lock.
-// list() walking every package is still one job.
+//
+// The read paths a waiting caller uses -- manifest(), manifests(), info()
+// and list() -- only read bytes on the worker and parse them on the
+// caller's thread, so the worker's stack never holds a manifest parse for
+// them and a long listing does not hold the worker: manifests() and
+// list() are one job that lists the code root, then one job per scene,
+// each taking and releasing the lock, submitted only after the previous
+// one finished. Other work (an Interactive settings save, an install's
+// swap, a remove) may run between two of them, so a listing is a set of
+// per-scene snapshots, not one: each entry is a scene that existed and was
+// complete when its own job ran. A caller that must know whether its
+// listing is still current takes changed_since() before listing and asks
+// again afterwards. load(), install()'s swap, export_zip(), removal(),
+// remove() and recover() still parse inside their job: their file work
+// depends on the manifest.
 
 #include <cstddef>
 #include <cstdint>
@@ -133,6 +147,11 @@ struct SceneRepoConfig {
     // into the scene's data would be lost. Tests use it to widen that
     // window; nothing sets it in production.
     std::function<void()> on_data_moved;
+    // Test seams, empty in production: on_read runs inside the worker job
+    // that reads scene `id` for manifest(), manifests(), info() or list();
+    // on_parse on the thread that then parses what was read.
+    std::function<void(std::string_view id)> on_read;
+    std::function<void(std::string_view id)> on_parse;
     // The flash thread the file work runs on. Null: on the caller (boot,
     // tests without one).
     StorageWorker* worker = nullptr;
@@ -148,11 +167,16 @@ public:
 
     // Installed scenes sorted by id. Directories starting with '.' and
     // packages whose scene.json is missing, invalid or names another id are
-    // skipped. A missing code root is an empty list.
+    // skipped. A missing code root is an empty list. Per-scene snapshots
+    // (file header): a scene removed after the code root was listed is
+    // left out, and one installed after it is not in this listing;
+    // changed_since() tells a caller what changed meanwhile. Fails only
+    // when the code root cannot be listed or the worker refuses a job.
     Result<std::vector<SceneInfo>> list();
 
     // list() without sizing the packages or their data: only each
-    // scene.json is read. Skips what list() skips.
+    // scene.json is read. Skips what list() skips; per-scene snapshots as
+    // list().
     Result<std::vector<SceneManifest>> manifests();
 
     // The scenes a replace (an install, an update, an interrupted one that
@@ -246,7 +270,32 @@ public:
     bool dev() const { return config_.dev; }
 
 private:
+    // What a read path reads on the worker, parsed by the caller. The
+    // file list holds every top-level scene.json or *.lua file and every
+    // regular file under lib/ and assets/ that a package may hold, at most
+    // kMaxFiles + 1 of each kind (one more tells a package past the limit).
+    struct SceneScan {
+        std::string id;
+        os::LargeBuffer manifest;
+        os::LargeVector<std::pair<std::string, uint64_t>> files;
+        uint64_t data_bytes = 0;
+    };
+
     std::string code_dir(std::string_view id) const;
+    // On the worker, under the lock: the bytes of <id>/scene.json and, with
+    // `with_files`, the package's files and the size of data_dir(id).
+    // NotFound without scene.json.
+    Result<SceneScan> scan_here(std::string_view id, bool with_files);
+    Result<SceneScan> scan_locked(std::string_view id, bool with_files);
+    // scan_here() as one job; `ran` is false when the worker refused it.
+    Result<SceneScan> scan(std::string_view id, bool with_files, bool& ran);
+    // On the worker: the valid scene ids in the code root, sorted.
+    Result<std::vector<std::string>> ids_here();
+    // On any thread, no file work: the manifest, checked to name the
+    // scene's directory; and with it the sizes, counting only the files a
+    // package may hold (the same results and errors as reading in one job).
+    Result<SceneManifest> parse_scan(const SceneScan& scan);
+    Result<SceneInfo> info_of(const SceneScan& scan);
     // scene.json of <id>, checked to name <id>; NotFound if absent.
     Result<SceneManifest> read_manifest(std::string_view id);
     // The same for the previous version, prev_dir(id).
@@ -255,13 +304,11 @@ private:
     // Steps 3-5 of the replace in the file header, if .<id>.newdir exists.
     // With keep_prev, step 4 renames <id> to prev_dir(id) instead.
     Result<void> finish_replace(const std::string& id, bool keep_prev = false);
-    // info() with the lock already held.
+    // info() with the lock already held, parsing included (install()'s
+    // swap).
     Result<SceneInfo> info_locked(std::string_view id);
     // The public methods' file work, on the flash thread.
     Result<void> recover_here();
-    Result<std::vector<SceneInfo>> list_here();
-    Result<SceneInfo> info_here(std::string_view id);
-    Result<SceneManifest> manifest_here(std::string_view id);
     Result<ScenePackage> load_here(std::string_view id);
     Result<os::LargeBuffer> read_asset_here(std::string_view id, std::string_view path,
                                             size_t max_bytes);
@@ -273,7 +320,6 @@ private:
     // previous version).
     Result<os::LargeBuffer> export_dir(std::string_view id, bool prev, bool with_data);
     Result<void> remove_here(std::string_view id, bool with_data);
-    Result<std::vector<SceneManifest>> manifests_here();
     // Records that `id` changed, for changed_since().
     void note_change(std::string_view id);
     Result<SceneRemoval> removal_here(std::string_view id, bool with_data);

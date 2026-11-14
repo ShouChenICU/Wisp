@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -115,11 +116,17 @@ struct Fixture {
         registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
         storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
         EXPECT_TRUE(storage->init());
-        SceneRepoConfig config;
         config.code_root = in + "/scenes";
         config.data_root = in + data_root;
         config.dev = dev;
         config.worker = worker;
+        repo = std::make_unique<SceneRepository>(*storage, config);
+    }
+
+    // A new repository over the same roots, with `fn` applied to the
+    // config (the test seams).
+    void reconfigure(const std::function<void(SceneRepoConfig&)>& fn) {
+        fn(config);
         repo = std::make_unique<SceneRepository>(*storage, config);
     }
 
@@ -131,6 +138,7 @@ struct Fixture {
     }
 
     std::string in;
+    SceneRepoConfig config;
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
     std::unique_ptr<wisp::core::StorageManager> storage;
@@ -1257,4 +1265,149 @@ TEST(SceneRepository, ReadAssetUnderAssetsOnly) {
     EXPECT_EQ(fx.repo->read_asset("todo", "assets/none.png", 64).error().code, ErrorCode::NotFound);
     EXPECT_EQ(fx.repo->read_asset("other", "assets/icon.png", 64).error().code,
               ErrorCode::NotFound);
+}
+
+namespace {
+
+// A package like todo_files() under another id.
+Files files_for(const std::string& id) {
+    return {{"scene.json", R"({"id":")" + id + R"(","name":")" + id +
+                               R"(","version":"1.0.0","schema_version":1,"entry":"main.lua"})"},
+            {"main.lua", "return {}\n"},
+            {"lib/util.lua", "return {}\n"}};
+}
+
+// Three scenes a, b and c installed through a running worker.
+struct WorkerFixture {
+    WorkerFixture() : f(false, "/scenes", &worker) {
+        EXPECT_TRUE(worker.start());
+        for (const char* id : {"a", "b", "c"}) EXPECT_TRUE(f.install(files_for(id)));
+    }
+    ~WorkerFixture() { worker.stop(); }
+
+    std::vector<std::string> ids(const std::vector<SceneInfo>& infos) {
+        std::vector<std::string> out;
+        for (const SceneInfo& i : infos) out.push_back(i.manifest.id);
+        return out;
+    }
+
+    wisp::core::StorageWorker worker;
+    Fixture f;
+};
+
+}  // namespace
+
+// The worker reads bytes; the JSON is parsed on the thread that asked. On
+// the worker itself every call runs inline, parsing included.
+TEST(SceneRepository, ReadPathsParseOnTheCaller) {
+    WorkerFixture w;
+    std::mutex mu;
+    std::vector<bool> on_worker;
+    w.f.reconfigure([&](SceneRepoConfig& c) {
+        c.on_parse = [&](std::string_view) {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.push_back(w.worker.on_worker());
+        };
+    });
+    auto all_four = [&] {
+        EXPECT_TRUE(w.f.repo->manifest("a"));
+        EXPECT_TRUE(w.f.repo->manifests());
+        EXPECT_TRUE(w.f.repo->info("a"));
+        EXPECT_TRUE(w.f.repo->list());
+    };
+
+    all_four();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        ASSERT_FALSE(on_worker.empty());
+        EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), true), 0);
+        on_worker.clear();
+    }
+    ASSERT_TRUE(w.worker.run_sync(all_four, wisp::os::kForever));
+    std::lock_guard<std::mutex> lock(mu);
+    ASSERT_FALSE(on_worker.empty());
+    EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
+}
+
+// A listing is one job per scene, so an Interactive job queued while the
+// first scene is read runs before the second.
+TEST(SceneRepository, ListReadsOneSceneAtATime) {
+    WorkerFixture w;
+    std::mutex mu;
+    std::vector<std::string> order;
+    bool submitted = false;
+    w.f.reconfigure([&](SceneRepoConfig& c) {
+        c.on_read = [&](std::string_view id) {
+            std::lock_guard<std::mutex> lock(mu);
+            order.push_back("read:" + std::string(id));
+            if (submitted) return;
+            submitted = true;
+            EXPECT_TRUE(w.worker.submit(
+                [&] {
+                    std::lock_guard<std::mutex> inner(mu);
+                    order.push_back("X");
+                },
+                wisp::core::IoLane::Interactive));
+        };
+    });
+    auto listed = w.f.repo->list();
+    ASSERT_TRUE(listed) << listed.error().message;
+    EXPECT_EQ(w.ids(listed.value()), (std::vector<std::string>{"a", "b", "c"}));
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(order, (std::vector<std::string>{"read:a", "X", "read:b", "read:c"}));
+}
+
+// A scene removed between the id listing and its own read is left out;
+// the rest of the listing stands.
+TEST(SceneRepository, SceneRemovedDuringAListIsSkipped) {
+    WorkerFixture w;
+    w.f.reconfigure([&](SceneRepoConfig& c) {
+        c.on_read = [&](std::string_view id) {
+            if (id == "a") EXPECT_TRUE(w.f.storage->remove_tree((w.f.root() / "b").string()));
+        };
+    });
+    auto listed = w.f.repo->list();
+    ASSERT_TRUE(listed) << listed.error().message;
+    EXPECT_EQ(w.ids(listed.value()), (std::vector<std::string>{"a", "c"}));
+    auto manifests = w.f.repo->manifests();
+    ASSERT_TRUE(manifests) << manifests.error().message;
+    EXPECT_EQ(manifests.value().size(), 2u);
+}
+
+// Only scene.json and the entry count at the top level of a package.
+TEST(SceneRepository, InfoIgnoresStrayTopLevelFiles) {
+    WorkerFixture w;
+    auto before = w.f.repo->info("a");
+    ASSERT_TRUE(before) << before.error().message;
+    EXPECT_EQ(before.value().code_bytes, total_size(files_for("a")));
+    write_raw(w.f.root() / "a" / "other.lua", "return 1\n");
+    auto after = w.f.repo->info("a");
+    ASSERT_TRUE(after) << after.error().message;
+    EXPECT_EQ(after.value().code_bytes, before.value().code_bytes);
+}
+
+TEST(SceneRepository, TooManyFilesStillRefused) {
+    wisp::log::reset_for_test();
+    wisp::log::init(8 * 1024);
+    WorkerFixture w;
+    for (int i = 0; i < 257; ++i) {
+        write_raw(w.f.root() / "a" / "lib" / ("m" + std::to_string(i) + ".lua"), "x");
+    }
+    auto info = w.f.repo->info("a");
+    ASSERT_FALSE(info);
+    EXPECT_EQ(info.error().code, ErrorCode::InvalidArgument);
+    EXPECT_NE(info.error().message.find("more than 256 files"), std::string::npos);
+
+    auto listed = w.f.repo->list();
+    ASSERT_TRUE(listed) << listed.error().message;
+    EXPECT_EQ(w.ids(listed.value()), (std::vector<std::string>{"b", "c"}));
+    bool warned = false;
+    for (const auto& e : wisp::log::ring_entries()) {
+        if (e.msg.find("skipping scene 'a'") != std::string::npos &&
+            e.msg.find("more than 256 files") != std::string::npos) {
+            warned = true;
+        }
+    }
+    EXPECT_TRUE(warned);
+    wisp::log::reset_for_test();
 }

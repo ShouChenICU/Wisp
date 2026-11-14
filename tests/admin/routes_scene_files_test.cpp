@@ -89,6 +89,14 @@ struct FilesFixture {
                           wisp::core::StorageWorker* worker = nullptr,
                           wisp::core::StorageRouter* router = nullptr)
         : f(true, std::move(sd)) {
+        if (worker != nullptr) {
+            // As in the app, the repository does its file work on the
+            // flash worker.
+            f.scenes = std::make_unique<wisp::core::SceneRepository>(
+                *f.storage, wisp::core::SceneRepoConfig{.code_root = f.dir + "/scenes",
+                                                        .data_root = f.dir + "/scenes",
+                                                        .worker = worker});
+        }
         SceneFilesConfig cfg;
         cfg.data_root = f.dir + "/scenes";
         cfg.max_list = max_list;

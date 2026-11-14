@@ -237,7 +237,9 @@ public:
     // updated at once, without reading it back from flash.
     void on_manifest(const core::SceneManifest& manifest);
 
-    // Reads every installed scene.json on the worker and builds the index.
+    // Builds the index from every installed scene.json: read on the worker
+    // one scene per job and parsed on the caller, which must be allowed to
+    // wait (not the UI thread).
     Result<void> load_installed();
 
 private:

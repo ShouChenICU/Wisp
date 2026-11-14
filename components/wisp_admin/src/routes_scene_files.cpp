@@ -16,8 +16,8 @@
 // is one read of at most kIoChunk at a time in the Bulk lane, so saves
 // queued meanwhile wait for one chunk at most, the rest in the Normal
 // lane. A wait that runs out fails the request (or ends the download
-// short). The installed-scene check reads the repository on the flash
-// thread (AdminDeps::worker).
+// short). The installed-scene check is SceneRepository::info(), which
+// reads on the flash thread and parses on the server's.
 
 #include <algorithm>
 #include <cstdint>
@@ -52,28 +52,10 @@ constexpr uint32_t kFlashWaitMs = 5000;
 constexpr uint32_t kBusyRetryMs = 2000;
 constexpr uint32_t kBusyPollMs = 10;
 
-// fn() run on the flash thread, or right here without a worker (tests,
-// boards without scenes). The job may outlive a timed-out wait, so `fn`
-// holds copies of what it needs and its result goes to a shared slot.
-template <typename T, typename Fn>
-Result<T> on_flash(core::StorageWorker* worker, Fn fn, core::IoLane lane = core::IoLane::Normal) {
-    if (worker == nullptr) return fn();
-    auto out = std::make_shared<std::optional<Result<T>>>();
-    std::function<void()> job = [out, fn] { out->emplace(fn()); };
-    Result<void> r = worker->run_sync(job, kFlashWaitMs, lane);
-    for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < kBusyRetryMs;
-         waited += kBusyPollMs) {
-        os::sleep_ms(kBusyPollMs);
-        r = worker->run_sync(job, kFlashWaitMs, lane);
-    }
-    if (!r) return Result<T>::err(r.error().code, r.error().message);
-    return std::move(**out);
-}
-
 // fn(files) as a job of `scene` (core::run_files()), on the worker its
 // files' medium picks, or right here when SceneFiles has no submit_io
-// (tests, boards without scenes). As on_flash(), `fn` holds copies of what
-// it needs; a read's bytes land in the PSRAM buffer SceneFiles::read()
+// (tests, boards without scenes). The job may outlive a timed-out wait, so
+// `fn` holds copies of what it needs; a read's bytes land in the PSRAM buffer SceneFiles::read()
 // returns.
 template <typename T, typename Fn>
 Result<T> on_files(core::SceneFiles& files, const std::string& scene, Fn fn,
@@ -118,9 +100,8 @@ std::optional<std::string> installed_scene(AdminDeps& deps, const RequestContext
         refusal = bad_request("invalid scene id");
         return std::nullopt;
     }
-    core::SceneRepository* scenes = deps.scenes;
-    auto info =
-        on_flash<core::SceneInfo>(deps.worker, [scenes, id = *id] { return scenes->info(id); });
+    // info() runs its own job and parses here, on the HTTP task.
+    auto info = deps.scenes->info(*id);
     if (!info) {
         refusal = service_error(info.error());
         return std::nullopt;

@@ -284,12 +284,129 @@ Result<SceneManifest> SceneRepository::read_manifest_in(const std::string& dir,
 }
 
 Result<SceneManifest> SceneRepository::manifest(std::string_view id) {
-    return call_on_worker<SceneManifest>(config_.worker, [&] { return manifest_here(id); });
+    bool ran = false;
+    Result<SceneScan> scanned = scan(id, false, ran);
+    if (!scanned) return fail<SceneManifest>(scanned.error());
+    if (config_.on_parse) config_.on_parse(id);
+    return parse_scan(scanned.value());
 }
 
-Result<SceneManifest> SceneRepository::manifest_here(std::string_view id) {
+Result<SceneRepository::SceneScan> SceneRepository::scan(std::string_view id, bool with_files,
+                                                         bool& ran) {
+    ran = false;
+    return call_on_worker<SceneScan>(config_.worker, [&] {
+        ran = true;
+        return scan_here(id, with_files);
+    });
+}
+
+Result<SceneRepository::SceneScan> SceneRepository::scan_here(std::string_view id,
+                                                              bool with_files) {
+    if (config_.on_read) config_.on_read(id);
     std::lock_guard<os::Mutex> lock(mutex_);
-    return read_manifest(id);
+    return scan_locked(id, with_files);
+}
+
+Result<SceneRepository::SceneScan> SceneRepository::scan_locked(std::string_view id,
+                                                                bool with_files) {
+    using R = Result<SceneScan>;
+    // Before any path is built from it.
+    if (!valid_scene_id(id)) {
+        return R::err(ErrorCode::InvalidArgument, "invalid scene id: " + std::string(id));
+    }
+    SceneScan out;
+    out.id = std::string(id);
+    const std::string dir = code_dir(id);
+    Result<os::LargeBuffer> raw = storage_.read_file_large(dir + "/" + std::string(kManifest));
+    if (!raw) {
+        if (raw.error().code == ErrorCode::NotFound) {
+            return R::err(ErrorCode::NotFound, "scene not installed: " + std::string(id));
+        }
+        return fail<SceneScan>(raw.error());
+    }
+    out.manifest = std::move(raw.value());
+    if (!with_files) return R::ok(std::move(out));
+
+    // The entry is not known until the manifest is parsed, so every
+    // top-level .lua file is kept; info_of() counts only the entry. Under
+    // lib/ and assets/ what a package may hold does not depend on it.
+    Result<std::vector<DirEntry>> top = storage_.list_dir(dir);
+    if (!top) return fail<SceneScan>(top.error());
+    size_t top_files = 0;
+    for (const DirEntry& e : top.value()) {
+        if (e.kind != EntryKind::File || top_files > kMaxFiles) continue;
+        if (e.name == kManifest || (is_lua(e.name) && e.name.size() > 4)) {
+            out.files.emplace_back(e.name, e.size);
+            ++top_files;
+        }
+    }
+    size_t nested = 0;
+    bool full = false;
+    auto keep = [&](const std::string& rel, uint64_t size) -> Result<void> {
+        if (!allowed_file(rel, kManifest)) return Result<void>::ok();
+        out.files.emplace_back(rel, size);
+        if (++nested <= kMaxFiles) return Result<void>::ok();
+        // One past the limit is enough for info_of() to refuse the
+        // package; the error only ends the walk.
+        full = true;
+        return Result<void>::err(ErrorCode::QuotaExceeded, "scan full");
+    };
+    for (const char* sub : {"lib", "assets"}) {
+        Result<void> walked = walk_files(storage_, dir, sub, keep);
+        if (full) break;
+        if (!walked) return fail<SceneScan>(walked.error());
+    }
+    Result<uint64_t> data = storage_.tree_size(data_dir(id));
+    if (!data) return fail<SceneScan>(data.error());
+    out.data_bytes = data.value();
+    return R::ok(std::move(out));
+}
+
+Result<std::vector<std::string>> SceneRepository::ids_here() {
+    using R = Result<std::vector<std::string>>;
+    std::lock_guard<os::Mutex> lock(mutex_);
+    std::vector<std::string> out;
+    Result<std::vector<DirEntry>> listed = storage_.list_dir(config_.code_root);
+    if (!listed) {
+        if (listed.error().code == ErrorCode::NotFound) return R::ok(std::move(out));
+        return fail<std::vector<std::string>>(listed.error());
+    }
+    for (const DirEntry& e : listed.value()) {
+        if (e.kind == EntryKind::Dir && valid_scene_id(e.name)) out.push_back(e.name);
+    }
+    std::sort(out.begin(), out.end());
+    return R::ok(std::move(out));
+}
+
+Result<SceneManifest> SceneRepository::parse_scan(const SceneScan& scan) {
+    Result<SceneManifest> m = parse_scene_manifest(std::string_view(
+        reinterpret_cast<const char*>(scan.manifest.data()), scan.manifest.size()));
+    if (!m) return m;
+    if (m.value().id != scan.id) {
+        return Result<SceneManifest>::err(
+            ErrorCode::InvalidArgument,
+            "scene.json: id '" + m.value().id + "' does not match its directory '" + scan.id + "'");
+    }
+    return m;
+}
+
+Result<SceneInfo> SceneRepository::info_of(const SceneScan& scan) {
+    Result<SceneManifest> m = parse_scan(scan);
+    if (!m) return fail<SceneInfo>(m.error());
+    SceneInfo info;
+    info.manifest = std::move(m.value());
+    size_t count = 0;
+    for (const auto& [rel, size] : scan.files) {
+        if (!allowed_file(rel, info.manifest.entry)) continue;
+        if (++count > kMaxFiles) {
+            return Result<SceneInfo>::err(
+                ErrorCode::InvalidArgument,
+                "scene package has more than 256 files: " + code_dir(scan.id));
+        }
+        info.code_bytes += size;
+    }
+    info.data_bytes = scan.data_bytes;
+    return Result<SceneInfo>::ok(std::move(info));
 }
 
 Result<os::LargeBuffer> SceneRepository::read_asset(std::string_view id, std::string_view path,
@@ -313,88 +430,65 @@ Result<os::LargeBuffer> SceneRepository::read_asset_here(std::string_view id, st
 }
 
 Result<SceneInfo> SceneRepository::info(std::string_view id) {
-    return call_on_worker<SceneInfo>(config_.worker, [&] { return info_here(id); });
-}
-
-Result<SceneInfo> SceneRepository::info_here(std::string_view id) {
-    std::lock_guard<os::Mutex> lock(mutex_);
-    return info_locked(id);
+    bool ran = false;
+    Result<SceneScan> scanned = scan(id, true, ran);
+    if (!scanned) return fail<SceneInfo>(scanned.error());
+    if (config_.on_parse) config_.on_parse(id);
+    return info_of(scanned.value());
 }
 
 Result<SceneInfo> SceneRepository::info_locked(std::string_view id) {
-    Result<SceneManifest> m = read_manifest(id);
-    if (!m) {
-        return fail<SceneInfo>(m.error());
-    }
-    SceneInfo info;
-    info.manifest = std::move(m.value());
-    Result<void> walked = walk_package(storage_, code_dir(id), info.manifest.entry,
-                                       [&](const std::string&, uint64_t size) -> Result<void> {
-                                           info.code_bytes += size;
-                                           return Result<void>::ok();
-                                       });
-    if (!walked) {
-        return fail<SceneInfo>(walked.error());
-    }
-    Result<uint64_t> data = storage_.tree_size(data_dir(id));
-    if (!data) {
-        return fail<SceneInfo>(data.error());
-    }
-    info.data_bytes = data.value();
-    return Result<SceneInfo>::ok(std::move(info));
+    Result<SceneScan> scanned = scan_locked(id, true);
+    if (!scanned) return fail<SceneInfo>(scanned.error());
+    return info_of(scanned.value());
 }
 
 Result<std::vector<SceneInfo>> SceneRepository::list() {
-    return call_on_worker<std::vector<SceneInfo>>(config_.worker, [&] { return list_here(); });
-}
-
-Result<std::vector<SceneInfo>> SceneRepository::list_here() {
     using R = Result<std::vector<SceneInfo>>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<std::vector<std::string>> ids =
+        call_on_worker<std::vector<std::string>>(config_.worker, [&] { return ids_here(); });
+    if (!ids) return fail<std::vector<SceneInfo>>(ids.error());
     std::vector<SceneInfo> out;
-    Result<std::vector<DirEntry>> listed = storage_.list_dir(config_.code_root);
-    if (!listed) {
-        if (listed.error().code == ErrorCode::NotFound) {
-            return R::ok(std::move(out));
-        }
-        return fail<std::vector<SceneInfo>>(listed.error());
-    }
-    for (const DirEntry& e : listed.value()) {
-        if (e.kind != EntryKind::Dir || !valid_scene_id(e.name)) {
-            continue;
-        }
-        Result<SceneInfo> one = info_locked(e.name);
+    // One job per scene, each submitted after the previous one finished,
+    // so the lane never holds more than one of them (file header).
+    for (const std::string& id : ids.value()) {
+        bool ran = false;
+        Result<SceneScan> scanned = scan(id, true, ran);
+        // Refused by the worker: the listing would silently miss a scene.
+        if (!ran) return fail<std::vector<SceneInfo>>(scanned.error());
+        if (scanned && config_.on_parse) config_.on_parse(id);
+        Result<SceneInfo> one =
+            scanned ? info_of(scanned.value()) : fail<SceneInfo>(scanned.error());
         if (one) {
             out.push_back(std::move(one.value()));
         } else if (one.error().code != ErrorCode::NotFound) {
-            // A directory left holding only kept data is not worth a warning.
-            WLOG_W(kTag, "skipping scene '%s': %s", e.name.c_str(), one.error().message.c_str());
+            // NotFound: a directory left holding only kept data, or a scene
+            // removed since the code root was listed; neither is worth a
+            // warning.
+            WLOG_W(kTag, "skipping scene '%s': %s", id.c_str(), one.error().message.c_str());
         }
     }
     return R::ok(std::move(out));
 }
 
 Result<std::vector<SceneManifest>> SceneRepository::manifests() {
-    return call_on_worker<std::vector<SceneManifest>>(config_.worker,
-                                                      [&] { return manifests_here(); });
-}
-
-Result<std::vector<SceneManifest>> SceneRepository::manifests_here() {
     using R = Result<std::vector<SceneManifest>>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<std::vector<std::string>> ids =
+        call_on_worker<std::vector<std::string>>(config_.worker, [&] { return ids_here(); });
+    if (!ids) return fail<std::vector<SceneManifest>>(ids.error());
     std::vector<SceneManifest> out;
-    Result<std::vector<DirEntry>> listed = storage_.list_dir(config_.code_root);
-    if (!listed) {
-        if (listed.error().code == ErrorCode::NotFound) return R::ok(std::move(out));
-        return fail<std::vector<SceneManifest>>(listed.error());
-    }
-    for (const DirEntry& e : listed.value()) {
-        if (e.kind != EntryKind::Dir || !valid_scene_id(e.name)) continue;
-        Result<SceneManifest> m = read_manifest(e.name);
+    // As list(): one job per scene, one at a time.
+    for (const std::string& id : ids.value()) {
+        bool ran = false;
+        Result<SceneScan> scanned = scan(id, false, ran);
+        if (!ran) return fail<std::vector<SceneManifest>>(scanned.error());
+        if (scanned && config_.on_parse) config_.on_parse(id);
+        Result<SceneManifest> m =
+            scanned ? parse_scan(scanned.value()) : fail<SceneManifest>(scanned.error());
         if (m) {
             out.push_back(std::move(m.value()));
         } else if (m.error().code != ErrorCode::NotFound) {
-            WLOG_W(kTag, "skipping scene '%s': %s", e.name.c_str(), m.error().message.c_str());
+            WLOG_W(kTag, "skipping scene '%s': %s", id.c_str(), m.error().message.c_str());
         }
     }
     return R::ok(std::move(out));
