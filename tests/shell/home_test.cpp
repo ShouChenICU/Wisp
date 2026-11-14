@@ -534,19 +534,56 @@ TEST_P(HomeShapes, StepListAsDrawn) {
     ui.stop();
 }
 
+namespace {
+
+// The admin address the shape tests use: as long as a real one gets.
+constexpr const char* kLongUrl = "http://192.168.100.100:8900";
+
+// The address as the hint shows it on this shape: whole where it fits on
+// one line, without its scheme on the 360 px circle, where it is 1 px too
+// wide (Home::fitted_url()).
+std::string shown_url(const ShapeCase& c) {
+    const std::string url = kLongUrl;
+    return std::string(c.shape) == "circle" && c.width == 360 ? url.substr(7) : url;
+}
+
+// `v` shown idle: the hint is `text` (then the address on a line of its
+// own when `with_url`), on rows the screen shows, like every hint band
+// (home_layout()), and wrapped whole, never cut with "...".
+void expect_hint_fits(Home& home, const wisp::hal::ScreenShape& shape, const ShapeCase& c,
+                      const TurnView& v, const std::string& text, bool with_url) {
+    home.show_view(v);
+    lv_obj_update_layout(home.screen());
+    ASSERT_FALSE(home.in_turn());
+    ASSERT_FALSE(hidden(home.hint_label()));
+    const std::string want = with_url ? text + "\n" + shown_url(c) : text;
+    EXPECT_EQ(label_text(home.hint_label()), want);  // not cut with "..."
+    const lv_area_t a = coords(home.hint_label());
+    EXPECT_TRUE(box_visible(shape, a)) << str(a);
+    lv_point_t size;
+    lv_text_get_size(&size, want.c_str(),
+                     lv_obj_get_style_text_font(home.hint_label(), LV_PART_MAIN), 0, 0,
+                     lv_obj_get_content_width(home.hint_label()), LV_TEXT_FLAG_NONE);
+    EXPECT_LE(size.y, lv_obj_get_content_height(home.hint_label()))
+        << str(a) << " needs " << size.y << " px at " << lv_obj_get_content_width(home.hint_label())
+        << " px wide";
+}
+
+}  // namespace
+
 // Why a turn ended, idle under the wisp, for every reason in every
-// language (the admin address after the two that need a setting): the hint
-// lies on rows the screen shows, like every hint band (home_layout()), and
-// is wrapped whole, never cut with "...".
+// language (the admin address after the two that need a setting): it fits
+// (expect_hint_fits()).
 TEST_P(HomeShapes, TurnOutcomeHintsFit) {
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
     wisp::core::EventBus bus;
     ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
-    const std::string url = "http://192.168.100.100:8900";
-    Home home(wisp::shell::HomeDeps{
-        .ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = [&] { return url; }});
+    Home home(
+        wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = [] {
+                                  return std::string(kLongUrl);
+                              }});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
@@ -571,12 +608,13 @@ TEST_P(HomeShapes, TurnOutcomeHintsFit) {
         {"server", StrId::HomeTurnServer, false},
         {"context", StrId::HomeTurnContext, false},
     };
+    const bool small_circle =
+        std::string_view(GetParam().shape) == "circle" && GetParam().width == 360;
     uint32_t turn = 0;
     for (const Lang lang : {Lang::Zh, Lang::Ja, Lang::En}) {
         for (const Reason& r : reasons) {
             const std::string text = wisp::ui::tr(r.id, lang);
-            const std::string want = r.with_url ? text + "\n" + url : text;
-            SCOPED_TRACE(want);
+            SCOPED_TRACE(text);
             on_ui([&] {
                 wisp::ui::set_lang(lang);
                 TurnView v;
@@ -585,20 +623,15 @@ TEST_P(HomeShapes, TurnOutcomeHintsFit) {
                 v.end_note.assign("the agent's full note");
                 v.ended_ms = wisp::os::now_ms();
                 v.started_ms = v.ended_ms;
-                home.show_view(v);
-                lv_obj_update_layout(home.screen());
-                ASSERT_FALSE(home.in_turn());
-                ASSERT_FALSE(hidden(home.hint_label()));
-                EXPECT_EQ(label_text(home.hint_label()), want);  // not cut with "..."
-                const lv_area_t a = coords(home.hint_label());
-                EXPECT_TRUE(box_visible(shape_, a)) << str(a);
-                lv_point_t size;
-                lv_text_get_size(&size, want.c_str(),
-                                 lv_obj_get_style_text_font(home.hint_label(), LV_PART_MAIN), 0, 0,
-                                 lv_obj_get_content_width(home.hint_label()), LV_TEXT_FLAG_NONE);
-                EXPECT_LE(size.y, lv_obj_get_content_height(home.hint_label()))
-                    << str(a) << " needs " << size.y << " px at "
-                    << lv_obj_get_content_width(home.hint_label()) << " px wide";
+                expect_hint_fits(home, shape_, GetParam(), v, text, r.with_url);
+                if (!r.with_url) return;
+                const std::string got = label_text(home.hint_label());
+                const std::string line = got.substr(got.find('\n') + 1);
+                if (small_circle) {
+                    EXPECT_EQ(line, "192.168.100.100:8900");
+                } else {
+                    EXPECT_EQ(line.rfind("http://", 0), 0u) << line;  // kept where it fits
+                }
             });
         }
     }

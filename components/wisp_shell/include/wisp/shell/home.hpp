@@ -44,7 +44,8 @@
 // controller only leaves them unspoken.
 //
 // The hint: readiness first (NoWifi: HomeNoWifi; NoLlm: HomeNoLlm and the
-// admin address), else the later of the controller's last voice error
+// admin address, on a line of its own, without its scheme where the whole
+// address would not fit on one line), else the later of the controller's last voice error
 // (VoiceErr*, with the address for a missing profile) or "not heard"
 // (HomeNotHeard), first seen, and why the last turn did not end "done"
 // (TurnView::end_reason as a short HomeTurn* string, with the address for
@@ -270,6 +271,9 @@ private:
     struct Row;
     void set_pulse(Row& r, bool on);
     std::string hint_text(uint64_t now, bool in_turn);
+    // `url` as the idle hint shows it: whole when it fits on one line of
+    // the hint band, else without its scheme ("192.168.1.5:8900").
+    std::string fitted_url(const std::string& url) const;
     void update_more();
     void start_fade_out();
     void act(WispPress::Action a);

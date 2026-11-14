@@ -604,12 +604,26 @@ void Home::retext() {
 
 HomeTextStats Home::take_text_stats() { return std::exchange(text_stats_, HomeTextStats{}); }
 
+std::string Home::fitted_url(const std::string& url) const {
+    // The idle band's width: the address is only added there.
+    const lv_area_t band = home_layout(deps_.shape, false, true).hint;
+    lv_point_t size{0, 0};
+    lv_text_get_size(&size, url.c_str(), lv_obj_get_style_text_font(hint_, LV_PART_MAIN), 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    if (size.x <= lv_area_get_width(&band)) return url;
+    // Broken over two lines the address would not read as one, and the
+    // band may not have the line to spare; a browser takes it without
+    // the scheme.
+    const size_t scheme = url.find("://");
+    return scheme == std::string::npos ? url : url.substr(scheme + 3);
+}
+
 std::string Home::hint_text(uint64_t now, bool in_turn) {
     // One line during a turn: the address waits for the idle layout.
     auto with_url = [&](std::string s) {
         if (in_turn || !deps_.admin_url) return s;
         const std::string url = deps_.admin_url();
-        if (!url.empty()) s += "\n" + url;
+        if (!url.empty()) s += "\n" + fitted_url(url);
         return s;
     };
     switch (conv_ != nullptr ? conv_->readiness() : Readiness::Ready) {
