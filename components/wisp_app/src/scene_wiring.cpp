@@ -20,6 +20,11 @@ constexpr const char* kTag = "scenes";
 constexpr uint32_t kDrainMs = 5000;
 // How often dev mode looks at the working directory (spec 6.4).
 constexpr uint32_t kWatchMs = 500;
+// Whether card-only work gets its own worker, wisp.sd.io, whose stack is
+// in PSRAM. False runs it all on wisp.fs, as before that worker existed:
+// the fallback if the device shows that FATFS/sdmmc writes cannot run
+// from a PSRAM stack (flash-thread spec 3.9).
+constexpr bool kSdOwnWorker = true;
 
 // The system notice for each SceneNoticeKind; its argument is the scene's
 // name.
@@ -39,7 +44,7 @@ const char* notice_code(scene::SceneNoticeKind kind) {
 
 }  // namespace
 
-SceneWiring::SceneWiring(SceneWiringDeps deps) : deps_(deps) {}
+SceneWiring::SceneWiring(SceneWiringDeps deps) : deps_(deps) { router_.emplace(worker_); }
 
 SceneWiring::~SceneWiring() { stop(); }
 
@@ -47,6 +52,16 @@ void SceneWiring::start_storage() {
     if (auto r = worker_.start(); !r) {
         WLOG_E(kTag, "storage worker not started (%s); scenes are off", r.error().message.c_str());
         return;
+    }
+    // After wisp.fs, so card work always has it to fall back to; without
+    // the SD I/O worker it simply stays there (StorageRouter).
+    if (kSdOwnWorker && deps_.storage.has_sd()) {
+        if (auto r = sd_worker_.start(); !r) {
+            WLOG_W(kTag, "SD I/O worker not started (%s); card work runs on %s",
+                   r.error().message.c_str(), worker_.name());
+        } else {
+            router_.emplace(worker_, &sd_worker_);
+        }
     }
     core::SceneRepoConfig config;
     const Platform& platform = deps_.platform;
@@ -84,10 +99,9 @@ void SceneWiring::start_storage() {
     if (internal) {
         core::SceneFilesConfig files_config;
         files_config.data_root = internal.value() + "/scenes";
-        // Every medium on wisp.fs for now, which may touch both.
-        files_config.submit_io = [this](core::Medium, core::IoLane lane,
+        files_config.submit_io = [this](core::Medium m, core::IoLane lane,
                                         std::function<void()> job) {
-            return worker_.submit(std::move(job), lane);
+            return router_->submit(m, std::move(job), lane);
         };
         // The repository never calls into SceneFiles, so taking its lock
         // under SceneFiles' locks cannot deadlock.
@@ -102,11 +116,12 @@ void SceneWiring::start_storage() {
     }
     core::SceneFiles* files = files_.get();
     if (files != nullptr) {
-        // The card's scenes are counted again on the worker (spec 7.2).
+        // The card's scenes are counted again (spec 7.2), starting on
+        // wisp.fs: their records sit on internal flash.
         for (const char* topic : {"storage.sd.inserted", "storage.sd.removed"}) {
             sd_subs_.push_back(deps_.bus.subscribe(topic, [this, files](const core::Event&) {
                 sd_changes_.fetch_add(1);
-                if (!worker_.submit([files] { files->on_sd_changed(); }))
+                if (!worker_.submit([this, files] { recount_card(*files); }))
                     WLOG_W(kTag, "storage worker busy: scene files on the card not recounted");
             }));
         }
@@ -133,6 +148,23 @@ void SceneWiring::start_storage() {
         !r) {
         WLOG_W(kTag, "storage worker busy: interrupted installs not recovered");
     }
+}
+
+void SceneWiring::recount_card(core::SceneFiles& files) {
+    core::SceneFiles* f = &files;
+    // Only queued, never waited for: the recounts and the orphan log need
+    // no order between them, and a scene not recounted yet is counted by
+    // its next call.
+    for (std::string& id : files.sd_changed_begin()) {
+        if (!router_->submit(core::Medium::Sd, [f, id] {
+                if (auto r = f->recount(id); !r)
+                    WLOG_W(kTag, "%s: not counted: %s", id.c_str(), r.error().message.c_str());
+            })) {
+            WLOG_W(kTag, "%s: card queue full; counted on its next call", id.c_str());
+        }
+    }
+    if (!worker_.submit([f] { f->sd_changed_end(); }))
+        WLOG_W(kTag, "storage worker busy: the card's files without a scene not logged");
 }
 
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
@@ -278,10 +310,14 @@ void SceneWiring::stop() {
     for (core::SubscriptionId id : sd_subs_) deps_.bus.unsubscribe(id);
     sd_subs_.clear();
     if (http_) http_->stop();
-    if (!worker_.drain(kDrainMs)) {
-        WLOG_W(kTag, "storage worker still busy after %u ms; stopping it",
+    // Both together: a job on either may hand work to the other.
+    if (!router_->drain(kDrainMs)) {
+        WLOG_W(kTag, "storage workers still busy after %u ms; stopping them",
                static_cast<unsigned>(kDrainMs));
     }
+    // The card's worker first: card work submitted from here on runs on
+    // wisp.fs, which stops last.
+    router_->stop_sd();
     worker_.stop();
 }
 

@@ -319,8 +319,8 @@ Result<void> App::start() {
             impl->settings_cache.reset();
         }
     }
-    // The SD card hot-plug probe, on the worker like every other storage
-    // access.
+    // The SD card hot-plug probe, on the card's worker (wisp.sd.io, or
+    // wisp.fs without one).
     impl_->refresh_pending.store(false);
     impl_->storage_timer =
         std::make_unique<os::Timer>("wisp.storage", kStorageRefreshMs, /*periodic=*/true,
@@ -1262,22 +1262,33 @@ void App::flush_storage() {
     if (auto r = impl_->settings_front.flush(kShutdownSettingsFlushMs); !r) {
         WLOG_W("app", "settings not saved before going down: %s", r.error().message.c_str());
     }
-    core::StorageWorker* worker = storage_worker();
-    if (worker != nullptr && !worker->drain(kShutdownDrainMs)) {
+    // Both workers: card work queued on wisp.sd.io is written too.
+    core::StorageRouter* router = storage_router();
+    if (router != nullptr && !router->drain(kShutdownDrainMs)) {
         WLOG_W("app", "storage work still queued (%u jobs); going down anyway",
-               static_cast<unsigned>(worker->pending()));
+               static_cast<unsigned>(router->pending()));
     }
 }
 
 bool queue_storage_refresh(App& app) {
     App::Impl* impl = app.impl_.get();
     if (impl->refresh_pending.exchange(true)) return false;
-    if (impl->submit_io([impl] {
-            impl->storage.refresh();
-            impl->refresh_pending.store(false);
-        })) {
+    std::function<void()> job = [impl] {
+        impl->storage.refresh();
+        impl->refresh_pending.store(false);
+    };
+    // Card work (it takes only the card's I/O lock, and may deinit a
+    // pulled card): on wisp.sd.io when it runs, else on wisp.fs.
+    core::StorageRouter* router = app.storage_router();
+    if (router == nullptr) {
+        job();
         return true;
     }
+    if (router->submit(core::Medium::Sd, job)) return true;
+    // Not running (boot or shutdown): run_sync() runs it right here. Timeout
+    // means it got queued after all and runs later; Busy that it never will.
+    Result<void> r = router->run_sync(core::Medium::Sd, std::move(job), 0);
+    if (r || r.error().code == ErrorCode::Timeout) return true;
     impl->refresh_pending.store(false);
     return false;
 }
@@ -1307,6 +1318,9 @@ shell::ConversationController* App::conversation() {
 shell::Shell* App::shell() { return impl_->shell.get(); }
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
+}
+core::StorageRouter* App::storage_router() {
+    return impl_->scenes ? &impl_->scenes->router() : nullptr;
 }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }

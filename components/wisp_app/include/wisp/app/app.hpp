@@ -17,8 +17,9 @@
 //   3. Starts the EventBus, then StorageManager::init() (a failure here
 //      sets the "storage" boot-report note to "readonly" and boot
 //      continues read-only rather than failing), starts ButtonService and
-//      the storage worker, and a periodic 2000ms timer that queues
-//      StorageManager::refresh() on that worker.
+//      the storage workers (wisp.fs, and wisp.sd.io with a card slot),
+//      and a periodic 2000ms timer that queues StorageManager::refresh()
+//      on the card's worker (wisp.sd.io, else wisp.fs).
 //   4. If "display.main" is registered: applies the `display` settings
 //      namespace's `brightness` key (default 200) to it, starts a
 //      UiRuntime over it (plus "touch.main" if also registered).
@@ -107,6 +108,7 @@ class MemoryStore;
 class WakeLockRegistry;
 class OccupancyRegistry;
 class SensorService;
+class StorageRouter;
 class StorageWorker;
 }  // namespace wisp::core
 
@@ -383,6 +385,11 @@ public:
     // The "wisp.fs" storage worker the scenes and notifications share:
     // nullptr without scenes, and before start() or after stop().
     core::StorageWorker* storage_worker();
+    // Routes card-only work to the SD I/O worker "wisp.sd.io" (started
+    // with a card slot) and everything else to storage_worker(); its sd()
+    // is null without one. nullptr under the same conditions as
+    // storage_worker().
+    core::StorageRouter* storage_router();
     // The agent (agent-core spec 2), built and started with a screen and a
     // scene runtime; nullptr otherwise, and before start() or after stop().
     agent::AgentService* agent();
@@ -401,9 +408,9 @@ public:
     // Writes what still waits for flash before the device restarts, powers
     // off or enters deep standby (spec 3.8 of
     // docs/superpowers/specs/2026-11-06-flash-thread-design.md): changed
-    // Settings first (up to 2 s), then every job queued on the storage
-    // worker (up to 5 s). A timeout is logged and ignored. Blocks; any
-    // thread but the worker's.
+    // Settings first (up to 2 s), then every job queued on both storage
+    // workers, wisp.fs and wisp.sd.io (up to 5 s). A timeout is logged and
+    // ignored. Blocks; any thread but the workers'.
     void flush_storage();
 
     // The Platform this App was constructed from (needed by the system

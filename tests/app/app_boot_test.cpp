@@ -35,6 +35,7 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/flash_guard.hpp"
@@ -484,19 +485,22 @@ TEST(AppNotifications, StopSavesPendingNotices) {
     EXPECT_NE(text.find("restore_failed"), std::string::npos) << text;
 }
 
-TEST(App, StorageRefreshRunsOnTheWorker) {
+// The SD card hot-plug probe is card-only work: on wisp.sd.io.
+TEST(AppBoot, StorageRefreshRunsOnTheSdWorker) {
     MakeAppOptions opts;
     opts.with_display = false;
     opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
                                             /*removable=*/true);
     std::atomic<int> polls{0};
     std::atomic<int> off_thread{0};
+    std::atomic<bool> booted{false};
     std::atomic<bool> hold{false};
     wisp::os::Semaphore entered(1, 0);
     wisp::os::Semaphore release(1, 0);
     opts.sd->on_online = [&] {
         polls.fetch_add(1);
-        if (!wisp::os::on_flash_thread()) off_thread.fetch_add(1);
+        // StorageManager::init() probes the card too, at boot.
+        if (booted.load() && !wisp::os::on_sd_io_thread()) off_thread.fetch_add(1);
         if (hold.exchange(false)) {
             entered.give();
             release.take(wisp::os::kForever);
@@ -504,6 +508,7 @@ TEST(App, StorageRefreshRunsOnTheWorker) {
     };
     Harness h(opts);
     ASSERT_TRUE(h.app.start());
+    booted = true;
     ASSERT_NE(h.app.storage_worker(), nullptr);
 
     // The timer's own refresh may be in flight; ours goes in once it is not.
@@ -522,6 +527,76 @@ TEST(App, StorageRefreshRunsOnTheWorker) {
     ASSERT_TRUE(wait_until([&] { return polls.load() > timer_before; }, 5000));
     h.app.stop();
     EXPECT_EQ(off_thread.load(), 0);
+}
+
+// A board with a card slot gets the SD I/O worker "wisp.sd.io" next to
+// wisp.fs; card work goes there through the router.
+TEST(AppBoot, SdWorkerRunsWithACardSlot) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+                                            /*removable=*/true);
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    wisp::core::StorageRouter* router = h.app.storage_router();
+    ASSERT_NE(router, nullptr);
+    ASSERT_NE(router->sd(), nullptr);
+    EXPECT_TRUE(router->sd()->running());
+    EXPECT_EQ(&router->worker_for(wisp::core::Medium::Sd), router->sd());
+    h.app.stop();
+}
+
+// Without a slot there is no second worker, and boot goes on: card work
+// (there is none) would go to wisp.fs.
+TEST(AppBoot, NoSdWorkerWithoutACardSlot) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    wisp::core::StorageRouter* router = h.app.storage_router();
+    ASSERT_NE(router, nullptr);
+    EXPECT_EQ(router->sd(), nullptr);
+    EXPECT_EQ(&router->worker_for(wisp::core::Medium::Sd), h.app.storage_worker());
+    h.app.stop();
+}
+
+// Before a restart, power-off or deep standby, card work still queued on
+// wisp.sd.io is written too, not only wisp.fs's.
+TEST(AppBoot, FlushStorageDrainsTheSdWorker) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+                                            /*removable=*/true);
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    wisp::core::StorageRouter* router = h.app.storage_router();
+    ASSERT_NE(router, nullptr);
+    ASSERT_NE(router->sd(), nullptr);
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    // A failed assertion below must not leave the worker parked.
+    struct ReleaseOnExit {
+        wisp::os::Semaphore& s;
+        ~ReleaseOnExit() { s.give(); }
+    } guard{release};
+    std::atomic<bool> gate_done{false};
+    ASSERT_TRUE(router->sd()->submit([&] {
+        started.give();
+        (void)release.take(wisp::os::kForever);
+        gate_done = true;
+    }));
+    ASSERT_TRUE(started.take(3000));
+    std::atomic<bool> returned{false};
+    std::thread flush([&] {
+        h.app.flush_storage();
+        returned = true;
+    });
+    // Still waiting for the card job.
+    EXPECT_FALSE(wait_until([&] { return returned.load(); }, 300));
+    release.give();
+    flush.join();
+    EXPECT_TRUE(gate_done.load());
+    h.app.stop();
 }
 
 TEST(App, RestartFlushesSettingsFirst) {

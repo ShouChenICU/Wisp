@@ -37,7 +37,7 @@
 
 ### 1.2 目标
 
-1. 运行期间，只有 `wisp.fs` 读、写、擦除、映射内部 flash，以及读写存储介质上的文件（内部 LittleFS、SD 卡）。其他线程一律把请求交给它，自己不碰。
+1. 运行期间，只有 `wisp.fs` 读、写、擦除、映射内部 flash，以及读写内部 LittleFS 上的文件。只读写 SD 卡的文件工作交给 SD I/O 线程 `wisp.sd.io`（2.1）；`wisp.fs` 也可以读写 SD 卡。其他线程一律把请求交给这两个线程之一，自己不碰。
 2. 规则由机制强制执行：放错线程的访问在模拟器的单元测试里就会失败，而不是等真机 abort。
 3. 内部 RAM 只用于：DMA 缓冲、`wisp.fs` 的栈、ISR 与 IRAM 代码数据、ESP-IDF 自己的任务，以及明确声明的**高性能路径**（UI 线程的栈）。其他任务的栈和数据一律放 PSRAM。
 4. 调用方接口尽量不变：Settings 的 `get/set` 签名不变；三个持久化服务（Wi-Fi、配对、模型配置）对外接口不变。
@@ -72,6 +72,12 @@
   - **开机阶段**：`wisp.fs` 启动之前，`app_main` 映射字体分区、初始化 NVS、挂载文件系统；
   - **关机阶段**：`wisp.fs` 停止之后（只在测试和模拟器退出时出现）。
 - SD 卡的挂载与探测（`wisp.sd`）不访问内部 flash，也不读写文件，保持现状。
+- **SD I/O 线程** `wisp.sd.io`（`core::StorageWorker`，`WorkerRole::SdIo`，由 `SceneWiring` 持有，板子注册了 `storage.sd` 才启动）：只读写 SD 卡的文件工作在它上面执行，由 `core::StorageRouter` 按 `Medium::Sd` 分派（某个场景在卡上的 `wisp.files` 调用、换卡后的重新统计、`StorageManager::refresh()`）。规则：
+  - `wisp.sd.io` 不碰内部 flash，也从不等待 `wisp.fs`（`run_sync`、`drain`、`stop`、`call_on_worker` 对 flash worker 在这个线程上一律拒绝）；
+  - `wisp.fs` 也可以读写 SD 卡；同时碰两种介质的工作（场景的位置记录在内部、文件在卡上，`scan()`、恢复出厂设置、`status()` 等）留在 `wisp.fs`；
+  - `wisp.fs` 只有在不持有任何卡锁时才能等待 `wisp.sd.io`；
+  - 锁的顺序（外层在前，持有后面的锁时不再取前面的）：`SceneFiles::io_int_mu_` → `SceneFiles::io_sd_mu_` → `SceneRepository::mutex_` → `StorageManager::int_io_mu_` → `StorageManager::sd_io_mu_` → `StorageManager::state_mu_`。`wisp.sd.io` 上只会取 `io_sd_mu_`、`sd_io_mu_`（和 `state_mu_`）。
+  - 没有 SD I/O 线程（没有卡槽、启动失败、`kSdOwnWorker` 为 false）或它已停止时，卡上的工作回到 `wisp.fs` 执行。
 
 ### 2.2 任务声明
 
@@ -224,7 +230,7 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 ### 3.6 管理后台 httpd：OTA 与下载
 
 - **OTA**：`FirmwareSink::on_data` 把收到的数据攒进一块 PSRAM 缓冲（32 KB），攒满或请求结束时用 `run_sync(…, IoLane::Bulk)` 交给 flash 线程执行 `esp_ota_write`，等这一块写完再继续收。`on_end` 用 `run_sync` 执行 `esp_ota_end` 与校验、设启动分区（映射 flash 的那一步也在 flash 线程上）。httpd 自己只做网络收发和等待。
-- **场景文件下载**：`routes_scene_files.cpp` 每次用 `run_sync(…, IoLane::Bulk)` 让 flash 线程 `read_range` 一块（32 KB）到 PSRAM 缓冲，httpd 再发送。`SceneFiles::read()` 只在 flash 线程上调用（与 Lua 路径一致），`docs/architecture.md` 里"或允许访问 flash 的 httpd 线程"的例外删除。
+- **场景文件下载**：`routes_scene_files.cpp` 每次经 `core::run_files()`（`SceneFiles::submit()`）在 Bulk 队列里读一块（32 KB）到 PSRAM 缓冲，httpd 再发送。文件在 SD 卡上的场景在 `wisp.sd.io` 上读，其余在 flash 线程上读（与 Lua 路径一致），所以从卡上下载大文件不占用 `wisp.fs`。`docs/architecture.md` 里"或允许访问 flash 的 httpd 线程"的例外删除。
 - **系统设置路由**：`SystemSettings` 走缓存（3.4），不需要改动。
 - 之后管理后台 httpd 声明 `flash_access = false`，10 KB 栈可放 PSRAM。
 
@@ -236,9 +242,9 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 | `power_manager.cpp` 读电源设置 | 走缓存，无需改动 |
 | `self_check_screen.cpp` 读写 `perf_overlay` | 走缓存，无需改动 |
 | `loopback.cpp` 读音量 | 走缓存，无需改动 |
-| `app.cpp` 每 2 s `refresh()` | 定时器回调改为 `submit` 一个 Normal 任务；上一个还没执行完就跳过这一次 |
+| `app.cpp` 每 2 s `refresh()` | 定时器回调经 `StorageRouter` 以 `Medium::Sd` 提交一个 Normal 任务（有 `wisp.sd.io` 时在它上面，否则在 `wisp.fs` 上）；上一个还没执行完就跳过这一次。拔卡时 `refresh()` 持卡的 I/O 锁把卡标记为离线并释放它，排在后面的卡任务以 `StorageUnavailable` 失败 |
 | `firmware_confirm.cpp` 标记固件有效 | `run_sync` 交给 flash 线程 |
-| `factory_reset.cpp` | 整个擦除过程作为一个 Normal 任务交给 flash 线程（`run_sync`，超时 30 s），完成后在 `wisp.reset` 上重启 |
+| `factory_reset.cpp` | 先 `StorageRouter::stop_sd()`（`wisp.sd.io` 做完已排队的任务后停止，之后的卡任务排在 `wisp.fs` 上），再把整个擦除过程（也会删卡上的文件）作为一个 Normal 任务交给 flash 线程（`run_sync`，超时 30 s），完成后在 `wisp.reset` 上重启 |
 | `wisp.bus` 的订阅回调 | 规则同样适用；守卫会抓出违规的订阅者 |
 
 ### 3.8 关机、重启、深度待机
@@ -246,7 +252,9 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 `Platform::restart`、`request_power_off` 和进入深度待机之前，依次：
 
 1. `Settings::flush(2000)`；
-2. `StorageWorker::drain(5000)`。
+2. `StorageRouter::drain(5000)`：`wisp.fs` 和 `wisp.sd.io` 两个 worker 都排空（`App::flush_storage()`）。
+
+`App::stop()` 里 `SceneWiring::stop()` 先排空两个 worker，再停 `wisp.sd.io`，最后停 `wisp.fs`。
 
 超时只记警告，然后继续。OTA 完成后的重启同样如此。
 
@@ -255,12 +263,15 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 | 任务 | `flash_access` | `hot_stack` | 栈位置（ESP，PSRAM 有空间时） |
 |---|---|---|---|
 | `wisp.fs` | true | false | 内部 |
+| `wisp.sd.io`（只读写 SD 卡，栈 8192） | false | false | PSRAM |
 | `wisp_ui` | false | true | 内部 |
 | 管理后台 httpd（8900） | false | false | PSRAM |
 | `wisp.net`、`wisp.console`、`wisp.reset`、`wisp.fwup`、`wisp.bus`、`wisp.loop`、`wisp.sample`、`wisp.sd` | false | false | PSRAM |
 | 已在 PSRAM 的任务（`wisp.scene`、`wisp.agent` 等） | false | false | PSRAM |
 
 `wisp.sd` 只做挂载探测：挂载 FAT 会访问 SD 卡，但不触及内部 flash 和 cache。如果实测挂载代码会 abort，就把挂载移到 flash 线程，并在硬件文档里记录。
+
+`wisp.sd.io` 的栈在 PSRAM，在上面执行 FATFS/sdmmc 的读写（以及拔卡后 `refresh()` 里的卸载）需要真机验证。如果实测从 PSRAM 栈写卡会 abort，把 `scene_wiring.cpp` 里的 `kSdOwnWorker` 改为 false：卡上的工作全部回到 `wisp.fs`，其余不变。
 
 ---
 

@@ -8,6 +8,14 @@
 //   - the "wisp.fs" StorageWorker (start_storage(), right after
 //     StorageManager::init()): file work for tasks that must not touch
 //     flash, the scene task above all;
+//   - when the board has a card slot, the SD I/O worker "wisp.sd.io"
+//     (StorageWorker::sd_io_config()), started right after wisp.fs, and
+//     the StorageRouter over both: card-only work (a card scene's
+//     wisp.files calls, their recount after a card change, the hot-plug
+//     probe) runs there, so card transfers never hold up internal flash
+//     work. Without a slot, or if it cannot start, the router sends card
+//     work to wisp.fs, as it does with kSdOwnWorker (scene_wiring.cpp)
+//     set false;
 //   - the SceneRepository over <int>/scenes (or, in dev mode,
 //     Platform::scenes_dir for the code and Platform::scenes_data_dir for
 //     the data), whose recover() runs on the worker before anything lists
@@ -16,7 +24,8 @@
 //     and the SD card's library, even in dev mode (StorageManager moves
 //     files only inside a storage mount). Its scan() follows recover() on
 //     the worker; storage.sd.inserted/removed recount the card's scenes
-//     there. Deleting a scene with its data also clears its files;
+//     on wisp.sd.io (marked on wisp.fs first, orphans logged there).
+//     Deleting a scene with its data also clears its files;
 //   - with a screen (build_runtime(), after the system layer): the
 //     scenes' HTTP proxy (given Platform::http_client) and the
 //     SceneRuntime, built before networking so the admin routes can be
@@ -43,7 +52,7 @@
 // front loads the screen it replaced again), stop() after networking
 // (whose handlers use the repository and the runtime) and before the
 // storage-refresh timer: the proxy stops (it may wait for one request in
-// flight), then the worker drains and stops.
+// flight), then both workers drain, wisp.sd.io stops, then wisp.fs.
 //
 // Deleting (AdminDeps::request_scene_delete): request_delete() opens the
 // confirmation on the device. "Yes" closes the scene if it is up --
@@ -68,6 +77,7 @@
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -131,7 +141,8 @@ public:
     // Stops the runtime (closing the scene in front) and lets go of the
     // system layer, which App::stop() destroys next. Idempotent.
     void stop_runtime();
-    // stop_runtime(), then the proxy, then the worker (drained). Idempotent.
+    // stop_runtime(), then the proxy, then both workers (drained):
+    // wisp.sd.io first, then wisp.fs. Idempotent.
     void stop();
 
     core::SceneRepository* repository() const { return repo_.get(); }
@@ -149,6 +160,9 @@ public:
     net::SceneHttp* http() const { return http_.get(); }
     // The "wisp.fs" worker, running from start_storage() until stop().
     core::StorageWorker& worker() { return worker_; }
+    // Picks wisp.fs or wisp.sd.io by medium (see the file header); its
+    // sd() is null without an SD I/O worker.
+    core::StorageRouter& router() { return *router_; }
 
     // The shell's scene list (ShellDeps::list_scenes): every installed
     // scene with its icon, whether it runs in the background and whether
@@ -228,6 +242,9 @@ private:
     // scene stays as it is; nothing is retried behind the user's back.
     void delete_failed(const std::string& id, const std::string& name, const char* why);
     void publish(const std::string& id, const char* state);
+    // On wisp.fs, after the card came or went: marks the card's scenes,
+    // queues their recounts on the card's worker and the orphan log here.
+    void recount_card(core::SceneFiles& files);
     // Dev mode: starts the watch timer (start_runtime()).
     void start_watching();
     // On the worker: one DirWatcher poll, reloading the scene in front if
@@ -250,6 +267,11 @@ private:
 
     SceneWiringDeps deps_;
     core::StorageWorker worker_;
+    // Started only with a card slot; its stack may be in PSRAM (it never
+    // touches internal flash).
+    core::StorageWorker sd_worker_{core::StorageWorker::sd_io_config()};
+    // Over worker_ alone until start_storage() has started sd_worker_.
+    std::optional<core::StorageRouter> router_;
     // The services sit in Mem::Large, like the worker inside this object
     // (App builds it there): long-lived and small, so malloc would put them
     // in internal RAM. The worker's stack and the FreeRTOS objects stay

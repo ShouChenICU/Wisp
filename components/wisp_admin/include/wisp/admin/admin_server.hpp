@@ -142,11 +142,13 @@ struct AdminDeps {
     // GET /system/occupancy (spec 6.3). Null: 503 unavailable.
     core::OccupancyRegistry* occupancy = nullptr;
     // GET/DELETE /scenes/{id}/files[/{name}] (spec 7.2). Null: 503
-    // unavailable.
+    // unavailable. Every call runs as a job of its scene
+    // (core::run_files(): on wisp.sd.io for files on the card, else on the
+    // flash thread), a download chunk by chunk (Bulk lane); without its
+    // SceneFilesConfig::submit_io (tests), on the calling thread.
     core::SceneFiles* files = nullptr;
-    // The flash thread: every `files` call, and the files routes' check
-    // that the scene is installed, runs on it, a download chunk by chunk
-    // (Bulk lane). Null (tests): they run on the calling thread.
+    // The flash thread: the files routes' check that the scene is
+    // installed runs on it. Null (tests): on the calling thread.
     core::StorageWorker* worker = nullptr;
     // The agent (agent-core spec 7.1). Null (no screen or no scene
     // runtime, so no agent): every /agent route answers 503 unavailable.

@@ -13,6 +13,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -135,6 +136,12 @@ void factory_reset(App& app) {
         }
     };
 
+    // The erase touches the card too, from wisp.fs: the card's worker
+    // finishes what it has queued and stops first, so no card job runs
+    // beside the erase; card work from here on queues behind it on
+    // wisp.fs (flash-thread spec 3.7). Not restarted if the reset fails:
+    // card work then simply stays on wisp.fs.
+    if (core::StorageRouter* router = app.storage_router()) router->stop_sd();
     // A full queue is retried for the whole budget, not given up on.
     const uint32_t budget = app.impl_->reset_erase_ms;
     Result<void> erased = app.impl_->run_io(
