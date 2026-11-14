@@ -1329,6 +1329,55 @@ TEST(SceneRepository, ReadPathsParseOnTheCaller) {
     EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
 }
 
+// ParseOn::Worker, for a caller whose own stack must not hold a parse (the
+// admin server's task): the parse runs inside each scene's job, still one
+// short job per scene.
+TEST(SceneRepository, ReadPathsCanParseOnTheWorker) {
+    using wisp::core::ParseOn;
+    WorkerFixture w;
+    std::mutex mu;
+    std::vector<bool> on_worker;
+    std::vector<std::string> order;
+    bool submitted = false;
+    w.f.reconfigure([&](SceneRepoConfig& c) {
+        c.on_parse = [&](std::string_view) {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.push_back(w.worker.on_worker());
+        };
+        c.on_read = [&](std::string_view id) {
+            std::lock_guard<std::mutex> lock(mu);
+            order.push_back("read:" + std::string(id));
+            if (submitted) return;
+            submitted = true;
+            EXPECT_TRUE(w.worker.submit(
+                [&] {
+                    std::lock_guard<std::mutex> inner(mu);
+                    order.push_back("X");
+                },
+                wisp::core::IoLane::Interactive));
+        };
+    });
+    auto listed = w.f.repo->list(ParseOn::Worker);
+    ASSERT_TRUE(listed) << listed.error().message;
+    EXPECT_EQ(w.ids(listed.value()), (std::vector<std::string>{"a", "b", "c"}));
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_EQ(order, (std::vector<std::string>{"read:a", "X", "read:b", "read:c"}));
+    }
+    auto info = w.f.repo->info("a", ParseOn::Worker);
+    ASSERT_TRUE(info) << info.error().message;
+    EXPECT_EQ(info.value().code_bytes, total_size(files_for("a")));
+    EXPECT_TRUE(w.f.repo->manifest("a", ParseOn::Worker));
+    EXPECT_EQ(w.f.repo->manifests(ParseOn::Worker).value().size(), 3u);
+    // The same errors as parsing on the caller.
+    auto missing = w.f.repo->info("zz", ParseOn::Worker);
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().code, ErrorCode::NotFound);
+    std::lock_guard<std::mutex> lock(mu);
+    ASSERT_EQ(on_worker.size(), 3u + 1u + 1u + 3u);
+    EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
+}
+
 // A listing is one job per scene, so an Interactive job queued while the
 // first scene is read runs before the second.
 TEST(SceneRepository, ListReadsOneSceneAtATime) {

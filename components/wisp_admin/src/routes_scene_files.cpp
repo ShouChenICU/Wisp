@@ -17,7 +17,7 @@
 // queued meanwhile wait for one chunk at most, the rest in the Normal
 // lane. A wait that runs out fails the request (or ends the download
 // short). The installed-scene check is SceneRepository::info(), which
-// reads on the flash thread and parses on the server's.
+// reads and parses on the flash thread (ParseOn::Worker).
 
 #include <algorithm>
 #include <cstdint>
@@ -100,8 +100,9 @@ std::optional<std::string> installed_scene(AdminDeps& deps, const RequestContext
         refusal = bad_request("invalid scene id");
         return std::nullopt;
     }
-    // info() runs its own job and parses here, on the HTTP task.
-    auto info = deps.scenes->info(*id);
+    // Parsed on the worker: this task's internal stack has little room
+    // left (routes_scenes.cpp).
+    auto info = deps.scenes->info(*id, core::ParseOn::Worker);
     if (!info) {
         refusal = service_error(info.error());
         return std::nullopt;

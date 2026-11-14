@@ -67,9 +67,12 @@
 // per-scene snapshots, not one: each entry is a scene that existed and was
 // complete when its own job ran. A caller that must know whether its
 // listing is still current takes changed_since() before listing and asks
-// again afterwards. load(), install()'s swap, export_zip(), removal(),
-// remove() and recover() still parse inside their job: their file work
-// depends on the manifest.
+// again afterwards. A caller whose own stack must not hold a manifest
+// parse (the admin server's task, whose internal stack has little room
+// left) passes ParseOn::Worker: each scene's job then parses what it read
+// before it ends, still one short job per scene. load(), install()'s swap,
+// export_zip(), removal(), remove() and recover() still parse inside their
+// job: their file work depends on the manifest.
 
 #include <cstddef>
 #include <cstdint>
@@ -137,6 +140,9 @@ struct InstallOptions {
 // manifest's entry.
 bool valid_package_path(std::string_view path);
 
+// Where a read path parses what it read (file header).
+enum class ParseOn : uint8_t { Caller, Worker };
+
 struct SceneRepoConfig {
     std::string code_root;
     std::string data_root;
@@ -172,12 +178,12 @@ public:
     // left out, and one installed after it is not in this listing;
     // changed_since() tells a caller what changed meanwhile. Fails only
     // when the code root cannot be listed or the worker refuses a job.
-    Result<std::vector<SceneInfo>> list();
+    Result<std::vector<SceneInfo>> list(ParseOn where = ParseOn::Caller);
 
     // list() without sizing the packages or their data: only each
     // scene.json is read. Skips what list() skips; per-scene snapshots as
     // list().
-    Result<std::vector<SceneManifest>> manifests();
+    Result<std::vector<SceneManifest>> manifests(ParseOn where = ParseOn::Caller);
 
     // The scenes a replace (an install, an update, an interrupted one that
     // recover() or the next install finished) or a remove touched after
@@ -189,12 +195,12 @@ public:
 
     // NotFound if `id` has no scene.json; InvalidArgument for a malformed id
     // or manifest.
-    Result<SceneInfo> info(std::string_view id);
+    Result<SceneInfo> info(std::string_view id, ParseOn where = ParseOn::Caller);
 
     // Only scene.json, checked to name <id>: cheaper than info(), which
     // also sizes the package. NotFound if it is absent; InvalidArgument for
     // a malformed id or manifest.
-    Result<SceneManifest> manifest(std::string_view id);
+    Result<SceneManifest> manifest(std::string_view id, ParseOn where = ParseOn::Caller);
 
     // One file of the package under assets/ (its icon, say), in
     // Mem::Large. InvalidArgument for a malformed id or a path outside
@@ -287,8 +293,12 @@ private:
     // NotFound without scene.json.
     Result<SceneScan> scan_here(std::string_view id, bool with_files);
     Result<SceneScan> scan_locked(std::string_view id, bool with_files);
-    // scan_here() as one job; `ran` is false when the worker refused it.
-    Result<SceneScan> scan(std::string_view id, bool with_files, bool& ran);
+    // One scene of a read path: scan_here() as one job, its result handed
+    // to `parse` where `where` says. `refused`, if given, tells whether the
+    // worker refused the job (the error is then the worker's).
+    template <class T, class Parse>
+    Result<T> read_one(std::string_view id, bool with_files, ParseOn where, Parse&& parse,
+                       bool* refused = nullptr);
     // On the worker: the valid scene ids in the code root, sorted.
     Result<std::vector<std::string>> ids_here();
     // On any thread, no file work: the manifest, checked to name the

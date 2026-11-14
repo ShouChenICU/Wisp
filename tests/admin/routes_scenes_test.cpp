@@ -9,12 +9,14 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "support/fake_http.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/core/zip.hpp"
 #include "wisp/net/http.hpp"
 
@@ -155,6 +158,9 @@ struct ScenesFixture {
         bool with_host = true;
         bool with_repo = true;
         bool dev = false;
+        // As in the app, the repository's file work on a flash worker.
+        wisp::core::StorageWorker* worker = nullptr;
+        std::function<void(std::string_view)> on_parse;
     };
 
     ScenesFixture() : ScenesFixture(Options{}) {}
@@ -164,6 +170,8 @@ struct ScenesFixture {
         cfg.code_root = root;
         cfg.data_root = root;
         cfg.dev = o.dev;
+        cfg.worker = o.worker;
+        cfg.on_parse = std::move(o.on_parse);
         repo = std::make_unique<SceneRepository>(*f.storage, cfg);
         f.srv.reset();
         wisp::admin::AdminDeps deps = f.make_deps();
@@ -720,4 +728,36 @@ TEST(AdminScenes, DeleteReachesABrokenPackage) {
     HttpResponse res = fx.call(Method::Delete, "/api/v1/scenes/todo", "data=0");
     EXPECT_EQ(res.status, 202) << res.body;
     ASSERT_EQ(fx.deletes.size(), 1u);
+}
+
+// The admin server's task has a small internal stack (its last measured
+// margin is a few KB, docs/hardware/), so the manifests its routes need
+// are parsed inside the repository's jobs on the worker, never there.
+TEST(AdminScenes, RoutesParseManifestsOnTheWorker) {
+    wisp::core::StorageWorker worker;
+    std::mutex mu;
+    std::vector<bool> on_worker;
+    {
+        ScenesFixture::Options o;
+        o.worker = &worker;
+        o.on_parse = [&](std::string_view) {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.push_back(worker.on_worker());
+        };
+        ScenesFixture fx(std::move(o));
+        // Before the worker starts, as at boot: runs inline.
+        ASSERT_EQ(fx.upload(zip_of(todo_files())).status, 201);
+        ASSERT_TRUE(worker.start());
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.clear();
+        }
+        EXPECT_EQ(fx.call(Method::Get, kScenes).status, 200);
+        EXPECT_EQ(fx.call(Method::Get, "/api/v1/scenes/todo/export").status, 200);
+        EXPECT_EQ(fx.call(Method::Post, "/api/v1/scenes/todo/open").status, 200);
+        worker.stop();
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(on_worker.size(), 3u);
+    EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
 }

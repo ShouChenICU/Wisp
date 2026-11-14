@@ -5,7 +5,10 @@
 // install runs on the HTTP server thread when it is complete -- that thread
 // may wait out SceneHost::check_sources(), which the UI thread and the
 // storage worker may not; the repository hands its file work (the replace
-// itself, listing, exporting) to the flash thread and waits for it. One
+// itself, listing, exporting) to the flash thread and waits for it. The
+// manifests the routes need are parsed there too (ParseOn::Worker): this
+// thread's stack is internal RAM with little room left (the httpd stack
+// item in docs/hardware/), and a manifest parse is not measured on it. One
 // upload at a time (409 busy).
 //
 // Deleting needs the user's yes on the device: the route only asks
@@ -131,7 +134,7 @@ net::HttpResponse invalid_scene(const std::string& message) {
 
 net::HttpResponse list_scenes(AdminDeps& deps, const RequestContext&) {
     if (deps.scenes == nullptr) return unavailable();
-    auto listed = deps.scenes->list();
+    auto listed = deps.scenes->list(core::ParseOn::Worker);
     if (!listed) return service_error(listed.error());
     List scenes;
     scenes.reserve(listed.value().size());
@@ -159,7 +162,7 @@ net::HttpResponse export_scene(AdminDeps& deps, const RequestContext& ctx) {
     net::HttpResponse refusal;
     std::optional<std::string> id = scene_id(ctx, refusal);
     if (!id) return refusal;
-    auto info = deps.scenes->info(*id);
+    auto info = deps.scenes->info(*id, core::ParseOn::Worker);
     if (!info) return service_error(info.error());
     auto zip = deps.scenes->export_zip(*id, with_data(ctx));
     if (!zip) return service_error(zip.error());
@@ -187,7 +190,7 @@ net::HttpResponse lifecycle(AdminDeps& deps, const RequestContext& ctx, HostCall
     std::optional<std::string> id = scene_id(ctx, refusal);
     if (!id) return refusal;
     if (deps.scene_host == nullptr) return unavailable();
-    auto info = deps.scenes->info(*id);
+    auto info = deps.scenes->info(*id, core::ParseOn::Worker);
     if (!info) return service_error(info.error());
     Result<void> r = call(*deps.scene_host, *id);
     if (!r) return service_error(r.error());

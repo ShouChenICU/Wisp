@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -87,7 +88,8 @@ struct FilesFixture {
     explicit FilesFixture(bool with_files = true, size_t max_list = 256,
                           std::shared_ptr<wisp::test::FakeStorage> sd = nullptr,
                           wisp::core::StorageWorker* worker = nullptr,
-                          wisp::core::StorageRouter* router = nullptr)
+                          wisp::core::StorageRouter* router = nullptr,
+                          std::function<void(std::string_view)> on_parse = {})
         : f(true, std::move(sd)) {
         if (worker != nullptr) {
             // As in the app, the repository does its file work on the
@@ -95,6 +97,7 @@ struct FilesFixture {
             f.scenes = std::make_unique<wisp::core::SceneRepository>(
                 *f.storage, wisp::core::SceneRepoConfig{.code_root = f.dir + "/scenes",
                                                         .data_root = f.dir + "/scenes",
+                                                        .on_parse = std::move(on_parse),
                                                         .worker = worker});
         }
         SceneFilesConfig cfg;
@@ -443,6 +446,32 @@ TEST(AdminSceneFiles, EncodedDotsAreRefused) {
             fx.call(Method::Delete, std::string("/api/v1/scenes/notes/files/") + name);
         EXPECT_EQ(del.status, 400) << name;
     }
+}
+
+// The installed-scene check every route makes parses the manifest on the
+// worker, not on the admin server's small internal stack.
+TEST(AdminSceneFiles, SceneCheckParsesOnTheWorker) {
+    wisp::core::StorageWorker worker;
+    wisp::core::StorageRouter router(worker);
+    std::mutex mu;
+    std::vector<bool> on_worker;
+    {
+        FilesFixture fx(true, 256, nullptr, &worker, &router, [&](std::string_view) {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.push_back(worker.on_worker());
+        });
+        fx.install("notes");
+        ASSERT_TRUE(worker.start());
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.clear();
+        }
+        EXPECT_EQ(fx.call(Method::Get, "/api/v1/scenes/notes/files").status, 200);
+        worker.stop();
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    ASSERT_FALSE(on_worker.empty());
+    EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
 }
 
 // Every read of a download runs on the flash thread, one 32 KiB chunk at

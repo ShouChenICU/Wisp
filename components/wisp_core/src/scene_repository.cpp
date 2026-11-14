@@ -283,21 +283,38 @@ Result<SceneManifest> SceneRepository::read_manifest_in(const std::string& dir,
     return m;
 }
 
-Result<SceneManifest> SceneRepository::manifest(std::string_view id) {
+template <class T, class Parse>
+Result<T> SceneRepository::read_one(std::string_view id, bool with_files, ParseOn where,
+                                    Parse&& parse, bool* refused) {
     bool ran = false;
-    Result<SceneScan> scanned = scan(id, false, ran);
-    if (!scanned) return fail<SceneManifest>(scanned.error());
-    if (config_.on_parse) config_.on_parse(id);
-    return parse_scan(scanned.value());
+    auto parse_here = [&](const SceneScan& scan) -> Result<T> {
+        if (config_.on_parse) config_.on_parse(id);
+        return parse(scan);
+    };
+    auto read = [&]() -> Result<T> {
+        if (where == ParseOn::Worker) {
+            return call_on_worker<T>(config_.worker, [&]() -> Result<T> {
+                ran = true;
+                Result<SceneScan> scanned = scan_here(id, with_files);
+                if (!scanned) return fail<T>(scanned.error());
+                return parse_here(scanned.value());
+            });
+        }
+        Result<SceneScan> scanned = call_on_worker<SceneScan>(config_.worker, [&] {
+            ran = true;
+            return scan_here(id, with_files);
+        });
+        if (!scanned) return fail<T>(scanned.error());
+        return parse_here(scanned.value());
+    };
+    Result<T> out = read();
+    if (refused != nullptr) *refused = !ran;
+    return out;
 }
 
-Result<SceneRepository::SceneScan> SceneRepository::scan(std::string_view id, bool with_files,
-                                                         bool& ran) {
-    ran = false;
-    return call_on_worker<SceneScan>(config_.worker, [&] {
-        ran = true;
-        return scan_here(id, with_files);
-    });
+Result<SceneManifest> SceneRepository::manifest(std::string_view id, ParseOn where) {
+    return read_one<SceneManifest>(id, false, where,
+                                   [this](const SceneScan& scan) { return parse_scan(scan); });
 }
 
 Result<SceneRepository::SceneScan> SceneRepository::scan_here(std::string_view id,
@@ -429,12 +446,9 @@ Result<os::LargeBuffer> SceneRepository::read_asset_here(std::string_view id, st
     return read;
 }
 
-Result<SceneInfo> SceneRepository::info(std::string_view id) {
-    bool ran = false;
-    Result<SceneScan> scanned = scan(id, true, ran);
-    if (!scanned) return fail<SceneInfo>(scanned.error());
-    if (config_.on_parse) config_.on_parse(id);
-    return info_of(scanned.value());
+Result<SceneInfo> SceneRepository::info(std::string_view id, ParseOn where) {
+    return read_one<SceneInfo>(id, true, where,
+                               [this](const SceneScan& scan) { return info_of(scan); });
 }
 
 Result<SceneInfo> SceneRepository::info_locked(std::string_view id) {
@@ -443,7 +457,7 @@ Result<SceneInfo> SceneRepository::info_locked(std::string_view id) {
     return info_of(scanned.value());
 }
 
-Result<std::vector<SceneInfo>> SceneRepository::list() {
+Result<std::vector<SceneInfo>> SceneRepository::list(ParseOn where) {
     using R = Result<std::vector<SceneInfo>>;
     Result<std::vector<std::string>> ids =
         call_on_worker<std::vector<std::string>>(config_.worker, [&] { return ids_here(); });
@@ -452,13 +466,11 @@ Result<std::vector<SceneInfo>> SceneRepository::list() {
     // One job per scene, each submitted after the previous one finished,
     // so the lane never holds more than one of them (file header).
     for (const std::string& id : ids.value()) {
-        bool ran = false;
-        Result<SceneScan> scanned = scan(id, true, ran);
+        bool refused = false;
+        Result<SceneInfo> one = read_one<SceneInfo>(
+            id, true, where, [this](const SceneScan& scan) { return info_of(scan); }, &refused);
         // Refused by the worker: the listing would silently miss a scene.
-        if (!ran) return fail<std::vector<SceneInfo>>(scanned.error());
-        if (scanned && config_.on_parse) config_.on_parse(id);
-        Result<SceneInfo> one =
-            scanned ? info_of(scanned.value()) : fail<SceneInfo>(scanned.error());
+        if (refused) return fail<std::vector<SceneInfo>>(one.error());
         if (one) {
             out.push_back(std::move(one.value()));
         } else if (one.error().code != ErrorCode::NotFound) {
@@ -471,7 +483,7 @@ Result<std::vector<SceneInfo>> SceneRepository::list() {
     return R::ok(std::move(out));
 }
 
-Result<std::vector<SceneManifest>> SceneRepository::manifests() {
+Result<std::vector<SceneManifest>> SceneRepository::manifests(ParseOn where) {
     using R = Result<std::vector<SceneManifest>>;
     Result<std::vector<std::string>> ids =
         call_on_worker<std::vector<std::string>>(config_.worker, [&] { return ids_here(); });
@@ -479,12 +491,10 @@ Result<std::vector<SceneManifest>> SceneRepository::manifests() {
     std::vector<SceneManifest> out;
     // As list(): one job per scene, one at a time.
     for (const std::string& id : ids.value()) {
-        bool ran = false;
-        Result<SceneScan> scanned = scan(id, false, ran);
-        if (!ran) return fail<std::vector<SceneManifest>>(scanned.error());
-        if (scanned && config_.on_parse) config_.on_parse(id);
-        Result<SceneManifest> m =
-            scanned ? parse_scan(scanned.value()) : fail<SceneManifest>(scanned.error());
+        bool refused = false;
+        Result<SceneManifest> m = read_one<SceneManifest>(
+            id, false, where, [this](const SceneScan& scan) { return parse_scan(scan); }, &refused);
+        if (refused) return fail<std::vector<SceneManifest>>(m.error());
         if (m) {
             out.push_back(std::move(m.value()));
         } else if (m.error().code != ErrorCode::NotFound) {
