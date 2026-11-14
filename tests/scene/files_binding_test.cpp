@@ -360,6 +360,42 @@ wisp.http.download("https://api.example.com/f", "f.bin", nil, function(err, res)
     EXPECT_EQ(files->info("h").value().used, 0u);
 }
 
+// A download streaming for a long time does not hold up the scene's
+// ordinary requests: they run on the other worker.
+TEST_F(FilesBinding, GetCompletesDuringADownload) {
+    start();
+    client.responder = [](const wisp::net::HttpClientRequest& req) {
+        wisp::net::HttpClientResponse res{.transport = wisp::net::TransportError::None,
+                                          .status = 200};
+        if (req.url == "https://api.example.com/f") res.body = std::string(64 * 1024, 'f');
+        return res;
+    };
+    // The first piece of the download waits until the test lets it go on.
+    // Shared, not locals: the worker may still call it after a failed
+    // assertion has left this body.
+    auto armed = std::make_shared<std::atomic<bool>>(true);
+    auto waiting = std::make_shared<std::atomic<bool>>(false);
+    client.before_piece = [this, armed, waiting] {
+        if (!armed->exchange(false)) return;
+        *waiting = true;
+        while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    install_scene("h", R"(
+wisp.http.download("https://api.example.com/f", "f.bin", nil, function(err, res)
+  print("download done", err)
+end)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_until([&] { return waiting->load(); }, 3000));
+    // Only now, with the download holding its worker, does the get go out.
+    ASSERT_TRUE(rt->eval("h", R"(
+wisp.http.get("https://api.example.com/x", function(err, res) print("get done", err) end)
+)"));
+    EXPECT_EQ(wait_log("h", 1), (std::vector<std::string>{"get done\tnil"}));
+    release = true;
+    EXPECT_EQ(wait_log("h", 2), (std::vector<std::string>{"get done\tnil", "download done\tnil"}));
+}
+
 // wisp.files on the SD card, pulled while a write is on its way: the write
 // was issued (it waits on the storage worker), then the card goes. The
 // scene gets an error, never a crash; once the card is reported gone every

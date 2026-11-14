@@ -19,19 +19,19 @@
 //     IPv6 literals; else "bad_url"), and Host/Content-Length/
 //     Transfer-Encoding/Connection headers (any case) are dropped rather
 //     than forwarded or rejected. Its size limits are AgentHttpLimits,
-//     always, not SceneHttpLimits; it also bypasses limits_.queue (an agent
-//     call waits for its own result before making another, so this never
-//     grows unbounded in practice). It is never rate limited or deferred:
-//     while deferring (Wi-Fi going off) it fails at once with "offline"
-//     instead of waiting. Its requests are recorded under the scene id
-//     kAgentHttpId ("@agent", which no real scene id can collide with);
-//     cancel_scene(kAgentHttpId) cancels them. A response past its cap is
-//     truncated (SceneHttpResult::body_truncated = true, error ""), not an
-//     error -- the request is sent with HttpClientRequest::
-//     truncate_at_limit, so the client itself stops at the cap instead of
-//     failing it; a 3xx body is truncated exactly the same way if huge,
-//     and (being a redirect's own body, not what was asked for) is then
-//     just not followed.
+//     always, not SceneHttpLimits; it also bypasses limits_.queue and
+//     limits_.download_queue (an agent call waits for its own result
+//     before making another, so this never grows unbounded in practice).
+//     It is never rate limited or deferred: while deferring (Wi-Fi going
+//     off) it fails at once with "offline" instead of waiting. Its
+//     requests are recorded under the scene id kAgentHttpId ("@agent",
+//     which no real scene id can collide with); cancel_scene(kAgentHttpId)
+//     cancels them. A response past its cap is truncated
+//     (SceneHttpResult::body_truncated = true, error ""), not an error --
+//     the request is sent with HttpClientRequest::truncate_at_limit, so
+//     the client itself stops at the cap instead of failing it; a 3xx body
+//     is truncated exactly the same way if huge, and (being a redirect's
+//     own body, not what was asked for) is then just not followed.
 //
 //     The worker follows redirects for an Agent request up to
 //     max_redirects hops, one deadline for the whole chain (the watch is
@@ -68,62 +68,84 @@
 //     most kMaxHeaderBytes and all of them at most kMaxHeadersTotal, the
 //     body at most kMaxRequestBody (else "too_large");
 //   - at most SceneHttpLimits::per_minute accepted requests per scene in
-//     any 60 s window, and room in the queue (else "rate_limited"). The
-//     window is kept per scene id, so closing and reopening a scene does
-//     not reset it;
+//     any 60 s window (one window for both lanes), and room in its lane's
+//     queue: SceneHttpLimits::queue, or download_queue for a download
+//     (else "rate_limited"). The window is kept per scene id, so closing
+//     and reopening a scene does not reset it;
 //   - while deferring (set_deferring(true), deep standby with Wi-Fi off,
 //     scene-device spec 4.4), room in the scene's deferred list of
 //     max_deferred_per_scene (else "deferred_queue_full") instead of room
 //     in the queue.
 //
-// Deferred requests wait apart from the run queue, in the order they were
-// submitted; set_deferring(false) has the worker move them into the run
-// queue as it has room, oldest first, and their results carry
-// `deferred = true`. set_deferring(true) moves the run queue's requests
-// that have not started back to the front of the deferred list (the one
-// in flight finishes as it is). While deferred requests are draining, a
-// new one lines up behind them -- in the deferred list, capped per scene
-// at max_deferred_per_scene (else "rate_limited") -- and is not marked
-// deferred unless deferring starts again before it runs. One that has
+// Deferred requests (both lanes') wait apart from the run queues, in the
+// order they were submitted; set_deferring(false) has each worker move
+// its lane's into its queue as it has room, oldest first (a full lane's
+// stay in place while later ones of the other lane go ahead), and their
+// results carry `deferred = true`. set_deferring(true)
+// moves both queues' requests that have not started back to the front of
+// the deferred list, in the order they were accepted (those in flight
+// finish as they are). While deferred requests of its lane are
+// draining, a new one lines up behind them -- in the deferred list,
+// capped per scene at max_deferred_per_scene (else "rate_limited") -- and
+// is not marked deferred unless deferring starts again before it runs. One that has
 // waited longer than deferred_timeout_ms fails with "deferred_timeout"
-// (the worker looks at least every deferred_check_ms while any wait).
-// Accepted requests run one at a time on the "wisp.shttp" task, each with
-// one deadline of SceneHttpLimits::timeout_ms for all of it (waiting for
-// the TLS gate, connect, handshake, sending and every read; "timeout"
-// when it passes), no redirects (a 3xx goes back as it is) and
-// a response body cap of SceneHttpLimits::max_response bytes ("too_large"
-// past it). The body is collected in PSRAM. A download
-// (SceneHttpRequest::on_body, wisp.http.download) streams its body to
-// on_body instead (only a 2xx body; others are dropped), without that
-// cap, under a deadline of
-// kDownloadTimeoutMs; it takes the one worker for as long as it runs, so
-// the scenes' other requests wait behind it. Transport failures come back
+// (the interactive worker looks at least every deferred_check_ms while
+// any wait).
+//
+// Two lanes (HttpLane), each with its own queue and worker task, so a
+// download that can stream for minutes never holds up anything else:
+//   - Interactive, "wisp.shttp": every request but a download -- scenes'
+//     wisp.http calls, the agent's http.fetch, lua.run's wisp.http.
+//   - Download, "wisp.shttp.dl": SceneHttpRequest::download (wisp.http.
+//     download), for either principal.
+// Each lane runs its requests one at a time in the order they were
+// accepted, so one scene's ordinary requests complete in order; a
+// download and an ordinary request of the same scene may complete in
+// either order. Both workers make their TLS handshakes under the one
+// process-wide TlsGate (wisp/net/tls_gate.hpp), which is held only
+// around connect and handshake, never for a whole transfer, so a long
+// download never keeps the other lane (or the LLM and TTS clients) from
+// opening a connection.
+//
+// Accepted requests run each with one deadline of
+// SceneHttpLimits::timeout_ms for all of it (waiting for the TLS gate,
+// connect, handshake, sending and every read; "timeout" when it passes),
+// no redirects (a 3xx goes back as it is) and a response body cap of
+// SceneHttpLimits::max_response bytes ("too_large" past it). The body is
+// collected in PSRAM. A download (SceneHttpRequest::on_body,
+// wisp.http.download) streams its body to on_body instead (only a 2xx
+// body; others are dropped), without that cap, under a deadline of
+// kDownloadTimeoutMs; it takes the download worker for as long as it
+// runs, so later downloads wait behind it. Transport failures come back
 // as "dns", "connect", "tls", "timeout" or "other".
 //
 // done: every submit() gets exactly one done() call -- immediate
-// rejections from inside submit(), the rest from the worker task --
+// rejections from inside submit(), the rest from either worker task --
 // unless cancel_scene() (or stop()) comes first: once it returns, done()
-// is never called for that scene's earlier requests, queued ones are
-// dropped and the one in flight is told to stop (HttpClientRequest::
-// cancelled, and the worker's RequestWatch is aborted, which interrupts a
-// blocked call from the watch's timer task: cancel_scene() never waits
-// for that). done() must be quick and must not call back into SceneHttp:
-// the worker runs it under the lock cancel_scene() waits on.
+// is never called for that scene's earlier requests in either lane,
+// queued ones are dropped and those in flight are told to stop
+// (HttpClientRequest::cancelled, and that lane's RequestWatch is aborted,
+// which interrupts a blocked call from the watch's timer task:
+// cancel_scene() never waits for that). done() must be quick and must not
+// call back into SceneHttp: both workers run it under the one lock
+// cancel_scene() waits on, so the two never call it at the same time.
 //
 // Memory: a queued request keeps its URL, headers and body in PSRAM; only
 // the request being sent has ordinary heap copies of the URL and headers
 // (bounded by the limits above), so the queue costs no internal RAM.
 //
-// Flash: the worker task never touches flash (task_config():
+// Flash: neither worker task touches flash (task_config():
 // flash_access = false): no Settings, no files; the HTTPS certificate
 // bundle is a constant linked into the image, read through the cache.
-// done() runs on that task too and must keep to the same rule.
+// done() and on_body run on those tasks too and must keep to the same
+// rule.
 //
 // Privacy: request bodies, header values and anything past the URL's host
 // are never logged. A rejection logs the scene, the code and the host
 // (tag "scene.<id>"); transport failures are logged by the HttpClient,
 // which keeps to the same rule.
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -148,6 +170,9 @@ namespace wisp::net {
 // Which code submitted a request (see the file header).
 enum class HttpPrincipal : uint8_t { Scene, Agent };
 
+// Which worker runs a request (see the file header).
+enum class HttpLane : uint8_t { Interactive, Download };
+
 // The scene id the Agent principal's requests are recorded under; no real
 // scene id contains '@', so this can never collide with one.
 inline constexpr const char* kAgentHttpId = "@agent";
@@ -170,11 +195,14 @@ struct SceneHttpLimits {
     size_t max_response = 256 * 1024;
     uint32_t per_minute = 30;
     uint32_t timeout_ms = 15000;
+    // Requests waiting behind the one in flight in each lane: the
+    // interactive lane's, then the download lane's.
     size_t queue = 8;
+    size_t download_queue = 2;
     size_t max_deferred_per_scene = 4;
     uint64_t deferred_timeout_ms = 3600000;
-    // How often the worker wakes to time out deferred requests while any
-    // wait.
+    // How often the interactive worker wakes to time out deferred
+    // requests while any wait.
     uint32_t deferred_check_ms = 60000;
 };
 
@@ -251,23 +279,24 @@ public:
     SceneHttp(const SceneHttp&) = delete;
     SceneHttp& operator=(const SceneHttp&) = delete;
 
-    // "wisp.shttp", 8192 bytes, priority 3, unpinned, flash_access =
-    // false (see the file header), so the port may put its stack in PSRAM.
-    static os::TaskConfig task_config();
+    // "wisp.shttp" (Interactive) or "wisp.shttp.dl" (Download), 8192
+    // bytes, priority 3, unpinned, flash_access = false (see the file
+    // header), so the port may put its stack in PSRAM.
+    static os::TaskConfig task_config(HttpLane lane);
 
-    // Makes the request watch and spawns the worker. Busy if started
-    // before, NoMemory if the watch's timer or the task cannot be made
-    // (the proxy then stays off).
+    // Makes both lanes' request watches and spawns both workers. Busy if
+    // started before, NoMemory if a watch's timer or a task cannot be
+    // made (the proxy then stays off, with neither worker running).
     Result<void> start();
-    // Drops every queued request and stops the one in flight, all without
-    // done(), and joins the worker. Idempotent.
+    // Drops every queued request and stops those in flight, all without
+    // done(), and joins both workers. Idempotent.
     void stop();
 
     // The hosts `scene_id` declared (lowercase, as the manifest holds
     // them); replaces any earlier list.
     void set_hosts(const std::string& scene_id, std::vector<std::string> hosts);
-    // Checks `req` and queues it. Rejections (and a stopped proxy:
-    // "other") call done() before this returns.
+    // Checks `req` and queues it in its lane. Rejections (and a stopped
+    // proxy: "other") call done() before this returns.
     void submit(SceneHttpRequest req, std::function<void(SceneHttpResult)> done);
     // See the file header. Safe from any thread but done() itself; also
     // drops the scene's deferred requests.
@@ -275,12 +304,13 @@ public:
 
     // On: accepted requests wait in the deferred list, and queued ones
     // that have not started go back to it (see the file header). Off: the
-    // worker moves the waiting ones into the run queue in submission order
-    // (those that do not fit stay until there is room). Any thread.
+    // workers move the waiting ones into their lanes' queues in
+    // submission order (those that do not fit stay until there is room).
+    // Any thread.
     void set_deferring(bool on);
     // Requests waiting in the deferred list.
     size_t deferred_count() const;
-    // Nothing deferred, queued or in flight.
+    // Nothing deferred, queued or in flight, in either lane.
     bool idle() const;
 
     // "" when `url` may be fetched with `hosts` declared, else
@@ -312,13 +342,32 @@ private:
         size_t deferred = 0;   // its requests in deferred_
     };
 
-    void run();
+    // One worker and what it alone uses; everything else is shared.
+    struct Lane {
+        Deque<os::LargeUnique<Job>> queue;
+        // The request in flight, for cancel_scene() and stop().
+        Job* current = nullptr;
+        // For the request in flight.
+        os::LargeUnique<RequestWatch> watch;
+        // The worker drains its whole queue on each wake, so surplus gives
+        // past the maximum are harmless.
+        os::Semaphore wake{1024, 0};
+        std::unique_ptr<os::Task> task;
+    };
+
+    Lane& lane(HttpLane l) { return lanes_[static_cast<size_t>(l)]; }
+    static HttpLane lane_of(const Job& job);
+    // How many may wait in `l`'s queue (the Agent principal ignores it).
+    size_t queue_cap(HttpLane l) const;
+
+    void run(HttpLane l);
     // Moves deferred requests that waited too long into `out`. With mu_.
     void expire_locked(uint64_t now, Deque<os::LargeUnique<Job>>& out);
-    // Moves deferred requests into the run queue while it has room and
-    // deferring is off. With mu_.
-    void promote_locked();
-    void execute(Job& job);
+    // Moves `l`'s deferred requests, oldest first, into its queue while it
+    // has room and deferring is off; the other lane's stay in place. Each
+    // worker calls it for its own lane. With mu_.
+    void promote_locked(HttpLane l);
+    void execute(Job& job, Lane& own);
     // The request's whole deadline.
     uint32_t timeout_of(const Job& job) const;
     // Rejects without a request: logs and calls done().
@@ -328,25 +377,26 @@ private:
     HttpClient& client_;
     SceneHttpLimits limits_;
     std::function<uint64_t()> now_ms_;
-    std::unique_ptr<os::Task> task_;
-    // The worker's one watch, for the request in flight.
-    os::LargeUnique<RequestWatch> watch_;
-    os::Semaphore wake_;
-    // Guards scenes_, queue_, deferred_, current_ and the flags below.
+    // Indexed by HttpLane. Inside this object, which the app makes in
+    // PSRAM (os::make_large), queues included.
+    std::array<Lane, 2> lanes_;
+    // Guards scenes_, both lanes' queue and current (and their jobs'
+    // tickets), deferred_, next_seq_ and the flags below.
     mutable os::Mutex mu_;
-    // Held while the worker decides whether to call done() and calls it;
-    // cancel_scene() takes it after marking, so no done() for a cancelled
-    // request can still be running once it returns.
+    // Held while either worker decides whether to call done() and calls
+    // it; cancel_scene() takes it after marking, so no done() for a
+    // cancelled request can still be running once it returns.
     os::Mutex deliver_mu_;
     std::map<std::string, SceneState, std::less<>> scenes_;
-    Deque<os::LargeUnique<Job>> queue_;
-    // Every scene's deferred requests, oldest first.
+    // Every scene's deferred requests (both lanes'), oldest first.
     Deque<os::LargeUnique<Job>> deferred_;
-    // The worker's: deferred requests that timed out, being answered.
-    // Under deliver_mu_; a member so the worker's loop allocates nothing.
+    // The interactive worker's (the only one that times out deferred
+    // requests): those that timed out, being answered. Under deliver_mu_;
+    // a member so the worker's loop allocates nothing.
     Deque<os::LargeUnique<Job>> expired_;
+    // Acceptance order across both lanes (Job::seq).
+    uint64_t next_seq_ = 0;
     bool deferring_ = false;
-    Job* current_ = nullptr;
     bool started_ = false;
     bool running_ = false;
 };
