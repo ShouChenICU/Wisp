@@ -15,6 +15,7 @@
 
 #include "scene_api.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/scene/vm.hpp"
 
 namespace {
@@ -743,6 +744,27 @@ TEST_F(LuaTask, CallsInFlightCountDownBeforeTheCallbackRuns) {
     auto err = wisp::scene::run_http_callback(*vm, http[0].first, status(200));
     ASSERT_TRUE(err);
     EXPECT_EQ(api.calls_in_flight, 0u);
+}
+
+// A result with no call counted (a double count-down) leaves the count at
+// 0 and says so in the log.
+TEST_F(LuaTask, ResultWithNoCallWaitingIsLogged) {
+    wisp::log::reset_for_test();
+    wisp::log::init(16 * 1024);
+    make();
+    EXPECT_FALSE(wisp::scene::run_http_callback(*vm, 77, status(200)));
+    EXPECT_FALSE(wisp::scene::run_files_callback(*vm, 78, FilesResult{}));
+    EXPECT_EQ(api.calls_in_flight, 0u);
+    int http_lines = 0, files_lines = 0;
+    for (const auto& e : wisp::log::ring_entries()) {
+        if (e.msg.find("http result 77 arrived with no call waiting") != std::string::npos)
+            ++http_lines;
+        if (e.msg.find("files result 78 arrived with no call waiting") != std::string::npos)
+            ++files_lines;
+    }
+    EXPECT_EQ(http_lines, 1);
+    EXPECT_EQ(files_lines, 1);
+    wisp::log::reset_for_test();
 }
 
 }  // namespace

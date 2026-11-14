@@ -63,6 +63,7 @@
 #include <utility>
 
 #include "scene_api.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/scene/lua_json.hpp"
 
 namespace wisp::scene {
@@ -477,8 +478,16 @@ std::optional<ScriptError> run_http_callback(Vm& vm, uint32_t id, const net::Sce
     // Every call that was counted gets exactly one result, also when its
     // callback was dropped (a cancelled task, a fault), so count it down
     // before anything can return early.
-    if (SceneApi* api = detail::find_api(L); api != nullptr && api->calls_in_flight > 0)
-        --api->calls_in_flight;
+    if (SceneApi* api = detail::find_api(L); api != nullptr) {
+        // At 0 a result came for a call that was not counted, or one was
+        // counted down twice: the count is low, and more than
+        // kMaxCallsInFlight calls could wait.
+        if (api->calls_in_flight > 0)
+            --api->calls_in_flight;
+        else
+            WLOG_W("scene", "%s: http result %u arrived with no call waiting",
+                   api->scene_id.c_str(), static_cast<unsigned>(id));
+    }
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     RunCtx ctx{id, &r};
     if (detail::is_waiting(L, &kCallbacksKey, id))

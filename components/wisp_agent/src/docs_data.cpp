@@ -447,7 +447,9 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
   has too much queued: try again later), `no_memory`, or the name of a storage
   error.
 - At most 16 calls of `wisp.http` and `wisp.files` together may wait for their results;
-  one more raises an error.
+  one more raises the Lua error `too many calls waiting for results (at most 16)`,
+  which `pcall` can catch. A place is free again as soon as a call's result
+  arrives (its callback runs, or a waiting task resumes).
 )wispdoc"},
     {"lua/http", R"wispdoc(## wisp.http
 
@@ -480,7 +482,9 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
   that cannot be sent as JSON). Errors always arrive through `cb`; only arguments
   of the wrong type, and a call past the limit below, are a Lua error at the call.
 - At most 16 calls of `wisp.http` and `wisp.files` together may wait for their results;
-  one more raises an error.
+  one more raises the Lua error `too many calls waiting for results (at most 16)`,
+  which `pcall` can catch. A place is free again as soon as a call's result
+  arrives (its callback runs, or a waiting task resumes).
 
 ### wisp.http.request
 

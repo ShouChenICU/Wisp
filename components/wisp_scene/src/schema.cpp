@@ -497,7 +497,11 @@ void append_lua_api(std::string& out) {
            "- At most " +
            num(kMaxCallsInFlight) +
            " calls of `wisp.http` and `wisp.files` together may wait for their results;\n"
-           "  one more raises an error.\n";
+           "  one more raises the Lua error `too many calls waiting for results (at most " +
+           num(kMaxCallsInFlight) +
+           ")`,\n"
+           "  which `pcall` can catch. A place is free again as soon as a call's result\n"
+           "  arrives (its callback runs, or a waiting task resumes).\n";
 }
 
 // The manifest, the hooks and the device-side APIs (scene-device spec 3,
@@ -754,7 +758,11 @@ void append_device_api(std::string& out) {
         "  error.\n";
     out += "- At most " + num(kMaxCallsInFlight) +
            " calls of `wisp.http` and `wisp.files` together may wait for their results;\n"
-           "  one more raises an error.\n";
+           "  one more raises the Lua error `too many calls waiting for results (at most " +
+           num(kMaxCallsInFlight) +
+           ")`,\n"
+           "  which `pcall` can catch. A place is free again as soon as a call's result\n"
+           "  arrives (its callback runs, or a waiting task resumes).\n";
     out +=
         "\n"
         "## wisp.http.download and deep standby\n"
