@@ -174,8 +174,9 @@ private:
     // Whether a sample has succeeded yet. Not derivable from supply_: a
     // first sample may equal PowerSupply{}.
     bool have_sample_ = false;
-    // Set only under sample_mutex_. Declared after bus_, so it is destroyed
-    // while the bus is still there.
+    // Set only under sample_mutex_. Declared after bus_, which its
+    // constructor uses; PowerMonitor itself is destroyed before the bus
+    // stops (App::stop()).
     StateCell<PowerSupply> supply_;
     std::optional<hal::PowerStatus> last_status_;  // guarded by sample_mutex_
 
