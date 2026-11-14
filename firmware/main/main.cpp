@@ -30,6 +30,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/bench.hpp"
 #include "wisp/app/board.hpp"
+#include "wisp/app/console.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/power.hpp"
@@ -200,12 +201,14 @@ extern "C" void app_main() {
         };
     }
     // `mem`: heap figures and every task's stack, for the internal-RAM
-    // budget in AGENTS.md section 5 (wisp/port/esp/mem_report.hpp).
+    // budget in AGENTS.md section 5 (wisp/port/esp/mem_report.hpp), then
+    // each storage lane's longest wait and job (wisp::app::storage_report).
     platform.console_commands.push_back(
-        {"mem", "mem                          internal/DMA/PSRAM heap and task stacks",
-         [](wisp::app::App&, const std::vector<std::string>& args) -> std::string {
+        {"mem", "mem                          heap, task stacks and storage queues",
+         [](wisp::app::App& app, const std::vector<std::string>& args) -> std::string {
              if (args.size() != 1) return "error: usage: mem";
-             return wisp::port::esp::mem_report();
+             return wisp::port::esp::mem_report() + "\n" +
+                    wisp::app::storage_report(app.storage_router());
          }});
     // `sleep`: light-sleep statistics of the running and the last deep
     // standby, and the PM locks (wisp/port/esp/sleep_stats.hpp).

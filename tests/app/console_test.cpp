@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -23,6 +24,8 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/board.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/storage_router.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -368,4 +371,75 @@ TEST(Console, ClosedInputEndsTheTask) {
     wisp::os::sleep_ms(300);
     EXPECT_EQ(h.feed->reads(), reads);
     h.app->stop();
+}
+
+// `mem`'s storage lines (wisp/app/console.hpp storage_report): workers with
+// an injected clock, so the waits and job times are exact.
+namespace {
+
+using wisp::core::IoLane;
+using wisp::core::StorageRouter;
+using wisp::core::StorageWorker;
+using wisp::core::StorageWorkerConfig;
+
+// The flash worker's statistics: an Interactive job that waited 7000 us
+// behind a Normal job of 7000 us and itself took 3000 us.
+void run_flash_jobs(StorageWorker& w, std::atomic<uint64_t>& clock) {
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    ASSERT_TRUE(w.submit([&] {
+        started.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(started.take(5000));
+    ASSERT_TRUE(w.submit([&] { clock += 3000; }, IoLane::Interactive));
+    clock = 7000;
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+}
+
+}  // namespace
+
+TEST(Console, StorageReportListsEveryLane) {
+    std::atomic<uint64_t> flash_clock{0};
+    std::atomic<uint64_t> sd_clock{0};
+    StorageWorker flash(StorageWorkerConfig{.now_us = [&] { return flash_clock.load(); }});
+    StorageWorkerConfig sd_config = StorageWorker::sd_io_config();
+    sd_config.now_us = [&] { return sd_clock.load(); };
+    StorageWorker sd(sd_config);
+    ASSERT_TRUE(flash.start());
+    ASSERT_TRUE(sd.start());
+    ASSERT_NO_FATAL_FAILURE(run_flash_jobs(flash, flash_clock));
+    ASSERT_TRUE(sd.submit([&] { sd_clock += 2500; }));
+    ASSERT_TRUE(sd.drain(5000));
+
+    StorageRouter router(flash, &sd);
+    EXPECT_EQ(wisp::app::storage_report(&router),
+              "storage wisp.fs interactive jobs=1 wait_max_ms=7 job_max_ms=3\n"
+              "storage wisp.fs normal jobs=1 wait_max_ms=0 job_max_ms=7\n"
+              "storage wisp.fs bulk jobs=0 wait_max_ms=0 job_max_ms=0\n"
+              "storage wisp.sd.io interactive jobs=0 wait_max_ms=0 job_max_ms=0\n"
+              "storage wisp.sd.io normal jobs=1 wait_max_ms=0 job_max_ms=3\n"
+              "storage wisp.sd.io bulk jobs=0 wait_max_ms=0 job_max_ms=0");
+    sd.stop();
+    flash.stop();
+}
+
+TEST(Console, StorageReportWithoutAnSdWorker) {
+    std::atomic<uint64_t> clock{0};
+    StorageWorker flash(StorageWorkerConfig{.now_us = [&] { return clock.load(); }});
+    ASSERT_TRUE(flash.start());
+    ASSERT_NO_FATAL_FAILURE(run_flash_jobs(flash, clock));
+
+    StorageRouter router(flash);
+    EXPECT_EQ(wisp::app::storage_report(&router),
+              "storage wisp.fs interactive jobs=1 wait_max_ms=7 job_max_ms=3\n"
+              "storage wisp.fs normal jobs=1 wait_max_ms=0 job_max_ms=7\n"
+              "storage wisp.fs bulk jobs=0 wait_max_ms=0 job_max_ms=0\n"
+              "storage wisp.sd.io off");
+    flash.stop();
+}
+
+TEST(Console, StorageReportWithoutStorage) {
+    EXPECT_EQ(wisp::app::storage_report(nullptr), "storage off");
 }
