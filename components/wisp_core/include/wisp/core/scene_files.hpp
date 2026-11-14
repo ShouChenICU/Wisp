@@ -90,12 +90,18 @@
 // time (only scan() at boot and remove_all() unload it), so one scene's
 // jobs keep their order across the two workers: a later job can only
 // move from wisp.fs to wisp.sd.io once every earlier one has finished.
-// A card job that runs after its scene's record was unloaded (the scene
-// removed meanwhile) fails Busy; one that runs while the card is out
-// fails "unavailable" without card I/O.
+// Each load of a record gets a new generation; a job routed to the card
+// carries the generation it was routed with, and its calls fail Busy
+// when the record has been unloaded or loaded again since (the scene's
+// files were removed meanwhile), so a stale job never writes into files
+// the scene has started again. A card job therefore works on its own
+// scene only. A download finished after such a removal is discarded the
+// same way. A card job that runs while the card is out fails
+// "unavailable" without card I/O.
 //
 // Locks, outer first: io_int_mu_ -> io_sd_mu_ -> (declared: the
-// repository's lock) -> StorageManager's int_io_mu_ -> sd_io_mu_. On
+// repository's lock) -> StorageManager's int_io_mu_ -> sd_io_mu_ ->
+// state_mu_. On
 // wisp.sd.io a method takes io_sd_mu_ only. Elsewhere it takes io_int_mu_,
 // plus io_sd_mu_ unless the scene's record is loaded with location
 // Internal; scan(), remove_all(), sd_changed_begin() and sd_changed_end()
@@ -277,6 +283,8 @@ private:
         // by the flash worker's queue. While non-zero the record is never
         // erased.
         uint32_t int_in_flight = 0;
+        // Which load of the record this is (file header); 0 until loaded.
+        uint64_t gen = 0;
     };
 
     // The I/O locks a method holds (file header).
@@ -294,20 +302,23 @@ private:
     // submit() with the medium fixed by `pinned` when it has a value.
     bool submit_on(std::string_view scene, std::optional<Medium> pinned, std::function<void()> job,
                    IoLane lane);
-    // One Internal job of `scene` has finished.
-    void end_internal(const std::string& scene);
+    // One Internal job of `r` has finished.
+    void end_internal(Record* r);
     // Ends an Internal job's count once: when the job has run, or when it
-    // is destroyed unrun (a refused submission destroys it).
+    // is destroyed unrun (a refused submission destroys it). Shared, since
+    // a std::function must be copyable and a copy must not end it twice;
+    // the record it points to is never erased while its count is non-zero
+    // (remove_all()), and std::map never moves it.
     struct InFlight {
-        InFlight(SceneFiles& f, std::string id) : files(f), scene(std::move(id)) {}
+        InFlight(SceneFiles& f, Record* r) : files(f), record(r) {}
         ~InFlight() { end(); }
         InFlight(const InFlight&) = delete;
         InFlight& operator=(const InFlight&) = delete;
         void end() {
-            if (!ended.exchange(true)) files.end_internal(scene);
+            if (!ended.exchange(true)) files.end_internal(record);
         }
         SceneFiles& files;
-        const std::string scene;
+        Record* const record;
         std::atomic<bool> ended{false};
     };
 
@@ -364,6 +375,8 @@ private:
     // locks.
     mutable os::Mutex mu_;
     std::map<std::string, Record, std::less<>> records_;
+    // The last generation handed to a record load (mu_).
+    uint64_t last_gen_ = 0;
 };
 
 // One download into a scene's files, made by begin_download() on a
@@ -410,11 +423,15 @@ public:
     // storage error's snake_case code.
     std::string error() const;
     const std::string& scene() const { return scene_; }
+    // How long submit() retries a full lane by default.
+    static constexpr uint32_t kFinishWaitMs = 5000;
     // Queues `job` behind this download's appends, on the same worker and
-    // lane (for finish()). A full lane is retried for up to 5 s, like
-    // push()'s appends, so the caller may block that long; false if it was
-    // not queued.
-    bool submit(std::function<void()> job);
+    // lane (for finish()). A full lane is retried for up to `wait_ms` (a
+    // full lane is mostly this download's own appends, which drain
+    // quickly), so the caller may block that long; 0 tries once. On the
+    // download's own worker it always tries once: nothing could drain the
+    // lane while that worker waits. False if it was not queued.
+    bool submit(std::function<void()> job, uint32_t wait_ms = kFinishWaitMs);
 
 private:
     friend class SceneFiles;
@@ -435,6 +452,8 @@ private:
     const bool card_;
     // Where begin_download() ran; set before the download is handed out.
     Medium medium_ = Medium::Internal;
+    // The generation of the scene's record at begin_download().
+    uint64_t gen_ = 0;
     mutable os::Mutex mu_;
     os::Semaphore wake_{1, 0};
     os::LargeBuffer staging_;

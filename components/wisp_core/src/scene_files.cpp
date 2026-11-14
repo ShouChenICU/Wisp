@@ -26,6 +26,10 @@ constexpr uint32_t kSubmitGiveUpMs = 5000;
 // How often a push() waiting for room looks at cancel() in any case.
 constexpr uint32_t kWaitSliceMs = 50;
 
+// The record generation the card job running on this thread was routed
+// with (SceneFiles::submit()); 0 outside such a job.
+thread_local uint64_t t_card_gen = 0;
+
 bool ends_with(std::string_view s, std::string_view x) {
     return s.size() >= x.size() && s.substr(s.size() - x.size()) == x;
 }
@@ -343,7 +347,8 @@ bool SceneFiles::submit_on(std::string_view scene, std::optional<Medium> pinned,
         return true;
     }
     Medium m = Medium::Internal;
-    bool counted = false;
+    Record* counted = nullptr;
+    uint64_t gen = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         m = pinned ? *pinned : route_locked(scene);
@@ -353,23 +358,33 @@ bool SceneFiles::submit_on(std::string_view scene, std::optional<Medium> pinned,
             auto it = records_.find(scene);
             if (it == records_.end()) it = records_.emplace(std::string(scene), Record{}).first;
             ++it->second.int_in_flight;
-            counted = true;
+            counted = &it->second;
+        } else if (m == Medium::Sd && !pinned) {
+            // Routed to the card: the record is loaded (route_locked()).
+            gen = records_.find(scene)->second.gen;
         }
     }
-    if (counted) {
-        auto token = std::make_shared<InFlight>(*this, std::string(scene));
+    if (counted != nullptr) {
+        // In PSRAM: one per queued job.
+        auto token = std::allocate_shared<InFlight>(os::LargeAllocator<InFlight>(), *this, counted);
         job = [token, inner = std::move(job)] {
             inner();
             token->end();
+        };
+    } else if (gen != 0) {
+        job = [gen, inner = std::move(job)] {
+            const uint64_t outer = t_card_gen;
+            t_card_gen = gen;
+            inner();
+            t_card_gen = outer;
         };
     }
     return config_.submit_io(m, lane, std::move(job));
 }
 
-void SceneFiles::end_internal(const std::string& scene) {
+void SceneFiles::end_internal(Record* r) {
     std::lock_guard<os::Mutex> lock(mu_);
-    auto it = records_.find(scene);
-    if (it != records_.end() && it->second.int_in_flight > 0) --it->second.int_in_flight;
+    if (r->int_in_flight > 0) --r->int_in_flight;
 }
 
 Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choose) {
@@ -382,7 +397,8 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         {
             std::lock_guard<os::Mutex> lock(mu_);
             auto it = records_.find(scene);
-            if (it != records_.end() && it->second.loaded && it->second.loc == FilesLocation::Sd)
+            if (it != records_.end() && it->second.loaded && it->second.loc == FilesLocation::Sd &&
+                (t_card_gen == 0 || it->second.gen == t_card_gen))
                 card = &it->second;
         }
         if (card == nullptr) return R::err(ErrorCode::Busy, "busy");
@@ -394,6 +410,11 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         auto it = records_.find(scene);
         if (it == records_.end()) it = records_.emplace(std::string(scene), Record{}).first;
         r = &it->second;
+        // A card job that fell back to wisp.fs (the SD I/O worker stopped)
+        // is just as stale once its record went: checked before anything
+        // is loaded or chosen again.
+        if (t_card_gen != 0 && (!r->loaded || r->gen != t_card_gen))
+            return R::err(ErrorCode::Busy, "busy");
     }
     if (!r->loaded) {
         FilesLocation loc = FilesLocation::None;
@@ -425,6 +446,7 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         r->loc = loc;
         if (loc != FilesLocation::None) r->want = want;
         r->loaded = true;
+        r->gen = ++last_gen_;
         r->counted = false;
     }
     if (r->loc == FilesLocation::None) {
@@ -795,6 +817,7 @@ Result<std::shared_ptr<FileDownload>> SceneFiles::begin_download(std::string_vie
     // Its appends and finish stay on the worker this runs on (FileDownload).
     dl->medium_ = os::on_sd_io_thread() ? Medium::Sd : Medium::Internal;
     std::lock_guard<os::Mutex> lock(mu_);
+    dl->gen_ = r.gen;
     r.downloading.push_back(dl->name_);
     return R::ok(std::move(dl));
 }
@@ -840,6 +863,13 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
     }
     dl.wake_.give();
     IoLocks io = lock_io(dl.scene_, dl.card_);
+    {
+        // The scene's files were removed since begin_download() (file
+        // header): what was fetched belongs to files that are gone.
+        std::lock_guard<os::Mutex> lock(mu_);
+        auto it = records_.find(dl.scene_);
+        if (it == records_.end() || !it->second.loaded || it->second.gen != dl.gen_) good = false;
+    }
     const std::string dl_path = dl.dl_path();
     const std::string done = dl.dir_ + "/." + dl.name_ + std::string(kDoneSuffix);
     // Pinned to its worker, an internal download never finishes on
@@ -924,13 +954,19 @@ std::string FileDownload::dl_path() const { return dir_ + "/." + name_ + std::st
 
 Result<uint64_t> FileDownload::finish(bool ok) { return files_.finish_download(*this, ok); }
 
-bool FileDownload::submit(std::function<void()> job) {
+bool FileDownload::submit(std::function<void()> job, uint32_t wait_ms) {
+    // On its own worker (SceneHttp calls done() inside the job that began
+    // the download when it refuses the request) the lane cannot drain
+    // while this waits. on_flash_thread() also holds while no flash thread
+    // is registered (boot, shutdown), when there is no worker to wait for.
+    const bool own = medium_ == Medium::Sd ? os::on_sd_io_thread() : os::on_flash_thread();
+    if (own) wait_ms = 0;
     // A full Bulk lane is mostly this download's own appends, which drain
     // quickly (at once after cancel()): worth waiting for, as dispatch()
     // does, rather than losing a finished download.
     for (uint32_t waited = 0;; waited += kSubmitRetryMs) {
         if (files_.submit_on(scene_, medium_, job, IoLane::Bulk)) return true;
-        if (waited >= kSubmitGiveUpMs) return false;
+        if (waited >= wait_ms) return false;
         os::sleep_ms(kSubmitRetryMs);
     }
 }

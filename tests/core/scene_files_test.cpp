@@ -1040,32 +1040,135 @@ TEST(SceneFiles, DownloadChunksStayOnOneWorker) {
     EXPECT_EQ(read_raw(f.sd_files("d") / "f.bin"), chunk + chunk);
 }
 
+namespace {
+
+// A flash worker behind SceneFilesConfig::submit_io whose Bulk lane can be
+// made to refuse, counting the Bulk submissions tried.
+struct BulkGate {
+    StorageWorker worker;
+    std::atomic<bool> full{false};
+    std::atomic<int> bulk_tries{0};
+    std::atomic<int> refused{0};
+
+    SceneFilesConfig config() {
+        SceneFilesConfig c;
+        c.submit_io = [this](Medium, IoLane lane, std::function<void()> job) {
+            if (lane == IoLane::Bulk) {
+                ++bulk_tries;
+                if (full.load()) {
+                    ++refused;
+                    return false;
+                }
+            }
+            return worker.submit(std::move(job), lane);
+        };
+        return c;
+    }
+};
+
+}  // namespace
+
 // The lane is full of the download's own appends when it ends: finish
 // waits for room rather than dropping a complete download.
 TEST(SceneFiles, DownloadFinishWaitsForRoomInItsLane) {
-    FakeRoute route;
-    route.hold = true;
-    route.capacity = 1;
-    Fixture f(false, routed(route));
+    BulkGate gate;
+    Fixture f(false, gate.config());
+    ASSERT_TRUE(gate.worker.start());
     using wisp::core::FileDownload;
-    auto dl = f.files->begin_download("d", "f.bin").value();
+    std::shared_ptr<FileDownload> dl;
+    ASSERT_TRUE(
+        gate.worker.run_sync([&] { dl = f.files->begin_download("d", "f.bin").value(); }, 5000));
     const std::string chunk(FileDownload::kChunk, 'x');
     EXPECT_TRUE(dl->push(as_bytes(chunk)));
+    ASSERT_TRUE(gate.worker.drain(5000));
+    gate.full = true;
     std::atomic<bool> queued{false};
     std::atomic<bool> fin{false};
     std::thread proxy(
         [&] { queued = dl->submit([&] { fin = static_cast<bool>(dl->finish(true)); }); });
-    for (;;) {
-        {
-            std::lock_guard<std::mutex> lock(route.mu);
-            if (route.refused > 0) break;
-        }
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (gate.refused.load() == 0 && std::chrono::steady_clock::now() < until)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    route.run_held();
+    const bool waited = gate.refused.load() > 0;
+    gate.full = false;
     proxy.join();
+    ASSERT_TRUE(waited);
     EXPECT_TRUE(queued);
-    route.run_held();
+    ASSERT_TRUE(gate.worker.drain(5000));
     EXPECT_TRUE(fin);
     EXPECT_TRUE(read_raw(f.int_files("d") / "f.bin") == chunk);
+}
+
+// On the download's own worker (SceneHttp may call done() inside the job
+// that began the download) nothing can drain the lane while it waits: one
+// try, and the worker goes on at once.
+TEST(SceneFiles, DownloadSubmitOnItsOwnWorkerNeverWaits) {
+    BulkGate gate;
+    Fixture f(false, gate.config());
+    ASSERT_TRUE(gate.worker.start());
+    gate.full = true;
+    std::shared_ptr<wisp::core::FileDownload> dl;
+    std::atomic<bool> queued{true};
+    ASSERT_TRUE(gate.worker.run_sync(
+        [&] {
+            dl = f.files->begin_download("d", "f.bin").value();
+            queued = dl->submit([&] { dl->finish(true); });
+        },
+        wisp::os::kForever));
+    EXPECT_FALSE(queued);
+    EXPECT_EQ(gate.bulk_tries.load(), 1);
+    dl->abandon();
+    gate.full = false;
+    EXPECT_TRUE(gate.worker.run_sync([] {}, 1000));
+}
+
+// close_gate() on the scene task: a single try, no wait.
+TEST(SceneFiles, DownloadSubmitWithoutAWaitTriesOnce) {
+    BulkGate gate;
+    Fixture f(false, gate.config());
+    ASSERT_TRUE(gate.worker.start());
+    std::shared_ptr<wisp::core::FileDownload> dl;
+    ASSERT_TRUE(
+        gate.worker.run_sync([&] { dl = f.files->begin_download("d", "f.bin").value(); }, 5000));
+    gate.full = true;
+    EXPECT_FALSE(dl->submit([] {}, 0));
+    EXPECT_EQ(gate.bulk_tries.load(), 1);
+    dl->abandon();
+}
+
+// A card job queued before the scene's files were removed must not write
+// into the files the scene has since started again.
+TEST(SceneFiles, StaleCardJobFailsAfterTheFilesWereRemoved) {
+    FakeRoute route;
+    route.hold = true;
+    Fixture f(true, routed(route));
+    f.declared["a"] = FilesWant::Sd;
+    ASSERT_TRUE(f.files->write("a", "x", as_bytes("x")));
+    std::string code;
+    ASSERT_TRUE(f.files->submit(
+        "a", [&] { code = code_of(f.files->write("a", "old.txt", as_bytes("old"))); }));
+    EXPECT_EQ(route.media(), std::vector<Medium>{Medium::Sd});
+    ASSERT_TRUE(f.files->remove_all("a"));
+    ASSERT_TRUE(f.files->write("a", "new.txt", as_bytes("new")));
+
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(s.start());
+    ASSERT_TRUE(s.run_sync([&] { route.run_held(); }, 5000));
+    EXPECT_EQ(code, "busy");
+    EXPECT_FALSE(on_disk(f.sd_files("a") / "old.txt"));
+    EXPECT_EQ(read_raw(f.sd_files("a") / "new.txt"), "new");
+    EXPECT_EQ(f.files->info("a").value().used, 3u);
+}
+
+// The same for a download that outlives the removal of its scene's files.
+TEST(SceneFiles, DownloadFinishedAfterRemovalIsDiscarded) {
+    Fixture f(true);
+    auto dl = f.files->begin_download("d", "f.bin").value();
+    EXPECT_TRUE(dl->push(as_bytes("stale")));
+    ASSERT_TRUE(f.files->remove_all("d"));
+    ASSERT_TRUE(f.files->write("d", "new.txt", as_bytes("new")));
+    EXPECT_FALSE(dl->finish(true));
+    EXPECT_FALSE(on_disk(f.sd_files("d") / "f.bin"));
+    EXPECT_FALSE(on_disk(f.sd_files("d") / ".f.bin.dl"));
+    EXPECT_EQ(f.files->info("d").value().used, 3u);
 }

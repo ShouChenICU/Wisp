@@ -1551,8 +1551,11 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
                     deliver(cb, std::move(r));
                 };
                 // Without the worker the reservation goes and the .dl waits
-                // for the next count. Not forgotten here: this may run inside
-                // submit(), under the gate's lock.
+                // for the next count. Not forgotten here, nor finished
+                // inline: this may run inside http.submit() on the download's
+                // own worker, under the gate's lock (which finish's forget()
+                // takes); FileDownload::submit() then tries once instead of
+                // waiting for a lane only this worker drains.
                 if (!dl->submit(std::move(finish))) {
                     dl->abandon();
                     busy(cb);
@@ -1588,7 +1591,10 @@ void SceneRuntime::close_gate(const std::shared_ptr<FilesGate>& gate) {
     }
     for (auto& dl : active) {
         dl->cancel();
-        if (!dl->submit([dl] { dl->finish(false); })) dl->abandon();
+        // One try (no wait): the scene task never waits for a storage
+        // lane. If refused, the reservation goes now and the ".dl" at the
+        // next count.
+        if (!dl->submit([dl] { dl->finish(false); }, 0)) dl->abandon();
     }
 }
 
