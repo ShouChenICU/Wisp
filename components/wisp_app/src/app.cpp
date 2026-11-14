@@ -233,11 +233,13 @@ Result<void> App::start() {
                     // reminder should ring on time. stop() waits for a
                     // queued pass by queuing behind it, and the router's
                     // todo actions must run before that too, so all three
-                    // use this one lane (a full lane: the retry timer).
+                    // use this one lane (a full lane: the retry timer for a
+                    // pass, drain_io for stop()).
                     .submit_io =
                         [worker](std::function<void()> job) {
                             return worker->submit(std::move(job), core::IoLane::Interactive);
                         },
+                    .drain_io = [worker](uint32_t ms) { return worker->drain(ms); },
                     .wall_s = [impl] { return impl->wall_now(); },
                     .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
                     .missed_title =

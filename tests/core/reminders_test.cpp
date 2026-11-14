@@ -101,6 +101,7 @@ protected:
             .bus = bus,
             .notes = notes.get(),
             .submit_io = submit_io,
+            .drain_io = drain_io,
             .wall_s = [this] { return now.load(); },
             .utc_offset_min = [this] { return offset.load(); },
             .missed_title = [](size_t n) { return "missed " + std::to_string(n); },
@@ -204,6 +205,7 @@ protected:
         job();
         return true;
     };
+    std::function<bool(uint32_t)> drain_io;
     std::atomic<int64_t> now{kT};
     std::atomic<int> offset{480};
     std::function<void()> fire;
@@ -633,6 +635,51 @@ TEST_F(Reminders, PersistsEventsAndWorker) {
     }
     on_worker([&] { sched.reset(); });
     notes->set_listener(nullptr);
+    worker.stop();
+}
+
+// A todo action queued on the worker before stop() may already be past
+// its liveness check: stop() returns only once it has finished, even when
+// the lane is too full to queue stop()'s own barrier behind it.
+TEST_F(Reminders, StopWaitsForQueuedJobsWhenTheLaneIsFull) {
+    wisp::core::StorageWorker worker(wisp::core::StorageWorkerConfig{.interactive_capacity = 2});
+    ASSERT_TRUE(worker.start());
+    submit_io = [&worker](std::function<void()> job) {
+        return worker.submit(std::move(job), wisp::core::IoLane::Interactive);
+    };
+    drain_io = [&worker](uint32_t ms) { return worker.drain(ms); };
+    ASSERT_TRUE(worker.run_sync([&] { open(); }, wisp::os::kForever));
+    ASSERT_TRUE(worker.drain(2000));
+
+    wisp::os::Semaphore release(1, 0);
+    wisp::os::Semaphore parked(1, 0);
+    ASSERT_TRUE(worker.submit([&] {
+        parked.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(parked.take(5000));
+    std::atomic<bool> action_done{false};
+    ASSERT_TRUE(submit_io([&] {
+        wisp::os::sleep_ms(20);
+        action_done = true;
+    }));
+    ASSERT_TRUE(submit_io([] {}));
+    ASSERT_FALSE(submit_io([] {}));  // the lane is full
+
+    std::atomic<bool> returned{false};
+    std::atomic<bool> done_at_return{false};
+    std::thread stopper([&] {
+        sched->stop();
+        done_at_return = action_done.load();
+        returned = true;
+    });
+    wisp::os::sleep_ms(100);
+    const bool returned_early = returned.load();
+    release.give();
+    stopper.join();
+    EXPECT_FALSE(returned_early);
+    EXPECT_TRUE(done_at_return);
+    ASSERT_TRUE(worker.run_sync([&] { sched.reset(); }, wisp::os::kForever));
     worker.stop();
 }
 
