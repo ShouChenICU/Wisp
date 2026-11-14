@@ -247,7 +247,9 @@ public:
 
     explicit Shell(ShellDeps deps);
     // Makes no LVGL call: stop() first when started. Joins a listing task
-    // still running (none once stop() has run).
+    // still running (none once stop() has run). Without stop() it still
+    // drops its bus subscriptions and conversation listener, so nothing
+    // calls into a destroyed shell.
     ~Shell();
 
     Shell(const Shell&) = delete;

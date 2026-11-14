@@ -216,7 +216,17 @@ Home::Home(HomeDeps deps) : deps_(std::move(deps)), press_(swipe_min_px(deps_.sh
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
-Home::~Home() = default;
+Home::~Home() {
+    // Without stop(): the bus and the conversation must not call into this
+    // object any more (stop() does the same, so this is a no-op after it).
+    for (core::SubscriptionId& id : subs_) {
+        if (id != 0) deps_.bus.unsubscribe(id);
+        id = 0;
+    }
+    if (conv_ != nullptr && listener_ != 0) conv_->remove_listener(listener_);
+    listener_ = 0;
+    if (alive_) *alive_ = false;
+}
 
 bool Home::start() {
     if (screen_ != nullptr) return true;

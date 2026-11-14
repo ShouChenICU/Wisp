@@ -229,7 +229,8 @@ public:
     static constexpr uint32_t kRefreshMs = 50, kTickMs = 250, kFadeOutMs = 300;
 
     explicit Home(HomeDeps deps);
-    // Makes no LVGL call: stop() first when started.
+    // Makes no LVGL call: stop() first when started. Without stop() it
+    // still drops its bus subscriptions and conversation listener.
     ~Home();
 
     Home(const Home&) = delete;

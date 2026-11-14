@@ -115,6 +115,15 @@ Shell::Shell(ShellDeps deps)
 }
 
 Shell::~Shell() {
+    // Without stop(): the bus and the conversation must not call into this
+    // shell any more (stop() does the same, so this is a no-op after it).
+    if (scene_sub_ != 0) deps_.bus.unsubscribe(scene_sub_);
+    scene_sub_ = 0;
+    if (talk_voice_sub_ != 0) deps_.bus.unsubscribe(talk_voice_sub_);
+    talk_voice_sub_ = 0;
+    if (deps_.conversation != nullptr && talk_listener_ != 0)
+        deps_.conversation->remove_listener(talk_listener_);
+    talk_listener_ = 0;
     join_listing();
     // Without stop(): a post still queued must not reach this shell.
     if (alive_) *alive_ = false;

@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -315,4 +316,46 @@ TEST(Shell, SubPagesComeAndGo) {
         EXPECT_EQ(f.shell().page_screen(), nullptr);
         EXPECT_EQ(f.shell().home_screen(), nullptr);
     });
+}
+
+// A shell destroyed without stop() (its UI runtime no longer running
+// LVGL) lets go of its bus subscriptions: an event published after that
+// does not reach it. The shell lives in a buffer the test owns, so the
+// check is that its bytes are untouched (scene.state counts into the
+// shell before anything else) rather than a crash the allocator may or
+// may not show.
+TEST(Shell, DestroyedWithoutStopHearsNoMoreEvents) {
+    auto display = std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, "rect");
+    const wisp::hal::ScreenShape shape =
+        wisp::hal::screen_shape_from_caps(display->info().caps).value();
+    wisp::ui::UiRuntime ui(display, nullptr);
+    ASSERT_TRUE(ui.start());
+    wisp::core::EventBus bus;
+    ASSERT_TRUE(bus.start());
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    wisp::test::run_on_ui_blocking(&ui,
+                                   [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
+
+    alignas(Shell) unsigned char storage[sizeof(Shell)];
+    Shell* sh =
+        new (storage) Shell(ShellDeps{.ui = ui, .layer = *layer, .shape = shape, .bus = bus});
+    wisp::test::run_on_ui_blocking(&ui, [&] { sh->start(); });
+    // LVGL stops here, as for a shell outliving its UI: the timers the
+    // started shell left behind never fire again.
+    ui.set_paused(true);
+    wisp::test::run_on_ui_blocking(&ui, [] {});
+    wisp::test::run_on_ui_blocking(&ui, [] {});
+    sh->~Shell();
+    unsigned char before[sizeof(Shell)];
+    std::memcpy(before, storage, sizeof(Shell));
+
+    bus.publish({.topic = "scene.state"});
+    bus.publish({.topic = "voice.state"});
+    ASSERT_TRUE(bus.wait_idle(2000));
+    wisp::test::run_on_ui_blocking(&ui, [] {});
+    EXPECT_EQ(std::memcmp(before, storage, sizeof(Shell)), 0);
+
+    wisp::test::run_on_ui_blocking(&ui, [&] { layer.reset(); });
+    bus.stop();
+    ui.stop();
 }
