@@ -1,7 +1,6 @@
 #include "wisp/core/button_service.hpp"
 
 #include <algorithm>
-#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -12,7 +11,6 @@ namespace wisp::core {
 
 namespace {
 constexpr const char* kTag = "button_service";
-constexpr const char* kIdPrefix = "button.";
 constexpr size_t kEdgeQueueCapacity = 32;
 constexpr uint64_t kDebounceUs = 20'000;
 constexpr uint32_t kFallbackStandbyMs = 100;
@@ -190,10 +188,6 @@ void ButtonService::refresh_buttons() {
         std::min(devices.size(), static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1));
     for (auto& button : devices) {
         const std::string& id = button->info().id;
-        if (id.compare(0, std::strlen(kIdPrefix), kIdPrefix) != 0) {
-            WLOG_W(kTag, "button device id '%s' does not start with '%s'; topic will be malformed",
-                   id.c_str(), kIdPrefix);
-        }
         ButtonState state;
         state.id = id;
         state.power_key = hal::has_role(button->info(), hal::role::kPower);

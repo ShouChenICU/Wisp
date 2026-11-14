@@ -51,7 +51,8 @@ std::optional<hal::Area> fallback_safe_area(const std::string& device_id, const 
 
 // "<kind>.<name>": [a-z][a-z0-9_]*\.[a-z0-9_]+, at most 32 bytes. A
 // generic device has no typed interface to say what it is, so its id has
-// to (spec 2.2).
+// to (spec 2.2). A button id follows the same rule with the kind fixed
+// to "button".
 bool valid_generic_id(const std::string& id) {
     constexpr size_t kMaxIdBytes = 32;
     if (id.empty() || id.size() > kMaxIdBytes) return false;
@@ -124,6 +125,14 @@ Result<void> DeviceRegistry::add(std::shared_ptr<hal::Device> device) {
         return Result<void>::err(
             ErrorCode::InvalidArgument,
             info.id + ": a generic device id is <kind>.<name>, at most 32 bytes");
+    }
+    // ButtonService publishes "<id>.<edge>" and the system's key handlers
+    // subscribe to "button.", so a key under any other id would be polled
+    // and heard by no one.
+    if (iface == hal::Interface::Button &&
+        (info.id.rfind("button.", 0) != 0 || !valid_generic_id(info.id))) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 info.id + ": a button id is button.<name>");
     }
     if (auto checked = check_device_schema(*device); !checked) return checked;
     std::lock_guard<os::Mutex> lock(mutex_);

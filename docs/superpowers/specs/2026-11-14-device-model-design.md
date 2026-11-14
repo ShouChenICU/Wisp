@@ -182,6 +182,8 @@ A **role** says what a device is for, so portable code can ask for "the main dis
 
 > In the code: for interface `None` the uniqueness key is (kind, role), the kind being the id's prefix before the dot, so `haptic.main` and `led.main` can both hold `main`; a generic device's id must match `^[a-z][a-z0-9_]*\.[a-z0-9_]+$` and be at most 32 bytes. At boot `App` logs a warning for each of Display, Touch, Power, Clock, Imu, AudioOut, AudioIn and Wifi that has devices but no holder of role `main`, and for a key that holds both `power` and `talk`: such a key has no gesture arbitration yet, so holding it to talk also triggers the power key's long press.
 
+> In the code: a Button's id must be `button.<name>` (same character rule and 32-byte limit as a generic id); `add()` refuses any other (`InvalidArgument`, "<id>: a button id is button.<name>"), because `ButtonService` publishes `<id>.<edge>` and the system's key handlers subscribe to `button.`, so a key named otherwise would be heard by no one.
+
 Alternative considered: keep fixed ids and make every board use them. Rejected: ids are also event topics (`button_service.cpp:448-452`, `button.power.short`) and the user-visible names in the manifest; a board should name a key after its label (`button.boot`), and the caller only cares about the purpose.
 
 **Role vocabulary** (closed list in `wisp/hal/roles.hpp` as constants; a board may use other names for devices only it or the generic path cares about):

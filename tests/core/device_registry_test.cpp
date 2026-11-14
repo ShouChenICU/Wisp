@@ -252,6 +252,22 @@ TEST(DeviceRegistry, GenericDeviceIdsNeedAKind) {
     EXPECT_EQ(reg.all().size(), 2u);
 }
 
+// Button topics are "<id>.<edge>" and the system's subscribers listen on
+// "button.", so a key under any other id would publish into the void.
+TEST(DeviceRegistry, ButtonIdsAreButtonDotName) {
+    wisp::core::DeviceRegistry reg;
+    for (const std::string& id :
+         {std::string("key.pwr"), std::string("button."), std::string("buttonx.a")}) {
+        auto added = reg.add(std::make_shared<FakeButton>(id));
+        ASSERT_FALSE(added) << id;
+        EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument) << id;
+        EXPECT_EQ(added.error().message, id + ": a button id is button.<name>");
+    }
+    EXPECT_TRUE(reg.all().empty());
+    EXPECT_TRUE(reg.add(std::make_shared<FakeButton>("button.power")));
+    EXPECT_EQ(reg.all().size(), 1u);
+}
+
 TEST(DeviceRegistry, ByRoleReturnsOnlyThatInterface) {
     wisp::core::DeviceRegistry reg;
     auto imu = std::make_shared<FakeImu>("imu.accel");
