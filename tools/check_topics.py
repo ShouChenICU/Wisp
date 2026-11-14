@@ -17,8 +17,9 @@ registered twice, and a constant of topics.hpp that is absent from kAll.
 A constant counts as a topic name when its value contains a '.' and does
 not end with '.'; that leaves out the button prefix ("button.") and the
 edge names ("down", "up", ...), which are parts of a topic, not topics.
-The doc table is the first table under the "## Event topics" heading; any
-heading or the end of that table closes it, so later tables are not read.
+The doc table is the first table under the "## Event topics" heading; a
+heading closes it. A table row after the table's first break (a blank line)
+in the same section is reported rather than skipped.
 Each first-column piece must be exactly one backticked name.
 
 Prints "path:line: message" lines and exits 1 when any rule fails; silent
@@ -184,7 +185,7 @@ def doc_rows(root):
     except OSError as exc:
         return [], [f"{ARCH_DOC}: cannot read: {exc.strerror}"]
     rows, errors = [], []
-    in_section = started = False
+    in_section = started = ended = False
     for number, line in enumerate(lines, 1):
         if line.startswith("#"):
             if started:
@@ -195,8 +196,14 @@ def doc_rows(root):
             continue
         if not line.startswith("|"):
             if started:
-                break  # the table is contiguous; later tables are not topics
+                ended = True
             continue
+        if ended:
+            # A blank line inside the table would otherwise hide the rows
+            # after it from the comparison with the registry.
+            errors.append(f"{ARCH_DOC}:{number}: topic table continues after a break; "
+                          "keep it one contiguous table")
+            break
         started = True
         cell = line.split("|")[1].strip()
         if cell == "Topic" or set(cell) <= {"-", " ", ":"}:

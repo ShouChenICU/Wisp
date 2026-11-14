@@ -197,8 +197,16 @@ class CheckTopicsTest(unittest.TestCase):
         extra = "\n### Sub\n\n| Topic | P | N |\n|---|---|---|\n| `bogus.one` | x | y |\n"
         write(self.root, "docs/architecture.md", DOC + extra)
         self.assertEqual(check_topics.check(self.root), [])
+
+    def test_rows_after_a_break_in_the_table_are_reported(self):
         both = DOC.replace("\nTrailing", "\n| `bogus.two` | x | y |\n\nTrailing")
         write(self.root, "docs/architecture.md", both)
+        line = both.splitlines().index("| `bogus.two` | x | y |") + 1
+        self.assertEqual(check_topics.check(self.root), [
+            f"docs/architecture.md:{line}: topic table continues after a break; "
+            "keep it one contiguous table"])
+        # A later table under a sub-heading is another section and stays legal.
+        write(self.root, "docs/architecture.md", DOC + "\n### Sub\n\n| T |\n|---|\n| `x` |\n")
         self.assertEqual(check_topics.check(self.root), [])
 
     def test_constant_missing_from_kall_is_reported_but_prefixes_are_not(self):
