@@ -78,11 +78,12 @@ void cancel_factory_reset(App& app);
 //      that asked still has a token, hence a socket to hear it on;
 //   2. waits (at most 500 ms in all) for the event bus to deliver it and
 //      the admin WebSocket sender to put it on the wire;
-//   3. erases Settings (and seeds the settings cell again from what is
-//      left), forgets the Wi-Fi networks, revokes every paired
+//   3. erases Settings, forgets the Wi-Fi networks, revokes every paired
 //      browser (closing their sockets), clears the model profiles and the
 //      agent's conversations;
-//   4. writes what still waits for flash (App::flush_storage());
+//   4. seeds the settings cell again from what is left (on this task,
+//      after the job; skipped when settings are read straight from flash)
+//      and writes what still waits for flash (App::flush_storage());
 //   5. calls Platform::reboot (if any).
 // If that job cannot start within the 30 s, nothing is erased: it
 // publishes {state:"failed"} instead, does not restart, and a later

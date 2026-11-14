@@ -34,6 +34,8 @@ public:
     }
     wisp::Result<void> set(const std::string& ns, const std::string& key,
                            const wisp::Value& value) override {
+        // Outside the lock, so a test can hold the worker inside a set.
+        if (on_set) on_set(ns, key);
         std::lock_guard<std::mutex> lock(m);
         if (!wisp::os::on_flash_thread()) ++sets_off_thread;
         store[{ns, key}] = value;
@@ -112,6 +114,8 @@ public:
     std::string refused_key;
     // Runs at the start of every write_batch(), before the lock.
     std::function<void()> on_write;
+    // Runs at the start of every set(), before the lock, with its names.
+    std::function<void(const std::string&, const std::string&)> on_set;
     bool off_thread = false;
 };
 

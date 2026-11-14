@@ -17,6 +17,7 @@
 
 #include "app/ui_net_harness.hpp"
 #include "support/fake_http.hpp"
+#include "support/fake_settings_backend.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
@@ -365,6 +366,21 @@ TEST(FactoryReset, AnnouncesDoneBeforeRevokingTokens) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));
     pair_browser(h);
+    // A stored setting the erase removes: "done" must be delivered while
+    // it is still there, so before the erase, not just before revoke_all().
+    ASSERT_TRUE(h.app->system_settings().set({{"language", "en"}}));
+    std::mutex lang_mutex;
+    std::string lang_at_done;
+    wisp::app::App* papp = h.app.get();
+    const wisp::core::SubscriptionId done_sub =
+        h.app->bus().subscribe("system.factory_reset", [&, papp](const wisp::core::Event& e) {
+            if (e.payload.at("state").as_string() != "done") return;
+            // Read through the settings cache, in memory: no flash here.
+            const std::string lang =
+                wisp::core::Settings(*papp->platform().settings, "sys").get_string("lang", "none");
+            std::lock_guard<std::mutex> lock(lang_mutex);
+            lang_at_done = lang;
+        });
     std::atomic<bool> done_seen_at_revoke{false};
     std::atomic<int> revokes{0};
     int listener = h.app->pairing()->add_revoke_listener([&](const auto& id) {
@@ -383,8 +399,13 @@ TEST(FactoryReset, AnnouncesDoneBeforeRevokingTokens) {
 
     wisp::app::factory_reset(*h.app);
     h.app->pairing()->remove_revoke_listener(listener);
+    h.app->bus().unsubscribe(done_sub);
     EXPECT_EQ(revokes.load(), 1);
     EXPECT_TRUE(done_seen_at_revoke.load());
+    {
+        std::lock_guard<std::mutex> lock(lang_mutex);
+        EXPECT_EQ(lang_at_done, "en");
+    }
     EXPECT_EQ(h.reboots.load(), 1);
     EXPECT_EQ(wisp::app::reset_status(*h.app).get(),
               (wisp::app::ResetStatus{wisp::app::ResetStatus::Phase::Done, 1}));
@@ -751,6 +772,113 @@ TEST(FactoryReset, DialogFitsEveryShapeAndLanguage) {
         ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
         EXPECT_EQ(h.reboots.load(), 0);
     }
+}
+
+// The settings cell is seeded again only once the wipe is over: while the
+// wipe job erases Settings, forgets the networks, revokes the browsers and
+// clears the notifications, the cell has not moved yet (the seed runs on
+// "wisp.reset" after the job, never between its steps).
+TEST(FactoryReset, SettingsCellReseededAfterEveryWipeStep) {
+    UiNetOptions opts;
+    opts.saved = {{"Home", "password1"}};
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    pair_browser(h);
+    ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
+    const uint32_t before = app.system_settings().cell().revision();
+    app.notifications()->post_system("test_notice", "x");
+    ASSERT_EQ(app.notifications()->unread_count(), 1u);
+
+    // Each records, from inside its wipe step, what the earlier steps
+    // left and whether the cell has moved.
+    std::atomic<bool> revoke_saw_wipe{false};
+    std::atomic<bool> cell_moved_by_revoke{true};
+    const int handle = app.pairing()->add_revoke_listener([&](const auto& id) {
+        if (id) return;
+        const bool settings_erased =
+            wisp::core::Settings(*app.platform().settings, "sys").get_string("lang", "none") ==
+            "none";
+        revoke_saw_wipe.store(settings_erased && app.wifi()->saved_ssids().empty());
+        cell_moved_by_revoke.store(app.system_settings().cell().revision() != before);
+    });
+    std::atomic<int> cleared{0};
+    std::atomic<bool> cell_moved_by_clear{false};
+    app.notifications()->set_listener([&](const wisp::core::NotificationChange&) {
+        cleared.fetch_add(1);
+        if (app.system_settings().cell().revision() != before) cell_moved_by_clear.store(true);
+    });
+
+    wisp::app::factory_reset(app);
+    app.pairing()->remove_revoke_listener(handle);
+    app.notifications()->set_listener(nullptr);
+
+    EXPECT_EQ(h.reboots.load(), 1);
+    EXPECT_TRUE(revoke_saw_wipe.load());
+    EXPECT_FALSE(cell_moved_by_revoke.load());
+    EXPECT_GE(cleared.load(), 1);
+    EXPECT_FALSE(cell_moved_by_clear.load());
+    // And then it was seeded, from the erased store.
+    EXPECT_NE(app.system_settings().cell().revision(), before);
+    EXPECT_EQ(app.system_settings().cell().get().language, app.system_settings().get().language);
+    EXPECT_NE(app.system_settings().cell().get().language, "en");
+}
+
+// Settings read straight from flash (the cache could not be loaded): every
+// settings call waits for the flash thread. A set() that holds the settings
+// lock while it waits there cannot stop the wipe job: the reset still
+// erases everything and restarts.
+TEST(FactoryReset, ResetCompletesWhileASetWaitsForTheFlashThread) {
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto release = std::make_shared<wisp::os::Semaphore>(1, 0);
+    UiNetOptions opts;
+    opts.saved = {{"Home", "password1"}};
+    opts.settings_backend = [entered, release] {
+        auto backend = std::make_unique<wisp::test::FakePlatformBackend>();
+        backend->fail_load = true;
+        // Holds the flash thread inside the set() of agent/turn_min, which
+        // only the test's SystemSettings::set() writes.
+        backend->on_set = [entered, release](const std::string& ns, const std::string& key) {
+            if (ns != "agent" || key != "turn_min") return;
+            entered->give();
+            (void)release->take(wisp::os::kForever);
+        };
+        return backend;
+    };
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::StorageWorker* worker = app.storage_worker();
+    ASSERT_NE(worker, nullptr);
+    pair_browser(h);
+
+    // The set() holds SystemSettings' lock, its backend call is on the
+    // flash thread, and the flash thread is held inside it.
+    std::atomic<bool> set_ok{false};
+    auto setter = wisp::os::Task::spawn({.name = "test.set"}, [&] {
+        set_ok.store(static_cast<bool>(app.system_settings().set({{"agent_turn_min", 20}})));
+    });
+    ASSERT_TRUE(entered->take(5000));
+
+    // The wipe job queues behind it.
+    const size_t queued = worker->pending();
+    std::atomic<bool> reset_returned{false};
+    auto resetter = wisp::os::Task::spawn({.name = "test.reset"}, [&] {
+        wisp::app::factory_reset(app);
+        reset_returned.store(true);
+    });
+    ASSERT_TRUE(wait_until([&] { return worker->pending() > queued; }, 5000));
+    release->give();
+
+    ASSERT_TRUE(wait_until([&] { return reset_returned.load(); }, 10000));
+    resetter->join();
+    setter->join();
+    EXPECT_TRUE(set_ok.load());
+    EXPECT_EQ(h.reboots.load(), 1);
+    EXPECT_EQ(reset_states(h), std::vector<std::string>{"done"});
+    // Every step after the settings erase ran.
+    EXPECT_TRUE(app.wifi()->saved_ssids().empty());
+    EXPECT_TRUE(app.pairing()->clients().empty());
 }
 
 TEST(FactoryReset, ErasesOnTheFlashThread) {

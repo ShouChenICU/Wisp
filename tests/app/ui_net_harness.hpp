@@ -76,6 +76,9 @@ struct UiNetOptions {
     std::shared_ptr<wisp::hal::Imu> imu;
     // Registered as they are (a mic, a talk key, ...).
     std::vector<std::shared_ptr<wisp::hal::Device>> extra_devices;
+    // Platform::settings, when set; otherwise the JSON file at
+    // UiNetHarness::settings_path().
+    std::function<std::unique_ptr<wisp::core::SettingsBackend>()> settings_backend;
     // Platform::http_client, when set.
     std::function<std::unique_ptr<wisp::net::HttpClient>()> http_client;
     // Registers a FakePower as "power.main" (UiNetHarness::power), which
@@ -198,8 +201,12 @@ struct UiNetHarness {
         platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out,
                                                       opts.imu, opts.extra_devices, power, sd);
         if (opts.http_client) platform.http_client = opts.http_client();
-        platform.settings =
-            std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
+        if (opts.settings_backend) {
+            platform.settings = opts.settings_backend();
+        } else {
+            platform.settings =
+                std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
+        }
         if (!opts.lang.empty()) {
             (void)wisp::core::Settings(*platform.settings, "sys").set("lang", opts.lang);
         }

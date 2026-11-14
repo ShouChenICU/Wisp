@@ -120,13 +120,6 @@ void factory_reset(App& app) {
             // The cache erases the platform in its save, run inline here.
             WLOG_E(kTag, "erasing settings failed: %s", f.error().message.c_str());
         }
-        // The erase bypasses SystemSettings::set(), so its cell still holds
-        // the old values: seed it from what storage holds now (the defaults,
-        // unless the erase failed), publishing nothing, as nothing was
-        // published for the erase before the cell. It reads the backend
-        // the erase above has just written, on the same thread, so it adds
-        // no flash access of its own.
-        app.impl_->system_settings.seed_cell();
         if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
         if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
         app.models().clear();
@@ -193,10 +186,28 @@ void factory_reset(App& app) {
         publish_state(app.impl_->reset_status, ResetStatus::Phase::Failed);
         return;
     }
+    // The wipe erased Settings without SystemSettings::set(), so the
+    // settings cell still holds the old values: seed it again from storage
+    // (the defaults, unless the erase failed), publishing nothing, as
+    // nothing was published for the erase before the cell. Here on
+    // "wisp.reset", once the whole wipe job has returned, never inside it:
+    // seed_cell() takes the settings lock, which a set() may hold while it
+    // waits for the flash thread (no settings cache), so on the flash
+    // thread it could stall the job before its later steps; and it must
+    // not sit between wipe steps. It reads through the settings front: from
+    // the cache in memory, or inline without a storage worker, as the erase
+    // ran. Without the cache but with a worker, every settings call (the
+    // seed's read, and a set() holding the lock) waits for the flash thread
+    // with no bound, so the seed is skipped there: the restart comes next
+    // and must not wait on it.
     const bool still_running = !erased;
     if (still_running) {
         WLOG_E(kTag, "factory reset erase did not finish in time: %s",
                erased.error().message.c_str());
+    } else if (!app.impl_->settings_cache && app.storage_worker() != nullptr) {
+        WLOG_W(kTag, "settings read straight from flash; their cell is not reseeded");
+    } else {
+        app.impl_->system_settings.seed_cell();
     }
 
     // Whatever else still waits for flash is written before the restart.
