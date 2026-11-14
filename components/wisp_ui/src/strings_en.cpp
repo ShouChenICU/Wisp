@@ -262,6 +262,9 @@ const char* strings_en(StrId id) {
                    "admin console";
         case StrId::AgentErrServer:
             return "The model service returned an error. Try again later";
+        case StrId::AgentErrContext:
+            return "The conversation no longer fits the model. Start a new one or use a model with "
+                   "a larger context.";
         case StrId::AgentRolledOver:
             return "The conversation got long, so it was archived and a new one started";
         case StrId::AgentContextDropped:
@@ -359,6 +362,26 @@ const char* strings_en(StrId id) {
             return "No model set up yet. Set one on the admin page's Models tab";
         case StrId::HomeNotHeard:
             return "Didn't catch that";
+        case StrId::HomeTurnStopped:
+            return "Stopped";
+        case StrId::HomeTurnStepLimit:
+            return "Stopped: too many steps";
+        case StrId::HomeTurnTimeLimit:
+            return "Stopped: took too long";
+        case StrId::HomeTurnNoModel:
+            return "No chat model set up";
+        case StrId::HomeTurnUnauthorized:
+            return "Model key rejected";
+        case StrId::HomeTurnNetwork:
+            return "Network unavailable";
+        case StrId::HomeTurnNetworkLost:
+            return "Network connection lost";
+        case StrId::HomeTurnServer:
+            return "Model service error";
+        case StrId::HomeTurnContext:
+            return "Conversation too long; start a new one";
+        case StrId::HomeStop:
+            return "Stop";
         case StrId::VoiceErrNoAsr:
             return "No speech recognition set up. Set it on the admin page's Models tab";
         case StrId::VoiceErrNoTts:

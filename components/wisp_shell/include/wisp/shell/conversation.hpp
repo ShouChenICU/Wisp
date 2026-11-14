@@ -18,19 +18,29 @@
 // stop_speaking(). Every such round is ended here: at its turn's
 // TurnEnd (done, error, stopped; muted or not), at once when submit()
 // refuses the text or the hold was cancelled, and by stop_speaking() when
-// a tap or a hold interrupts the speech. A round needs no ending only when
-// a newer capture has begun since: begin_capture() hands the locks to the
-// new round, and an end_speech() then would end that one instead.
+// a hold or stop_turn() interrupts the speech. A round needs no ending
+// only when a newer capture has begun since: begin_capture() hands the
+// locks to the new round, and an end_speech() then would end that one
+// instead.
 //
 // Triggers (spec 6.3). tap() is reserved for character interaction (e.g.
 // patting the wisp's head) and has no voice effect: it starts no capture,
-// ends none, and does not stop speech. hold_begin(): in any state stops
-// the speech and the running turn (it ends "stopped") and starts a hold
-// capture; a capture already listening is kept as the hold's, and one
-// already transcribing is cancelled and the hold capture starts once it
-// has ended. hold_end() sends the recording, hold_cancel() drops it.
-// While readiness() is not Ready neither hold_begin()/hold_end()/
-// hold_cancel() nor voice_text() sends anything.
+// ends none, and does not stop speech. hold_begin(): stops the speech and
+// starts a hold capture; a capture already listening is kept as the
+// hold's, and one already transcribing is cancelled and the hold capture
+// starts once it has ended. A running turn (a scene build from the web
+// page, say) runs on, unspoken, while the hold records. hold_end() sends
+// the recording, hold_cancel() drops it. The hold's transcript replaces
+// the turn: a turn running or a message waiting is stopped (it ends
+// "stopped") just before the text is submitted, and until the text's own
+// TurnBegin the view is the text's (running, no outcome), whatever the
+// stopped turn still reports. A transcript that comes in the instant
+// after the agent took a message up and before it marked the turn
+// running sees nothing to stop, and waits behind that turn instead. A
+// cancelled hold, or one that heard nothing, stops nothing. stop_turn()
+// (the screen's Stop) stops the speech, the running turn and a waiting
+// voice text. While readiness() is not Ready neither
+// hold_begin()/hold_end()/hold_cancel() nor voice_text() sends anything.
 //
 // Threads. The triggers, voice_text(), readiness(), current() and the
 // listener calls may come from any thread; the triggers and the
@@ -113,6 +123,10 @@ struct TurnView {
     uint64_t started_ms = 0;
     uint64_t ended_ms = 0;
     bool thinking = false;
+    // Set at TurnEnd: AgentEvent::reason and AgentEvent::note ("" for a
+    // turn that went well).
+    std::string end_reason;
+    os::LargeString end_note;
 
     // The step under way, if the last one still runs.
     const TurnStep* running_step() const {
@@ -153,6 +167,10 @@ public:
     // No voice effect (see the file header); kept so the shell UI can
     // route taps here for character interaction, designed later.
     void tap();
+    // Stops the speech (not a capture's round), the agent's running turn
+    // and a waiting voice text; the view ends "stopped" with the turn's
+    // TurnEnd. Nothing to stop: nothing happens.
+    void stop_turn();
     // Between hold_begin() and hold_end()/hold_cancel() (also when
     // hold_begin() did nothing because nothing was ready: then false).
     bool holding() const;

@@ -27,6 +27,12 @@
 // request without tools. If the model fails to summarize, they are left out
 // of the context (an empty summary) with a note; with no model, a refused
 // key or no connection nothing is stored and the request goes out whole.
+// Still too long, the turns before the running one are summarized too, and
+// past the whole window the running turn's tool results are cut to
+// kToolResultKeepBytes. The estimate (bytes / 3) is scaled by the prompt
+// tokens the model reported for the last request. A request the model
+// refuses as too long ("context_length") is retried once per turn, treated
+// as over the window; a second refusal ends the turn with a note.
 //
 // A model request is aborted (its RequestWatch, and its cancelled() check,
 // which also covers the waits between retries) when the user stops the
@@ -127,6 +133,14 @@ struct AgentEvent {
     uint32_t turn = 0;                    // TurnBegin, TurnEnd
     Source source = Source::Web;          // TurnBegin
     std::string status;                   // TurnEnd
+    // TurnEnd: why a turn not "done" ended -- "stopped", "step_limit",
+    // "time_limit", "no_model", "unauthorized", "network" (no connection,
+    // or nothing came back), "network_lost" (it broke mid-reply),
+    // "server" or "context"; "" when done. `note`: that turn's note as written to the
+    // conversation (localised), cut to kSummaryChars code points; "" when
+    // done.
+    std::string reason;
+    std::string note;
 };
 
 struct ConversationView {

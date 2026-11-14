@@ -1,5 +1,5 @@
 // Shell's own wiring for the talk overlay (wisp/shell/talk_overlay.hpp,
-// mvp spec 6.5): scene_in_front()/request_talk()/update_talk()/
+// mvp spec 6.5): home_in_front()/request_talk()/update_talk()/
 // on_voice_bus() and the tick timer, driven end to end over a real
 // ConversationController/AgentService/VoiceService (shell/shell_fixture.hpp)
 // and a real Shell on a live UiRuntime (as shell/shell_test.cpp drives one,
@@ -18,9 +18,11 @@
 #include "support/wait.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/net/http.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/shell/talk_overlay.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -51,6 +53,17 @@ protected:
             .shape = shape_,
             .bus = h->bus,
             .conversation = conv.get(),
+            // The App's self-check screen stands in as a bare screen.
+            .open_diagnostics =
+                [this] {
+                    diag = lv_obj_create(nullptr);
+                    lv_screen_load(diag);
+                },
+            .close_diagnostics =
+                [this] {
+                    lv_obj_delete(diag);
+                    diag = nullptr;
+                },
             .leave_scene = [this]() -> wisp::Result<bool> {
                 ++leaves;
                 if (scene == nullptr) return wisp::Result<bool>::ok(false);
@@ -92,6 +105,26 @@ protected:
         });
     }
 
+    lv_obj_t* active() {
+        lv_obj_t* a = nullptr;
+        on_ui([&] { a = lv_screen_active(); });
+        return a;
+    }
+    std::string overlay_text() {
+        std::string out;
+        on_ui([&] {
+            lv_obj_t* label = wisp::test::find_obj_of_class(shell_->talk()->obj(), &lv_label_class);
+            if (label != nullptr && !lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN))
+                out = lv_label_get_text(label);
+        });
+        return out;
+    }
+    bool overlay_shown() {
+        bool shown = false;
+        on_ui([&] { shown = !lv_obj_has_flag(shell_->talk()->obj(), LV_OBJ_FLAG_HIDDEN); });
+        return shown;
+    }
+
     Phase phase() {
         Phase p = Phase::Hidden;
         on_ui([&] { p = shell_->talk()->phase(); });
@@ -111,14 +144,16 @@ protected:
     bool refuse = false;
     bool leaving = false;
     lv_obj_t* scene = nullptr;
+    lv_obj_t* diag = nullptr;
 };
 
 }  // namespace
 
-// 只在场景在前台时显示: the shell's own home screen is active, so a real
-// hold never reaches the overlay even once capture genuinely starts.
-TEST_F(ShellTalkTest, HoldWithNoSceneShowsNothing) {
+// Home shows the turn itself: a real hold there never reaches the overlay,
+// even once capture genuinely starts.
+TEST_F(ShellTalkTest, HoldOnHomeShowsNoOverlay) {
     make_shell();
+    ASSERT_EQ(active(), shell_->home_screen());
     say_into_mic();
     conv->hold_begin();
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
@@ -126,6 +161,145 @@ TEST_F(ShellTalkTest, HoldWithNoSceneShowsNothing) {
     // asserting the negative.
     h->bus.wait_idle(500);
     EXPECT_EQ(phase(), Phase::Hidden);
+    EXPECT_FALSE(overlay_shown());
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// Every screen but Home gets the overlay: a sub-page ...
+TEST_F(ShellTalkTest, HoldOnASubPageShowsTheOverlay) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    ASSERT_EQ(active(), shell_->page_screen());
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+    EXPECT_TRUE(overlay_shown());
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// ... and the hardware diagnostics.
+TEST_F(ShellTalkTest, HoldOnDiagnosticsShowsTheOverlay) {
+    make_shell();
+    on_ui([&] { shell_->open_diagnostics(); });
+    ASSERT_NE(diag, nullptr);
+    ASSERT_EQ(active(), diag);
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+    EXPECT_TRUE(overlay_shown());
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// A turn that fails while a sub-page is in front says why, in the same
+// short words Home uses, for the overlay's five seconds.
+TEST_F(ShellTalkTest, FailedTurnOnASubPageShowsItsNote) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    // A connect failure, retried twice by the client: reason "network".
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_EQ(conv->current().end_reason, "network");
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+    EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_TRUE(overlay_shown());
+
+    virtual_ms += wisp::shell::kOverlaySayMs + 1;
+    ASSERT_TRUE(wait_phase(Phase::Hidden, 2000));
+    // Shown once: a later change of the voice does not bring it back.
+    h->bus.publish({"voice.state", "test", 0, {{"state", "idle"}}});
+    h->bus.wait_idle(500);
+    EXPECT_EQ(phase(), Phase::Hidden);
+}
+
+// Home coming to the front hides the overlay: it shows the same itself.
+TEST_F(ShellTalkTest, HomeInFrontHidesTheOverlay) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::History); });
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+
+    on_ui([&] {
+        shell_->show(wisp::shell::Page::Home);
+        // At once, not on the next change.
+        EXPECT_EQ(shell_->talk()->phase(), Phase::Hidden);
+    });
+    h->bus.wait_idle(500);
+    EXPECT_EQ(phase(), Phase::Hidden);
+    EXPECT_FALSE(overlay_shown());
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// Leaving Home while capturing shows the overlay on the page that came in
+// front, without waiting for the next change.
+TEST_F(ShellTalkTest, LeavingHomeShowsTheOverlay) {
+    make_shell();
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    h->bus.wait_idle(500);
+    ASSERT_EQ(phase(), Phase::Hidden);
+
+    on_ui([&] { shell_->show(wisp::shell::Page::Scenes); });
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// On a sub-page a tap on the card goes back to Home the way show(Home)
+// leaves it: the page is deleted and nothing is sent back.
+TEST_F(ShellTalkTest, TapOnASubPageShowsHome) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+
+    on_ui([&] { lv_obj_send_event(shell_->talk()->obj(), LV_EVENT_CLICKED, nullptr); });
+    // The posted navigation runs on the next round-trip.
+    EXPECT_EQ(active(), shell_->home_screen());
+    lv_obj_t* page = nullptr;
+    on_ui([&] { page = shell_->page_screen(); });
+    EXPECT_EQ(page, nullptr);
+    EXPECT_FALSE(leaving);
+    EXPECT_EQ(phase(), Phase::Hidden);
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// On the diagnostics the tap closes them, as their back gesture does.
+TEST_F(ShellTalkTest, TapOnDiagnosticsShowsHome) {
+    make_shell();
+    on_ui([&] { shell_->open_diagnostics(); });
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+
+    on_ui([&] { lv_obj_send_event(shell_->talk()->obj(), LV_EVENT_CLICKED, nullptr); });
+    EXPECT_EQ(active(), shell_->home_screen());
+    bool open = true;
+    on_ui([&] { open = shell_->diagnostics_open(); });
+    EXPECT_FALSE(open);
+    EXPECT_EQ(diag, nullptr);
 
     conv->hold_cancel();
     ASSERT_TRUE(settled());

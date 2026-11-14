@@ -20,8 +20,16 @@ inline constexpr size_t kMaxUserChars = 4000;
 // Messages waiting behind the running turn; more are refused as busy.
 inline constexpr size_t kMaxQueued = 1;
 
-// Context: every tool result in the history is cut to this many bytes.
+// Context: every tool result of an earlier turn is cut to this many bytes.
 inline constexpr size_t kToolResultKeepBytes = 4096;
+// The turn in progress keeps its tool results up to this size: the largest
+// tool payload (kReadMaxBytes / kHttpMaxMaxBytes, 64 KB) plus JSON escaping
+// and metadata.
+inline constexpr size_t kLiveToolResultBytes = 96 * 1024;
+// A call of an earlier turn whose arguments exceed this is sent as
+// {"elided_bytes":N}: the model wrote them, and the tool result says what
+// came of them, so resending a whole scene file every turn buys nothing.
+inline constexpr size_t kCallArgsKeepBytes = 2048;
 inline constexpr uint32_t kDefaultContextWindow = 65536;
 // Compress past this share of the window, down to the target share,
 // never touching the most recent turns.
@@ -47,6 +55,9 @@ inline constexpr uint64_t kRolloverBytes = 1024 * 1024;
 // Tool limits.
 inline constexpr size_t kReadMaxBytes = 65536;
 inline constexpr size_t kDataReadMaxBytes = 16384;
+// docs.read: one page of a topic. Pages end on a line break so a model
+// reading on never starts mid-line.
+inline constexpr size_t kDocsPageBytes = 16384;
 inline constexpr size_t kLogsMax = 100;
 inline constexpr uint32_t kEvalMs = 200;
 // The install check reports at most this many W and E log lines each.

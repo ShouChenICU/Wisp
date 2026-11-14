@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -61,6 +62,8 @@ std::string summary(std::string_view s) {
 
 struct Outcome {
     const char* status = "done";
+    // AgentEvent::reason, set where the note that explains it is written.
+    const char* reason = "";
     uint32_t steps = 0;
     uint32_t tokens = 0;
     // The turn's last reply or note: the done notice's text.
@@ -420,7 +423,13 @@ struct AgentService::Impl {
         set_state(AgentState::Thinking);
 
         Outcome out;
-        out.status = loop(turn, c.source, context_window(), out);
+        const ActiveLlm llm = active_llm();
+        // The calibration is the last model's count, not this one's.
+        if (llm.model != scale_model) {
+            est_scale_pct = 100;
+            scale_model = llm.model;
+        }
+        out.status = loop(turn, c.source, llm.window, out);
 
         if (timer) timer->stop();
         in_turn = false;
@@ -448,6 +457,10 @@ struct AgentService::Impl {
         end.kind = AgentEvent::Kind::TurnEnd;
         end.turn = turn;
         end.status = out.status;
+        if (std::string_view(out.status) != "done") {
+            end.reason = out.reason;
+            end.note = summary(sv(out.last_text));
+        }
         emit(end);
     }
 
@@ -467,17 +480,20 @@ struct AgentService::Impl {
                 note_text(ui::tr_fill(ui::StrId::AgentTimeLimit, lang(),
                                       std::to_string(minutes(turn_ms.load()))),
                           turn, &out);
+                out.reason = "time_limit";
                 return "time_limit";
             case Abort::Network:
             case Abort::Stall:
                 set_state(AgentState::Error);
                 note(ui::StrId::AgentErrNetworkLost, turn, &out);
+                out.reason = "network_lost";
                 return "error";
             case Abort::Stop:
             case Abort::None:
                 break;
         }
         note(ui::StrId::AgentStopped, turn, &out);
+        out.reason = "stopped";
         return "stopped";
     }
 
@@ -497,21 +513,31 @@ struct AgentService::Impl {
         }
     }
 
-    // The active llm profile's context window, read once per turn.
-    uint32_t context_window() const {
+    struct ActiveLlm {
+        uint32_t window = kDefaultContextWindow;
+        std::string model;
+    };
+
+    // The active llm profile's context window and model, read once per
+    // turn.
+    ActiveLlm active_llm() const {
         const core::ProfilesState st = deps.models.get();
         const std::string& id = st.active_for(core::ModelKind::Llm);
         for (const core::ModelProfile& p : st.profiles)
-            if (p.id == id) return core::profile_context_window(p.options);
-        return kDefaultContextWindow;
+            if (p.id == id) return {core::profile_context_window(p.options), p.model};
+        return {};
     }
 
-    BuiltRequest build(std::span<const Message> h, Source source) const {
-        if (!deps.context) return build_history(h);
+    BuiltRequest build(std::span<const Message> h, Source source, BuildOptions opts = {}) const {
+        if (!deps.context) return build_history(h, opts);
         DeviceSnapshot d = deps.context(source);
         d.source = source;
-        return build_request(h, d);
+        return build_request(h, d, opts);
     }
+
+    // The estimate of a request in the model's own tokens: bytes / 3,
+    // scaled by what the model last reported.
+    size_t scaled(size_t est_tokens) const { return est_tokens * est_scale_pct / 100; }
 
     // One model request under the turn's controls: the user's stop, the
     // network, the stall check and the time limit.
@@ -565,22 +591,22 @@ struct AgentService::Impl {
     // from the context; the file keeps them) and says so. Without a model,
     // with a refused key or without a connection nothing is stored: the
     // request that follows fails the same way and explains it, and the
-    // turns stay for a later attempt. false when the turn was aborted
-    // meanwhile.
-    bool compress(uint32_t turn, std::span<const Message> h, std::pair<uint64_t, uint64_t> range,
-                  Outcome& out) {
+    // turns stay for a later attempt (Kept).
+    enum class Compressed : uint8_t { Stored, Kept, Aborted };
+    Compressed compress(uint32_t turn, std::span<const Message> h,
+                        std::pair<uint64_t, uint64_t> range, Outcome& out) {
         net::LlmResult res;
         {
             const BuiltRequest req = build_summary_request(h, range.first, range.second);
             res = request({req.messages.data(), req.messages.size()}, {}, nullptr);
         }
         if (res.usage) out.tokens += res.usage->total;
-        if (aborted()) return false;
+        if (aborted()) return Compressed::Aborted;
         const bool ok = whole(res) && !res.text.empty();
         if (!ok &&
             (res.error == "no_model" || res.error == "unauthorized" || res.error == "transport")) {
             WLOG_W(kTag, "context not compressed: %s", res.error.c_str());
-            return true;
+            return Compressed::Kept;
         }
         WLOG_I(kTag, "context %s seq %llu-%llu", ok ? "summarized" : "dropped",
                static_cast<unsigned long long>(range.first),
@@ -593,14 +619,25 @@ struct AgentService::Impl {
         if (ok) m.text = std::move(res.text);
         append(std::move(m));
         if (!ok) note(ui::StrId::AgentContextDropped, turn);
-        return true;
+        return Compressed::Stored;
     }
 
     const char* loop(uint32_t turn, Source source, uint32_t window, Outcome& out) {
         uint32_t generated = 0;
-        // Set once the context has been compressed for the coming request,
-        // so a history still too long after that is sent as it is.
+        // Set once the context has been compressed for the coming request
+        // (first sparing the last kKeepRecentTurns turns, then only the
+        // running one), so a history still too long after that is sent as
+        // it is, with the running turn's results cut.
         bool compressed = false;
+        bool compressed_deep = false;
+        // The model refused the last request as too long: the next one is
+        // treated as over the window whatever the estimate says. Once per
+        // turn.
+        bool overflow = false;
+        bool overflow_retried = false;
+        // The refused request's estimate while its retry is being
+        // prepared: a retry that did not shrink is the same request.
+        std::optional<size_t> refused_tokens;
         const std::string_view tools_json = sv(deps.tools.tools_json());
         const size_t tools_tokens = tools_json.size() / 3;
         for (;;) {
@@ -608,24 +645,63 @@ struct AgentService::Impl {
             if (!network_up()) {
                 set_state(AgentState::Error);
                 note(ui::StrId::AgentErrNetwork, turn, &out);
+                out.reason = "network";
                 return "error";
             }
             set_state(AgentState::Thinking);
 
             net::LlmResult res;
+            size_t sent_tokens = 0;
             {
                 const std::shared_ptr<const History> hist = deps.store.history();
-                const BuiltRequest req = build(*hist, source);
-                if (!compressed && needs_compression(req.est_tokens + tools_tokens, window)) {
+                BuiltRequest req = build(*hist, source);
+                const bool over =
+                    overflow || needs_compression(scaled(req.est_tokens + tools_tokens), window);
+                if (over && !compressed_deep) {
+                    // pick_compression() counts bytes / 3: the window it
+                    // fills is the real one unscaled.
+                    const uint32_t est_window =
+                        static_cast<uint32_t>(uint64_t{window} * 100 / est_scale_pct);
+                    const size_t fixed = req.fixed_tokens + tools_tokens;
+                    std::optional<std::pair<uint64_t, uint64_t>> range;
+                    if (!compressed) range = pick_compression(*hist, est_window, fixed);
                     compressed = true;
-                    const auto range =
-                        pick_compression(*hist, window, req.fixed_tokens + tools_tokens);
+                    if (!range) {
+                        compressed_deep = true;
+                        range = pick_compression(*hist, est_window, fixed, 1);
+                    }
                     if (range) {
-                        if (!compress(turn, *hist, *range, out)) return finish_abort(turn, out);
-                        continue;  // rebuilt with the summary in place
+                        const Compressed c = compress(turn, *hist, *range, out);
+                        if (c == Compressed::Aborted) return finish_abort(turn, out);
+                        // A summary request that failed this way fails the
+                        // same way again: go on without summarizing.
+                        if (c == Compressed::Kept) compressed_deep = true;
+                        // Rebuilt with the summary in place, and judged by
+                        // the estimate again.
+                        if (c == Compressed::Stored) overflow = false;
+                        continue;
                     }
                 }
+                if (overflow ||
+                    uint64_t{scaled(req.est_tokens + tools_tokens)} > uint64_t{window}) {
+                    // Nothing more to summarize: the running turn's own
+                    // results are what does not fit.
+                    WLOG_W(kTag, "context over the window: cutting this turn's tool results");
+                    req = build(*hist, source, {.live_tool_bytes = kToolResultKeepBytes});
+                }
                 compressed = false;
+                compressed_deep = false;
+                overflow = false;
+                sent_tokens = req.est_tokens + tools_tokens;
+                if (refused_tokens && sent_tokens >= *refused_tokens) {
+                    // Nothing was summarized or cut: the model would refuse
+                    // it again.
+                    set_state(AgentState::Error);
+                    note(ui::StrId::AgentErrContext, turn, &out);
+                    out.reason = "context";
+                    return "error";
+                }
+                refused_tokens.reset();
                 bool output = false;
                 res = request({req.messages.data(), req.messages.size()}, tools_json,
                               [&](std::string_view d) {
@@ -640,6 +716,13 @@ struct AgentService::Impl {
                               });
             }
             if (res.usage) out.tokens += res.usage->total;
+            if (whole(res) && res.usage && res.usage->prompt > 0) {
+                const uint64_t pct =
+                    uint64_t{res.usage->prompt} * 100 / std::max<size_t>(1, sent_tokens);
+                est_scale_pct =
+                    static_cast<uint32_t>(std::clamp<uint64_t>(pct, kMinScalePct, kMaxScalePct));
+                scale_model = res.model;
+            }
 
             if (!whole(res)) {
                 if (!res.text.empty()) {
@@ -652,14 +735,32 @@ struct AgentService::Impl {
                 // aborted() also checks the time limit: a request that ran
                 // into it ends as time_limit, not as an error.
                 if (aborted()) return finish_abort(turn, out);
-                ui::StrId why = ui::StrId::AgentErrServer;
-                if (res.error == "no_model") why = ui::StrId::AgentErrNoModel;
-                if (res.error == "unauthorized") why = ui::StrId::AgentErrUnauthorized;
+                if (res.error == "context_length" && !overflow_retried) {
+                    // Our estimate was short of the model's count: trust it
+                    // less from now on, compress harder and try once more.
+                    overflow_retried = true;
+                    overflow = true;
+                    refused_tokens = sent_tokens;
+                    est_scale_pct = std::max(est_scale_pct, kOverflowScalePct);
+                    scale_model = res.model;
+                    WLOG_W(kTag, "context too long for the model: compressing and retrying");
+                    continue;
+                }
+                struct Why {
+                    ui::StrId id;
+                    const char* reason;
+                };
+                Why why{ui::StrId::AgentErrServer, "server"};
+                if (res.error == "context_length") why = {ui::StrId::AgentErrContext, "context"};
+                if (res.error == "no_model") why = {ui::StrId::AgentErrNoModel, "no_model"};
+                if (res.error == "unauthorized")
+                    why = {ui::StrId::AgentErrUnauthorized, "unauthorized"};
                 if (res.error == "transport")
-                    why =
-                        res.any_body ? ui::StrId::AgentErrNetworkLost : ui::StrId::AgentErrNetwork;
+                    why = res.any_body ? Why{ui::StrId::AgentErrNetworkLost, "network_lost"}
+                                       : Why{ui::StrId::AgentErrNetwork, "network"};
                 set_state(AgentState::Error);
-                note(why, turn, &out);
+                note(why.id, turn, &out);
+                out.reason = why.reason;
                 return "error";
             }
 
@@ -697,6 +798,7 @@ struct AgentService::Impl {
                 if (out.steps >= max_steps) {
                     skip_calls(turn, calls.subspan(i), "the turn reached its step limit");
                     note(ui::StrId::AgentStepLimit, turn, &out);
+                    out.reason = "step_limit";
                     return "step_limit";
                 }
                 // With finish_reason "length" the last call's arguments
@@ -843,6 +945,17 @@ struct AgentService::Impl {
     std::atomic<int> net_state{-1};  // -1 before any net.wifi.state event
     os::LargeUnique<net::RequestWatch> watch;
     std::unique_ptr<os::Timer> timer;
+
+    // The token estimate's multiplier in percent (wisp.agent only): the
+    // model's reported prompt tokens over the bytes / 3 estimate of the
+    // last request it answered, kept across turns. A context-length
+    // refusal raises it to at least kOverflowScalePct. It holds for
+    // scale_model only: a turn on another model starts again from 100.
+    static constexpr uint32_t kMinScalePct = 50;
+    static constexpr uint32_t kMaxScalePct = 300;
+    static constexpr uint32_t kOverflowScalePct = 150;
+    uint32_t est_scale_pct = 100;
+    std::string scale_model;
 
     os::Mutex lmu;
     std::vector<std::shared_ptr<Listener>> listeners;

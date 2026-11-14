@@ -261,6 +261,8 @@ const char* strings_zh(StrId id) {
             return "模型拒绝了 API Key，请在管理后台的“模型”页检查配置";
         case StrId::AgentErrServer:
             return "模型服务出错，请稍后再试";
+        case StrId::AgentErrContext:
+            return "对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型。";
         case StrId::AgentRolledOver:
             return "对话太长，已存档并开始新对话";
         case StrId::AgentContextDropped:
@@ -357,6 +359,26 @@ const char* strings_zh(StrId id) {
             return "还没配置模型，请在管理后台的模型页设置";
         case StrId::HomeNotHeard:
             return "没听清";
+        case StrId::HomeTurnStopped:
+            return "已停止";
+        case StrId::HomeTurnStepLimit:
+            return "步骤太多，已停止";
+        case StrId::HomeTurnTimeLimit:
+            return "用时太长，已停止";
+        case StrId::HomeTurnNoModel:
+            return "还没配置对话模型";
+        case StrId::HomeTurnUnauthorized:
+            return "模型密钥无效";
+        case StrId::HomeTurnNetwork:
+            return "网络连接失败";
+        case StrId::HomeTurnNetworkLost:
+            return "网络中断了";
+        case StrId::HomeTurnServer:
+            return "模型服务出错了";
+        case StrId::HomeTurnContext:
+            return "对话太长，请开始新对话";
+        case StrId::HomeStop:
+            return "停止";
         case StrId::VoiceErrNoAsr:
             return "还没配置语音识别，请在管理后台的模型页设置";
         case StrId::VoiceErrNoTts:

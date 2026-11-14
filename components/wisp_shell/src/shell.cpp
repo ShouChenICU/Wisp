@@ -107,6 +107,9 @@ void Shell::start() {
     // After Home's own handler: Home has seen the press when may_drag()
     // asks about it.
     lv_obj_add_event_cb(home_screen_, &Shell::press_cb, LV_EVENT_ALL, this);
+    // The talk overlay shows on every screen but Home.
+    lv_obj_add_event_cb(home_screen_, &Shell::home_loaded_cb, LV_EVENT_SCREEN_LOADED, this);
+    lv_obj_add_event_cb(home_screen_, &Shell::home_loaded_cb, LV_EVENT_SCREEN_UNLOADED, this);
 
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
@@ -187,14 +190,11 @@ void Shell::set_conversation(ConversationController* conversation) {
     request_talk();
 }
 
-bool Shell::scene_in_front() const {
-    if (home_ == nullptr) return false;
-    lv_obj_t* act = lv_screen_active();
-    return act != home_screen_ && act != sub_ && act != diag_ && act != choice_screen_;
-}
+bool Shell::home_in_front() const { return home_ != nullptr && lv_screen_active() == home_screen_; }
 
 void Shell::request_talk() {
-    if (!talk_) return;
+    // !alive_: stop() is loading the screen it leaves on.
+    if (!talk_ || !alive_) return;
     if (talk_posted_.exchange(true)) return;
     // A full queue: nothing is lost (the next request_talk() tries again),
     // but the flag must come back down or every later call would see it
@@ -207,10 +207,26 @@ void Shell::request_talk() {
 }
 
 void Shell::update_talk() {
-    if (!talk_ || !scene_in_front()) return;
+    if (!talk_ || home_ == nullptr) return;
     const TurnView view =
         deps_.conversation != nullptr ? deps_.conversation->current() : TurnView{};
+    if (home_in_front()) {
+        talk_->on_home(view);
+        return;
+    }
     talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
+}
+
+void Shell::home_loaded_cb(lv_event_t* e) {
+    auto* self = static_cast<Shell*>(lv_event_get_user_data(e));
+    if (lv_event_get_code(e) == LV_EVENT_SCREEN_LOADED) {
+        // At once: Home shows the same, and must not have the card over it
+        // for even a frame.
+        self->update_talk();
+    } else {
+        // Posted: the screen that replaced Home may be mid-build.
+        self->request_talk();
+    }
 }
 
 void Shell::on_voice_bus(const core::Event& e) {

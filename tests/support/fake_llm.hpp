@@ -40,6 +40,8 @@ struct FakeReply {
     std::vector<std::string> chunks;
     net::TransportError fail = net::TransportError::None;
     int hold_after = -1;
+    // Response headers, names lowercase as the clients keep them.
+    std::vector<std::pair<std::string, std::string>> headers;
 };
 
 class FakeLlmServer : public net::HttpClient {
@@ -165,7 +167,7 @@ private:
         if (reply.fail != net::TransportError::None && reply.chunks.empty())
             return {.transport = reply.fail};
         if (req.on_status) req.on_status(reply.status);
-        net::HttpClientResponse res{.status = reply.status};
+        net::HttpClientResponse res{.status = reply.status, .headers = reply.headers};
         for (size_t i = 0; i <= reply.chunks.size(); ++i) {
             if (reply.hold_after >= 0 && static_cast<size_t>(reply.hold_after) == i) {
                 if (auto stopped = hold(req)) return {.transport = *stopped};

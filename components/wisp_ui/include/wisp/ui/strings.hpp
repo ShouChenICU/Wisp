@@ -215,6 +215,8 @@ enum class StrId : uint16_t {
     AgentErrNetworkLost,
     AgentErrUnauthorized,
     AgentErrServer,
+    // The model refused the request as too long even after compression.
+    AgentErrContext,
     AgentRolledOver,
     // The context grew past the model's window and its summary failed.
     AgentContextDropped,
@@ -293,6 +295,20 @@ enum class StrId : uint16_t {
     HomeNoWifi,
     HomeNoLlm,
     HomeNotHeard,
+    // Why the last turn ended, short (the conversation keeps the agent's
+    // full note); the address follows HomeTurnNoModel and
+    // HomeTurnUnauthorized too.
+    HomeTurnStopped,
+    HomeTurnStepLimit,
+    HomeTurnTimeLimit,
+    HomeTurnNoModel,
+    HomeTurnUnauthorized,
+    HomeTurnNetwork,
+    HomeTurnNetworkLost,
+    HomeTurnServer,
+    HomeTurnContext,
+    // The home screen's control that stops the running turn.
+    HomeStop,
     VoiceErrNoAsr,
     VoiceErrNoTts,
     VoiceErrOffline,

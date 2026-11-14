@@ -51,6 +51,19 @@ std::string cut_note(size_t total) {
     return buf;
 }
 
+// The running turn's results are cut only when they do not fit; the model
+// is still working from them, so the note says how to get the rest.
+std::string live_cut_note(size_t total) {
+    char buf[80];
+    std::snprintf(buf, sizeof buf, "\n[truncated; read in smaller pieces, %zu bytes total]", total);
+    return buf;
+}
+
+// What a large call argument of an earlier turn is sent as.
+std::string elided_args_text(size_t bytes) {
+    return R"({"elided_bytes":)" + std::to_string(bytes) + "}";
+}
+
 struct Unit {
     const Message* m = nullptr;
     bool summary = false;
@@ -63,7 +76,8 @@ bool in_sorted(const os::LargeVector<std::string_view>& v, std::string_view id) 
 
 class Layout {
 public:
-    explicit Layout(std::span<const Message> h) {
+    explicit Layout(std::span<const Message> h, size_t live_cap = kLiveToolResultBytes)
+        : live_turn_(h.empty() ? 0 : h.back().turn), live_cap_(live_cap) {
         find_live(h);
         os::LargeVector<bool> emitted(live_.size(), false);
         for (const Message& m : h) {
@@ -105,7 +119,7 @@ public:
             case Role::Assistant: {
                 size_t n = m.text.size();
                 for (const ToolCallRec& c : m.calls)
-                    if (kept(c)) n += c.id.size() + c.name.size() + c.args.size();
+                    if (kept(c)) n += c.id.size() + c.name.size() + args_bytes(m, c);
                 return n;
             }
             case Role::Tool:
@@ -151,7 +165,7 @@ public:
                     if (!kept(c)) continue;
                     calls.push_back({.id = std::string(sv(c.id)),
                                      .name = wire_name(sv(c.name)),
-                                     .arguments = c.args});
+                                     .arguments = call_args(m, c)});
                 }
                 if (m.text.empty() && calls.empty()) break;
                 r.calls.push_back(std::move(calls));
@@ -165,16 +179,16 @@ public:
             case Role::Tool: {
                 if (!in_sorted(asked_, sv(m.call_id))) break;
                 size_t idx;
-                if (m.text.size() <= kToolResultKeepBytes) {
+                const size_t cap = tool_cap(m);
+                if (m.text.size() <= cap) {
                     net::LlmMessage& out = r.messages.emplace_back();
                     out.role = net::LlmRole::Tool;
                     out.text = sv(m.text);
                     idx = r.messages.size() - 1;
                 } else {
                     const std::string_view t = sv(m.text);
-                    idx = arena_text(net::LlmRole::Tool,
-                                     t.substr(0, prefix_bytes(t, kToolResultKeepBytes)),
-                                     cut_note(t.size()));
+                    idx = arena_text(net::LlmRole::Tool, t.substr(0, prefix_bytes(t, cap)),
+                                     note_for(m));
                 }
                 r.messages[idx].tool_call_id = sv(m.call_id);
                 break;
@@ -189,9 +203,34 @@ public:
 private:
     static constexpr size_t kNone = static_cast<size_t>(-1);
 
-    static size_t tool_text_bytes(const Message& m) {
-        if (m.text.size() <= kToolResultKeepBytes) return m.text.size();
-        return prefix_bytes(sv(m.text), kToolResultKeepBytes) + cut_note(m.text.size()).size();
+    // The turn in progress gets its results whole: the model has not seen
+    // them yet, or is still working from them. Earlier turns keep a short cut.
+    size_t tool_cap(const Message& m) const {
+        return m.turn == live_turn_ ? live_cap_ : kToolResultKeepBytes;
+    }
+
+    std::string note_for(const Message& m) const {
+        return m.turn == live_turn_ ? live_cut_note(m.text.size()) : cut_note(m.text.size());
+    }
+
+    bool elides(const Message& m, const ToolCallRec& c) const {
+        return m.turn != live_turn_ && c.args.size() > kCallArgsKeepBytes;
+    }
+
+    size_t args_bytes(const Message& m, const ToolCallRec& c) const {
+        return elides(m, c) ? elided_args_text(c.args.size()).size() : c.args.size();
+    }
+
+    os::LargeString call_args(const Message& m, const ToolCallRec& c) const {
+        if (!elides(m, c)) return c.args;
+        const std::string e = elided_args_text(c.args.size());
+        return os::LargeString(e.data(), e.size());
+    }
+
+    size_t tool_text_bytes(const Message& m) const {
+        const size_t cap = tool_cap(m);
+        if (m.text.size() <= cap) return m.text.size();
+        return prefix_bytes(sv(m.text), cap) + note_for(m).size();
     }
 
     void find_live(std::span<const Message> h) {
@@ -228,6 +267,8 @@ private:
         return seq <= (*it)->covers_last ? static_cast<size_t>(it - live_.begin()) : kNone;
     }
 
+    uint32_t live_turn_;                    // turn of the last message
+    size_t live_cap_;                       // its tool results' cut
     os::LargeVector<const Message*> live_;  // by covers_first
     os::LargeVector<Unit> units_;
     os::LargeVector<std::string_view> answered_, asked_;
@@ -240,9 +281,9 @@ void settle(BuiltRequest& r, const os::LargeVector<std::pair<size_t, size_t>>& a
         r.messages[which[i]].text = std::string_view(r.arena).substr(at[i].first, at[i].second);
 }
 
-BuiltRequest build(std::span<const Message> history, const DeviceSnapshot* d) {
+BuiltRequest build(std::span<const Message> history, const DeviceSnapshot* d, BuildOptions opts) {
     BuiltRequest r;
-    const Layout layout(history);
+    const Layout layout(history, opts.live_tool_bytes);
     std::string prompt, info;
     if (d != nullptr) {
         prompt = system_prompt(*d);
@@ -279,19 +320,22 @@ BuiltRequest build(std::span<const Message> history, const DeviceSnapshot* d) {
 
 }  // namespace
 
-BuiltRequest build_request(std::span<const Message> history, const DeviceSnapshot& d) {
-    return build(history, &d);
+BuiltRequest build_request(std::span<const Message> history, const DeviceSnapshot& d,
+                           BuildOptions opts) {
+    return build(history, &d, opts);
 }
 
-BuiltRequest build_history(std::span<const Message> history) { return build(history, nullptr); }
+BuiltRequest build_history(std::span<const Message> history, BuildOptions opts) {
+    return build(history, nullptr, opts);
+}
 
 bool needs_compression(size_t est_tokens, uint32_t window) {
     return uint64_t{est_tokens} * 100 > uint64_t{window} * kCompressPercent;
 }
 
 std::optional<std::pair<uint64_t, uint64_t>> pick_compression(std::span<const Message> history,
-                                                              uint32_t window,
-                                                              size_t fixed_tokens) {
+                                                              uint32_t window, size_t fixed_tokens,
+                                                              uint32_t keep_recent) {
     struct Group {
         uint64_t first = 0, last = 0;
         size_t bytes = 0;
@@ -310,9 +354,10 @@ std::optional<std::pair<uint64_t, uint64_t>> pick_compression(std::span<const Me
         if (!u.summary) turn = u.m->turn;
     }
 
-    // The earliest of the last kKeepRecentTurns turns: never picked.
+    // The earliest of the last `keep_recent` turns: never picked. The
+    // running turn is always among them.
     size_t limit = groups.size();
-    for (uint32_t kept = 0; limit > 0 && kept < kKeepRecentTurns;) {
+    for (uint32_t kept = 0; limit > 0 && kept < std::max<uint32_t>(1, keep_recent);) {
         --limit;
         if (!groups[limit].summary) ++kept;
     }
@@ -356,7 +401,10 @@ BuiltRequest build_summary_request(std::span<const Message> history, uint64_t fi
                 for (const ToolCallRec& c : m.calls) {
                     line("Assistant called ", wire_name(sv(c.name)));
                     r.arena += '(';
-                    r.arena += c.args;
+                    if (c.args.size() > kCallArgsKeepBytes)
+                        r.arena += elided_args_text(c.args.size());
+                    else
+                        r.arena += c.args;
                     r.arena += ')';
                 }
                 break;
