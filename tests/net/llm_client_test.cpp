@@ -47,7 +47,8 @@ constexpr const char* kKey = "sk-test";
 constexpr const char* kBase = "https://llm.example.com/v1";
 
 struct Fixture {
-    explicit Fixture(bool with_profile = true) : dir(wisp::test::temp_dir().string()) {
+    explicit Fixture(bool with_profile = true, const char* key = kKey)
+        : dir(wisp::test::temp_dir().string()) {
         wisp::log::reset_for_test();
         wisp::log::init();
         registry.add(
@@ -63,7 +64,7 @@ struct Fixture {
                                      .preset = "custom",
                                      .base_url = std::string(kBase),
                                      .model = std::string("m"),
-                                     .api_key = std::string(kKey)});
+                                     .api_key = std::string(key)});
             EXPECT_TRUE(r);
         }
         client = std::make_unique<LlmClient>(server, *models, [this](uint32_t ms) {
@@ -106,6 +107,16 @@ const Value* at(const Value& v, std::initializer_list<const char*> path) {
         if (cur == nullptr) return nullptr;
     }
     return cur;
+}
+
+bool mentions_key(const LlmResult& r) {
+    auto has = [](std::string_view s) { return s.find(kKey) != std::string_view::npos; };
+    if (has(r.error) || has(r.code) || has(r.model) || has({r.text.data(), r.text.size()}))
+        return true;
+    for (const LlmToolCall& c : r.tool_calls) {
+        if (has(c.id) || has(c.name) || has({c.arguments.data(), c.arguments.size()})) return true;
+    }
+    return false;
 }
 
 TEST(LlmClient, StreamsTextDeltasInOrder) {
@@ -475,15 +486,194 @@ TEST(LlmClient, CancelMidStreamKeepsPartialText) {
     EXPECT_EQ(r.attempts, 1u);
 }
 
-TEST(LlmClient, TransportErrorNotRetried) {
+TEST(LlmClient, BodilessTransportErrorIsRetried) {
     Fixture f;
     f.server.push({.fail = TransportError::Connect});
+    f.server.push({.status = 200,
+                   .chunks = {FakeLlmServer::sse_text("hi"), FakeLlmServer::sse_finish("stop"),
+                              FakeLlmServer::sse_done()}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.transport, TransportError::None);
+    EXPECT_EQ(std::string(r.text.data(), r.text.size()), "hi");
+    EXPECT_EQ(r.attempts, 2u);
+    EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, 1000}}));
+}
+
+// Part of the reply already reached the caller: a retry would repeat it.
+TEST(LlmClient, TransportErrorAfterADeltaIsNotRetried) {
+    Fixture f;
+    f.server.push(
+        {.status = 200, .chunks = {FakeLlmServer::sse_text("he")}, .fail = TransportError::Tls});
+    f.server.push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_text("never"), FakeLlmServer::sse_finish("stop")}});
     LlmResult r = f.run_user("hi");
     EXPECT_EQ(r.error, "transport");
-    EXPECT_EQ(r.transport, TransportError::Connect);
-    EXPECT_EQ(r.status, 0);
+    EXPECT_EQ(r.transport, TransportError::Tls);
+    EXPECT_TRUE(r.any_body);
     EXPECT_EQ(r.attempts, 1u);
-    EXPECT_EQ(f.server.requests().size(), 1u);
+    EXPECT_EQ(std::string(r.text.data(), r.text.size()), "he");
+    EXPECT_TRUE(f.sleeps.empty());
+}
+
+TEST(LlmClient, TransportRetriesShareTheBudgetWith5xx) {
+    Fixture f;
+    f.server.push({.fail = TransportError::Connect});
+    f.server.push({.status = 503});
+    f.server.push({.fail = TransportError::Dns});
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "transport");
+    EXPECT_EQ(r.transport, TransportError::Dns);
+    EXPECT_EQ(r.status, 0);
+    EXPECT_EQ(r.attempts, 3u);
+    EXPECT_EQ(f.server.requests().size(), 3u);
+    EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, 1000}, {2, 4000}}));
+}
+
+TEST(LlmClient, RetryAfterSecondsReplaceTheBackoff) {
+    Fixture f;
+    f.server.push({.status = 429, .headers = {{"retry-after", "7"}}});
+    f.server.push({.status = 200,
+                   .chunks = {FakeLlmServer::sse_text("ok"), FakeLlmServer::sse_finish("stop")}});
+    int slices = 0;
+    f.on_sleep = [&] { ++slices; };
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.attempts, 2u);
+    EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, 7000}}));
+    EXPECT_EQ(slices, static_cast<int>(7000 / LlmClient::kWaitSliceMs));
+}
+
+TEST(LlmClient, RetryAfterIsCapped) {
+    Fixture f;
+    f.server.push({.status = 503, .headers = {{"retry-after", "600"}}});
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, LlmClient::kMaxRetryAfterMs}}));
+}
+
+// Only delta-seconds is honoured; a date falls back to the schedule.
+TEST(LlmClient, RetryAfterDateUsesTheSchedule) {
+    Fixture f;
+    f.server.push({.status = 429, .headers = {{"retry-after", "Wed, 21 Oct 2015 07:28:00 GMT"}}});
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    EXPECT_EQ(f.run_user("hi").error, "");
+    EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, 1000}}));
+}
+
+TEST(LlmClient, ContextLengthCodeIsReported) {
+    Fixture f;
+    f.server.push(
+        {.status = 400,
+         .chunks = {R"({"error":{"code":"context_length_exceeded","message":"too long"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "context_length");
+    EXPECT_EQ(r.code, "context_length_exceeded");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_EQ(r.attempts, 1u);
+    EXPECT_TRUE(r.text.empty());
+}
+
+TEST(LlmClient, ContextLengthIsRecognisedFromTheMessage) {
+    Fixture f;
+    f.server.push(
+        {.status = 400,
+         .chunks = {R"({"error":{"type":"invalid_request_error",)",
+                    R"("message":"This model's maximum context length is 32768 tokens"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "context_length");
+    EXPECT_EQ(r.code, "invalid_request_error");
+    EXPECT_EQ(r.attempts, 1u);
+}
+
+// A message that names the limit on another status is not a refusal of
+// the prompt's size.
+TEST(LlmClient, ContextLengthMessageNeeds400Or413) {
+    Fixture f;
+    f.server.push(
+        {.status = 422, .chunks = {R"({"error":{"message":"Too many tokens requested"}})"}});
+    EXPECT_EQ(f.run_user("hi").error, "http");
+    f.server.push(
+        {.status = 413, .chunks = {R"({"error":{"message":"Too Many Tokens in the prompt"}})"}});
+    EXPECT_EQ(f.run_user("hi").error, "context_length");
+}
+
+TEST(LlmClient, ErrorCodeOutsideTheCharacterSetIsDropped) {
+    Fixture f;
+    f.server.push({.status = 400, .chunks = {R"({"error":{"code":"bad code\n","type":"x"}})"}});
+    f.server.push(
+        {.status = 400, .chunks = {R"({"error":{"code":")" + std::string(65, 'a') + R"("}})"}});
+    f.server.push({.status = 503, .chunks = {R"({"error":{"code":"overloaded"}})"}});
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    EXPECT_EQ(f.run_user("hi").code, "");
+    EXPECT_EQ(f.run_user("hi").code, "");
+    // A successful retry reports no earlier attempt's code.
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.code, "");
+}
+
+TEST(LlmClient, ErrorBodyNeverLeaksTheKey) {
+    Fixture f(/*with_profile=*/true, "sk-test-key");
+    f.server.push(
+        {.status = 400,
+         .chunks = {R"({"error":{"code":"sk-test-key","message":"bad key sk-test-key"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code.find("sk-test"), std::string::npos);
+    EXPECT_FALSE(mentions_key(r));
+    for (const auto& e : wisp::log::ring_entries()) {
+        EXPECT_EQ(e.msg.find("sk-test"), std::string::npos) << e.msg;
+    }
+}
+
+// A provider that echoes a prefix of the key as its code (a "key
+// sk-proj-abcd... is invalid" kind of error) gives that piece no way out.
+TEST(LlmClient, ErrorCodeThatIsAPieceOfTheKeyIsDropped) {
+    const std::string key = "sk-proj-abcdefghijklmnop";
+    Fixture f(/*with_profile=*/true, key.c_str());
+    f.server.push(
+        {.status = 400,
+         .chunks = {R"({"error":{"code":")" + key.substr(0, 12) + R"(","message":"bad"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code, "");
+}
+
+// A code that holds 8 bytes or more of the key anywhere in it (here 10,
+// wrapped in other characters, so neither holds the other whole) is
+// dropped from the result and the log alike.
+TEST(LlmClient, ErrorCodeHoldingAPieceOfTheKeyIsDropped) {
+    const std::string key = "sk-proj-abcdefghijklmnop";
+    const std::string piece = key.substr(8, 10);  // "abcdefghij"
+    Fixture f(/*with_profile=*/true, key.c_str());
+    f.server.push({.status = 400,
+                   .chunks = {R"({"error":{"code":"bad_)" + piece + R"(_key","message":"bad"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code, "");
+    for (const auto& e : wisp::log::ring_entries()) {
+        EXPECT_EQ(e.msg.find(piece), std::string::npos) << e.msg;
+    }
+}
+
+// The metadata line of a failed request carries the provider's code, so
+// the gateway's error.code can be read off the device's log.
+TEST(LlmClient, FailedRequestLogsTheProviderCode) {
+    Fixture f;
+    f.server.push(
+        {.status = 400, .chunks = {R"({"error":{"code":"model_not_found","message":"no such"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code, "model_not_found");
+    bool logged = false;
+    for (const auto& e : wisp::log::ring_entries()) {
+        if (e.msg.find("error=http code=model_not_found") != std::string::npos) logged = true;
+    }
+    EXPECT_TRUE(logged);
 }
 
 TEST(LlmClient, BrokenEventIsBadStream) {
@@ -518,15 +708,6 @@ TEST(LlmClient, ErrorEventInStreamIsBadStream) {
                    .chunks = {"data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
                               FakeLlmServer::sse_done()}});
     EXPECT_EQ(f.run_user("hi").error, "bad_stream");
-}
-
-bool mentions_key(const LlmResult& r) {
-    auto has = [](std::string_view s) { return s.find(kKey) != std::string_view::npos; };
-    if (has(r.error) || has(r.model) || has({r.text.data(), r.text.size()})) return true;
-    for (const LlmToolCall& c : r.tool_calls) {
-        if (has(c.id) || has(c.name) || has({c.arguments.data(), c.arguments.size()})) return true;
-    }
-    return false;
 }
 
 TEST(LlmClient, KeyNeverInLogsOrResult) {

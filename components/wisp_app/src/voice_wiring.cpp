@@ -64,10 +64,12 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .tones = deps_.tones,
         .locks = deps_.locks,
         .network_up = deps_.network_up,
+        .network_expected = deps_.network_expected,
         .volume = [this] { return volume_.load(); },
     });
     core::ModelProfileService* models = &deps_.models;
     std::function<bool()> network_up = deps_.network_up;
+    std::function<bool()> network_expected = deps_.network_expected;
     conv_ = std::make_unique<shell::ConversationController>(shell::ConversationDeps{
         .bus = deps_.bus,
         .agent = deps_.agent,
@@ -75,12 +77,17 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .tts_mute = [this] { return tts_mute_.load(); },
         // In-memory reads only: the triggers come from any thread.
         .readiness =
-            [models, network_up] {
-                if (network_up && !network_up()) return shell::Readiness::NoWifi;
-                if (models->get().active_for(core::ModelKind::Llm).empty()) {
-                    return shell::Readiness::NoLlm;
-                }
-                return shell::Readiness::Ready;
+            [this, models, network_up, network_expected] {
+                using Net = shell::Readiness::Net;
+                shell::Readiness r;
+                if (network_up && !network_up())
+                    r.net = network_expected && network_expected() ? Net::Connecting : Net::Down;
+                const core::ProfilesState p = models->get();
+                r.llm = !p.active_for(core::ModelKind::Llm).empty();
+                r.asr = !p.active_for(core::ModelKind::Asr).empty();
+                // Muted, no reply is spoken: speech is not missing.
+                r.tts = tts_mute_.load() || !p.active_for(core::ModelKind::Tts).empty();
+                return r;
             },
         .now_ms = os::now_ms,
     });

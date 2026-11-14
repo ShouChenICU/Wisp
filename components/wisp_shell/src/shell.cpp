@@ -107,19 +107,26 @@ void Shell::start() {
     // After Home's own handler: Home has seen the press when may_drag()
     // asks about it.
     lv_obj_add_event_cb(home_screen_, &Shell::press_cb, LV_EVENT_ALL, this);
+    // The talk overlay shows on every screen but Home.
+    lv_obj_add_event_cb(home_screen_, &Shell::home_loaded_cb, LV_EVENT_SCREEN_LOADED, this);
+    lv_obj_add_event_cb(home_screen_, &Shell::home_loaded_cb, LV_EVENT_SCREEN_UNLOADED, this);
 
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
     icons_ = std::make_shared<IconCache>();
-    // Always subscribed: a scene.state event hides the talk overlay (the
-    // scene that was in front may no longer be) whether or not the scene
-    // list is also listening for it.
+    // Always subscribed: a scene.state event has the talk overlay look
+    // again (the scene that was in front may no longer be) whether or not
+    // the scene list is also listening for it. Not a hide: the overlay
+    // records a say or note as seen when it takes one, so a hide here would
+    // lose it for good; Home coming in front hides it on its own.
     scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
         // On the bus's thread: the list is read again from the UI
         // thread, which knows whether it is open.
         deps_.ui.post([this, alive] {
             if (!*alive) return;
-            if (talk_) talk_->hide();
+            // Posted again: the screen that replaces a closing scene may
+            // still be loading.
+            request_talk();
             if (scenes_) list_scenes();
         });
     });
@@ -167,6 +174,9 @@ void Shell::stop() {
     }
     delete_page();
     talk_.reset();
+    // The room is the card's: no card, no room (the setter's state
+    // outlives this shell).
+    sync_end_room();
     home_->stop();  // deletes the home screen and the wisp with it
     home_.reset();
     home_screen_ = nullptr;
@@ -187,14 +197,11 @@ void Shell::set_conversation(ConversationController* conversation) {
     request_talk();
 }
 
-bool Shell::scene_in_front() const {
-    if (home_ == nullptr) return false;
-    lv_obj_t* act = lv_screen_active();
-    return act != home_screen_ && act != sub_ && act != diag_ && act != choice_screen_;
-}
+bool Shell::home_in_front() const { return home_ != nullptr && lv_screen_active() == home_screen_; }
 
 void Shell::request_talk() {
-    if (!talk_) return;
+    // !alive_: stop() is loading the screen it leaves on.
+    if (!talk_ || !alive_) return;
     if (talk_posted_.exchange(true)) return;
     // A full queue: nothing is lost (the next request_talk() tries again),
     // but the flag must come back down or every later call would see it
@@ -207,10 +214,35 @@ void Shell::request_talk() {
 }
 
 void Shell::update_talk() {
-    if (!talk_ || !scene_in_front()) return;
+    if (!talk_ || home_ == nullptr) return;
     const TurnView view =
         deps_.conversation != nullptr ? deps_.conversation->current() : TurnView{};
-    talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
+    if (home_in_front()) {
+        talk_->on_home(view);
+    } else {
+        talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
+    }
+    sync_end_room();
+}
+
+void Shell::sync_end_room() {
+    const int32_t room = talk_ ? talk_->end_room() : 0;
+    if (room == end_room_) return;
+    end_room_ = room;
+    detail::set_overlay_end_room(room);
+    if (diag_ != nullptr && deps_.diagnostics_end_room) deps_.diagnostics_end_room(room);
+}
+
+void Shell::home_loaded_cb(lv_event_t* e) {
+    auto* self = static_cast<Shell*>(lv_event_get_user_data(e));
+    if (lv_event_get_code(e) == LV_EVENT_SCREEN_LOADED) {
+        // At once: Home shows the same, and must not have the card over it
+        // for even a frame.
+        self->update_talk();
+    } else {
+        // Posted: the screen that replaced Home may be mid-build.
+        self->request_talk();
+    }
 }
 
 void Shell::on_voice_bus(const core::Event& e) {
@@ -231,7 +263,10 @@ void Shell::on_voice_bus(const core::Event& e) {
 
 void Shell::talk_timer_cb(lv_timer_t* t) {
     auto* self = static_cast<Shell*>(lv_timer_get_user_data(t));
-    if (self->talk_) self->talk_->tick(self->deps_.now_ms());
+    if (self->talk_) {
+        self->talk_->tick(self->deps_.now_ms());
+        self->sync_end_room();
+    }
     self->check_drag();
     self->follow_lang();
 }
@@ -838,6 +873,7 @@ void Shell::open_diagnostics() {
         return;
     }
     diag_ = now;
+    if (deps_.diagnostics_end_room) deps_.diagnostics_end_room(end_room_);
     lv_obj_add_event_cb(diag_, &Shell::diag_loaded_cb, LV_EVENT_SCREEN_LOADED, this);
     set_diag_back_handler();
     WLOG_I(kTag, "diagnostics open");

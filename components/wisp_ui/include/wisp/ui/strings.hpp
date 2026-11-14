@@ -215,6 +215,8 @@ enum class StrId : uint16_t {
     AgentErrNetworkLost,
     AgentErrUnauthorized,
     AgentErrServer,
+    // The model refused the request as too long even after compression.
+    AgentErrContext,
     AgentRolledOver,
     // The context grew past the model's window and its summary failed.
     AgentContextDropped,
@@ -287,12 +289,36 @@ enum class StrId : uint16_t {
     NoteActionTodoSnooze,
     ReminderMissed,
     // The home screen's hint below the wisp (mvp spec 4.6, 6.2, 6.6):
-    // what is not set up yet, the last voice error, or "not heard". The
-    // screen adds the admin address on a line of its own after HomeNoLlm,
+    // what is not set up yet, the last voice error, "not heard", or how
+    // to talk after a tap on the wisp. HomeMissing's "{}" is the list of
+    // HomeNeed* items not set up (at most two: none set up is
+    // HomeNoModels). Short enough for one line of the smallest round
+    // screen's hint, with the address on the next. The screen adds the
+    // admin address on a line of its own after HomeNoModels, HomeMissing,
     // VoiceErrNoAsr and VoiceErrNoTts.
     HomeNoWifi,
-    HomeNoLlm,
+    HomeConnecting,
+    HomeNoModels,
+    HomeMissing,
+    HomeNeedLlm,
+    HomeNeedAsr,
+    HomeNeedTts,
+    HomeHoldToTalk,
     HomeNotHeard,
+    // Why the last turn ended, short (the conversation keeps the agent's
+    // full note); the address follows HomeTurnNoModel and
+    // HomeTurnUnauthorized too.
+    HomeTurnStopped,
+    HomeTurnStepLimit,
+    HomeTurnTimeLimit,
+    HomeTurnNoModel,
+    HomeTurnUnauthorized,
+    HomeTurnNetwork,
+    HomeTurnNetworkLost,
+    HomeTurnServer,
+    HomeTurnContext,
+    // The home screen's control that stops the running turn.
+    HomeStop,
     VoiceErrNoAsr,
     VoiceErrNoTts,
     VoiceErrOffline,

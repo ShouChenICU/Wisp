@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
@@ -21,6 +22,17 @@ using wisp::Value;
 
 bool has(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+Value run_docs(const std::string& topic, int64_t offset) {
+    wisp::agent::ToolRegistry reg(wisp::agent::ToolExecutors{});
+    EXPECT_TRUE(wisp::agent::add_docs_tools(reg));
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    return reg
+        .call("docs_read",
+              R"({"topic":")" + topic + R"(","offset":)" + std::to_string(offset) + "}", ctx)
+        .result;
 }
 
 }  // namespace
@@ -82,4 +94,60 @@ TEST(Docs, UnknownTopicListsTopics) {
     wisp::agent::ToolOutput ok = reg.call("docs_read", R"({"topic":"widget/button"})", ctx);
     ASSERT_TRUE(ok.ok) << wisp::to_json(ok.result);
     EXPECT_NE(ok.result.find("text")->as_string().find("on_click"), std::string::npos);
+}
+
+TEST(Docs, LongTopicComesInPagesThatJoinToTheWhole) {
+    const std::string whole = *wisp::agent::read_doc("lua");
+    ASSERT_GT(whole.size(), wisp::agent::kDocsPageBytes);
+    std::string joined;
+    int64_t offset = 0;
+    for (int page = 0; page < 8; ++page) {
+        const Value r = run_docs("lua", offset);
+        const std::string text = r.find("text")->as_string();
+        EXPECT_LE(text.size(), wisp::agent::kDocsPageBytes);
+        EXPECT_EQ(r.find("total_bytes")->as_int(), static_cast<int64_t>(whole.size()));
+        joined += text;
+        const Value* next = r.find("next_offset");
+        if (next == nullptr) break;
+        EXPECT_EQ(text.back(), '\n');
+        EXPECT_EQ(next->as_int(), static_cast<int64_t>(joined.size()));
+        offset = next->as_int();
+    }
+    EXPECT_EQ(joined, whole);
+}
+
+TEST(Docs, ShortTopicHasNoNextOffset) {
+    const Value r = run_docs("widget/label", 0);
+    EXPECT_EQ(r.find("next_offset"), nullptr);
+}
+
+TEST(Docs, OffsetPastTheEndIsAnError) {
+    const Value r = run_docs("widget/label", 1 << 20);
+    EXPECT_EQ(r.find("ok")->as_bool(), false);
+    EXPECT_EQ(r.find("error")->as_string(), "bad_offset");
+}
+
+// An offset that is there but not an integer is refused, never read as 0:
+// the registry's schema check refuses it first, and the tool's own body
+// (reached without that check, as a direct run is) says bad_offset.
+TEST(Docs, OffsetThatIsNotAnIntegerIsAnError) {
+    wisp::agent::ToolRegistry reg(wisp::agent::ToolExecutors{});
+    ASSERT_TRUE(wisp::agent::add_docs_tools(reg));
+    const wisp::agent::ToolDef* def = reg.find("docs.read");
+    ASSERT_NE(def, nullptr);
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    for (const char* offset : {R"("12")", "1.5", "true", "null"}) {
+        SCOPED_TRACE(offset);
+        const std::string args = std::string(R"({"topic":"lua","offset":)") + offset + "}";
+        const wisp::agent::ToolOutput via_registry = reg.call("docs_read", args, ctx);
+        EXPECT_FALSE(via_registry.ok);
+        auto parsed = wisp::from_json(args);
+        ASSERT_TRUE(parsed);
+        const wisp::agent::ToolOutput out = def->run(parsed.value(), ctx);
+        EXPECT_FALSE(out.ok);
+        const Value* err = out.result.find("error");
+        ASSERT_NE(err, nullptr) << wisp::to_json(out.result);
+        EXPECT_EQ(err->as_string(), "bad_offset") << wisp::to_json(out.result);
+    }
 }

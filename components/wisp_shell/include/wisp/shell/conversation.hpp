@@ -7,8 +7,11 @@
 // to agent.submit(text, Source::Voice). At the turn's TurnBegin the
 // SayParser is reset and, for a voice turn with tts_mute() false, the
 // speech opens (voice.begin_speech()); each Delta goes through the
-// parser, its say part both into the view and to voice.speak(); every
-// State sets voice.set_llm_busy() (thinking or output: the LLM streams).
+// parser, its say part both into the view and to voice.speak(), and the
+// say's "</say>" to voice.say_closed() (so the rest of the say is
+// synthesized while the model writes the body); every State sets
+// voice.set_llm_busy() (thinking or output: the LLM streams). A turn not
+// spoken (muted, or its speech stopped by a hold) reports no closed say.
 // At TurnEnd the parser finishes, its fallback sentence (no <say> this
 // turn) is spoken, and the speech ends (voice.end_speech()). Turns from
 // the web page update the view the same way and are never spoken.
@@ -18,19 +21,41 @@
 // stop_speaking(). Every such round is ended here: at its turn's
 // TurnEnd (done, error, stopped; muted or not), at once when submit()
 // refuses the text or the hold was cancelled, and by stop_speaking() when
-// a tap or a hold interrupts the speech. A round needs no ending only when
-// a newer capture has begun since: begin_capture() hands the locks to the
-// new round, and an end_speech() then would end that one instead.
+// a hold or stop_turn() interrupts the speech. A round needs no ending
+// only when a newer capture has begun since: begin_capture() hands the
+// locks to the new round, and an end_speech() then would end that one
+// instead.
+//
+// Presses. A hold is only told from a tap kHoldStartMs after the press,
+// so the press itself primes the mic (voice.prime(), see
+// wisp/voice/voice_service.hpp): press_begin() at touch-down or key-down
+// primes when ready and no capture runs. press_end() comes once the press
+// can no longer become a hold: it ended early, moved away, was taken by a
+// drag, the screen went dark, the input stopped -- or hold_begin() was
+// just called for it. Unless that hold_begin() started a hold (whose
+// capture has taken the primed mic), it unprimes, so the mic closes at once
+// instead of at kPrimeMaxMs. Every press_begin() is followed by one
+// press_end().
 //
 // Triggers (spec 6.3). tap() is reserved for character interaction (e.g.
 // patting the wisp's head) and has no voice effect: it starts no capture,
-// ends none, and does not stop speech. hold_begin(): in any state stops
-// the speech and the running turn (it ends "stopped") and starts a hold
-// capture; a capture already listening is kept as the hold's, and one
-// already transcribing is cancelled and the hold capture starts once it
-// has ended. hold_end() sends the recording, hold_cancel() drops it.
-// While readiness() is not Ready neither hold_begin()/hold_end()/
-// hold_cancel() nor voice_text() sends anything.
+// ends none, and does not stop speech. hold_begin(): stops the speech and
+// starts a hold capture; a capture already listening is kept as the
+// hold's, and one already transcribing is cancelled and the hold capture
+// starts once it has ended. A running turn (a scene build from the web
+// page, say) runs on, unspoken, while the hold records. hold_end() sends
+// the recording, hold_cancel() drops it. The hold's transcript replaces
+// the turn: a turn running or a message waiting is stopped (it ends
+// "stopped") just before the text is submitted, and until the text's own
+// TurnBegin the view is the text's (running, no outcome), whatever the
+// stopped turn still reports. A transcript that comes in the instant
+// after the agent took a message up and before it marked the turn
+// running sees nothing to stop, and waits behind that turn instead. A
+// cancelled hold, or one that heard nothing, stops nothing. stop_turn()
+// (the screen's Stop) stops the speech, the running turn and a waiting
+// voice text. Unless readiness().can_talk() neither press_begin() nor
+// hold_begin()/hold_end()/hold_cancel() records or sends anything, and
+// voice_text() also needs the network up.
 //
 // Threads. The triggers, voice_text(), readiness(), current() and the
 // listener calls may come from any thread; the triggers and the
@@ -79,9 +104,21 @@
 
 namespace wisp::shell {
 
-enum class Readiness : uint8_t { Ready, NoWifi, NoLlm };
-// "ready" "no_wifi" "no_llm"
-const char* to_string(Readiness r);
+// What talking needs (mvp spec 6.6). Net: Up online; Connecting offline
+// while a connection is being made or will be
+// (net::WifiService::connection_expected(): a hold records and its
+// recognition waits, see
+// wisp/voice/voice_service.hpp); Down offline otherwise. llm / asr / tts:
+// a profile of that kind is active (tts also when the speech is muted).
+// A hold needs can_talk(); the home screen lists what complete() lacks.
+struct Readiness {
+    enum class Net : uint8_t { Up, Connecting, Down };
+    Net net = Net::Up;
+    bool llm = true, asr = true, tts = true;
+    bool can_talk() const { return net != Net::Down && llm && asr; }
+    bool complete() const { return net == Net::Up && llm && asr && tts; }
+    bool operator==(const Readiness&) const = default;
+};
 
 // One step of the agent's turn as the screen shows it (activity.hpp).
 struct TurnStep {
@@ -113,6 +150,14 @@ struct TurnView {
     uint64_t started_ms = 0;
     uint64_t ended_ms = 0;
     bool thinking = false;
+    // Set at TurnEnd: AgentEvent::reason and AgentEvent::note ("" for a
+    // turn that went well). Home and the talk overlay show only the short
+    // per-reason words for end_reason (outcome_text.hpp): the full note
+    // does not fit the small round screens. end_note keeps the agent's
+    // full note for a screen with room for it (the conversation has it
+    // too).
+    std::string end_reason;
+    os::LargeString end_note;
 
     // The step under way, if the last one still runs.
     const TurnStep* running_step() const {
@@ -125,9 +170,8 @@ struct ConversationDeps {
     core::EventBus& bus;
     agent::AgentService& agent;
     voice::VoiceService& voice;
-    std::function<bool()> tts_mute;  // cached voice/tts_mute; empty: false
-    std::function<Readiness()>
-        readiness;  // Wi-Fi connected and an llm profile active; empty: Ready
+    std::function<bool()> tts_mute;        // cached voice/tts_mute; empty: false
+    std::function<Readiness()> readiness;  // empty: complete
     // TurnView's started_ms/ended_ms; empty: os::now_ms (the screens'
     // clock).
     std::function<uint64_t()> now_ms;
@@ -147,18 +191,27 @@ public:
     void start();
     void stop();
 
+    // A press (talk key or wisp) went down / ended without a hold (see
+    // the file header).
+    void press_begin();
+    void press_end();
     void hold_begin();
     void hold_end();
     void hold_cancel();
     // No voice effect (see the file header); kept so the shell UI can
     // route taps here for character interaction, designed later.
     void tap();
+    // Stops the speech (not a capture's round), the agent's running turn
+    // and a waiting voice text; the view ends "stopped" with the turn's
+    // TurnEnd. Nothing to stop: nothing happens.
+    void stop_turn();
     // Between hold_begin() and hold_end()/hold_cancel() (also when
     // hold_begin() did nothing because nothing was ready: then false).
     bool holding() const;
 
     // A transcript without recording, as Source::Voice (spoken unless
-    // muted). Unsupported "no_wifi"/"no_llm" when not ready; Busy "busy"
+    // muted). Unsupported "no_wifi" unless the network is up, "no_llm"
+    // without an llm profile; Busy "busy"
     // while capturing, speaking or a turn runs; submit()'s own errors.
     Result<void> voice_text(std::string text);
 
@@ -213,6 +266,10 @@ private:
     TurnView view_;
     voice::SayParser parser_;
     bool holding_ = false;
+    // hold_begin() started a hold since the last press_begin() whose
+    // capture took (or, deferred, will take) the primed mic; not when the
+    // voice refused the capture.
+    bool press_held_ = false;
     // A hold waits for the capture it cancelled to end before its own.
     bool deferred_hold_ = false;
     // Successful begin_capture() calls; the transcript always belongs to

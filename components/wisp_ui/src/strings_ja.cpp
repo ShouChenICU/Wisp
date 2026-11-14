@@ -265,6 +265,9 @@ const char* strings_ja(StrId id) {
                    "を拒否しました。管理画面の「モデル」ページで設定を確認してください";
         case StrId::AgentErrServer:
             return "モデルサービスでエラーが発生しました。しばらくしてからお試しください";
+        case StrId::AgentErrContext:
+            return "会話が長すぎて、モデルに収まらなくなりました。新しい会話を始めるか、コンテキス"
+                   "トの大きいモデルに切り替えてください";
         case StrId::AgentRolledOver:
             return "会話が長くなったため、保存して新しい会話を始めました";
         case StrId::AgentContextDropped:
@@ -358,10 +361,42 @@ const char* strings_ja(StrId id) {
             return "{} 件のリマインダーを見逃しました";
         case StrId::HomeNoWifi:
             return "Wi-Fi 未接続です。右にスワイプして 設定 → Wi-Fi";
-        case StrId::HomeNoLlm:
-            return "モデルが未設定です。管理画面のモデルページで設定してください";
+        case StrId::HomeConnecting:
+            return "Wi-Fi に接続中…";
+        case StrId::HomeNoModels:
+            return "モデルが未設定です";
+        case StrId::HomeMissing:
+            return "未設定：{}";
+        case StrId::HomeNeedLlm:
+            return "対話";
+        case StrId::HomeNeedAsr:
+            return "音声認識";
+        case StrId::HomeNeedTts:
+            return "音声合成";
+        case StrId::HomeHoldToTalk:
+            return "鬼火を長押しして話しかけてください";
         case StrId::HomeNotHeard:
             return "聞き取れませんでした";
+        case StrId::HomeTurnStopped:
+            return "停止しました";
+        case StrId::HomeTurnStepLimit:
+            return "ステップが多すぎるため停止しました";
+        case StrId::HomeTurnTimeLimit:
+            return "時間がかかりすぎたため停止しました";
+        case StrId::HomeTurnNoModel:
+            return "対話モデルが未設定です";
+        case StrId::HomeTurnUnauthorized:
+            return "モデルのキーが無効です";
+        case StrId::HomeTurnNetwork:
+            return "ネットワークに接続できません";
+        case StrId::HomeTurnNetworkLost:
+            return "ネットワークが切れました";
+        case StrId::HomeTurnServer:
+            return "モデルサービスでエラーが発生しました";
+        case StrId::HomeTurnContext:
+            return "会話が長すぎます。新しい会話を始めてください";
+        case StrId::HomeStop:
+            return "停止";
         case StrId::VoiceErrNoAsr:
             return "音声認識が未設定です。管理画面のモデルページで設定してください";
         case StrId::VoiceErrNoTts:

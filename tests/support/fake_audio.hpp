@@ -2,11 +2,15 @@
 
 // Scripted audio devices for the voice tests.
 //
-// FakeAudioIn plays a script of segments (silence, noise, a sine) as fast
-// as it is read, advancing an optional virtual clock by the audio's
-// duration; once the script is used up it reads silence at real-time pace
-// (one 20 ms frame per 20 ms), as a microphone would, so a capture that
-// waits for a key release does not run away to its cap.
+// FakeAudioIn plays a script of segments (silence, noise, a sine, a
+// ramp) as fast as it is read, advancing an optional virtual clock by the
+// audio's duration; once the script is used up it reads silence at
+// real-time pace (one 20 ms frame per 20 ms), as a microphone would, so a
+// capture that waits for a key release does not run away to its cap.
+// hold_at() makes it read live silence the same way from a point in the
+// script until release(), so a test can act at that point of the audio.
+// close_reads() holds every read() at a gate until open_reads(), so a
+// test can stall the task that reads.
 //
 // FakeAudioOut records the formats it was opened with and every sample
 // written; writes can be made to take time (write_ms) or be held at a
@@ -52,7 +56,9 @@ private:
 };
 
 struct Segment {
-    enum class Kind : uint8_t { Silence, Noise, Sine };
+    // Ramp: never 0, and tells where in the script a sample was read
+    // (ramp_value()).
+    enum class Kind : uint8_t { Silence, Noise, Sine, Ramp };
     Kind kind = Kind::Silence;
     uint32_t ms = 0;
     int16_t amplitude = 8000;
@@ -65,6 +71,9 @@ inline Segment noise(uint32_t ms, int16_t amplitude = 30) {
 inline Segment sine(uint32_t ms, int16_t amplitude = 8000) {
     return {Segment::Kind::Sine, ms, amplitude};
 }
+inline Segment ramp(uint32_t ms) { return {Segment::Kind::Ramp, ms, 0}; }
+// The sample a Ramp segment reads at `pos` frames into the script.
+inline int16_t ramp_value(uint64_t pos) { return static_cast<int16_t>(1 + pos % 16000); }
 
 class FakeAudioIn : public hal::AudioIn {
 public:
@@ -88,9 +97,31 @@ public:
         total_ = 0;
         for (const Segment& s : script_) total_ += static_cast<uint64_t>(s.ms) * kRate / 1000;
         pos_ = 0;
+        hold_pos_ = UINT64_MAX;
+    }
+
+    // From `ms` into the script on, reads are live silence (as past the
+    // script's end) until release().
+    void hold_at(uint32_t ms) {
+        std::lock_guard<std::mutex> lock(mu_);
+        hold_pos_ = static_cast<uint64_t>(ms) * kRate / 1000;
+    }
+    void release() {
+        std::lock_guard<std::mutex> lock(mu_);
+        hold_pos_ = UINT64_MAX;
+    }
+    // Reading has reached the hold_at() point.
+    bool holding() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return opens_ > 0 && pos_ >= hold_pos_;
     }
 
     void set_fail_open(bool fail) { fail_open_ = fail; }
+    // While closed, read() waits at the gate (polling, so open_reads()
+    // always lets it through); read_waiting(): one waits there now.
+    void close_reads() { reads_gated_ = true; }
+    void open_reads() { reads_gated_ = false; }
+    bool read_waiting() const { return read_waiting_.load(); }
 
     Result<void> open(const hal::AudioFormat& format) override {
         if (order_) order_->add("in.open");
@@ -104,10 +135,16 @@ public:
     }
 
     Result<size_t> read(int16_t* frames, size_t count) override {
+        while (reads_gated_.load()) {
+            read_waiting_ = true;
+            os::sleep_ms(1);
+        }
+        read_waiting_ = false;
         size_t scripted = 0;
         {
             std::lock_guard<std::mutex> lock(mu_);
-            while (scripted < count && pos_ < total_) {
+            const uint64_t end = std::min(total_, hold_pos_);
+            while (scripted < count && pos_ < end) {
                 frames[scripted++] = sample_at(pos_++);
             }
             read_frames_ += scripted;
@@ -177,6 +214,8 @@ private:
                                              static_cast<double>(kRate);
                         return static_cast<int16_t>(std::lround(s.amplitude * std::sin(phase)));
                     }
+                    case Segment::Kind::Ramp:
+                        return ramp_value(pos);
                 }
             }
             start += len;
@@ -188,10 +227,13 @@ private:
     std::shared_ptr<OrderLog> order_;
     std::atomic<uint64_t>* virtual_ms_;
     std::atomic<bool> fail_open_{false};
+    std::atomic<bool> reads_gated_{false};
+    std::atomic<bool> read_waiting_{false};
     mutable std::mutex mu_;
     std::vector<Segment> script_;
     uint64_t total_ = 0;
     uint64_t pos_ = 0;
+    uint64_t hold_pos_ = UINT64_MAX;
     uint64_t read_frames_ = 0;
     hal::AudioFormat format_{};
     bool open_ = false;

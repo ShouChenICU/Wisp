@@ -57,6 +57,9 @@ public:
     uint32_t ms() const;
     bool full() const { return frames_ >= capacity_frames_; }
     void clear() { frames_ = 0; }
+    // Keeps only the last `ms` committed, moved to the front of the PCM
+    // region; a no-op when no more than that is held.
+    void keep_tail(uint32_t ms);
 
     // Builds the multipart/form-data body for POST .../audio/transcriptions:
     // "model" and "file" (a WAV of the committed samples) always, "language"

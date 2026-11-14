@@ -100,6 +100,10 @@ public:
 
     // Between HoldBegin and HoldEnd / HoldCancel.
     bool holding() const { return state_ == State::Holding; }
+    // Down and may still become a hold: not held yet, not moved beyond
+    // `swipe_px`, not released or lost. The caller primes the mic while it
+    // is (ConversationController::press_begin() / press_end()).
+    bool pending() const { return state_ == State::Pressed; }
     // The current or last press reached HoldBegin.
     bool held() const { return held_; }
 

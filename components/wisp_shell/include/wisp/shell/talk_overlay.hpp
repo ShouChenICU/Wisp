@@ -1,37 +1,59 @@
 #pragma once
 
-// TalkOverlay (MVP spec 6.5): the feedback shown while holding to talk
-// with a Lua scene in front, so the scene's own screen is left alone. A
-// top-layer piece, like SystemLayer's own pieces (wisp/ui/overlay.hpp):
-// built once, next to lv_layer_top(), and raised above whatever is
-// already there (a confirm dialog opened before it) so later dialogs,
-// appended after it, stay on top without any further raise().
+// TalkOverlay (MVP spec 6.5): the feedback shown while talking with any
+// screen but Home in front (a Lua scene, a sub-page, the diagnostics), so
+// that screen is left alone; Home shows the turn itself. A top-layer
+// piece, like SystemLayer's own pieces (wisp/ui/overlay.hpp): built once,
+// next to lv_layer_top(), so it stays over whatever screen is loaded or
+// slides in, and raised above whatever is already there (a confirm
+// dialog opened before it) so later dialogs, appended after it, stay on
+// top without any further raise().
 //
 // Shell owns the one instance and decides when to drive it: on_turn()/
-// tick() only while a scene is in front, hide() on every "scene.state"
-// event (the scene that was in front may no longer be).
+// tick() while Home is not in front, on_home() while it is (and the
+// moment it comes in front); a "scene.state" event (the scene that was in
+// front may no longer be) only has Shell look again, since a hide would
+// drop a say or note already taken.
 //
 // Phase, from on_turn()'s VoiceState and TurnView: Listening while
 // recording (a pulsing dot and the level bar), Thinking while
-// transcribing, or once a turn is running without a say yet ("思考中…",
-// or the label of the agent's step under way, TurnView::running_step()),
-// Saying once the turn's say text is non-empty. Saying holds for
-// kOverlaySayMs (wisp/shell/limits.hpp) after the say text it shows was
-// last set; tick() ends it. The text is spoken by others
-// (ConversationController), not here.
+// transcribing, or once a voice turn is running with nothing newer to
+// show ("思考中…", or the label of the agent's step under way,
+// TurnView::running_step()), Saying once a voice turn's say text is new,
+// and Note once any turn ends with a reason (TurnView::end_reason) or a voice
+// error is new: the same short words Home's hint uses (not the agent's
+// full note, which does not fit the small round screens). A turn from the
+// web page or device text shows nothing while it runs: it can run for
+// minutes, and the card would cover the page's last rows all that time. Saying and Note
+// each hold for kOverlaySayMs (wisp/shell/limits.hpp) after what they show
+// was first seen (a say: last changed); tick() ends them, and what one
+// showed is not shown again when the view is next seen unchanged (the
+// speech ending, say). A capture ends either at once: it is the user's
+// next try. The text is spoken by others (ConversationController), not
+// here.
 //
-// A tap calls `open_home` (Shell::show(Home), after it has sent the
-// foreground scene back -- the same path as the back gesture).
+// The card sits above the safe area's bottom edge and grows upward to fit
+// its text, three lines at most, then the text ends with an ellipsis; at
+// every height it keeps to the rows the screen shows. While it shows,
+// Shell gives the scrolling screens under it room at their end
+// (end_room()), so their last item can be scrolled clear of it.
+//
+// A tap calls `open_home` (Shell::show(Home): a scene in front is sent
+// back first, as the back gesture does; a sub-page or the diagnostics
+// close as their own way back closes them). The card takes only the
+// presses on itself.
 //
 // UI thread only, like every lv_* call.
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 #include "lvgl.h"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/shell/conversation.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/voice/voice_service.hpp"
 
 namespace wisp::ui {
@@ -42,7 +64,7 @@ namespace wisp::shell {
 
 class TalkOverlay {
 public:
-    enum class Phase : uint8_t { Hidden, Listening, Thinking, Saying };
+    enum class Phase : uint8_t { Hidden, Listening, Thinking, Saying, Note };
 
     TalkOverlay(ui::SystemLayer& layer, const hal::ScreenShape& shape,
                 std::function<void()> open_home);
@@ -53,18 +75,34 @@ public:
 
     // Shows what `t`/`v`/`level` call for now.
     void on_turn(const TurnView& t, voice::VoiceState v, uint8_t level, uint64_t now_ms);
-    // Saying -> Hidden once kOverlaySayMs has passed since the say text
-    // shown was last set.
+    // Saying or Note -> Hidden once kOverlaySayMs has passed since what it
+    // shows was set.
     void tick(uint64_t now_ms);
+    // Home in front: hidden, and what `t` holds now counts as seen, so it
+    // does not show once Home goes.
+    void on_home(const TurnView& t);
     // Hidden at once (e.g. the foreground scene changed).
     void hide();
 
     Phase phase() const { return phase_; }
     lv_obj_t* obj() const { return obj_; }
+    // The rows a scrolling screen under the card keeps clear at its end
+    // while the card shows: from kGapSm above the card's top to the
+    // screen's bottom edge, at the card's current height; 0 while hidden.
+    int32_t end_room() const;
 
 private:
+    // What a Saying or Note shows, and since when.
+    enum class Timed : uint8_t { None, Say, Note };
+
+    // Takes in what is new in `t` since the last view seen: a new turn
+    // ends what showed, a new say or outcome starts showing.
+    void take(const TurnView& t, uint64_t now_ms);
     Phase decide(const TurnView& t, voice::VoiceState v) const;
     void apply(uint8_t level);
+    // The card's size and place for the label's text (one line for the
+    // dot and bar).
+    void fit(const char* text);
     void set_pulse(bool on);
 
     static void click_cb(lv_event_t* e);
@@ -78,11 +116,25 @@ private:
     lv_obj_t* bar_ = nullptr;
     lv_obj_t* label_ = nullptr;
     bool pulsing_ = false;
+    int32_t card_top_ = 0;  // the card's top row, as fit() last placed it
 
     Phase phase_ = Phase::Hidden;
-    os::LargeString say_shown_;
     os::LargeString step_shown_;  // the running step's label, while thinking
-    uint64_t say_since_ = 0;
+
+    bool voice_running_ = false;  // the last view's turn is spoken and still runs
+
+    // The last view seen: its turn, its say, how its last turn ended and
+    // its voice error, so only what changed starts a Saying or a Note.
+    uint32_t seen_turn_ = 0;
+    uint64_t seen_started_ = 0;
+    os::LargeString seen_say_;
+    uint32_t seen_end_turn_ = 0;
+    uint64_t seen_end_ms_ = 0;
+    std::optional<voice::VoiceError> seen_error_;
+
+    Timed timed_ = Timed::None;
+    uint64_t timed_since_ = 0;
+    ui::StrId note_ = ui::StrId::HomeTurnServer;
 };
 
 }  // namespace wisp::shell

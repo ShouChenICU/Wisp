@@ -22,12 +22,21 @@ inline constexpr uint32_t kMinSpeechMs = 300;
 // the start tone's tail land here, out of the recording and the VAD's
 // noise estimate.
 inline constexpr uint32_t kMicSettleMs = 100;
+// A primed mic (VoiceService::prime(), at the talk key's press) keeps the
+// last kPrerollMs before the hold is confirmed, so the first words said
+// while the press is still being told from a tap are in the recording.
+inline constexpr uint32_t kPrerollMs = 500;
+// A priming that no capture follows ends by itself after this long.
+inline constexpr uint32_t kPrimeMaxMs = 2000;
 
 inline constexpr size_t kFrameSamples = kSampleRate / 1000 * kFrameMs;
 
 // Recognition and speech (spec 4.2, 4.4).
 inline constexpr uint32_t kAsrTimeoutMs = 15000;
-inline constexpr uint32_t kAsrRetries = 1;   // on a 429 or 5xx
+inline constexpr uint32_t kAsrRetries = 1;  // on a 429 or 5xx
+// How long a recording waits for a network that is on its way (Wi-Fi
+// reconnecting after deep standby) before recognition gives up offline.
+inline constexpr uint32_t kNetWaitMs = 8000;
 inline constexpr size_t kTtsMaxChars = 200;  // code points spoken per turn
 inline constexpr uint32_t kTtsDefaultRate = 24000;
 // spec 2: the 15 s budget is how long a TTS request may go without any

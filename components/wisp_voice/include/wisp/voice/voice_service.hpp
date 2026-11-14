@@ -8,19 +8,44 @@
 // "voice_turn") and hands the round to the task, which checks for a mic,
 // an active asr profile and the network, plays the start tone (and waits
 // up to kToneWaitMs for it to end, so the mic does not hear it), opens the
-// mic, drops its first kMicSettleMs, and reads kFrameMs frames into a
-// CaptureBuffer. Hold mode (press-and-hold, key or screen) never runs the
-// VAD: it ends at end_capture() and sends any recording of kMinSpeechMs
-// or more. Vad mode (a tap) feeds each frame to a Vad and ends when the
-// Vad says so, or at end_capture() (a second tap). Both end at
-// max_record_ms. A shorter hold, a tap capture the Vad does not call
-// Done, or an empty transcript is "not heard" (not an error): voice.state
-// goes back to idle with result "not_heard".
-// Otherwise the recording goes to AsrClient and the text to the
-// on_transcript callback. cancel_capture() drops the recording, or aborts
-// the ASR request already sent. The start tone goes through TonePlayer,
-// which plays the newest sound only: starting a capture silences an alarm
-// that is ringing.
+// mic, drops its first kMicSettleMs, publishes listening, and reads
+// kFrameMs frames into a CaptureBuffer. Hold mode (press-and-hold, key or
+// screen) never runs the VAD: it ends at end_capture() and sends a
+// recording whose own part is kMinSpeechMs or more. Vad mode (a tap)
+// feeds each frame to a Vad and ends when the Vad says so, or at
+// end_capture() (a second tap). Both end at max_record_ms. A shorter
+// hold, a tap capture the Vad does not call Done, or an empty transcript
+// is "not heard" (not an error): voice.state goes back to idle with
+// result "not_heard". Otherwise the recording goes to AsrClient and the
+// text to the on_transcript callback. Offline with network_expected()
+// (Wi-Fi coming back from deep standby, which the round's network lock
+// asks for), the capture records anyway and recognition stays in
+// transcribing for up to kNetWaitMs until network_up(), as long as the
+// network stays expected: still offline, or no longer expected, is the
+// "offline" error; a cancel or stop() ends the round without one. Offline
+// and not expected, at the start or once the recording is done, is the
+// "offline" error at once. cancel_capture() drops the
+// recording, or aborts the ASR request already sent. The start tone goes
+// through TonePlayer, which plays the newest sound only: starting a
+// capture silences an alarm that is ringing.
+//
+// A hold is only told from a tap kHoldStartMs after the press, so the
+// press primes the mic: prime() opens it at once (when the task is idle,
+// an asr profile is active and the output is quiet; otherwise it does
+// nothing and the hold takes the path above), drops kMicSettleMs and
+// keeps recording, holding on to the last preroll_ms (kPrerollMs). It
+// takes no wake lock and publishes nothing. unprime() (the press was a
+// tap), kPrimeMaxMs, or speech that has something to play ends it: the
+// mic closes and what it heard is dropped. A Hold begin_capture() on a
+// primed mic keeps that pre-roll as the head of the recording, publishes
+// listening and plays the start tone without closing the mic: the tone
+// is in the recording by design (the mic being open while the output
+// plays is this path's deliberate exception), and preroll_ms = 0 turns
+// priming off for a board where that hurts recognition. kMinSpeechMs
+// counts the part after the pre-roll only, while max_record_ms caps the
+// pre-roll and the hold together. A press made while a capture is in
+// progress (recording or transcribing) is spent with it. A Vad
+// begin_capture() on a primed mic closes it and opens it again, unprimed.
 //
 // Speech (spec 4.4, 4.5). begin_speech() opens the turn's speech;
 // speak() feeds it the say text as it streams (SentenceSplitter, at most
@@ -30,9 +55,15 @@
 // being synthesized while sentence n plays. Only the first sentence of a
 // turn may be requested while the LLM is still streaming
 // (set_llm_busy(true)), and with overlap_first_sentence = false not even
-// that one. A TTS failure ends the turn's speech (the text is still
-// shown by others). stop_speaking() clears the queue, aborts the request
-// in flight and stops playback.
+// that one -- until say_closed() says the say block has closed: then the
+// say's unterminated tail is queued too, and the rest of the queue is
+// synthesized while the model streams the body (a later say of the turn
+// keeps feeding the same splitter and cap).
+// Either way it is one TTS request at a time, so a turn never holds more
+// than two model connections (the LLM stream and one TTS). A TTS failure
+// ends the turn's speech (the text is still shown by others).
+// stop_speaking() clears the queue, aborts the request in flight and
+// stops playback.
 //
 // Rounds and wake locks. The round ends -- its locks are released, and
 // only then is the final idle published, so a listener that sees idle
@@ -43,10 +74,10 @@
 // transcript with end_speech() (also when nothing is spoken: muted, the
 // agent refused the text, the turn failed) or stop_speaking(). As a
 // safety net only, a round that has delivered its transcript and then
-// seen no begin_speech()/speak()/end_speech()/stop_speaking()/
-// set_llm_busy() for kVoiceRoundBackstopMs ends itself (log "voice: round
-// backstop"). set_llm_busy() counts because a turn that runs tools for
-// minutes without speaking yet is still alive.
+// seen no begin_speech()/speak()/say_closed()/end_speech()/
+// stop_speaking()/set_llm_busy() for kVoiceRoundBackstopMs ends itself
+// (log "voice: round backstop"). set_llm_busy() counts because a turn
+// that runs tools for minutes without speaking yet is still alive.
 //
 // Sharing the output (spec 4.4). TonePlayer and PcmPlayer must never have
 // the AudioOut open at once. Install may_play_tone() as the TonePlayer's
@@ -64,8 +95,11 @@
 //
 // Threads: every public method may be called from any thread. None waits
 // for the task: stop_speaking() and cancel_capture() set a flag, abort the
-// request through the RequestWatch ticket and wake the task; wake-ups
-// never block (they coalesce into one queued command). The exceptions
+// request through the RequestWatch ticket and wake the task, and prime()
+// and unprime() move a sequence number and wake it (so a prime() the task
+// has not seen yet is still undone by its unprime(), and neither takes
+// the queue's room from a BeginCapture); wake-ups never block (they
+// coalesce into one queued command). The exceptions
 // that do wait are may_play_tone(Alarm) (up to kAlarmWaitMs, on wisp.tone)
 // and stop(). Commands go through an os::Queue (its slots in Mem::Large);
 // the CaptureBuffer is one Mem::Large allocation of max_record_ms made at
@@ -86,6 +120,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -139,6 +174,11 @@ struct VoiceDeps {
     core::TonePlayer* tones = nullptr;
     core::WakeLockRegistry* locks = nullptr;
     std::function<bool()> network_up;
+    // A connection is being made or will be
+    // (net::WifiService::connection_expected()): a capture that starts
+    // offline records anyway and its recognition waits for the network.
+    // Empty: false.
+    std::function<bool()> network_expected;
     std::function<uint8_t()> volume;  // cached audio/volume
     std::function<uint64_t()> now_ms = os::now_ms;
 };
@@ -151,6 +191,9 @@ struct VoiceConfig {
     // The command queue: a BeginCapture, one coalesced wake-up and a quit
     // are all it ever holds at once.
     size_t queue_depth = 8;
+    // What a primed mic keeps from before the hold (see the file header);
+    // 0 turns priming off. At most half of max_record_ms is used.
+    uint32_t preroll_ms = kPrerollMs;
 };
 
 class VoiceService {
@@ -187,12 +230,20 @@ public:
     Result<void> begin_capture(CaptureMode mode);
     void end_capture();
     void cancel_capture();
+    // The talk key went down / came up without a hold (see the file
+    // header). Do nothing before start() or with preroll_ms = 0.
+    void prime();
+    void unprime();
     // Runs on wisp.voice; must not touch flash (see the file header).
     void set_on_transcript(std::function<void(std::string text)> cb);
 
     void begin_speech();
     void speak(std::string_view say_delta);
     void end_speech();
+    // The reply's say block has closed: no more say text arrives while
+    // the model goes on streaming the body (see the file header). A no-op
+    // when no speech is open.
+    void say_closed();
     void stop_speaking();
     void set_llm_busy(bool busy);
 
@@ -222,7 +273,8 @@ private:
         bool open = false;   // begin_speech() .. its end
         bool ended = false;  // end_speech() called
         bool sent_first = false;
-        bool stopped = false;  // stop_speaking() ended it; its round ends too
+        bool say_closed = false;  // say_closed() called
+        bool stopped = false;     // stop_speaking() ended it; its round ends too
         uint32_t round = 0;
         uint32_t next_index = 1;
         std::deque<std::string> pending;
@@ -235,7 +287,23 @@ private:
     // stop_speaking() without the wake-up.
     void stop_speech();
     void run();
-    void capture(const Command& c);
+    // How a priming ended: the BeginCapture that came meanwhile, if one
+    // did, and whether the mic is still open for it (only for a Hold, and
+    // not once stop() has begun).
+    struct Primed {
+        std::optional<Command> begin;
+        bool mic_open = false;
+    };
+    // Keeps the mic primed for prime() number `seq` until it ends (see the
+    // file header).
+    Primed prime_mic(uint32_t seq);
+    // `primed`: the mic is open and the buffer holds the pre-roll.
+    void capture(const Command& c, bool primed);
+    // Fills `frame` from the mic; false when the mic fails.
+    bool read_frame(std::span<int16_t> frame);
+    uint32_t preroll_ms() const;
+    // The speech has a sentence to play or a turn to finish.
+    bool speech_has_work();
     bool capture_cancelled(uint32_t seq) const;
     // Plays the speech: true when it did something that may be followed
     // at once by more.
@@ -277,6 +345,11 @@ private:
     std::atomic<uint32_t> ended_seq_{0};
     std::atomic<uint32_t> cancelled_seq_{0};
     std::atomic<uint32_t> asr_ticket_{0};
+    // Priming: prime() bumps prime_seq_, unprime() marks the newest it saw;
+    // prime_seen_ (task only) is the last one the task acted on.
+    std::atomic<uint32_t> prime_seq_{0};
+    std::atomic<uint32_t> unprimed_seq_{0};
+    uint32_t prime_seen_ = 0;
     std::atomic<uint32_t> tts_ticket_{0};
 
     // Speech: speech_gen_ moves on with every begin_speech() and

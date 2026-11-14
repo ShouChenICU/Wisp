@@ -73,12 +73,16 @@
 // loading the screen it replaced. When the scene cannot be sent back the
 // navigation is refused and the scene stays in front.
 //
-// The talk overlay (wisp/shell/talk_overlay.hpp, mvp spec 6.5): while a
-// scene is in front (the active screen is none of the shell's own --
-// scene_in_front()), every change of the conversation or the voice state
-// is forwarded to it; its own tap opens the home screen the same way
-// leave_scene() does. Any "scene.state" event hides it at once, since the
-// scene that was in front may no longer be.
+// The talk overlay (wisp/shell/talk_overlay.hpp, mvp spec 6.5): while any
+// screen but Home is in front (a scene, a sub-page, a choice or
+// connections page, the diagnostics -- !home_in_front()), every change of
+// the conversation or the voice state is forwarded to it, and so is the
+// moment Home leaves the front; the moment Home comes in front it hides,
+// since Home shows the same itself. Its own tap is show(Home): a scene is
+// sent back as leave_scene() does, a page or the diagnostics close as
+// their own way back closes them. Any "scene.state" event has it look
+// again, since the scene that was in front may no longer be; it does not
+// hide it, which would drop a say or note the overlay has already taken.
 //
 // Threading: every member is UI thread only, like every lv_* call. A back
 // swipe's work is posted (it arrives from inside the pointer's read
@@ -142,6 +146,10 @@ struct ShellDeps {
     // tears it down. Called on the UI thread; either may be empty (no
     // diagnostics).
     std::function<void()> open_diagnostics, close_diagnostics;
+    // While the diagnostics are open: the talk overlay's room at the
+    // bottom of the screen (TalkOverlay::end_room(), 0 with no card), for
+    // their scrolling page to end above. UI thread; empty: none.
+    std::function<void(int32_t)> diagnostics_end_room;
     // Sends the scene in front back (SceneRuntime::close(), which on the
     // UI thread only queues it): true if there was one, false if none; an
     // error refuses the navigation. Empty: no scenes.
@@ -323,13 +331,18 @@ private:
     void set_diag_back_handler();
     static void diag_loaded_cb(lv_event_t* e);
 
-    // The talk overlay. True while the active screen is a scene's own
-    // (none of the shell's).
-    bool scene_in_front() const;
+    // The talk overlay. True while the home screen is the active screen.
+    bool home_in_front() const;
+    // The home screen loaded (the overlay hides) or replaced (it shows
+    // what there is).
+    static void home_loaded_cb(lv_event_t* e);
     // Coalesces a burst of conversation/voice changes into one UI-thread
     // update_talk() already queued.
     void request_talk();
     void update_talk();
+    // Hands the overlay card's room (TalkOverlay::end_room()) to the
+    // scrolling pages under it when it changed.
+    void sync_end_room();
     void on_voice_bus(const core::Event& e);
     static void talk_timer_cb(lv_timer_t* t);
 
@@ -394,6 +407,7 @@ private:
     std::atomic<voice::VoiceState> voice_state_{voice::VoiceState::Idle};
     std::atomic<uint8_t> voice_level_{0};
     std::atomic<bool> talk_posted_{false};
+    int32_t end_room_ = 0;  // the room last handed to the pages
 
     // Cleared by stop(): a back swipe's post queued before it does
     // nothing.

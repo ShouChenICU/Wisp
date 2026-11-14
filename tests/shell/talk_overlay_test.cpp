@@ -1,5 +1,5 @@
 // TalkOverlay (wisp/shell/talk_overlay.hpp, mvp spec 6.5): the feedback
-// shown over a scene while holding to talk.
+// shown over any screen but Home while talking.
 
 #include "wisp/shell/talk_overlay.hpp"
 
@@ -17,6 +17,7 @@
 #include "wisp/shell/limits.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
+#include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::shell::kOverlaySayMs;
@@ -41,6 +42,14 @@ lv_area_t coords_of(lv_obj_t* o) {
 }
 
 bool is_hidden(lv_obj_t* o) { return o == nullptr || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN); }
+
+// A view of a turn the user spoke: the overlay shows its progress and its
+// say (a turn from the web page or device text shows only how it ended).
+TurnView voice_view() {
+    TurnView v;
+    v.source = wisp::agent::Source::Voice;
+    return v;
+}
 
 std::string label_text(lv_obj_t* o) {
     const char* t = lv_label_get_text(o);
@@ -137,7 +146,7 @@ TEST_F(TalkOverlayTest, ListeningThinkingSaying) {
         ASSERT_NE(label, nullptr);
         EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::TalkThinking));
 
-        TurnView v;
+        TurnView v = voice_view();
         v.say.assign("好的，明天早上8点提醒你带伞。");
         overlay_->on_turn(v, VoiceState::Idle, 0, 1200);
         EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
@@ -151,7 +160,7 @@ TEST_F(TalkOverlayTest, ThinkingShowsTheCurrentStep) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.running = true;
         v.steps_total = 1;
         v.step_count = 1;
@@ -174,7 +183,7 @@ TEST_F(TalkOverlayTest, SayHidesAfterFiveSeconds) {
     start();
     make();
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.say.assign("好的。");
         overlay_->on_turn(v, VoiceState::Idle, 0, 1000);
         ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
@@ -229,6 +238,218 @@ TEST_F(TalkOverlayTest, ConfirmDialogStaysOnTop) {
     });
 }
 
+// A turn that ended badly says why in Home's short words, for
+// kOverlaySayMs, once: the same ending seen again later stays hidden.
+TEST_F(TalkOverlayTest, FailedTurnShowsItsNoteOnce) {
+    start();
+    make();
+    on_ui([&] {
+        TurnView v = voice_view();
+        v.turn = 3;
+        v.say.assign("好的");
+        v.ended_ms = 900;
+        v.end_reason = "network";
+        v.end_note.assign("the agent's long note");
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
+        lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+        ASSERT_NE(label, nullptr);
+        EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+
+        overlay_->tick(1000 + kOverlaySayMs);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000 + kOverlaySayMs + 100);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+
+        // An unknown reason reads as the service's error, as on Home.
+        v.ended_ms = 7000;
+        v.end_reason = "something_new";
+        overlay_->on_turn(v, VoiceState::Idle, 0, 7000);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
+        EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+    });
+}
+
+// A capture is the user's next try: the last outcome goes with it.
+TEST_F(TalkOverlayTest, CaptureEndsTheNote) {
+    start();
+    make();
+    on_ui([&] {
+        TurnView v = voice_view();
+        v.turn = 1;
+        v.ended_ms = 900;
+        v.end_reason = "server";
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
+        overlay_->on_turn(v, VoiceState::Listening, 20, 1100);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Listening);
+        // Nothing heard: back to idle, the old outcome stays gone.
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1200);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+    });
+}
+
+// A voice error shows the string Home shows for it.
+TEST_F(TalkOverlayTest, VoiceErrorIsShown) {
+    start();
+    make();
+    on_ui([&] {
+        TurnView v = voice_view();
+        v.error = wisp::voice::VoiceError::Offline;
+        overlay_->on_turn(v, VoiceState::Error, 0, 1000);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
+        lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+        ASSERT_NE(label, nullptr);
+        EXPECT_FALSE(is_hidden(label));
+        EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::VoiceErrOffline));
+
+        overlay_->tick(1000 + kOverlaySayMs);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000 + kOverlaySayMs + 1);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+    });
+}
+
+// A say shown its five seconds does not come back for the next change
+// (the speech ending, say) while it is still the turn's.
+TEST_F(TalkOverlayTest, SayShownOnce) {
+    start();
+    make();
+    on_ui([&] {
+        TurnView v = voice_view();
+        v.turn = 2;
+        v.say.assign("好的。");
+        overlay_->on_turn(v, VoiceState::Speaking, 0, 1000);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
+        overlay_->tick(1000 + kOverlaySayMs);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000 + kOverlaySayMs + 1);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+    });
+}
+
+// Home in front shows the turn itself: what it showed meanwhile is not
+// shown again by the overlay once Home goes.
+TEST_F(TalkOverlayTest, WhatHomeShowedIsNotShownAgain) {
+    start();
+    make();
+    on_ui([&] {
+        TurnView v = voice_view();
+        v.turn = 2;
+        v.say.assign("好的。");
+        overlay_->on_home(v);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1000);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        // A turn still running shows as thinking all the same.
+        v.running = true;
+        overlay_->on_turn(v, VoiceState::Idle, 0, 1100);
+        EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Thinking);
+    });
+}
+
+// A turn from the web page or device text (which can run for minutes)
+// shows nothing while it runs, not its steps nor its say: the card would
+// sit over the page's last rows all that time. How it ended still shows,
+// and a recording over it still does.
+TEST_F(TalkOverlayTest, NonVoiceTurnShowsOnlyHowItEnded) {
+    start();
+    make();
+    on_ui([&] {
+        for (wisp::agent::Source src :
+             {wisp::agent::Source::Web, wisp::agent::Source::DeviceText}) {
+            TurnView v;
+            v.source = src;
+            v.turn = src == wisp::agent::Source::Web ? 4 : 5;
+            v.started_ms = 1000u * v.turn;
+            v.running = true;
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            EXPECT_TRUE(is_hidden(overlay_->obj()));
+            v.steps_total = 1;
+            v.step_count = 1;
+            v.steps[0].label.assign("写入文件 main.lua");
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 10);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            v.say.assign("场景做好了。");
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 20);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            // A recording over it shows, and the turn still shows nothing
+            // once it ends.
+            overlay_->on_turn(v, VoiceState::Listening, 30, v.started_ms + 30);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Listening);
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 40);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+            overlay_->tick(v.started_ms + kOverlaySayMs + 100);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+
+            v.running = false;
+            v.ended_ms = v.started_ms + 50;
+            v.end_reason = "network";
+            overlay_->on_turn(v, VoiceState::Idle, 0, v.started_ms + 50);
+            ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Note);
+            lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+            ASSERT_NE(label, nullptr);
+            EXPECT_EQ(label_text(label), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+            overlay_->tick(v.started_ms + 50 + kOverlaySayMs);
+            EXPECT_EQ(overlay_->phase(), TalkOverlay::Phase::Hidden);
+        }
+    });
+}
+
+// The room the pages under the card get follows the card: none while
+// hidden, kGapSm above its top while shown, more as it grows.
+TEST_F(TalkOverlayTest, EndRoomFollowsTheCard) {
+    start();
+    make();
+    on_ui([&] {
+        EXPECT_EQ(overlay_->end_room(), 0);
+        overlay_->on_turn(TurnView{}, VoiceState::Listening, 10, 0);
+        lv_obj_update_layout(overlay_->obj());
+        const int32_t one = overlay_->end_room();
+        EXPECT_EQ(one, kSide - coords_of(overlay_->obj()).y1 + wisp::ui::theme::kGapSm);
+        TurnView v = voice_view();
+        std::string say;
+        for (int i = 0; i < 30; ++i) say += "好的，已经记下来了。";
+        v.say.assign(say);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 100);
+        lv_obj_update_layout(overlay_->obj());
+        EXPECT_GT(overlay_->end_room(), one);
+        EXPECT_EQ(overlay_->end_room(),
+                  kSide - coords_of(overlay_->obj()).y1 + wisp::ui::theme::kGapSm);
+        overlay_->hide();
+        EXPECT_EQ(overlay_->end_room(), 0);
+    });
+}
+
+// A say longer than a line grows the card, up to three lines, without
+// cutting it; the card keeps to the visible area.
+TEST_F(TalkOverlayTest, LongSayGrowsToThreeLines) {
+    start("circle", 466, 466);
+    make();
+    on_ui([&] {
+        TurnView v = voice_view();
+        // 40 CJK characters: past one line on the 466 px circle, inside
+        // three.
+        v.say.assign("好的，明天早上八点提醒你带伞，下午三点提醒你开会，晚上记得给家里打个电话。");
+        overlay_->on_turn(v, VoiceState::Idle, 0, 0);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
+        lv_obj_update_layout(overlay_->obj());
+        lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+        ASSERT_NE(label, nullptr);
+        const lv_font_t* font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+        const int32_t line = lv_font_get_line_height(font);
+        const int32_t h = lv_obj_get_height(overlay_->obj());
+        EXPECT_GT(h, 56);
+        EXPECT_LE(h, 3 * line + 2 * lv_obj_get_style_text_line_space(label, LV_PART_MAIN) +
+                         2 * wisp::ui::theme::kGapMd + 2 * wisp::ui::theme::kBorderWidth);
+        const std::string shown = label_text(label);
+        EXPECT_NE(shown.substr(shown.size() - 3), "...");
+        EXPECT_EQ(shown, std::string(v.say.c_str()));
+        EXPECT_TRUE(box_visible(shape_, coords_of(overlay_->obj())));
+    });
+}
+
 // The three screen shapes the home screen and the sub-pages are already
 // checked on (AGENTS.md, screen shape; spec 5.6 of the base spec).
 struct ShapeCase {
@@ -273,7 +494,7 @@ protected:
 
 TEST_P(TalkOverlayShapes, InsideVisibleArea) {
     on_ui([&] {
-        TurnView v;
+        TurnView v = voice_view();
         v.say.assign("好的，已经记下来了。");
         overlay_->on_turn(v, VoiceState::Idle, 0, 0);
         ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
@@ -282,10 +503,45 @@ TEST_P(TalkOverlayShapes, InsideVisibleArea) {
     });
 }
 
+// The longest text: three lines, then an ellipsis, the card still inside
+// the visible area and above the safe area's bottom.
+TEST_P(TalkOverlayShapes, ThreeLinesAtMostInsideVisibleArea) {
+    on_ui([&] {
+        TurnView v = voice_view();
+        std::string say;
+        for (int i = 0; i < 30; ++i) say += "好的，已经记下来了。";
+        v.say.assign(say);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 0);
+        ASSERT_EQ(overlay_->phase(), TalkOverlay::Phase::Saying);
+        lv_obj_update_layout(overlay_->obj());
+        const lv_area_t box = coords_of(overlay_->obj());
+        EXPECT_TRUE(box_visible(shape_, box));
+        const wisp::hal::Area safe = wisp::hal::safe_rect(shape_);
+        EXPECT_GE(box.y1, safe.y1);
+        EXPECT_LE(box.y2, safe.y2);
+        lv_obj_t* label = find_obj_of_class(overlay_->obj(), &lv_label_class);
+        ASSERT_NE(label, nullptr);
+        const lv_font_t* font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+        const int32_t line = lv_font_get_line_height(font);
+        EXPECT_LE(lv_obj_get_height(label),
+                  3 * line + 2 * lv_obj_get_style_text_line_space(label, LV_PART_MAIN));
+        EXPECT_GT(lv_obj_get_height(label), 2 * line);
+        const std::string shown = label_text(label);
+        EXPECT_EQ(shown.substr(shown.size() - 3), "...");
+        // The label lies inside the card.
+        const lv_area_t l = coords_of(label);
+        EXPECT_GE(l.y1, box.y1);
+        EXPECT_LE(l.y2, box.y2);
+        // The room the pages under it get: from kGapSm above its top.
+        EXPECT_EQ(overlay_->end_room(), shape_.height - box.y1 + wisp::ui::theme::kGapSm);
+    });
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Shapes, TalkOverlayShapes,
     ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},
-                      ShapeCase{"circle", 480, 480}, ShapeCase{"circle", 360, 360}),
+                      ShapeCase{"circle", 480, 480}, ShapeCase{"circle", 360, 360},
+                      ShapeCase{"circle", 466, 466}),
     [](const ::testing::TestParamInfo<ShapeCase>& info) {
         return std::string(info.param.shape) + "_" + std::to_string(info.param.width);
     });

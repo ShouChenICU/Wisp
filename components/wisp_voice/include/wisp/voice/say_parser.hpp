@@ -27,6 +27,9 @@ class SayParser {
 public:
     struct Out {
         std::function<void(std::string_view)> say, body;
+        // Once each time a "</say>" closes an open say (not for a stray
+        // one, not from finish()): the say's text is all delivered.
+        std::function<void()> say_end;
     };
 
     explicit SayParser(Out out);

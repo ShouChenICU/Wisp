@@ -161,6 +161,41 @@ TEST(WispPressTest, TapHoldCancel) {
     }
 }
 
+// pending(): the press may still become a hold. Every way it stops being
+// one ends it, and a hold is not pending.
+TEST(WispPressTest, PendingUntilHeldOrDone) {
+    constexpr uint64_t kHold = wisp::voice::kHoldStartMs;
+    WispPress p(kSwipe480);
+    EXPECT_FALSE(p.pending());
+    p.pressed(pt(50, 50), 1000);
+    EXPECT_TRUE(p.pending());
+    p.moved(pt(52, 50), 1100);
+    EXPECT_TRUE(p.pending());
+    p.released(pt(52, 50), 1200);  // a tap
+    EXPECT_FALSE(p.pending());
+
+    p.pressed(pt(50, 50), 2000);
+    p.moved(pt(50 + kSwipe480 + 1, 50), 2100);  // beyond the slop
+    EXPECT_FALSE(p.pending());
+    EXPECT_FALSE(p.holding());
+
+    p.pressed(pt(50, 50), 3000);
+    EXPECT_EQ(p.lost(), Action::None);
+    EXPECT_FALSE(p.pending());
+
+    p.pressed(pt(50, 50), 4000);
+    EXPECT_EQ(p.tick(4000 + kHold), Action::HoldBegin);
+    EXPECT_FALSE(p.pending());
+    EXPECT_TRUE(p.holding());
+    p.released(pt(50, 50), 5000);
+    EXPECT_FALSE(p.pending());
+
+    // Held past the hold time without a tick: no tap, and no longer pending.
+    p.pressed(pt(50, 50), 6000);
+    EXPECT_EQ(p.released(pt(50, 50), 6000 + kHold), Action::None);
+    EXPECT_FALSE(p.pending());
+}
+
 // --- DragTrack -------------------------------------------------------------
 
 using wisp::shell::DragTrack;

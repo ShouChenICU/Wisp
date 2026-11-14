@@ -32,18 +32,6 @@ std::string str(const Properties& p, const char* key) {
 
 }  // namespace
 
-const char* to_string(Readiness r) {
-    switch (r) {
-        case Readiness::Ready:
-            return "ready";
-        case Readiness::NoWifi:
-            return "no_wifi";
-        case Readiness::NoLlm:
-            return "no_llm";
-    }
-    return "ready";
-}
-
 ConversationController::ConversationController(ConversationDeps deps)
     : deps_(std::move(deps)),
       // The parser runs under mu_ (on_agent()), so its outputs may touch
@@ -58,6 +46,12 @@ ConversationController::ConversationController(ConversationDeps deps)
                   }
               },
           .body = [this](std::string_view d) { view_.body.append(d.data(), d.size()); },
+          // Only speech still open hears of it: a hold that stopped the
+          // speech, or a muted turn, has none.
+          .say_end =
+              [this] {
+                  if (speaking_) deps_.voice.say_closed();
+              },
       }) {}
 
 ConversationController::~ConversationController() { stop(); }
@@ -86,12 +80,10 @@ void ConversationController::stop() {
 
 // --- triggers -----------------------------------------------------------
 
-bool ConversationController::ready() const {
-    return !deps_.readiness || deps_.readiness() == Readiness::Ready;
-}
+bool ConversationController::ready() const { return readiness().can_talk(); }
 
 Readiness ConversationController::readiness() const {
-    return deps_.readiness ? deps_.readiness() : Readiness::Ready;
+    return deps_.readiness ? deps_.readiness() : Readiness{};
 }
 
 bool ConversationController::agent_busy() const {
@@ -126,6 +118,55 @@ void ConversationController::tap() {
     // effect.
 }
 
+void ConversationController::stop_turn() {
+    bool changed = false;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        // A capture under way owns the round now: stopping the speech
+        // would end it.
+        if (!deps_.voice.capturing()) deps_.voice.stop_speaking();
+        speaking_ = false;
+        const bool dropped = submitted_;
+        if (agent_busy()) {
+            deps_.agent.stop_turn();
+            // A waiting voice text was dropped with the stop.
+            submitted_ = false;
+        }
+        if (dropped) {
+            // No turn will come to end the dropped text's round.
+            if (captures_ == submitted_capture_ && !deps_.voice.capturing())
+                deps_.voice.end_speech();
+            // Nor to end its view, when nothing else runs (the agent was
+            // busy with something other than a turn).
+            const agent::ConversationView v = deps_.agent.view();
+            if (!turn_running_ && !v.running_turn && !v.queued && view_.running) {
+                view_.running = false;
+                view_.thinking = false;
+                view_.ended_ms = now();
+                view_.end_reason = "stopped";
+                view_.end_note.clear();
+                changed = true;
+            }
+        }
+    }
+    if (changed) notify();
+}
+
+void ConversationController::press_begin() {
+    std::lock_guard<os::Mutex> lock(mu_);
+    press_held_ = false;
+    // A capture under way would spend the prime anyway; not ready, no hold
+    // will start to take the mic.
+    if (!ready() || deps_.voice.capturing()) return;
+    deps_.voice.prime();
+}
+
+void ConversationController::press_end() {
+    std::lock_guard<os::Mutex> lock(mu_);
+    if (press_held_) return;
+    deps_.voice.unprime();
+}
+
 void ConversationController::hold_begin() {
     {
         std::lock_guard<os::Mutex> lock(mu_);
@@ -134,6 +175,7 @@ void ConversationController::hold_begin() {
         switch (phase()) {
             case Phase::Listening:
                 // Already recording: that capture becomes the hold's.
+                press_held_ = true;
                 break;
             case Phase::Transcribing:
                 // Busy until the cancelled capture is over; on_voice_state()
@@ -141,23 +183,17 @@ void ConversationController::hold_begin() {
                 deps_.voice.cancel_capture();
                 cancelled_capture_ = captures_;
                 deferred_hold_ = true;
+                press_held_ = true;
                 break;
             default:
                 // Ends the speech's round, or hands its locks to the new
-                // capture's.
+                // capture's. The turn runs on, unspoken, until the hold's
+                // transcript replaces it (on_transcript()); a cancelled
+                // or unheard hold leaves it be.
                 deps_.voice.stop_speaking();
-                const bool dropped = submitted_;
-                if (agent_busy()) {
-                    deps_.agent.stop_turn();
-                    // A waiting voice text was dropped with the stop.
-                    submitted_ = false;
-                }
-                // A failed capture did not take over the dropped text's
-                // round, and no turn will come to end it.
-                if (!start_capture(voice::CaptureMode::Hold) && dropped &&
-                    captures_ == submitted_capture_ && !deps_.voice.capturing()) {
-                    deps_.voice.end_speech();
-                }
+                speaking_ = false;
+                // A refused capture leaves the primed mic to press_end().
+                press_held_ = start_capture(voice::CaptureMode::Hold);
                 break;
         }
     }
@@ -194,8 +230,12 @@ bool ConversationController::holding() const {
 Result<void> ConversationController::voice_text(std::string text) {
     {
         std::lock_guard<os::Mutex> lock(mu_);
+        // No recording to keep while a connection is made: the text goes
+        // only once the network is up.
         const Readiness r = readiness();
-        if (r != Readiness::Ready) return Result<void>::err(ErrorCode::Unsupported, to_string(r));
+        if (r.net != Readiness::Net::Up)
+            return Result<void>::err(ErrorCode::Unsupported, "no_wifi");
+        if (!r.llm) return Result<void>::err(ErrorCode::Unsupported, "no_llm");
         if (phase() != Phase::Idle) return Result<void>::err(ErrorCode::Busy, "busy");
         if (auto sent = deps_.agent.submit(text, agent::Source::Voice); !sent) return sent;
         submitted_ = true;
@@ -303,6 +343,14 @@ void ConversationController::on_transcript(std::string text) {
         std::lock_guard<os::Mutex> lock(mu_);
         // A newer capture has taken over this round (and its locks).
         if (deps_.voice.capturing()) return;
+        // The new text replaces whatever runs or waits. stop_turn() drops
+        // every waiting message, so it comes first: the agent takes the
+        // stop at once (under its own lock), and the text then waits for
+        // the stopped turn's end in the one queue slot.
+        if (cancelled_capture_ != captures_ && agent_busy()) {
+            deps_.agent.stop_turn();
+            submitted_ = false;
+        }
         if (cancelled_capture_ == captures_) {
             end_round = true;
         } else if (auto r = deps_.agent.submit(text, agent::Source::Voice); !r) {
@@ -324,6 +372,10 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
     using Kind = agent::AgentEvent::Kind;
     {
         std::lock_guard<os::Mutex> lock(mu_);
+        // A voice text submitted while this turn ran replaced it
+        // (on_transcript()): the view is the text's now, and what the
+        // stopped turn still reports does not belong there.
+        const bool shown = turn_running_ && !submitted_;
         switch (e.kind) {
             case Kind::TurnBegin: {
                 parser_.reset();
@@ -342,20 +394,20 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                 break;
             }
             case Kind::Delta:
-                if (!turn_running_) return;
+                if (!shown) return;
                 view_.thinking = false;
                 parser_.feed(e.text);
                 break;
             case Kind::ToolPrep:
-                if (!turn_running_) return;
+                if (!shown) return;
                 on_tool_prep(e);
                 break;
             case Kind::ToolStart:
-                if (!turn_running_) return;
+                if (!shown) return;
                 on_tool_start(e);
                 break;
             case Kind::ToolEnd: {
-                if (!turn_running_) return;
+                if (!shown) return;
                 TurnStep* s = tool_step_ != 0 ? step_no(tool_step_) : nullptr;
                 tool_step_ = 0;
                 if (s == nullptr) return;
@@ -365,7 +417,7 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
             case Kind::State: {
                 deps_.voice.set_llm_busy(e.state == agent::AgentState::Thinking ||
                                          e.state == agent::AgentState::Output);
-                if (!turn_running_) return;
+                if (!shown) return;
                 // A reply's ToolStarts all come before the next request:
                 // calls written but not started by then never run.
                 const bool dropped = e.state == agent::AgentState::Thinking && drop_unstarted();
@@ -391,11 +443,12 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                     }
                 }
                 if (!turn_running_) break;
+                const bool view_shown = !submitted_;
                 // Calls skipped at a stop or the step limit, or cut off by
                 // a failed reply.
-                drop_unstarted();
+                if (view_shown) drop_unstarted();
                 const std::string fallback = parser_.finish();
-                if (speaking_ && !fallback.empty()) {
+                if (speaking_ && view_shown && !fallback.empty()) {
                     deps_.voice.speak(fallback);
                     view_.spoken = true;
                 }
@@ -405,12 +458,17 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                 turn_running_ = false;
                 voice_turn_ = false;
                 speaking_ = false;
-                view_.running = false;
-                view_.thinking = false;
-                view_.ended_ms = now();
                 // Ends the round (muted, refused, stopped or spoken alike);
                 // with the speech still playing, once it has played.
                 if (end) deps_.voice.end_speech();
+                // The text that replaced this turn keeps its view (running,
+                // no outcome) until its own turn.
+                if (!view_shown) return;
+                view_.running = false;
+                view_.thinking = false;
+                view_.ended_ms = now();
+                view_.end_reason = e.reason;
+                view_.end_note.assign(e.note);
                 break;
             }
             default:

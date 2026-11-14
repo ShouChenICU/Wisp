@@ -161,7 +161,8 @@ std::string system_prompt(const DeviceSnapshot& d) {
          "- Lua modules: wisp.device, wisp.store, wisp.timer, wisp.http, wisp.scene, wisp.log, "
          "wisp.notify, wisp.power, wisp.sensor, wisp.files.\n"
          "- Look details up with docs_read instead of guessing. Topics: widgets, "
-         "widget/<name>, lua, lua/<module>, screen, examples, example/<id>.\n"
+         "widget/<name>, lua, lua/<module>, screen, examples, example/<id>. Long topics come "
+         "in pages; pass next_offset to read on.\n"
          "- Work on a draft: scene_list, scene_read_file, then scene_write_file or "
          "scene_edit_file, then scene_install. scene_rollback brings back the version before "
          "the last install.\n\n";

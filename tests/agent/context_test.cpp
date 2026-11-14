@@ -296,7 +296,7 @@ TEST(Context, VoiceSourceAsksForShortBody) {
     EXPECT_FALSE(has(web, "short"));
 }
 
-TEST(Context, ToolResultsCutTo4KiBInHistory) {
+TEST(Context, EarlierTurnsToolResultsCutTo4KiB) {
     Conv c;
     c.next_turn();
     c.begin();
@@ -305,9 +305,12 @@ TEST(Context, ToolResultsCutTo4KiBInHistory) {
     c.call("c1", "scene.read_file", R"({"id":"a"})", big);
     c.call("c2", "scene.list", "{}", "short");
     c.end();
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "next");
 
     const BuiltRequest r = build_history(c.h());
-    ASSERT_EQ(r.messages.size(), 5u);
+    ASSERT_EQ(r.messages.size(), 6u);
     const std::string cut = text(r.messages[2]);
     EXPECT_EQ(r.messages[2].role, LlmRole::Tool);
     EXPECT_EQ(r.messages[2].tool_call_id, "c1");
@@ -320,6 +323,134 @@ TEST(Context, ToolResultsCutTo4KiBInHistory) {
     EXPECT_EQ(r.messages[1].tool_calls[0].name, "scene_read_file");
 }
 
+TEST(Context, EarlierTurnsLargeCallArgsAreElided) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "write it");
+    const std::string args = R"({"id":"a","content":")" + std::string(9000, 'z') + R"("})";
+    c.call("c1", "scene.write_file", args, R"({"ok":true})");
+    c.end();
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "next");
+
+    const BuiltRequest r = build_history(c.h());
+    ASSERT_EQ(r.messages[1].tool_calls.size(), 1u);
+    EXPECT_EQ(std::string(r.messages[1].tool_calls[0].arguments),
+              R"({"elided_bytes":)" + std::to_string(args.size()) + "}");
+}
+
+TEST(Context, EarlierTurnsSmallCallArgsStayWhole) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "go");
+    const std::string args = R"({"content":")" + std::string(1500, 'z') + R"("})";
+    c.call("c1", "scene.write_file", args, "ok");
+    c.end();
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "next");
+    const BuiltRequest r = build_history(c.h());
+    EXPECT_EQ(std::string(r.messages[1].tool_calls[0].arguments), args);
+}
+
+TEST(Context, RunningTurnCallArgsStayWhole) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "write it");
+    const std::string args = R"({"content":")" + std::string(9000, 'z') + R"("})";
+    c.call("c1", "scene.write_file", args, R"({"ok":true})");
+    const BuiltRequest r = build_history(c.h());
+    EXPECT_EQ(std::string(r.messages[1].tool_calls[0].arguments), args);
+}
+
+TEST(Context, ElidedCallArgsCountAsTheirShortFormInTheEstimate) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "go");
+    c.call("c1", "scene.write_file", std::string(60000, 'z'), "ok");
+    c.end();
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "next");
+    EXPECT_LT(build_history(c.h()).est_tokens, 2000u);
+}
+
+TEST(Context, RunningTurnToolResultIsSentWhole) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "read it");
+    const std::string big(10000, 'x');
+    c.call("c1", "scene.read_file", R"({"id":"a"})", big);  // no c.end(): the turn runs
+
+    const BuiltRequest r = build_history(c.h());
+    ASSERT_EQ(r.messages.size(), 3u);
+    EXPECT_EQ(text(r.messages[2]), big);
+}
+
+TEST(Context, RunningTurnToolResultCutAtTheLiveCap) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "read it");
+    const std::string huge(wisp::agent::kLiveToolResultBytes + 5000, 'y');
+    c.call("c1", "http.fetch", "{}", huge);
+
+    const BuiltRequest r = build_history(c.h());
+    const std::string cut = text(r.messages[2]);
+    EXPECT_TRUE(cut.ends_with("bytes total]"));
+    EXPECT_GT(cut.size(), wisp::agent::kLiveToolResultBytes - 8);
+    EXPECT_LT(cut.size(), wisp::agent::kLiveToolResultBytes + 64);
+}
+
+TEST(Context, EstimateCountsTheLiveResultWhole) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "u");
+    c.call("c1", "scene.read_file", "{}", std::string(30000, 'x'));
+    EXPECT_GE(build_history(c.h()).est_tokens, 10000u);
+}
+
+TEST(Context, LiveCapOptionCutsTheRunningTurn) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "u");
+    c.call("c1", "scene.read_file", "{}", std::string(30000, 'x'));
+    const BuiltRequest r =
+        build_history(c.h(), {.live_tool_bytes = wisp::agent::kToolResultKeepBytes});
+    const std::string cut = text(r.messages[2]);
+    EXPECT_LT(cut.size(), wisp::agent::kToolResultKeepBytes + 64);
+    // The model is still working from it: the note says how to get the rest.
+    EXPECT_TRUE(has(cut, "smaller pieces")) << cut;
+    // The estimate follows the cut.
+    EXPECT_LT(r.est_tokens, 2000u);
+}
+
+TEST(Context, CompressionCanReachThePreviousTurn) {
+    // Three ended turns, each a user message and a 30 KB assistant reply.
+    Conv c;
+    uint64_t end_of_turn_2 = 0;
+    for (int t = 1; t <= 3; ++t) {
+        c.next_turn();
+        c.begin();
+        c.add(Role::User, "u");
+        c.add(Role::Assistant, std::string(30000, 'a'));
+        c.end();
+        if (t == 2) end_of_turn_2 = c.last_seq();
+    }
+    EXPECT_FALSE(pick_compression(c.h(), 20000, 0, 3).has_value());
+    const auto r = pick_compression(c.h(), 20000, 0, 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->second, end_of_turn_2);
+}
+
 TEST(Context, ToolResultCutKeepsWholeCharacters) {
     Conv c;
     c.next_turn();
@@ -328,6 +459,8 @@ TEST(Context, ToolResultCutKeepsWholeCharacters) {
     std::string big = "xx";
     for (int i = 0; i < 2000; ++i) big += "汉";
     c.call("c1", "scene.read_file", "{}", big);
+    c.next_turn();
+    c.add(Role::User, "again");
     const BuiltRequest r = build_history(c.h());
     const std::string cut = text(r.messages[2]);
     const size_t kept = cut.find("\n[truncated");
@@ -452,6 +585,20 @@ TEST(Context, AnEarlierSummaryIsFoldedIn) {
     ASSERT_TRUE(pick);
     EXPECT_EQ(pick->first, 1u);  // the summary's own coverage
     EXPECT_EQ(pick->second, 16u);
+}
+
+TEST(Context, SummaryRequestElidesLargeCallArgs) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "write it");
+    c.call("c1", "scene.write_file", std::string(9000, 'z'), "ok");
+    c.add(Role::Assistant, "done");
+    c.end();
+    const BuiltRequest r = build_summary_request(c.h(), 1, c.h().back().seq);
+    const std::string t = text(r.messages[1]);
+    EXPECT_TRUE(has(t, R"(scene_write_file({"elided_bytes":9000}))")) << t.substr(0, 200);
+    EXPECT_LT(t.size(), 1000u);
 }
 
 TEST(Context, SummaryRequestIsATranscriptWithoutTools) {

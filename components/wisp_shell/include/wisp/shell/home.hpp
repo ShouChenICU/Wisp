@@ -36,6 +36,13 @@
 // over). A turn without steps shows neither. Neither moves anything else:
 // the layout is the same with or without them.
 //
+// Stop (HomeStop): while a turn runs -- any turn, with or without steps or
+// text, also while a hold records -- a button kStopPx high right of the
+// wisp, centred on its rows (HomeLayout::stop), which nothing else uses
+// (none on a screen too narrow for it); a tap -> the controller's
+// stop_turn(). Its presses do not bubble, so
+// they are never a press on the wisp, a page drag or a swipe.
+//
 // The turn's text fades kFadeAfterMs after the later of the turn's end
 // and the last time a finger scrolled the column, and the wisp goes back
 // to the centre. Nothing else keeps it, and nothing but a new turn brings
@@ -43,11 +50,24 @@
 // leaves the screen idle. Turns from the web page show the same way; the
 // controller only leaves them unspoken.
 //
-// The hint: readiness first (NoWifi: HomeNoWifi; NoLlm: HomeNoLlm and the
-// admin address), else the controller's last voice error (VoiceErr*, with
-// the address for a missing profile) or "not heard" (HomeNotHeard), for
-// kFadeAfterMs after it was first seen; while the turn's text shows the
-// wait does not run, so the full hint still gets its time after the fade.
+// The hint (spec 6.6): the controller's readiness first, for as long as
+// it lasts (Net::Down: HomeNoWifi; Net::Connecting: HomeConnecting;
+// online with nothing set up: HomeNoModels, with some missing:
+// HomeMissing listing the HomeNeed* items; either with the admin address,
+// on a line of its own, without its scheme where the whole address would
+// not fit on one line) -- except that while talking works (can_talk(),
+// say only speech is missing) a failure hint inside its window shows
+// instead of the missing-items list, which comes back after it. Else,
+// newest first: a tap on the wisp (HomeHoldToTalk; not set while a turn
+// runs) until a capture, a turn or another hint; the failure hints: the
+// later of the controller's last voice error (VoiceErr*, with the address
+// for a missing profile) or "not heard" (HomeNotHeard), first seen, and
+// why the last turn did not end "done" (TurnView::end_reason as a short
+// HomeTurn* string, with the address for "no_model" and "unauthorized";
+// the full note stays in the conversation), from its ended_ms, until the
+// next turn or capture; each for kFadeAfterMs. While the turn's text
+// shows the wait of the error and turn hints does not run, so the full
+// hint still gets its time after the fade.
 //
 // The wisp's mood follows "agent.state" and "voice.state" (mood_for());
 // listening and speaking pass on their level, a running tool sets
@@ -62,7 +82,12 @@
 //     when it has: a drag is no tap and no hold on the wisp;
 //   - a press on the wisp goes through WispPress: HoldBegin / HoldEnd /
 //     HoldCancel -> the controller's hold_begin() / hold_end() /
-//     hold_cancel(); a tap -> tap(), which has no voice effect;
+//     hold_cancel(); a tap -> tap(), which has no voice effect (the
+//     hint says how to talk, see above). Its
+//     touch-down calls press_begin() (the mic primes), and the moment it
+//     stops being WispPress::pending() -- held, released, moved beyond the
+//     hold slop, taken by a page drag or PRESS_LOST, or dropped because
+//     the screen went dark -- press_end();
 //   - while the controller is holding for the talk key, a swipe up past
 //     swipe_min_px() anywhere on the screen -> hold_cancel().
 //
@@ -80,6 +105,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -117,6 +143,8 @@ inline constexpr int32_t kHintIdleLines = 3, kHintTurnLines = 1;
 inline constexpr int32_t kMorePx = 16;
 // The step list's rows: the steps kept and the summary line.
 inline constexpr size_t kActivityRows = kTurnSteps + 1;
+// The Stop control's height (and least width): a finger's target.
+inline constexpr int32_t kStopPx = 48;
 
 // What the turn shows of the agent's steps (see the file header).
 enum class Activity : uint8_t { None, List, Summary };
@@ -139,6 +167,11 @@ struct HomeLayout {
     // column's first line.
     std::array<lv_area_t, kActivityRows> rows{};
     size_t row_count = 0;
+    // In a turn: the room right of the wisp for the Stop control, kStopPx
+    // high and centred on the wisp's box; the control is centred in it.
+    // Empty (and the control hidden) where it would be narrower than
+    // kStopPx.
+    lv_area_t stop = kNone;
 };
 
 // Screen coordinates of what is drawn. Idle (`in_turn` false) leaves
@@ -220,6 +253,9 @@ public:
     // Shows `v` as if the controller had reported it, until it reports
     // again (tests). UI thread.
     void show_view(const TurnView& v);
+    // Shows `r` in place of the controller's readiness; nullopt: the
+    // controller's again (tests). UI thread.
+    void show_readiness(std::optional<Readiness> r);
 
     lv_obj_t* screen() const { return screen_; }
     // Everything the screen shows, in one container as large as the
@@ -245,6 +281,8 @@ public:
     lv_obj_t* step_mark(size_t i) const { return rows_[i].mark; }
     lv_obj_t* step_label(size_t i) const { return rows_[i].text; }
     lv_obj_t* summary_label() const { return summary_; }
+    // The Stop control (a button; its label is its first child).
+    lv_obj_t* stop_button() const { return stop_; }
     Activity activity() const { return shown_activity_; }
     // The stats since the last call, which starts them again. UI thread.
     HomeTextStats take_text_stats();
@@ -265,13 +303,23 @@ private:
     void hide_row(size_t i);
     struct Row;
     void set_pulse(Row& r, bool on);
+    Readiness readiness() const;
     std::string hint_text(uint64_t now, bool in_turn);
+    // `url` as the idle hint shows it: whole when it fits on one line of
+    // the hint band, else without its scheme ("192.168.1.5:8900").
+    std::string fitted_url(const std::string& url) const;
     void update_more();
+    // Stop's label in the current language, sized and centred in its room.
+    void place_stop();
     void start_fade_out();
     void act(WispPress::Action a);
+    // After a WispPress call: press_end() once the press stopped being
+    // pending (`was_pending` before the call).
+    void settle_press(bool was_pending);
 
     static void event_cb(lv_event_t* e);
     static void column_cb(lv_event_t* e);
+    static void stop_cb(lv_event_t* e);
     static void timer_cb(lv_timer_t* t);
     static void fade_done_cb(lv_anim_t* a);
     void on_event(lv_event_t* e);
@@ -296,6 +344,7 @@ private:
     // The summary line: in turn_box_ under the list, or the column's
     // first child (Activity::Summary).
     lv_obj_t* summary_ = nullptr;
+    lv_obj_t* stop_ = nullptr;
     lv_obj_t* hint_ = nullptr;
     ui::WispView* wisp_ = nullptr;  // owned by its object
     lv_timer_t* timer_ = nullptr;
@@ -334,10 +383,18 @@ private:
     std::string shown_heard_;
     os::LargeString shown_say_, shown_body_;
     std::string shown_hint_;
-    // The voice error / not-heard the hint shows, and since when.
+    // The voice error / not-heard last seen, the turn outcome the hint
+    // shows instead when it came later (HomeTurn*), the turn end it came
+    // from, and since when the hint shows.
     std::optional<voice::VoiceError> hint_error_;
     bool hint_not_heard_ = false;
+    std::optional<ui::StrId> hint_turn_;
+    uint32_t hint_turn_end_turn_ = 0;
+    uint64_t hint_turn_end_ms_ = 0;
     uint64_t hint_since_ = 0;
+    // The last tap on the wisp, until a capture, a turn or another hint.
+    std::optional<uint64_t> tap_at_;
+    std::optional<Readiness> shown_readiness_;  // show_readiness()
 
     // The press being tracked.
     bool tracking_ = false;

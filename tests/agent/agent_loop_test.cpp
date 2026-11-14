@@ -145,10 +145,13 @@ protected:
         return out;
     }
 
-    std::string last_status() {
+    std::string last_status() { return last_end().status; }
+    std::string last_reason() { return last_end().reason; }
+
+    AgentEvent last_end() {
         auto ev = snapshot();
         for (auto it = ev.rbegin(); it != ev.rend(); ++it)
-            if (it->kind == Kind::TurnEnd) return it->status;
+            if (it->kind == Kind::TurnEnd) return *it;
         return {};
     }
 
@@ -256,6 +259,17 @@ TEST_F(AgentLoop, TurnBeginAndEndFrameTheTurn) {
     EXPECT_EQ(ev.back().status, "done");
 }
 
+TEST_F(AgentLoop, DoneTurnHasNoReason) {
+    start();
+    h->server.push(text_reply("all fine"));
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    const AgentEvent end = last_end();
+    EXPECT_EQ(end.status, "done");
+    EXPECT_TRUE(end.reason.empty()) << end.reason;
+    EXPECT_TRUE(end.note.empty()) << end.note;
+}
+
 TEST_F(AgentLoop, EveryListenerSeesEveryEvent) {
     start();
     std::mutex mu2;
@@ -342,6 +356,8 @@ TEST_F(AgentLoop, StopsAfterMaxToolCalls) {
     ASSERT_TRUE(wait_turns(1, 10000));
     EXPECT_EQ(tool_calls().size(), wisp::agent::kMaxSteps);
     EXPECT_EQ(last_status(), "step_limit");
+    EXPECT_EQ(last_reason(), "step_limit");
+    EXPECT_EQ(last_end().note, "步骤太多，已停止");
     auto n = notes();
     ASSERT_FALSE(n.empty());
     EXPECT_EQ(n.back(), "步骤太多，已停止");
@@ -401,6 +417,8 @@ TEST_F(AgentLoop, TimeLimitNoteNamesTheConfiguredMinutes) {
     ASSERT_TRUE(svc->submit("slow", Source::Web));
     ASSERT_TRUE(wait_turns(1));
     EXPECT_EQ(last_status(), "time_limit");
+    EXPECT_EQ(last_reason(), "time_limit");
+    EXPECT_EQ(last_end().note, "超过 7 分钟，已停止");
     auto n = notes();
     ASSERT_FALSE(n.empty());
     EXPECT_EQ(n.back(), "超过 7 分钟，已停止");
@@ -430,6 +448,7 @@ TEST_F(AgentLoop, TimeLimitDuringRequestEndsAsTimeLimit) {
     ASSERT_TRUE(wait_turns(1, 3000));
     EXPECT_EQ(h->server.held(), 0);
     EXPECT_EQ(last_status(), "time_limit");
+    EXPECT_EQ(last_reason(), "time_limit");
     auto n = notes();
     ASSERT_EQ(n.size(), 1u);
     // Under a minute still reads as one.
@@ -502,6 +521,19 @@ TEST_F(AgentLoop, StopDuringStreamAborts) {
     ASSERT_FALSE(n.empty());
     EXPECT_EQ(n.back(), "已中止");
     EXPECT_EQ(h->server.requests().size(), 1u);
+}
+
+TEST_F(AgentLoop, StoppedTurnReasonIsStopped) {
+    start();
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hel")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
+    svc->stop_turn();
+    ASSERT_TRUE(wait_turns(1));
+    const AgentEvent end = last_end();
+    EXPECT_EQ(end.status, "stopped");
+    EXPECT_EQ(end.reason, "stopped");
+    EXPECT_EQ(end.note, wisp::ui::tr(wisp::ui::StrId::AgentStopped, wisp::ui::Lang::Zh));
 }
 
 TEST_F(AgentLoop, StopDuringToolCancelsIt) {
@@ -599,6 +631,8 @@ TEST_F(AgentLoop, NoModelExplainsInConversation) {
     auto n = notes();
     ASSERT_EQ(n.size(), 1u);
     EXPECT_NE(n[0].find("“模型”"), std::string::npos) << n[0];
+    EXPECT_EQ(last_reason(), "no_model");
+    EXPECT_EQ(last_end().note, n[0]);
     auto s = states();
     ASSERT_GE(s.size(), 2u);
     EXPECT_EQ(s[s.size() - 2], AgentState::Error);
@@ -615,6 +649,7 @@ TEST_F(AgentLoop, NetworkDownExplainsInConversation) {
     auto n = notes();
     ASSERT_EQ(n.size(), 1u);
     EXPECT_NE(n[0].find("网络"), std::string::npos) << n[0];
+    EXPECT_EQ(last_reason(), "network");
 }
 
 TEST_F(AgentLoop, UnauthorizedTellsUserToCheckModel) {
@@ -628,6 +663,27 @@ TEST_F(AgentLoop, UnauthorizedTellsUserToCheckModel) {
     ASSERT_EQ(n.size(), 1u);
     EXPECT_NE(n[0].find("API Key"), std::string::npos) << n[0];
     EXPECT_NE(n[0].find("“模型”"), std::string::npos) << n[0];
+}
+
+TEST_F(AgentLoop, TurnEndCarriesReasonAndNote) {
+    start();
+    h->server.push({.status = 401, .chunks = {"{\"error\":\"bad key sk-test\"}"}});
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    AgentEvent end = last_end();
+    EXPECT_EQ(end.status, "error");
+    EXPECT_EQ(end.reason, "unauthorized");
+    EXPECT_EQ(end.note, wisp::ui::tr(wisp::ui::StrId::AgentErrUnauthorized, wisp::ui::Lang::Zh));
+    EXPECT_EQ(end.note.find("sk-test"), std::string::npos);
+
+    // A server error (500, retried twice) is "server".
+    for (int i = 0; i < 3; ++i) h->server.push({.status = 500, .chunks = {}});
+    ASSERT_TRUE(svc->submit("again", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    end = last_end();
+    EXPECT_EQ(end.status, "error");
+    EXPECT_EQ(end.reason, "server");
+    EXPECT_EQ(end.note, wisp::ui::tr(wisp::ui::StrId::AgentErrServer, wisp::ui::Lang::Zh));
 }
 
 TEST_F(AgentLoop, NotesFollowTheDeviceLanguage) {
@@ -690,6 +746,7 @@ TEST_F(AgentLoop, WifiLossMidStreamEndsTurnCleanly) {
     auto n = notes();
     ASSERT_FALSE(n.empty());
     EXPECT_EQ(n.back(), "网络中断");
+    EXPECT_EQ(last_reason(), "network_lost");
     std::optional<Message> a = last_of(history(), Role::Assistant);
     ASSERT_TRUE(a.has_value());
     EXPECT_EQ(str(a->text), "Hel");
@@ -700,6 +757,7 @@ TEST_F(AgentLoop, WifiLossMidStreamEndsTurnCleanly) {
     ASSERT_TRUE(svc->submit("again", Source::Web));
     ASSERT_TRUE(wait_turns(2));
     EXPECT_EQ(h->server.requests().size(), 1u);
+    EXPECT_EQ(last_reason(), "network");
 
     h->bus.publish({"net.wifi.state", "net.wifi", 0, Map{{"state", "connected"}}});
     ASSERT_TRUE(h->bus.wait_idle(1000));
@@ -719,6 +777,7 @@ TEST_F(AgentLoop, StalledStreamTimesOut) {
     auto n = notes();
     ASSERT_FALSE(n.empty());
     EXPECT_EQ(n.back(), "网络中断");
+    EXPECT_EQ(last_reason(), "network_lost");
 }
 
 TEST_F(AgentLoop, TransportErrorAfterFinishCountsAsDone) {
@@ -751,6 +810,7 @@ TEST_F(AgentLoop, TransportErrorMidStreamKeepsTextAndExplains) {
     auto n = notes();
     ASSERT_EQ(n.size(), 1u);
     EXPECT_EQ(n[0], "网络中断");
+    EXPECT_EQ(last_reason(), "network_lost");
 }
 
 TEST_F(AgentLoop, HoldsCpuAndNetworkLocksDuringTurn) {
@@ -1223,16 +1283,172 @@ TEST_F(AgentLoop, SummaryWithoutConnectionKeepsTheTurns) {
     run_turn("q1", big);
     run_turn("q2", big);
     run_turn("q3", big);
-    h->server.push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    // The client retries a connect failure twice before it gives up.
+    for (int i = 0; i < 3; ++i)
+        h->server.push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
     run_turn("q4", "done");
-    ASSERT_EQ(h->server.requests().size(), 5u);
+    ASSERT_EQ(h->server.requests().size(), 7u);
     EXPECT_EQ(last_status(), "done");
     EXPECT_FALSE(last_of(history(), Role::Summary));
     EXPECT_TRUE(notes().empty());
     // Sent whole: the turns are kept for a later attempt.
-    const Value body_msgs = h->server.body_json(4);
+    const Value body_msgs = h->server.body_json(6);
     const List& msgs = body_msgs.find("messages")->as_list();
     EXPECT_EQ(msgs[0].find("content")->as_string(), "q1");
+}
+
+namespace {
+
+FakeReply context_length_reply() {
+    return {.status = 400,
+            .chunks = {R"({"error":{"code":"context_length_exceeded","message":"too long"}})"}};
+}
+
+FakeReply usage_reply(const std::string& text, int prompt) {
+    return {.status = 200,
+            .chunks = {FakeLlmServer::sse_text(text), FakeLlmServer::sse_finish("stop"),
+                       FakeLlmServer::sse_usage(prompt, 1), FakeLlmServer::sse_done()}};
+}
+
+}  // namespace
+
+TEST_F(AgentLoop, ContextLengthErrorCompressesAndRetriesOnce) {
+    // 4096 tokens: turns 1-2 (about 2700 tokens) fit under 75% by the
+    // estimate, so turn 3 is sent whole and refused.
+    set_window(4096);
+    add_tool("scene.list");
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    h->server.push(context_length_reply());
+    h->server.push(text_reply("they asked q1"));
+    run_turn("q3", "done");
+
+    EXPECT_EQ(last_status(), "done");
+    EXPECT_TRUE(last_of(history(), Role::Summary));
+    // The refused request, the summary request (no tools), one retry.
+    ASSERT_EQ(h->server.requests().size(), 5u);
+    EXPECT_EQ(h->server.body_json(3).find("tools"), nullptr);
+    const Value retry = h->server.body_json(4);
+    EXPECT_NE(retry.find("tools"), nullptr);
+    const List& msgs = retry.find("messages")->as_list();
+    EXPECT_NE(msgs[0].find("content")->as_string().find("they asked q1"), std::string::npos);
+    EXPECT_EQ(msgs.back().find("content")->as_string(), "q3");
+    EXPECT_TRUE(notes().empty());
+}
+
+TEST_F(AgentLoop, SecondContextLengthErrorEndsTheTurnWithANote) {
+    set_window(4096);
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    h->server.push(context_length_reply());
+    h->server.push(text_reply("they asked q1"));
+    h->server.push(context_length_reply());
+    ASSERT_TRUE(svc->submit("q3", Source::Web));
+    ASSERT_TRUE(wait_turns(3));
+    // The refused request, the summary, the refused retry.
+    EXPECT_EQ(h->server.requests().size(), 5u);
+    EXPECT_EQ(last_status(), "error");
+    auto n = notes();
+    ASSERT_EQ(n.size(), 1u);
+    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentErrContext, wisp::ui::Lang::Zh));
+    EXPECT_EQ(last_reason(), "context");
+}
+
+// Nothing to summarize and no result to cut: the retry would be the same
+// request, refused the same way.
+TEST_F(AgentLoop, ContextLengthWithNothingToShrinkIsNotRetried) {
+    start();
+    h->server.push(context_length_reply());
+    h->server.push(text_reply("never"));
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(h->server.requests().size(), 1u);
+    EXPECT_EQ(last_status(), "error");
+    auto n = notes();
+    ASSERT_EQ(n.size(), 1u);
+    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentErrContext, wisp::ui::Lang::Zh));
+    EXPECT_EQ(last_reason(), "context");
+}
+
+TEST_F(AgentLoop, OversizedLiveResultIsCutInsteadOfOverflowing) {
+    // 8192 tokens; one 60 KB result is about 20000 tokens on its own.
+    set_window(8192);
+    add_tool("scene.read_file", [](const Value&, ToolCtx&) {
+        return ToolOutput{.ok = true, .result = Map{{"content", std::string(60000, 'x')}}};
+    });
+    start();
+    h->server.push(tool_reply("c1", "scene_read_file", "{}"));
+    h->server.push(text_reply("read it"));
+    ASSERT_TRUE(svc->submit("read the file", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 2u);
+    const Value next = h->server.body_json(1);
+    const List& msgs = next.find("messages")->as_list();
+    ASSERT_EQ(msgs.size(), 3u);
+    EXPECT_EQ(msgs[2].find("role")->as_string(), "tool");
+    EXPECT_LT(msgs[2].find("content")->as_string().size(), wisp::agent::kToolResultKeepBytes + 64);
+    // The stored result stays whole.
+    std::optional<Message> stored = last_of(history(), Role::Tool);
+    ASSERT_TRUE(stored);
+    EXPECT_GT(stored->text.size(), 60000u);
+}
+
+TEST_F(AgentLoop, UsageCalibratesTheEstimate) {
+    // Turn 2's request is estimated at (2 + 3000 + 2) / 3 = 1001 tokens and
+    // the model counts twice that. Turn 3's history, 6006 bytes = 2002
+    // tokens, fits under 75% of 4096 (3072) as estimated, not when doubled.
+    set_window(4096);
+    start();
+    run_turn("q1", std::string(3000, 'a'));
+    h->server.push(usage_reply("ok", 2002));
+    ASSERT_TRUE(svc->submit("q2", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    h->server.push(text_reply("they said q1"));
+    run_turn(std::string(3000, 'q'), "done");
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 4u);
+    // The summary request: a fixed prompt and the transcript.
+    const Value sum = h->server.body_json(2);
+    ASSERT_EQ(sum.find("messages")->as_list().size(), 2u);
+    EXPECT_NE(sum.find("messages")->as_list()[1].find("content")->as_string().find("User: q1"),
+              std::string::npos);
+    EXPECT_TRUE(last_of(history(), Role::Summary));
+}
+
+// The calibration belongs to the model that reported it: after a switch
+// the plain estimate counts again, and turn 3 fits without a summary.
+TEST_F(AgentLoop, ModelSwitchResetsTheCalibration) {
+    set_window(4096);
+    start();
+    run_turn("q1", std::string(3000, 'a'));
+    h->server.push(usage_reply("ok", 2002));
+    ASSERT_TRUE(svc->submit("q2", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    ASSERT_TRUE(h->worker.run_sync(
+        [&] {
+            const std::string id = h->models->get().active_for(wisp::core::ModelKind::Llm);
+            wisp::core::ProfileUpdate u;
+            u.model = "m2";
+            ASSERT_TRUE(h->models->update(id, u));
+        },
+        wisp::os::kForever));
+    run_turn(std::string(3000, 'q'), "done");
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 3u);
+    EXPECT_EQ(*h->server.body_json(2).find("model"), Value("m2"));
+    EXPECT_FALSE(last_of(history(), Role::Summary));
 }
 
 namespace {

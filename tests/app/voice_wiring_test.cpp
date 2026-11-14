@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -33,7 +34,8 @@ using wisp::test::audio::sine;
 namespace {
 
 struct VoiceApp {
-    explicit VoiceApp(bool with_mic) {
+    // `tweak` changes the options before the harness is built.
+    explicit VoiceApp(bool with_mic, const std::function<void(UiNetOptions&)>& tweak = {}) {
         wisp::log::reset_for_test();
         wisp::log::init();
         opts.saved = {{"Home", "password1"}};
@@ -45,6 +47,7 @@ struct VoiceApp {
             server = s.get();
             return std::unique_ptr<wisp::net::HttpClient>(std::move(s));
         };
+        if (tweak) tweak(opts);
         h = std::make_unique<UiNetHarness>(opts);
     }
     ~VoiceApp() {
@@ -53,7 +56,9 @@ struct VoiceApp {
         wisp::log::reset_for_test();
     }
 
-    bool start() {
+    // Boots, then creates (and so activates) a profile of each kind asked
+    // for.
+    bool start(bool llm = true, bool asr = true, bool tts = true) {
         if (!h->start("voice.")) return false;
         wisp::core::StorageWorker* worker = h->app->storage_worker();
         if (worker == nullptr) return false;
@@ -61,27 +66,33 @@ struct VoiceApp {
         auto made = worker->run_sync(
             [&] {
                 wisp::core::ModelProfileService& m = h->app->models();
-                ok = m.create({.kind = wisp::core::ModelKind::Llm,
-                               .name = "llm",
-                               .preset = "custom",
-                               .base_url = std::string("https://llm.example.com/v1"),
-                               .model = std::string("m"),
-                               .api_key = std::string("sk-llm")})
-                         .is_ok() &&
-                     m.create({.kind = wisp::core::ModelKind::Asr,
-                               .name = "asr",
-                               .preset = "custom",
-                               .base_url = std::string("https://asr.example.com/v1"),
-                               .model = std::string("whisper-1"),
-                               .api_key = std::string("sk-asr")})
-                         .is_ok() &&
-                     m.create({.kind = wisp::core::ModelKind::Tts,
-                               .name = "tts",
-                               .preset = "custom",
-                               .base_url = std::string("https://tts.example.com/v1"),
-                               .model = std::string("tts-1"),
-                               .api_key = std::string("sk-tts")})
-                         .is_ok();
+                if (llm) {
+                    ok = ok && m.create({.kind = wisp::core::ModelKind::Llm,
+                                         .name = "llm",
+                                         .preset = "custom",
+                                         .base_url = std::string("https://llm.example.com/v1"),
+                                         .model = std::string("m"),
+                                         .api_key = std::string("sk-llm")})
+                                   .is_ok();
+                }
+                if (asr) {
+                    ok = ok && m.create({.kind = wisp::core::ModelKind::Asr,
+                                         .name = "asr",
+                                         .preset = "custom",
+                                         .base_url = std::string("https://asr.example.com/v1"),
+                                         .model = std::string("whisper-1"),
+                                         .api_key = std::string("sk-asr")})
+                                   .is_ok();
+                }
+                if (tts) {
+                    ok = ok && m.create({.kind = wisp::core::ModelKind::Tts,
+                                         .name = "tts",
+                                         .preset = "custom",
+                                         .base_url = std::string("https://tts.example.com/v1"),
+                                         .model = std::string("tts-1"),
+                                         .api_key = std::string("sk-tts")})
+                                   .is_ok();
+                }
             },
             wisp::os::kForever);
         return made.is_ok() && ok;
@@ -129,8 +140,7 @@ TEST(AppVoice, BootWiresVoiceAndTalkKey) {
     ASSERT_TRUE(v.start());
     wisp::shell::ConversationController* conv = v.h->app->conversation();
     ASSERT_NE(conv, nullptr);
-    ASSERT_TRUE(
-        wait_until([&] { return conv->readiness() == wisp::shell::Readiness::Ready; }, 10000));
+    ASSERT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 10000));
 
     v.server->push_asr(FakeReply{.status = 200, .chunks = {R"({"text":"你好"})"}});
     v.server->llm().push({.status = 200,
@@ -139,10 +149,14 @@ TEST(AppVoice, BootWiresVoiceAndTalkKey) {
                                      wisp::test::FakeLlmServer::sse_done()}});
     v.server->push_tts(pcm(200));
     v.mic->set_script({silence(300), sine(1000)});
+    // The press primes the mic, and the fake reads its script as fast as
+    // it is read: the words come once the hold has begun.
+    v.mic->hold_at(0);
 
     // Held past 300 ms: wisp.voice records.
     v.key->down = true;
     ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 3000));
+    v.mic->release();
     ASSERT_TRUE(wait_until([&] { return v.saw_voice("listening"); }, 3000));
     ASSERT_TRUE(wait_until([&] { return v.mic->script_done(); }, 3000));
     v.key->down = false;
@@ -173,8 +187,7 @@ TEST(AppVoice, NoMicStillBoots) {
     ASSERT_TRUE(v.start());
     wisp::shell::ConversationController* conv = v.h->app->conversation();
     ASSERT_NE(conv, nullptr);
-    ASSERT_TRUE(
-        wait_until([&] { return conv->readiness() == wisp::shell::Readiness::Ready; }, 10000));
+    ASSERT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 10000));
     v.key->down = true;
     ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 3000));
     ASSERT_TRUE(wait_until(
@@ -195,4 +208,54 @@ TEST(AppVoice, AgentNotRunningLeavesVoiceOff) {
     wisp::os::sleep_ms(500);
     v.key->down = false;
     EXPECT_FALSE(v.saw_voice("listening"));
+}
+
+// The checklist from the services: each profile kind, and the network.
+TEST(AppVoice, ReadinessListsWhatIsMissing) {
+    VoiceApp v(/*with_mic=*/true);
+    ASSERT_TRUE(v.start(/*llm=*/true, /*asr=*/false, /*tts=*/false));
+    wisp::shell::ConversationController* conv = v.h->app->conversation();
+    ASSERT_NE(conv, nullptr);
+    using wisp::shell::Readiness;
+    EXPECT_TRUE(wait_until(
+        [&] { return conv->readiness() == Readiness{.asr = false, .tts = false}; }, 10000));
+    EXPECT_FALSE(conv->readiness().can_talk());
+}
+
+// Muted, speech is not needed: no tts profile is not missing.
+TEST(AppVoice, MutedDeviceDoesNotAskForTts) {
+    VoiceApp v(/*with_mic=*/true);
+    ASSERT_TRUE(v.start(/*llm=*/true, /*asr=*/true, /*tts=*/false));
+    wisp::shell::ConversationController* conv = v.h->app->conversation();
+    ASSERT_NE(conv, nullptr);
+    using wisp::shell::Readiness;
+    ASSERT_TRUE(wait_until([&] { return conv->readiness() == Readiness{.tts = false}; }, 10000));
+    EXPECT_TRUE(conv->readiness().can_talk());
+    ASSERT_TRUE(v.h->app->system_settings().set({{"tts_mute", true}}));
+    EXPECT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 3000));
+}
+
+// Offline and no connection being made -- a saved network that is out of
+// reach waits in backoff, or none is saved -- is down: a hold would only
+// wait and fail (WifiService::connection_expected()).
+TEST(AppVoice, OfflineIsDownWhileNoConnectionIsBeingMade) {
+    using wisp::shell::Readiness;
+    {
+        VoiceApp v(/*with_mic=*/true, [](UiNetOptions& o) { o.wifi_reachable = false; });
+        ASSERT_TRUE(v.start());
+        wisp::shell::ConversationController* conv = v.h->app->conversation();
+        ASSERT_NE(conv, nullptr);
+        EXPECT_TRUE(wait_until(
+            [&] { return conv->readiness() == Readiness{.net = Readiness::Net::Down}; }, 10000));
+        EXPECT_FALSE(conv->readiness().can_talk());
+    }
+    {
+        VoiceApp v(/*with_mic=*/true, [](UiNetOptions& o) { o.saved.clear(); });
+        ASSERT_TRUE(v.start());
+        wisp::shell::ConversationController* conv = v.h->app->conversation();
+        ASSERT_NE(conv, nullptr);
+        EXPECT_TRUE(wait_until(
+            [&] { return conv->readiness() == Readiness{.net = Readiness::Net::Down}; }, 10000));
+        EXPECT_FALSE(conv->readiness().can_talk());
+    }
 }
