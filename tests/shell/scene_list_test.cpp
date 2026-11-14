@@ -843,7 +843,10 @@ TEST_F(SceneListTest, StopJoinsTheListingTask) {
 
 // A stop while the listing waits on scene k of N ends it after that one
 // job: no further scene is read, no icon is read or decoded, nothing is
-// shown, and stop() returns.
+// shown, and stop() returns. Nothing is posted either: the page is gone
+// with stop(), so the shell started again shows whether the stopped
+// listing's cards reached its last-listing cache (a warm open would show
+// them at once).
 TEST_F(SceneListTest, StopEndsTheListingAfterTheJobInProgress) {
     constexpr int kScenes = 5;
     constexpr int kGated = 2;
@@ -890,8 +893,25 @@ TEST_F(SceneListTest, StopEndsTheListingAfterTheJobInProgress) {
     helper.join();
     EXPECT_EQ(jobs.load(), kGated + 1);
     EXPECT_EQ(decodes.load(), 0);
-    std::lock_guard<std::mutex> lock(mu);
-    EXPECT_TRUE(icon_reads.empty());
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_TRUE(icon_reads.empty());
+    }
+
+    // Whatever was queued for the UI thread has run by now.
+    harness->on_ui([] {});
+    Gate relist;
+    lister = nullptr;
+    on_list = [&] { relist.wait(); };
+    harness->on_ui([&] { harness->shell().start(); });
+    harness->show(Page::Scenes);
+    harness->on_ui([&] {
+        ASSERT_NE(page(), nullptr);
+        EXPECT_EQ(page()->cards(), 0u);
+        EXPECT_GT(page()->placeholders(), 0u);
+    });
+    relist.release();
+    settle();
 }
 
 // A listing's cards still queued for the UI thread when the page is closed
