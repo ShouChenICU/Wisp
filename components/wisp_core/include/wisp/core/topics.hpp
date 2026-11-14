@@ -26,7 +26,10 @@
 // Button topics are built per device: kButtonPrefix's "button." is the
 // start of every button device id (chosen by the board), and the topic is
 // "<device id>.<edge>", e.g. "button.power.short". The registry lists
-// them as patterns.
+// them as patterns: a row whose name contains '<' is a pattern, not a
+// literal topic (tools/check_topics.py relies on this marker). "<id>"
+// stands for a device id, which itself begins with "button.", and the
+// edge is one of kButtonDown/kButtonUp/kButtonShort/kButtonLong.
 //
 // Only constant data: no static constructors, nothing allocated; the
 // arrays are inline variables, so one copy in read-only data however many
@@ -45,7 +48,9 @@ struct Topic {
     bool forwarded;
 };
 
-inline constexpr char kButtonPrefix[] = "button.";  // + <device id> + "." + edge
+// Prefix of button device ids, for subscriptions and checks; the topic itself is
+// "<device id>.<edge>", so this is never prepended to an id.
+inline constexpr char kButtonPrefix[] = "button.";
 inline constexpr char kButtonDown[] = "down", kButtonUp[] = "up", kButtonShort[] = "short",
                       kButtonLong[] = "long";
 inline constexpr char kPowerState[] = "power.state";

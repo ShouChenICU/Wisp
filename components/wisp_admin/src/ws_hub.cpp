@@ -21,8 +21,9 @@ constexpr const char* kTag = "ws";
 // Event prefixes forwarded to "events" subscribers (spec 6.2); the hub
 // subscribes to each, and forwards() answers from the same list, which a
 // test checks against the `forwarded` flags of wisp/core/topics.hpp.
-// memory.* and todo.* events carry a count only (MemoryStore, ReminderScheduler), never
-// note or todo text, so forwarding them is no privacy issue.
+// memory.* and todo.* events carry a count only (MemoryStore,
+// ReminderScheduler), never note or todo text, so forwarding them is no
+// privacy issue.
 constexpr const char* kForwardedPrefixes[] = {"memory.",  "net.",    "power.", "scene.",
                                               "storage.", "system.", "todo."};
 
