@@ -6,11 +6,13 @@
 #include <atomic>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "lvgl_private.h"
 #include "support/fake_devices.hpp"
@@ -1041,4 +1043,108 @@ TEST(UiRuntime, NoSlotRunsAfterStopAndCancelDoesNotWait) {
     EXPECT_EQ(a.runs.load(), 0);
     ui.detach();
     // Destroyed here with nothing attached: no misuse report.
+}
+
+namespace {
+
+// Re-arms itself in every run until `rearm` is cleared or it has run
+// `max_runs` times (so a runtime that never leaves its slot pass still
+// ends the job test instead of hanging it). While `jobs_left` > 0, each run also
+// posts one job, which records how many runs had happened when it ran;
+// the job that brings `jobs_left` to zero stops the re-arming.
+struct RearmingUiSlot : DispatchSlot {
+    explicit RearmingUiSlot(wisp::ui::UiRuntime* ui_) : ui(ui_) {
+        run = [](DispatchSlot& s) {
+            auto& self = static_cast<RearmingUiSlot&>(s);
+            int n = self.runs.fetch_add(1) + 1;
+            if (self.jobs_to_post > 0) {
+                --self.jobs_to_post;
+                self.ui->post([&self] {
+                    self.seen.push_back(self.runs.load());
+                    if (--self.jobs_left == 0) self.rearm.store(false);
+                });
+            }
+            if (self.rearm.load() && n < self.max_runs) self.ui->schedule(self);
+        };
+    }
+    wisp::ui::UiRuntime* ui;
+    std::atomic<int> runs{0};
+    std::atomic<bool> rearm{true};
+    int max_runs = 1000;
+    int jobs_to_post = 0;  // UI task only
+    std::atomic<int> jobs_left{0};
+    std::vector<int> seen;  // UI task only
+};
+
+// Posted jobs and a slot that re-arms in every run both make progress:
+// each pass runs the slot once, and the loop takes at least one posted
+// job between passes, so job k runs before the slot's run k + 1.
+void expect_rearming_slot_shares_the_loop(bool paused) {
+    constexpr int kJobs = 20;
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    if (paused) {
+        ui.set_paused(true);
+        ui.run_blocking([] {});  // the task has reached the paused branch
+    }
+    RearmingUiSlot a(&ui);
+    a.jobs_to_post = kJobs;
+    a.jobs_left = kJobs;
+    ui.schedule(a);
+    ASSERT_TRUE(wait_until([&] { return a.jobs_left.load() == 0; }, 5000));
+    EXPECT_TRUE(ui.cancel(a));
+    std::vector<int> seen;
+    ui.run_blocking([&] { seen = a.seen; });
+    ASSERT_EQ(seen.size(), static_cast<size_t>(kJobs));
+    for (int k = 1; k <= kJobs; ++k) {
+        EXPECT_LE(seen[k - 1], k) << "job " << k;
+    }
+    ui.stop();
+}
+
+// A slot re-arming in every run does not freeze the UI task: a
+// run_blocking() no-op still returns.
+void expect_rearming_slot_does_not_freeze(bool paused) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    if (paused) {
+        ui.set_paused(true);
+        ui.run_blocking([] {});
+    }
+    RearmingUiSlot a(&ui);
+    // No cap: only the test thread's clearing of `rearm` below ends the
+    // re-arming, after the run_blocking() verdict.
+    a.max_runs = std::numeric_limits<int>::max();
+    ui.schedule(a);
+    ASSERT_TRUE(wait_until([&] { return a.runs.load() > 0; }, 1000));
+    std::atomic<bool> returned{false};
+    std::thread caller([&] {
+        ui.run_blocking([] {});
+        returned.store(true);
+    });
+    EXPECT_TRUE(wait_until([&] { return returned.load(); }, 2000));
+    a.rearm.store(false);
+    caller.join();
+    EXPECT_TRUE(ui.cancel(a));
+    ui.stop();
+}
+
+}  // namespace
+
+TEST(UiRuntime, ReArmingSlotAndPostedJobsShareTheLoop) {
+    expect_rearming_slot_shares_the_loop(/*paused=*/false);
+}
+
+TEST(UiRuntime, ReArmingSlotAndPostedJobsShareThePausedLoop) {
+    expect_rearming_slot_shares_the_loop(/*paused=*/true);
+}
+
+TEST(UiRuntime, ReArmingSlotDoesNotFreezeTheUiTask) {
+    expect_rearming_slot_does_not_freeze(/*paused=*/false);
+}
+
+TEST(UiRuntime, ReArmingSlotDoesNotFreezeThePausedUiTask) {
+    expect_rearming_slot_does_not_freeze(/*paused=*/true);
 }

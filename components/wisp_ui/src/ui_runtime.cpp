@@ -194,7 +194,14 @@ void UiRuntime::Impl::drain_post_queue() {
 }
 
 void UiRuntime::Impl::run_slots() {
-    while (core::DispatchSlot* slot = slots.take()) {
+    // One pass: only the slots queued when it starts. A slot re-armed
+    // during the pass goes to the tail and waits for the next pass, so a
+    // slot that re-arms in every run cannot keep the task here, away from
+    // posted jobs and frames. pending() counts no running slot here: only
+    // this task runs them, and it is between runs.
+    for (size_t n = slots.pending(); n > 0; --n) {
+        core::DispatchSlot* slot = slots.take();
+        if (slot == nullptr) break;  // cancelled since pending() was read
         slot->run(*slot);
         // done() may hand the slot to its owner's finish(), which frees
         // it: nothing touches `slot` after this line.
@@ -232,17 +239,22 @@ void UiRuntime::Impl::ui_main() {
             // UiRuntime::stop()) -- without that, a paused UI task would
             // never notice `running` went false until the next
             // post()'d job happened to arrive, which might be never.
-            // Slots run on both sides of the wait: those already queued
-            // before it (whose wake post may have been consumed by an
-            // earlier pop), and those the job, or the wake post it
-            // stands for, brought.
+            //
+            // A slot pass precedes every wait. A slot still queued after
+            // it (re-armed during the pass, on this task, so with no wake
+            // post) must not sit behind a blocking pop: then this takes at
+            // most one posted job without waiting and goes round again,
+            // alternating one pass and one job. That keeps both moving
+            // and needs no wake post that could take a posted job's place
+            // in the queue. Slots the job schedules run in the next
+            // iteration's pass, right after it.
             run_slots();
+            const uint32_t wait = slots.pending() > 0 ? 0 : os::kForever;
             std::function<void()> fn;
-            if (post_queue.pop(fn, os::kForever)) {
+            if (post_queue.pop(fn, wait)) {
                 fn();
                 fn = nullptr;
             }
-            run_slots();
             continue;
         }
         if (was_paused) {

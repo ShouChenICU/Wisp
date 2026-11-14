@@ -85,8 +85,10 @@ struct UiPerf {
 
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,
 // optionally, a wisp::hal::Touch -- pass nullptr to run display-only).
-// As a dispatcher it runs its queued slots in every loop iteration, paused
-// or not, and none after stop().
+// As a dispatcher it runs one pass of its queued slots in every loop
+// iteration, paused or not, and none after stop(). A pass runs only the
+// slots queued when it starts, so a slot that re-arms itself in every run
+// shares the task with posted jobs and frames instead of starving them.
 class UiRuntime : public core::Dispatcher {
 public:
     UiRuntime(std::shared_ptr<hal::Display> display, std::shared_ptr<hal::Touch> touch,
@@ -149,10 +151,12 @@ public:
     // core::Dispatcher. schedule() from another thread also posts a no-op
     // to wake a paused task blocked on the post queue; when that post fails
     // the queue is non-empty, which wakes it just the same. Slots run in
-    // FIFO order once per iteration of the UI loop (see set_paused()); a
-    // slot scheduled from another thread runs within about one loop sleep
-    // (10 ms) while rendering. After stop() nothing runs them, so cancel()
-    // never waits.
+    // FIFO order, one pass per iteration of the UI loop (see set_paused());
+    // a slot scheduled from another thread runs within about one loop
+    // sleep (10 ms) while rendering, and one re-armed during a pass runs
+    // in the next. After stop() nothing runs them, so cancel() never
+    // waits; a slot scheduled after stop() stays queued and runs after a
+    // later start().
     void schedule(core::DispatchSlot& slot) override;
     [[nodiscard]] bool cancel(core::DispatchSlot& slot) override;
     bool on_dispatch_thread() const override { return on_ui_thread(); }
@@ -162,8 +166,10 @@ public:
     // task never calls lv_timer_handler() (so no LVGL timer fires and no
     // flush happens) -- it only blocks waiting for, and running,
     // whatever is post()'d to it, exactly like the unpaused loop already
-    // does on top of its own lv_timer_handler() call, and runs the queued
-    // dispatch slots before and after each such wait. This is purely an
+    // does on top of its own lv_timer_handler() call, and runs a pass of
+    // the queued dispatch slots before each such wait (while slots stay
+    // queued it takes posted jobs one at a time without waiting, between
+    // passes). This is purely an
     // atomic flag: pausing never blocks, and never fights stop() for the
     // UI task (ui_main() keeps checking `running` -- see
     // ui_runtime.cpp -- even while the paused branch is blocked waiting
