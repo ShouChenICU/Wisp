@@ -220,7 +220,7 @@ Source: glyph partition review records.
 Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator and unit tests only so far.
 
 - `mem` after a turn with a 64 KB `scene.read_file` result: the `Mem::Large` peak and the `wisp.agent` stack high-water mark.
-- A real turn over weak Wi-Fi: the retry is invisible apart from the delay; no doubled text or speech.
+- A real turn over weak Wi-Fi that stays associated (requests fail at the TCP/TLS level): the retry is invisible apart from the delay; no doubled text or speech. A Wi-Fi disconnect is not retried: the turn ends `network_lost` (during a request) or `network` (between steps), and Home shows the matching short reason.
 - The Stop button and the taller talk overlay on the 1.75C round panel: touch target, spacing, no clipping.
 - A provider 400 for an over-long context on the owner's gateway: the turn recovers (note which `error.code` the gateway sends).
 - The Stop button's colours on a two-colour panel.
@@ -228,6 +228,8 @@ Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator
 - A provider's real `Retry-After` and 4xx bodies over TLS.
 
 ## Agent turn reliability parked review findings
+
+- Deferred: wait for Wi-Fi to reconnect and resume the turn. Today a Wi-Fi disconnect ends a running turn (`Abort::Network` during a request, the `network_up()` check between steps; agent-core spec 3.6); the retries only cover TCP/TLS failures while the link stays up.
 
 - `docs.read` has no tests for an `offset` in the middle of a character or exactly at the end of the text.
 - The agent loop has no test for the keep-1 compression step on its own, nor for the 50/300 clamp of `est_scale_pct`.

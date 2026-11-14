@@ -170,6 +170,7 @@
   - 失败响应的正文最多读 `kErrorBodyBytes`（2 KB），按 JSON 取 `error.code`（没有时取 `error.type`）和 `error.message`，然后丢弃，从不写日志、不保存。正文可能引用 Key，所以只有 `LlmResult::code` 带出去：最多 64 字节，只含 `[A-Za-z0-9_.-]`，包含 Key 的、或者 8 字节以上且是 Key 一部分的都丢掉。
   - `error.code` 为 `context_length_exceeded`，或状态码为 400/413 且 message 含 "context length"、"maximum context"、"too many tokens"（不分大小写）时，结果的 `error` 为 `context_length`，不重试，由 Agent 按 3.3 处理。
   - 已知行为：一个没有正文、`Retry-After` 很长的 429，等待期间没有字节到达，可能先触发 Agent 的 60 秒卡顿检测（`kStallMs`），这一轮以"网络中断"（原因 `network_lost`）结束。
+  - 边界：这些重试只覆盖 TCP/TLS 层的失败（没有收到任何回复内容）。Wi-Fi 断开事件（`net.wifi.state` 不再是 connected）仍然结束这一轮：请求进行中时经 `Abort::Network` 中止，原因 `network_lost`；两步之间由每步开始前的 `network_up()` 检查结束，原因 `network`。等 Wi-Fi 重连后接着跑这一轮暂不做，记在 `docs/backlog.md`。
 
 ### 3.7 电源
 

@@ -19,7 +19,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 ### Fixes
 
 - Recover from an over-long context: summarize harder, then cut the current turn's results, and retry once when the model refuses the request as too long; the token estimate calibrates itself from the model's reported usage.
-- Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key.
+- Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key. These retries cover connection and TLS failures only: a Wi-Fi disconnect still ends the running turn ("lost connection" during a request, "no network" between steps).
 
 Device checks are pending (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run"); these changes are verified in the simulator and unit tests only.
 
