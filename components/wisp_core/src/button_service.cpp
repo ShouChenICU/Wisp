@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 
 namespace wisp::core {
 
@@ -195,6 +196,7 @@ void ButtonService::refresh_buttons() {
         }
         ButtonState state;
         state.id = id;
+        state.power_key = hal::has_role(button->info(), hal::role::kPower);
         state.mode = button->input_mode();
         state.button = std::move(button);
         state.next_poll_ms = 0;
@@ -302,7 +304,9 @@ uint32_t ButtonService::poll_interval_ms(const ButtonState& state) const {
     if (!standby_) {
         return poll_ms_;
     }
-    if (state.id != "button.power") {
+    // Polling costs battery in standby, so only the power key, the wake
+    // source, is polled; a board without one polls nothing.
+    if (!state.power_key) {
         return 0;
     }
     const uint32_t interval = state.button->standby_poll_ms();

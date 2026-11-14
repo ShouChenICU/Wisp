@@ -37,6 +37,7 @@
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -122,7 +123,10 @@ public:
         }
         if (opts_.sd) maybe_register(registry, report, opts_.sd);
         maybe_register(registry, report, std::make_shared<FakeImu>("imu.main"));
-        maybe_register(registry, report, std::make_shared<FakeButton>("button.power"));
+        maybe_register(
+            registry, report,
+            std::make_shared<FakeButton>(
+                "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
     }
 
 private:

@@ -31,6 +31,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/shell/shell.hpp"
@@ -98,7 +99,8 @@ public:
 
     void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport&) override {
         registry.add(std::make_shared<FakeStorage>("storage.int", root_, /*removable=*/false));
-        registry.add(std::make_shared<FakeButton>("button.power"));
+        registry.add(std::make_shared<FakeButton>(
+            "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
         if (wifi_) registry.add(wifi_);
         if (display_) registry.add(display_);
         if (touch_) registry.add(touch_);

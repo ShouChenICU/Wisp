@@ -42,6 +42,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/shell/shell.hpp"
@@ -119,7 +120,8 @@ public:
         registry.add(std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
                                                    /*removable=*/false));
         registry.add(imu_);
-        registry.add(std::make_shared<FakeButton>("button.power"));
+        registry.add(std::make_shared<FakeButton>(
+            "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
         registry.add(power_);
         registry.add(std::make_shared<FakeClock>("clock.main"));
         if (sd_) {

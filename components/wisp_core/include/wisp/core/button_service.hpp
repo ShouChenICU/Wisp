@@ -41,6 +41,8 @@ private:
     struct ButtonState {
         std::shared_ptr<hal::Button> button;
         std::string id;
+        // Role power (hal/roles.hpp): the one key still polled in standby.
+        bool power_key = false;
         hal::ButtonInputMode mode = hal::ButtonInputMode::PollOnly;
         bool edge_attached = false;
         bool saw_edge = false;

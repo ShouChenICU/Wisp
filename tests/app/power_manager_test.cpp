@@ -23,6 +23,7 @@
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -56,7 +57,8 @@ namespace {
 
 class CountedButton : public FakeButton {
 public:
-    explicit CountedButton(std::string id) : FakeButton(std::move(id)) {}
+    explicit CountedButton(std::string id, wisp::Properties caps = {})
+        : FakeButton(std::move(id), std::move(caps)) {}
     bool pressed() override {
         ++reads;
         return FakeButton::pressed();
@@ -68,7 +70,7 @@ public:
 class CountedEdgeButton : public wisp::port::sim::SimButton {
 public:
     explicit CountedEdgeButton(std::shared_ptr<wisp::port::sim::SimInput> input)
-        : SimButton("button.power", Kind::Power, std::move(input)) {}
+        : SimButton("button.power", Kind::Power, std::move(input), wisp::hal::role::kPower) {}
     bool pressed() override {
         ++reads;
         return SimButton::pressed();
@@ -239,7 +241,8 @@ struct Fixture {
     std::shared_ptr<wisp::port::sim::SimInput> input =
         std::make_shared<wisp::port::sim::SimInput>();
     std::shared_ptr<CountedEdgeButton> edge_btn = std::make_shared<CountedEdgeButton>(input);
-    std::shared_ptr<CountedButton> btn = std::make_shared<CountedButton>("button.power");
+    std::shared_ptr<CountedButton> btn = std::make_shared<CountedButton>(
+        "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}});
     std::shared_ptr<CountedButton> vol_btn = std::make_shared<CountedButton>("button.vol_up");
 
     std::shared_ptr<FakeStorage> int_storage =

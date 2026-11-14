@@ -13,6 +13,7 @@
 #include "support/fake_devices.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/shell/conversation.hpp"
 #include "wisp/voice/limits.hpp"
 
@@ -173,7 +174,8 @@ TEST_F(TalkKeyTest, ShortPressWithTheScreenOffDoesNothingElse) {
 TEST(FindTalkButton, UsesRoleCaps) {
     wisp::core::DeviceRegistry reg;
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::nullopt);
-    ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>("button.power")));
+    ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
+        "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}})));
     ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
         "button.vol_up", wisp::Properties{{"role", wisp::Value("volume")}})));
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::nullopt);
