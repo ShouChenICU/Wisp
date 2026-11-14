@@ -11,6 +11,9 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - `docs.read` returns long topics in pages the agent reads on with `next_offset`.
 - The talk key works from a dark screen: held, it wakes the screen and records; a short press only wakes the screen.
 - The home screen lists what is missing to talk instead of one generic hint: "Connecting to Wi-Fi…" while it reconnects, "No models set up yet" on first boot, or the missing items ("Needed: listening, speech"), with the admin address. A muted device does not ask for a speech model. While talking works (say, only speech is missing) why the last try failed shows first, for its usual time, and then the list returns. A tap on the wisp says "Hold the wisp to talk" once everything is set up and no turn runs.
+- The agent can read and control peripherals that describe themselves (a vibration motor, a light, a sensor): `device.list` shows each one's properties and commands, and `device.call` reads a property or runs a command. Arguments are checked against the device's ranges, commands that must not repeat quickly are rate-limited, and nothing asks for confirmation. The activity line shows "Check peripherals" / "Use peripheral", and a command that changes something leaves a note in the conversation.
+- Scenes reach the same devices through `wisp.device.list()`, `wisp.device.get(id, prop)` and `wisp.device.call(id, cmd, args)`; `get` and `call` need the device's id in `scene.json`'s `permissions.device` (at most 8 ids); the agent's `lua.run` reaches every device.
+- The simulator has a vibration motor, `haptic.main` (`pulse`, `effect`, property `active`), that logs what it would do.
 
 ### Changes
 
@@ -25,6 +28,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - A scene, or a `lua.run` script, may have at most 16 `wisp.http`, `wisp.http.download` and `wisp.files` calls waiting for results (`kMaxCallsInFlight`); one more raises the Lua error "too many calls waiting for results (at most 16)", which `pcall` catches, and a place frees once its callback has run. An entry file that starts more than 16 at load fails the install check.
 - Downloads run on their own worker (`wisp.shttp.dl`): a download that streams for minutes no longer holds up a scene's other requests or the agent's `http.fetch`. At most two downloads wait behind the one running; a download and an ordinary request of one scene may now complete in either order.
 - `scene.rollback` returns to the version from before the agent's turn: within one turn only a scene's first install keeps the installed version as the previous one, so two installs and an "undo" no longer land on the turn's own first attempt.
+- Devices are found by role instead of fixed ids: a board names its devices as it likes and marks each one's purpose in caps `role` (`main`, `internal`/`removable` storage, the `power` and `talk` keys). `WISP_MANIFEST` gains caps `role` on every device that has one, caps `schema` on a self-describing device and the class `other` for a device with no typed interface; the admin device page shows them. A board that registers a device without its `main` role, or gives one key both the `power` and `talk` roles, gets a warning at boot.
 
 ### Fixes
 
@@ -33,7 +37,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - A scene no longer loses an HTTP or files result when its message queue is full: results wait in a box of the scene's own, sized for its 16 calls, and the queue only carries a wake-up.
 - Replacing a list's items no longer shows an empty list for a frame: the old rows stay on screen until the new ones arrive, and a tap on an old row in that moment does nothing.
 
-Device checks are pending for the turn reliability, the voice and wake, and the scene scheduling and install safety changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run" and "Scene scheduling: device checks not run"); these changes are verified in the simulator and unit tests only.
+Device checks are pending for the turn reliability, the voice and wake, and the scene scheduling and install safety changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run" and "Scene scheduling: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run".
 
 ## 0.5.2 — 2026-11-14
 

@@ -39,6 +39,7 @@ Portable code asks for devices by literal id. The complete list (comments exclud
 | `components/wisp_app/src/system_duties.cpp:47-48` | `display.main`, `power.main` | screen and power-off | role lookups `main` |
 | `system_duties.cpp:182` | `button.power` (event source) | which key is the power key | id resolved once from role `power` |
 | `components/wisp_app/src/power_manager.cpp:73` | `button.power` (event source) | the same | id resolved once from role `power` |
+| `system_duties.cpp:205,207` | `button.power.short`, `button.power.long` (topics) | the power key's gestures | `<power key id>` + `.short`/`.long` |
 | `components/wisp_app/src/self_check_screen.cpp:62-64` | `display.main`, `power.main`, `clock.main` | readouts | role lookups `main` |
 | `self_check_screen.cpp:246,499,501` | `storage.sd` | the removable card row | role lookup `Storage` `removable` |
 | `components/wisp_app/src/self_check_readouts.cpp:146,148` | `storage.int`, `storage.sd` | row labels | nothing: use the medium's own `removable` flag |
@@ -160,6 +161,8 @@ public:
 - `interface()` is `final` in each interface class, so a concrete device cannot report another interface than the one it inherits. That makes the cast sound without RTTI, which a data field (as `info().cls` is today) cannot guarantee.
 - `DeviceRegistry::add()` also rejects (`InvalidArgument`, recorded by the caller as a failed device) a device whose `info().cls` does not match its interface's class (`Wifi` ↔ `Network`, the others by name), or whose interface is `None` and whose class is not `Other`. This catches mislabelling at boot instead of at a cast.
 
+> In the code: `interface()` is not virtual; `hal::Device` stores the tag, set through a constructor only the interface classes reach, so no subclass can claim an interface it does not implement (`wisp/hal/device.hpp`). `add()` also rejects a typed device that describes commands, a `Display` with any schema, and a schema that fails `hal::check_schema()`.
+
 **One typed interface per device object.** A chip with two functions registers two device objects that share the driver handle, as `EspPmuPowerKey` already does for the AXP2101's power key next to `EspPower` (`esp_button.hpp:53,62`), and as audio already does with separate `EspAudioOut`/`EspAudioIn` objects over one codec bus. Alternative considered: an `as(Interface)` method returning a pointer per interface, so one object can implement several. Rejected: implementing two interfaces that both derive from `Device` needs virtual inheritance or a hand-written subobject table, and no current or planned chip needs it; the generic path (section 3) already lets any typed device expose extra read-only properties.
 
 ### 2.2 What `DeviceClass` is for afterwards
@@ -176,6 +179,8 @@ A **role** says what a device is for, so portable code can ask for "the main dis
 - **How code asks:** `registry.by_role<hal::Display>("main")` returns the device whose interface is `Display` and whose role includes `main`, or null. `hal::has_role(const DeviceInfo&, std::string_view)` parses the caps.
 - **Uniqueness:** `DeviceRegistry::add()` rejects a second device with the same (interface, role) pair (`AlreadyExists`); the board kit records it as a failed device with reason `role main already taken by display.main`. With uniqueness enforced at registration, `by_role()` never has to choose among several candidates; with zero candidates it returns null, exactly as `get<T>("display.main")` does today, and every caller already handles null (for example `app.cpp:353`, `power_monitor.hpp:70`).
 - **Generic devices** may have roles too (`led.status` with role `status`), scoped to interface `None`.
+
+> In the code: for interface `None` the uniqueness key is (kind, role), the kind being the id's prefix before the dot, so `haptic.main` and `led.main` can both hold `main`; a generic device's id must match `^[a-z][a-z0-9_]*\.[a-z0-9_]+$` and be at most 32 bytes. At boot `App` logs a warning for each of Display, Touch, Power, Clock, Imu, AudioOut, AudioIn and Wifi that has devices but no holder of role `main`, and for a key that holds both `power` and `talk`: such a key has no gesture arbitration yet, so holding it to talk also triggers the power key's long press.
 
 Alternative considered: keep fixed ids and make every board use them. Rejected: ids are also event topics (`button_service.cpp:448-452`, `button.power.short`) and the user-visible names in the manifest; a board should name a key after its label (`button.boot`), and the caller only cares about the purpose.
 
@@ -204,11 +209,20 @@ Each row of the table in 1.1.2 becomes the replacement listed there. Three kinds
 
 1. **Role lookup** at the place that builds the service (`app.cpp`, `net_wiring.cpp`, `voice_wiring.cpp`, `loopback.cpp`, `system_duties.cpp`, `self_check_screen.cpp`, `simulator/main.cpp`, `StorageManager::init`).
 2. **Injected id** where a service compares event sources or keys occupancy: `ButtonService` takes the power key's id (resolved once from role `power`; buttons are registered by the board before `ButtonService` starts, `app.cpp:149-161`); `PowerManager` and `SystemDuties` get the same id; `SensorService` uses `imu->info().id` of the device it is given instead of `kDevice`.
+
+   > In the code: `ButtonService` marks the key whose caps hold role `power` when it refreshes its buttons (no constructor argument); `PowerManager` gets the id through `PowerManagerDeps::power_key`; `SystemDuties` resolves it at construction and compares the topics `<id>.short`/`<id>.long`.
+
 3. **Nothing**: `self_check_readouts.cpp:146-148` switches on the medium's `removable` flag that `StorageManager` already reports.
+
+   > In the code: `StorageManager::MediaStatus` has `bool removable` (true for the medium found by role `removable`). The topics `storage.sd.inserted`/`storage.sd.removed` stay fixed system topic names; their `source` is the card's id.
 
 The port's devices stop choosing ids: every `Esp*` constructor takes `id` and `role` from its config struct (`EspDisplayConfig`, `EspTouchConfig`, ... gain two fields), filled by the board kit with today's ids as defaults. `shell::find_talk_button()` becomes `by_role<hal::Button>("talk")`.
 
+> In the code (H1): the ESP devices keep today's ids and add caps `role`; `EspPmuPowerKey` takes a `role`, and the boards give their power keys role `power`. Ids and roles move into the board configs with H2's board kit.
+
 A CI grep guard (in `tools/ci.sh`) fails on a literal `"<class>.main"`, `"net.wifi"`, `"button.power"`, `"storage.int"` or `"storage.sd"` in `components/wisp_*/` other than the port and the simulator board, so the literals do not come back.
+
+> In the code: the guard is in `tools/check_layering.py` (run by `tools/ci.sh`, comments stripped, with a self-test). It rejects `"<kind>.main"`, `"net.wifi"`, `"button.<name>"`, `"storage.int"` and `"storage.sd"` in the portable components and in `simulator/*.cpp`; ports, boards, drivers and tests may name ids.
 
 ---
 
@@ -275,6 +289,8 @@ Decisions:
 - **The table, not caps, is the source.** Alternative considered: drivers write the schema straight into caps as a `Value`, as the roadmap phrased it ("in caps"). Rejected: validation would have to parse a `Value` tree on every call, and a typo in a hand-built map would only show at run time. The table is checked by a unit test per driver (names, ranges, counts) and is rendered into caps for everything that reads the manifest, so the outside view is unchanged.
 - **Five types are enough** for the peripherals in view (haptics, LEDs, buzzers, relays, light/temperature sensors). Lists and nested objects are not supported: a command that needs a list is a sign it should be a typed interface.
 
+> In the code: every schema type is a literal type and drivers declare their tables `constexpr` (they live in flash); a default is a `hal::ParamDefault` scalar (`.def = 80`), not a `Value`, and its kind must match the argument's type (Int: Int; Number: Int or Number; Bool: Bool; String and Enum: String). `validate_args()` fills a missing optional argument with a `Value` of the default's own kind. `hal::check_schema()` also refuses names that are Lua reserved words (scenes pass arguments as a table constructor) and a String parameter whose `max_len` exceeds `hal::kMaxStringParamBytes` (256).
+
 ### 3.3 Calls, threading and errors
 
 - `get(prop)` returns the property's current value; `invoke(cmd, args)` runs a command with arguments already validated and defaulted, and returns a small `Value` (a `Map`, or null).
@@ -282,6 +298,8 @@ Decisions:
 - **Blocking:** a call returns within 50 ms (`hal::kDeviceCallBudgetMs`); a bus transaction of a few milliseconds is fine. An action that lasts longer (a 2 s vibration, a fade) is started by the call and finished by the driver itself (an `os::Timer`), so the caller is never held. `DeviceService` measures each call and logs `WLOG_W` once per (device, command) when the budget is exceeded.
 - **Errors** (`Result<Value>`, existing `ErrorCode`s): `NotFound` (no such device, property or command), `InvalidArgument` (validation; the message names the argument and the rule), `PermissionDenied` (section 3.4), `RateLimited` (section 3.5), `Busy` (another holder has the device exclusively, or the device is powered down for standby), `DeviceFailure` (bus error), `Unsupported` (default implementations).
 - **Power levels:** the generic path never wakes a device. A device that declares caps `standby: "off"` is switched by `PowerManager` like any other (`power_manager.cpp:438-466`), and a call while it is off answers `Busy`.
+
+> In the code: `DeviceService` follows `power.state` (`set_power_level()`) and refuses reads and calls on a `standby: "off"` device at `Standby` and `DeepStandby`; the event arrives after `PowerManager` has switched the devices, so this check is advisory and the driver itself refuses (`Busy`) while off.
 
 ### 3.4 What is deliberately not reachable
 
@@ -333,6 +351,8 @@ public:
 
 `call()` does, in order: find the device; find the command in `describe()`; refuse commands on typed devices; `validate_args`; check `min_interval_ms` (one small table guarded by a mutex); check occupancy (an exclusive holder other than `holder` → `Busy`; nobody takes generic devices exclusively yet, phase I may); `invoke`; measure; log. `App` constructs it next to `SensorService` with no UI dependency.
 
+> In the code: `call()` checks, in order, device (and id length), command, typed device (`PermissionDenied`), `validate_args`, occupancy (`Busy`), standby (`Busy`), then `min_interval_ms`, checked and stamped in one critical section right before `invoke()`, so a call refused for another reason does not start the interval and two racing calls cannot both pass; a call that reaches `invoke()` is stamped whatever it returns. The rate table has 32 fixed slots; when it is full of running intervals a new rate-limited command is refused (`RateLimited`, `retry_after_ms` = the soonest any ends) instead of evicting one. A result whose JSON exceeds 1 KiB becomes `DeviceFailure` ("result too large") here, for both adapters. `for_each()` hands out `list()`'s entries one at a time.
+
 ---
 
 ## 4. The agent tools and the Lua binding
@@ -341,6 +361,8 @@ public:
 
 - Read-only, `ToolRisk::Normal`, `ToolThread::Agent`.
 - Returns `{"devices": [{"id", "class", "model", "role", "schema"}]}` for every device with a schema, at most 32. Typed devices without a schema are left out; the agent already sees their state in `device.status` (`tools_device.cpp:64-80`).
+
+> In the code: the list is rendered one device at a time and stops at 32 devices or 64 KiB of JSON, whole entries only, adding `"truncated": true` when it was cut.
 
 Alternative considered: one tool `device.call` with an `op: "list"`. Rejected: the argument schema would have to allow `id`/`name` to be missing for one op and required for another, which the validator's JSON Schema subset (`components/wisp_agent/src/args_schema.cpp`) cannot express; two small tools are clearer to the model. The roadmap's "one agent tool" therefore becomes two (section 18).
 
@@ -362,6 +384,8 @@ Alternative considered: one tool `device.call` with an `op: "list"`. Rejected: t
 - When the command `changes_state`, the result carries a localised note (new `StrId::AgentNoteDevice`, "Device {id}: {cmd}", zh/ja/en), as `settings.set` does (`tools_device.cpp:130-134`). No confirmation, per the owner's ruling.
 - Holder `"agent"`.
 
+> In the code: errors go through the agent's existing `detail::tool_code()` mapping like every other tool: `not_found`, `invalid_value`, `rate_limited`, `busy`, `device_failure`, and outside the tool description `denied` (a typed device's command; unreachable in practice, since `add()` refuses a typed device that describes commands) and whatever a driver returns outside its contract (`unsupported`, `timeout`, `quota_exceeded`, `unavailable`, else `failed`). An oversized result is `device_failure` (section 3.6), not `result_too_large`. The note names only the device id and the command.
+
 ### 4.3 `wisp.device.list/get/call` in Lua
 
 Added to the existing `wisp.device` table (`components/wisp_scene/src/bind_device.cpp`), following the binding style of `bind_sensor.cpp:42-60`:
@@ -374,9 +398,13 @@ Calls are synchronous on `wisp.scene` (the 50 ms budget keeps the scene task res
 
 **Who may call:** the agent's own `lua.run` context always (owner's autonomy ruling, as the roadmap's phase I also assumes). A scene only when its `scene.json` declares the device: `"permissions": {"device": ["haptic.main"]}` (at most 8 ids, parsed by `core::SceneManifest` next to `http_hosts`, `components/wisp_core/include/wisp/core/scene_manifest.hpp:70`). An undeclared id answers `permission_denied`. The install-time prompt for this permission belongs to phase I's general mechanism (open question 17.2-3).
 
+> In the code: `wisp.device.get` needs the same `permissions.device` entry as `call`, and `permission_denied` is decided before the service is reached; `list()` needs none and returns at most 32 devices, with nothing signalling a cut. A command whose result is null returns `true`. `rate_limited` reaches a scene as the code alone (no `retry_after_ms`). A call's arguments are capped at 16 KiB of JSON and nesting depth 2, which every argument set a schema allows fits. Background and headless scenes may call declared devices.
+
 ### 4.4 Admin console
 
 No new REST endpoint in this phase. `GET /api/v1/devices` already returns caps (`routes_device.cpp:31-40`), which now include `role` and `schema`, so the web page can show them. A `POST` to call a command can be added later as another thin adapter over `DeviceService`.
+
+> In the code: `GET /api/v1/devices` renders caps with `hal::caps_of()`, as the manifest does, so `schema` is included. The web page shows class `other` with a translated name; caps (role, schema) render generically.
 
 ---
 
@@ -616,6 +644,8 @@ The phase is too large for one plan. Three plans, each leaving both boards worki
 5. `device.list`, `device.call`; `wisp.device.list/get/call` with `permissions.device`.
 Delivers: no fixed ids in portable code; generic devices usable by the agent and scenes (in the simulator at once, on hardware once a board adds one).
 
+> In the code: H1 did not move the ESP ids into configs (step 2): the ESP devices keep today's ids and gain caps `role`; that move is H2's, with the board kit's slots.
+
 **Plan H2: board kit, driver adapters, target readiness** (ESP; device checks on both boards). Depends on H1 (ids and roles come from configs).
 1. Adapters into `drivers/*`, `board.cmake`, the port drops chip requirements, the layering rule.
 2. `boards/common/` kit and `BoardSpec`; the 2.16 first, then the 1.75C; bmgr verifications of 7.1 and 7.3 come first.
@@ -650,6 +680,8 @@ Following AGENTS.md section 5 (GoogleTest, TDD, clean output) and `docs/testing.
 - Keypad: `push_key` ordering and overflow; a dialog's default focus.
 - Port headers that are pure (downmix by roles, target fact tables) under `tests/port_esp/`, as today.
 - Driver schema tables under `tests/drivers/` (names, counts, ranges).
+
+> In the code: `AgentWiring::tools()` and `App::agent_tools()` (const pointers to the agent's `ToolRegistry`, null without an agent) let tests check the tool order and the end-to-end path through the real wiring; `Platform::device_clock_ms` lets them move `DeviceService`'s clock.
 
 ### 14.2 Simulator and smoke tests
 
