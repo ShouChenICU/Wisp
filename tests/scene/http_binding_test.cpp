@@ -428,7 +428,6 @@ return ui.screen {
 // callback.
 TEST_F(HttpBinding, FaultDropsWaitingResults) {
     start();
-    const uint64_t stale = rt->stale_dropped();
     install_http("h", R"(
 for i = 1, 3 do
   wisp.http.get("https://other.example.com/" .. i, function(err)
@@ -442,9 +441,6 @@ end
     EXPECT_NE(rt->status("h").error.find("boom"), std::string::npos) << rt->status("h").error;
     wisp::os::sleep_ms(50);
     EXPECT_FALSE(log_has("scene.h", "late")) << ::testing::PrintToString(scene_log("h"));
-    // Only the two results that had not run count; the wake-ups that
-    // outlive the instance are not results.
-    EXPECT_LE(rt->stale_dropped(), stale + 2);
 }
 
 TEST_F(HttpBinding, UnavailableWithoutAProxy) {

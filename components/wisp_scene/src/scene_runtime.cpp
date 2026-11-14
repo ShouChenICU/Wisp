@@ -947,8 +947,9 @@ void SceneRuntime::handle(SceneMessage& m) {
         clock_set();
     } else if (std::holds_alternative<msg::Completed>(body)) {
         // A wake-up only: the lanes take the results from the box. One for
-        // an instance that is gone carries nothing; the box counted what it
-        // held when it closed (stale_dropped() counts results, not wake-ups).
+        // an instance that is gone is stale.
+        if (find(m.instance) == nullptr && !(agent_ && agent_->instance == m.instance))
+            ++stale_dropped_;
     } else if (auto* b = std::get_if<msg::Sensor>(&body)) {
         Slot* s = target(m);
         // Paused in the background: a batch already on its way is dropped.
