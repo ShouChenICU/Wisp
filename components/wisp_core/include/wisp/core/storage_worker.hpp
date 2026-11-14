@@ -19,9 +19,10 @@
 // a second worker of the same role started while the first runs takes
 // the role over (wisp/os/flash_guard.hpp), so the app runs one of each;
 // StorageRouter (wisp/core/storage_router.hpp) picks between them.
-// The SD I/O worker never waits for the flash worker: run_sync() and
-// drain() of a Flash-role worker refuse a caller on the SD I/O thread, so
-// a card job cannot block on wisp.fs while wisp.fs waits for a card lock.
+// The SD I/O worker never waits for the flash worker: run_sync(), drain()
+// and stop() of a Flash-role worker refuse a caller on the SD I/O thread,
+// so a card job cannot block on wisp.fs while wisp.fs waits for a card
+// lock.
 //
 // Jobs run one at a time on the one worker task, from three lanes in
 // priority order (spec 3.1): Interactive (short jobs a user or the agent
@@ -154,7 +155,8 @@ public:
 
     // Stops accepting jobs, lets the worker finish every job already
     // queued in every lane, then joins it. Idempotent; a no-op before
-    // start().
+    // start(), and for a Flash-role worker on the SD I/O thread (it would
+    // wait for the flash worker; see the file header).
     void stop();
 
     // Queues `job` on `lane`. Returns false without queuing it if that

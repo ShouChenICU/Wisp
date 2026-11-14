@@ -110,6 +110,9 @@ Result<void> StorageWorker::start() {
 }
 
 void StorageWorker::stop() {
+    if (sd_thread_waits_for_flash(config_.role)) {
+        return;  // it would wait for every queued flash job; see the header
+    }
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         if (!accepting_) {

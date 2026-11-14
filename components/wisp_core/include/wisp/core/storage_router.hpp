@@ -23,12 +23,16 @@
 //     falls back to wisp.fs because the SD I/O worker is stopping may run
 //     before card jobs still queued there.
 //   - Waiting: the SD I/O worker never waits for the flash worker --
-//     StorageWorker::run_sync() and drain() of the flash worker refuse a
-//     caller on the SD I/O thread (InvalidArgument), so a card job cannot
-//     block on wisp.fs while wisp.fs waits for a card lock. wisp.fs may
-//     wait for the SD I/O worker, but only while holding no lock a card
-//     job takes (StorageManager's SD lock, a scene's card lock): the card
-//     job would wait for it and the wait would never end.
+//     StorageWorker::run_sync(), drain() and stop() of the flash worker
+//     refuse a caller on the SD I/O thread, so a card job cannot block on
+//     wisp.fs while wisp.fs waits for a card lock.
+//   - Caller obligation, not checked at run time: a wisp.fs job may wait
+//     for the SD I/O worker (run_sync(Medium::Sd), call_on()) only while
+//     it holds no lock that a card job takes: StorageManager's sd_io_mu_
+//     (held only inside one StorageManager call, so never across such a
+//     wait) or any caller-side card lock (such as one serializing a
+//     scene's card files). The card job would wait for that lock and
+//     wisp.fs for the card job, forever.
 //   - Full lanes: a full lane is reported (submit() false, run_sync()
 //     Busy), never retried on the other worker, which would break the
 //     order of the lane it was meant for.
@@ -76,7 +80,8 @@ public:
     // timeout rules, except that Medium::Sd never runs inline on the
     // caller because the SD I/O worker stopped: it goes to the flash
     // worker then (which itself runs inline before start() / after its
-    // own stop()). Called from an SD I/O job, Medium::Sd runs inline.
+    // own stop()). Called from an SD I/O job, Medium::Sd runs inline,
+    // including while stop_sd() drains the jobs queued before it.
     Result<void> run_sync(Medium m, std::function<void()> job, uint32_t timeout_ms,
                           IoLane lane = IoLane::Normal);
 

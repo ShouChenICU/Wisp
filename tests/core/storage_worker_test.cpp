@@ -613,3 +613,15 @@ TEST(StorageWorker, RunSyncFromTheSdIoThreadOntoTheFlashWorkerIsRefused) {
         EXPECT_FALSE(flag);
     }
 }
+
+TEST(StorageWorker, StopOfTheFlashWorkerFromTheSdIoThreadIsRefused) {
+    StorageWorker f;
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(f.start());
+    ASSERT_TRUE(s.start());
+    ASSERT_TRUE(s.run_sync([&] { f.stop(); }, 5000));
+    EXPECT_TRUE(f.running());
+    EXPECT_TRUE(f.submit([] {}));
+    f.stop();
+    EXPECT_FALSE(f.running());
+}

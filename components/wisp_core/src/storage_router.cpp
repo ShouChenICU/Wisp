@@ -44,11 +44,15 @@ Result<void> StorageRouter::run_sync(Medium m, std::function<void()> job, uint32
     if (!job) {
         return Result<void>::err(ErrorCode::InvalidArgument, "empty storage job");
     }
+    if (m == Medium::Sd && sd_ != nullptr && sd_->on_worker()) {
+        // Inline, as for any worker called from its own job -- also while
+        // stop_sd() drains the jobs queued before it, when worker_for()
+        // already answers the flash worker, which would refuse this thread.
+        return sd_->run_sync(std::move(job), timeout_ms, lane);
+    }
     StorageWorker& w = worker_for(m);
-    if (&w == &flash_ || w.on_worker()) {
-        // On the SD I/O worker's own thread its run_sync() runs the job
-        // inline, as for any worker called from its own job.
-        return w.run_sync(std::move(job), timeout_ms, lane);
+    if (&w == &flash_) {
+        return flash_.run_sync(std::move(job), timeout_ms, lane);
     }
     // Not w.run_sync(): once the SD I/O worker has stopped it would run the
     // job inline on this thread, which need not be allowed to touch the

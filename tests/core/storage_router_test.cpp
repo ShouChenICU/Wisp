@@ -25,6 +25,15 @@ struct ReleaseOnExit {
     ~ReleaseOnExit() { sem.give(); }
 };
 
+// Joins `t` when the test body exits, including by a failed ASSERT: a
+// joinable std::thread's destructor would abort the binary.
+struct JoinOnExit {
+    std::thread& t;
+    ~JoinOnExit() {
+        if (t.joinable()) t.join();
+    }
+};
+
 // Parks `w`'s thread in a job until `release` is given.
 void gate(StorageWorker& w, wisp::os::Semaphore& release) {
     wisp::os::Semaphore started(1, 0);
@@ -131,6 +140,9 @@ TEST(StorageRouter, StopSdRunsQueuedSdJobsFirst) {
         s1_before_return = s1.load();
         stopped = true;
     });
+    // Declared after `stopper`: releases the gate before joining it.
+    ReleaseOnExit release_first{release};
+    JoinOnExit join{stopper};
     // stop_sd() has begun (the SD worker no longer accepts work) and waits
     // on the gated job; nothing of the SD lane ran yet.
     while (sd.running()) wisp::os::sleep_ms(1);
@@ -138,8 +150,8 @@ TEST(StorageRouter, StopSdRunsQueuedSdJobsFirst) {
     EXPECT_FALSE(stopped);
     // Meanwhile new SD work goes to the flash worker.
     std::atomic<bool> later_on_flash{false};
-    ASSERT_TRUE(r.submit(Medium::Sd, [&] { later_on_flash = flash.on_worker(); }));
-    ASSERT_TRUE(flash.drain(5000));
+    EXPECT_TRUE(r.submit(Medium::Sd, [&] { later_on_flash = flash.on_worker(); }));
+    EXPECT_TRUE(flash.drain(5000));
     EXPECT_TRUE(later_on_flash);
 
     release.give();
@@ -207,4 +219,44 @@ TEST(StorageRouter, CallOnReturnsTheResult) {
     ASSERT_TRUE(w);
     EXPECT_EQ(w.value(), 8);
     EXPECT_TRUE(inline_run);
+}
+
+TEST(StorageRouter, AnSdJobRunSyncWhileStoppingRunsInline) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker flash;
+    StorageWorker sd(StorageWorker::sd_io_config());
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(flash.start());
+    ASSERT_TRUE(sd.start());
+    StorageRouter r(flash, &sd);
+
+    // Queued before stop_sd(), so it runs while the SD worker drains and no
+    // longer reports running().
+    wisp::os::Semaphore started(1, 0);
+    std::atomic<int> sync_code{-1};
+    std::atomic<int> call_code{-1};
+    std::atomic<int> inline_runs{0};
+    ASSERT_TRUE(r.submit(Medium::Sd, [&] {
+        started.give();
+        release.take(wisp::os::kForever);
+        auto a = r.run_sync(
+            Medium::Sd, [&] { inline_runs += sd.on_worker() ? 1 : 0; }, wisp::os::kForever);
+        sync_code = a ? 0 : static_cast<int>(a.error().code);
+        auto b = wisp::core::call_on<int>(&r, Medium::Sd, [&] {
+            inline_runs += sd.on_worker() ? 1 : 0;
+            return wisp::Result<int>::ok(3);
+        });
+        call_code = b ? 0 : static_cast<int>(b.error().code);
+    }));
+    ASSERT_TRUE(started.take(5000));
+    std::thread stopper([&] { r.stop_sd(); });
+    ReleaseOnExit release_first{release};
+    JoinOnExit join{stopper};
+    while (sd.running()) wisp::os::sleep_ms(1);
+
+    release.give();
+    stopper.join();
+    EXPECT_EQ(sync_code.load(), 0);
+    EXPECT_EQ(call_code.load(), 0);
+    EXPECT_EQ(inline_runs.load(), 2);
 }
