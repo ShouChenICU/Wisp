@@ -5,7 +5,8 @@
 
 namespace wisp::port::sim {
 
-SimImu::SimImu(std::string id, std::shared_ptr<SimInput> input) : input_(std::move(input)) {
+SimImu::SimImu(std::string id, std::shared_ptr<SimInput> input, std::string role)
+    : input_(std::move(input)) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sim-imu";
@@ -13,6 +14,7 @@ SimImu::SimImu(std::string id, std::shared_ptr<SimInput> input) : input_(std::mo
         {"accel", true},       {"gyro", true},     {"magnetometer", false},
         {"max_rate_hz", 1000}, {"standby", "off"},
     };
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 wisp::Result<wisp::hal::ImuSample> SimImu::read() {

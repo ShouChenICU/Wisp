@@ -75,6 +75,23 @@ EXIT_AFTER_MS = 3000
 
 # The 13 devices SimBoard::init() registers by default (see
 # components/wisp_port_sim/sim_board.cpp).
+# caps.role of each simulated device (wisp/hal/roles.hpp); button.vol_up
+# serves no portable role, so it declares none.
+EXPECTED_ROLES = {
+    "audio_in.main": "main",
+    "audio_out.main": "main",
+    "button.power": "power",
+    "button.vol_down": "talk",
+    "clock.main": "main",
+    "display.main": "main",
+    "imu.main": "main",
+    "net.wifi": "main",
+    "power.main": "main",
+    "storage.int": "internal",
+    "storage.sd": "removable",
+    "touch.main": "main",
+}
+
 EXPECTED_DEVICE_IDS = {
     "audio_in.main",
     "audio_out.main",
@@ -341,6 +358,11 @@ def case_default(sim_path, tmp_root):
         display_safe_area == DEFAULT_SAFE_AREA,
         f"display.main safe_area == {display_safe_area}, expected {DEFAULT_SAFE_AREA}",
     )
+
+    for device_id, device in manifest_devices.items():
+        role = device.get("caps", {}).get("role")
+        want = EXPECTED_ROLES.get(device_id)
+        expect(role == want, f"{device_id} caps.role == {role!r}, expected {want!r}")
 
     # All devices report "ok", with two controller-approved exceptions:
     # storage.sd (not asserted here; --no-sd covers its "missing"

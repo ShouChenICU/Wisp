@@ -69,6 +69,7 @@
 #include "esp_board_periph.h"
 #include "esp_err.h"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/esp_audio.hpp"
 #include "wisp/port/esp/esp_button.hpp"
 #include "wisp/port/esp/esp_clock.hpp"
@@ -359,10 +360,10 @@ struct ButtonSpec {
 void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
     constexpr auto cls = wisp::hal::DeviceClass::Button;
     constexpr ButtonSpec kButtons[] = {
-        {kPinBtnPower, false, "button.power", "axp2101-pwrkey", ""},
+        {kPinBtnPower, false, "button.power", "axp2101-pwrkey", wisp::hal::role::kPower},
         {kPinBtnVolUp, true, "button.vol_up", "gpio-button", ""},
         // Vol- is the BOOT key (GPIO0): hold-to-talk (mvp spec 6.3).
-        {kPinBtnVolDown, true, "button.vol_down", "gpio-button", "talk"},
+        {kPinBtnVolDown, true, "button.vol_down", "gpio-button", wisp::hal::role::kTalk},
     };
     for (const ButtonSpec& spec : kButtons) {
         gpio_config_t cfg = {};

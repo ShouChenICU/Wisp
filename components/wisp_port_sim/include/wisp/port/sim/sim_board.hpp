@@ -55,8 +55,9 @@ namespace wisp::port::sim {
 // copy_framebuffer() at ~60 Hz from the main thread.
 class SimDisplay : public wisp::hal::Display {
 public:
+    // `role`, when not empty, becomes caps "role" (wisp/hal/roles.hpp).
     SimDisplay(std::string id, int32_t width, int32_t height, std::string shape,
-               int32_t corner_radius, std::string panel = "amoled");
+               int32_t corner_radius, std::string panel = "amoled", std::string role = {});
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<void> flush(const wisp::hal::Area& area, const uint16_t* rgb565) override;

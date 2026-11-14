@@ -72,10 +72,10 @@ After `init()`, `App::start()` automatically adds a `DeviceState::Ok` for every 
 | `Power` | `battery`, `charging_status` |
 | `Storage` | `removable`, `fs` |
 | `Network` | `ap` (bool, whether the hotspot `start_ap()` is supported; when false, `WifiService` does not open the setup hotspot), `bands` (list of bands, such as `["2.4GHz"]`) |
-| `Button` | Nothing required; the talk key adds `role: "talk"` (see "Voice and the talk key" below) |
+| `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below); other keys need nothing |
 | `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"` |
 
-In addition, every device that switches on and off with the power level declares `standby` (see "Standby and power levels" below).
+In addition, every device that switches on and off with the power level declares `standby` (see "Standby and power levels" below), and every device portable code looks up declares `role`, the name it is found by (`wisp/hal/roles.hpp`): `"main"` for the display, touch, IMU, power, clock, Wi-Fi and both audio devices, `"internal"`/`"removable"` for the two storage devices, and the button roles above. One interface has at most one device per role; `DeviceRegistry::add()` refuses a second one, and the board records it as failed.
 
 You do not compute the `Display` `safe_area` yourself: `DeviceRegistry::manifest()` derives it from `shape`/`corner_radius`/`width`/`height` with `wisp::hal::safe_rect()`, and the device only fills in `shape`. A missing or unrecognised `shape` is treated as `circle` (the most conservative) with a warning. For `rounded_rect`/`circle`, `safe_rect()` leaves a fixed margin of 4 px beyond the exact visible boundary (`kSafeCornerMargin`, `wisp/hal/display_geometry.cpp`), so that text placed right against a rounded corner does not lose its first glyph to the real panel.
 

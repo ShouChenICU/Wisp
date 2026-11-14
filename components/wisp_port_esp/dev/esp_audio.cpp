@@ -9,6 +9,7 @@
 #include "esp_err.h"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/audio_downmix.hpp"
 #include "wisp/port/esp/i2s_power.hpp"
 
@@ -136,6 +137,7 @@ EspAudioOut::EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s
     info_.cls = kClass;
     info_.model = std::move(model);
     info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
 }
 
 // No esp_codec_dev_delete(): the handle is owned by bmgr (it lives for
@@ -253,6 +255,7 @@ EspAudioIn::EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_c
     info_.cls = kClass;
     info_.model = std::move(model);
     info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
     std::memset(scratch_, 0, sizeof(scratch_));
 }
 

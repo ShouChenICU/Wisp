@@ -26,8 +26,15 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/button.hpp"
+#include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
+#include "wisp/hal/imu.hpp"
+#include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
+#include "wisp/hal/storage.hpp"
 #include "wisp/hal/touch.hpp"
+#include "wisp/hal/wifi.hpp"
 #include "wisp/port/sim/sim_input.hpp"
 #include "wisp/shell/conversation.hpp"
 
@@ -124,6 +131,12 @@ protected:
         return it->second.as_string();
     }
 
+    template <class T>
+    std::string id_by_role(const char* role) const {
+        auto device = registry_->by_role<T>(role);
+        return device ? device->info().id : "<none>";
+    }
+
     std::unique_ptr<wisp::port::sim::SimBoard> board_;
     std::unique_ptr<wisp::core::DeviceRegistry> registry_;
     wisp::core::BootReport report_;
@@ -148,6 +161,24 @@ TEST_F(SimBoard, DevicesDeclareStandbyPolicy) {
     EXPECT_EQ(standby_of("clock.main"), "");
     EXPECT_EQ(standby_of("storage.int"), "");
     EXPECT_EQ(standby_of("storage.sd"), "");
+}
+
+TEST_F(SimBoard, EveryTypedDeviceIsFoundByRole) {
+    namespace hal = wisp::hal;
+    namespace role = wisp::hal::role;
+    EXPECT_EQ(id_by_role<hal::Display>(role::kMain), "display.main");
+    EXPECT_EQ(id_by_role<hal::Touch>(role::kMain), "touch.main");
+    EXPECT_EQ(id_by_role<hal::Imu>(role::kMain), "imu.main");
+    EXPECT_EQ(id_by_role<hal::Power>(role::kMain), "power.main");
+    EXPECT_EQ(id_by_role<hal::Clock>(role::kMain), "clock.main");
+    EXPECT_EQ(id_by_role<hal::Wifi>(role::kMain), "net.wifi");
+    EXPECT_EQ(id_by_role<hal::Storage>(role::kInternal), "storage.int");
+    EXPECT_EQ(id_by_role<hal::Storage>(role::kRemovable), "storage.sd");
+    EXPECT_EQ(id_by_role<hal::Button>(role::kPower), "button.power");
+    EXPECT_EQ(id_by_role<hal::Button>(role::kTalk), "button.vol_down");
+    // Null on a host whose SDL build offers no such audio device.
+    EXPECT_EQ(registry_->by_role<hal::AudioOut>(role::kMain), registry_->find("audio_out.main"));
+    EXPECT_EQ(registry_->by_role<hal::AudioIn>(role::kMain), registry_->find("audio_in.main"));
 }
 
 TEST_F(SimBoard, DisplayFollowsPowerLevel) {
