@@ -994,8 +994,10 @@ TEST(AppScenes, ShellScenesListsAvailabilityDataAndIcons) {
     wiring.start_storage();
     ASSERT_NE(wiring.files(), nullptr);
     ASSERT_FALSE(wiring.files()->sd_online());
-    std::vector<wisp::shell::ShellScene> got;
-    ASSERT_TRUE(wiring.worker().run_sync([&] { got = wiring.shell_scenes().scenes; }, 5000));
+    // From this thread, as the shell's listing task calls it: every read
+    // goes through the workers (the simulator aborts on a direct one).
+    ASSERT_FALSE(wisp::os::on_flash_thread());
+    std::vector<wisp::shell::ShellScene> got = wiring.shell_scenes().scenes;
     std::map<std::string, const wisp::shell::ShellScene*> by_id;
     for (const auto& s : got) by_id[s.id] = &s;
     ASSERT_EQ(by_id.size(), 4u);
@@ -1023,14 +1025,13 @@ TEST(AppScenes, ShellScenesListsAvailabilityDataAndIcons) {
 
     // Whether there is data to delete is asked on its own.
     bool counter_data = false, photos_data = true;
-    std::shared_ptr<const wisp::os::LargeBuffer> again;
     ASSERT_TRUE(wiring.worker().run_sync(
         [&] {
             counter_data = wiring.scene_has_data("counter");
             photos_data = wiring.scene_has_data("photos");
-            again = wiring.shell_icon("clock");
         },
         5000));
+    std::shared_ptr<const wisp::os::LargeBuffer> again = wiring.shell_icon("clock");
     EXPECT_TRUE(counter_data);
     EXPECT_FALSE(photos_data);
     ASSERT_NE(again, nullptr);
@@ -1104,11 +1105,8 @@ struct ListingRig {
         return wiring->repository()->install(zip.span(), {});
     }
 
-    wisp::shell::ShellListing list() {
-        wisp::shell::ShellListing out;
-        EXPECT_TRUE(wiring->worker().run_sync([&] { out = wiring->shell_scenes(); }, 5000));
-        return out;
-    }
+    // From this thread, as the shell's listing task calls it.
+    wisp::shell::ShellListing list() { return wiring->shell_scenes(); }
 
     // StorageManager::refresh() on the flash thread, as the app runs it.
     void refresh() {
@@ -1211,6 +1209,26 @@ TEST(AppScenes, ListingCachedAcrossOpens) {
     EXPECT_EQ(again->icon_png, nullptr);  // the hash alone
     EXPECT_EQ(again->icon_hash, clock->icon_hash);
     EXPECT_EQ(ListingRig::find(second, "counter")->name, "计数器");
+}
+
+// What the shell asks before it lists again on a warm open: current
+// until an install, a card change or a failed read; never in dev mode.
+TEST(AppScenes, ShellListingCurrentUntilSomethingChanges) {
+    ListingRig r(/*card_in=*/true);
+    r.put("photos", "相册", R"(,"files":"sd")");
+    r.put("clock", "时钟");
+    r.start();
+    EXPECT_FALSE(r.wiring->shell_listing_current());  // never listed
+    const wisp::shell::ShellListing first = r.list();
+    EXPECT_TRUE(r.wiring->shell_listing_current());
+    ASSERT_TRUE(r.install("todo", "待办"));
+    EXPECT_FALSE(r.wiring->shell_listing_current());
+    const wisp::shell::ShellListing second = r.list();
+    EXPECT_GT(second.generation, first.generation);
+    EXPECT_TRUE(r.wiring->shell_listing_current());
+    r.sd_dev->online_flag = false;
+    r.refresh();
+    EXPECT_FALSE(r.wiring->shell_listing_current());
 }
 
 TEST(AppScenes, InstallInvalidatesListing) {

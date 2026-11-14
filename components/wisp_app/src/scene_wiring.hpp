@@ -174,9 +174,12 @@ public:
 
     // The shell's scene list (ShellDeps::list_scenes): every installed
     // scene with its icon, whether it runs in the background and whether
-    // it can run now (its files are not on a card that is out). On
-    // worker() only. Empty without a repository or when listing fails
-    // (logged).
+    // it can run now (its files are not on a card that is out). On the
+    // shell's listing task, one call at a time (not on the worker or the
+    // UI thread): every read is a job of the repository's, of SceneFiles'
+    // or of the worker's, waited for here. Empty without a repository or
+    // when listing fails (logged); its generation is the repository's
+    // (SceneRepository::changed_since()) it is up to date with.
     //
     // Kept between calls (outside dev mode, whose working directory
     // changes behind the repository's back): only what changed since the
@@ -193,8 +196,12 @@ public:
     // from storage. An icon comes as its bytes when read for this call and
     // as its icon_hash alone after that (shell_icon() reads it again).
     shell::ShellListing shell_scenes();
-    // ShellDeps::read_scene_icon: scene `id`'s icon file, or null. On
-    // worker() only.
+    // ShellDeps::listing_current: whether shell_scenes() would read nothing
+    // (its listing is cached, nothing changed in the repository and the
+    // card is as it saw it). No file work: any thread.
+    bool shell_listing_current() const;
+    // ShellDeps::read_scene_icon: scene `id`'s icon file, or null. On the
+    // shell's listing task, like shell_scenes().
     std::shared_ptr<const os::LargeBuffer> shell_icon(const std::string& id);
     // ShellDeps::scene_has_data: whether deleting `id` with its data would
     // find any (SceneRepository::removal()). Read when asked, never kept:
@@ -266,9 +273,9 @@ private:
         uint64_t icon_hash = 0;
         bool available = true;
     };
-    // shell_scenes() helpers, on the worker: the entry for manifest `m`
-    // (its icon read into `bytes`), and whether `id` can run with the card
-    // as `online` says.
+    // shell_scenes() helpers, on its task: the entry for manifest `m` (its
+    // icon read into `bytes`), and whether `id` can run with the card as
+    // `online` says.
     ListedScene listed_scene(const core::SceneManifest& m,
                              std::shared_ptr<const os::LargeBuffer>& bytes);
     bool can_run(const os::LargeString& id, bool online);
@@ -294,15 +301,17 @@ private:
     // Bumped by those events (on the bus thread); shell_scenes() then
     // asks again whether each scene can run.
     std::atomic<uint64_t> sd_changes_{0};
-    // shell_scenes()'s listing, sorted by id; worker only. `listed_` is
-    // false until one has been read (and after a failed read), `listed_gen_`
-    // the repository generation it is up to date with, and `listed_online_`
-    // / `listed_sd_` the card as its `available` flags saw it.
+    // shell_scenes()'s listing, sorted by id; on its task only. `listed_`
+    // is false until one has been read (and after a failed read),
+    // `listed_gen_` the repository generation it is up to date with, and
+    // `listed_online_` / `listed_sd_` the card as its `available` flags saw
+    // it; atomics, since shell_listing_current() reads them from the UI
+    // thread.
     os::LargeVector<ListedScene> listing_;
-    bool listed_ = false;
-    uint64_t listed_gen_ = 0;
-    bool listed_online_ = true;
-    uint64_t listed_sd_ = 0;
+    std::atomic<bool> listed_{false};
+    std::atomic<uint64_t> listed_gen_{0};
+    std::atomic<bool> listed_online_{true};
+    std::atomic<uint64_t> listed_sd_{0};
     // Declared before runtime_, so the runtime goes first: it cancels its
     // scene's requests through the proxy while it stops.
     os::LargeUnique<net::SceneHttp> http_;

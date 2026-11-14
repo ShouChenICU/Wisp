@@ -7,7 +7,8 @@
 // its width; each card is square. A card shows the scene's icon or, without
 // one, the first character of its name, and the name below. The icon comes
 // already decoded and scaled to icon_side() (decode_scene_icon(), run by
-// the shell on the storage worker), so building a card decodes nothing and
+// the shell on its listing task "wisp.shell.list"), so building a card
+// decodes nothing and
 // drawing it is a plain copy, never a per-frame transform. A scene running
 // in the background carries LV_SYMBOL_PLAY; one that cannot run now (its
 // files are on an SD card that is out) is greyed out and takes no tap or
@@ -20,8 +21,8 @@
 // SceneListDeps::delete_scene, which asks with the system dialog. With no
 // scenes the page says how to get one (SceneListEmpty).
 //
-// The scenes come from the shell (ShellDeps::list_scenes on the storage
-// worker), handed in with set_scenes() on the UI thread. Until the first
+// The scenes come from the shell (ShellDeps::list_scenes on its listing
+// task), handed in with set_scenes() on the UI thread. Until the first
 // set_scenes() the page shows it is loading: dim placeholder cards, only
 // as many rows as lie wholly inside the safe area, cheap to draw since
 // they slide along with a page drag. A listing the same as the one shown
@@ -68,10 +69,14 @@ struct ShellScene {
 };
 
 // What ShellDeps::list_scenes hands over. `cached`: nothing was read from
-// storage for it (the shell's timing line says so).
+// storage for it (the shell's timing line says so). `generation`: the
+// repository generation (SceneRepository::changed_since()) the listing is
+// up to date with, 0 from a lister that keeps none or a failed read; the
+// shell drops a listing older than the one it shows.
 struct ShellListing {
     std::vector<ShellScene> scenes;
     bool cached = false;
+    uint64_t generation = 0;
 };
 
 // An icon file's content hash (64-bit FNV-1a), never 0.
@@ -86,7 +91,7 @@ inline constexpr uint32_t kIconMaxSide = 256;
 // keeping its aspect (averaging when it shrinks). Null for anything that
 // is not a PNG of at most kIconMaxSide a side, or without the memory.
 // Changes no LVGL state, so it runs on any thread once lv_init() has run
-// (the shell runs it on the storage worker); its memory comes from
+// (the shell runs it on its listing task); its memory comes from
 // Mem::Large.
 std::shared_ptr<const SceneIcon> decode_scene_icon(const os::LargeBuffer& png, int32_t side);
 

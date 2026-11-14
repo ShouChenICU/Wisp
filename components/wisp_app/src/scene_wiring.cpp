@@ -527,8 +527,12 @@ SceneWiring::ListedScene SceneWiring::listed_scene(const core::SceneManifest& m,
 bool SceneWiring::can_run(const os::LargeString& id, bool online) {
     core::SceneFiles* sf = files_.get();
     if (sf == nullptr || online) return true;
-    const std::string_view sid(id.data(), id.size());
-    auto fi = sf->info(sid);
+    // A job of the scene's (SceneFiles::submit()): the record may need
+    // loading, and info() takes the scene's I/O lock, which a job on the
+    // worker may hold while it waits for nothing of this task's.
+    const std::string sid(id.data(), id.size());
+    auto fi = core::run_files<core::SceneFilesInfo>(
+        *sf, sid, [sid](core::SceneFiles& f) { return f.info(sid); });
     if (!fi) {
         // A scene that wants the card and has no files yet is refused
         // outright while the card is out.
@@ -548,7 +552,7 @@ shell::ShellListing SceneWiring::shell_scenes() {
     // Asked before reading, so a change landing while this reads is read
     // again next time.
     uint64_t gen = 0;
-    const std::vector<std::string> changed = repo->changed_since(listed_gen_, gen);
+    const std::vector<std::string> changed = repo->changed_since(listed_gen_.load(), gen);
     const uint64_t sd = sd_changes_.load();
     const bool online = files_ == nullptr || files_->sd_online();
     const bool full = !listed_ || repo->dev();
@@ -610,12 +614,13 @@ shell::ShellListing SceneWiring::shell_scenes() {
     }
     if (full || !changed.empty() || card) {
         // A failed read above leaves listed_ false for a full read next time.
-        listed_ = full || listed_;
+        listed_ = full || listed_.load();
         listed_gen_ = gen;
         listed_sd_ = sd;
         listed_online_ = online;
     }
     out.cached = !full && changed.empty() && !card;
+    out.generation = listed_gen_.load();
     const uint64_t t1 = os::now_us();
 
     std::vector<std::string> background;
@@ -639,6 +644,15 @@ shell::ShellListing SceneWiring::shell_scenes() {
            static_cast<unsigned>(full ? listing_.size() : changed.size()),
            static_cast<unsigned>(listing_.size()), out.cached ? 1u : 0u);
     return out;
+}
+
+bool SceneWiring::shell_listing_current() const {
+    const core::SceneRepository* repo = repo_.get();
+    if (repo == nullptr || repo->dev() || !listed_.load()) return false;
+    uint64_t now = 0;
+    if (!repo->changed_since(listed_gen_.load(), now).empty()) return false;
+    const bool online = files_ == nullptr || files_->sd_online();
+    return sd_changes_.load() == listed_sd_.load() && online == listed_online_.load();
 }
 
 std::shared_ptr<const os::LargeBuffer> SceneWiring::shell_icon(const std::string& id) {

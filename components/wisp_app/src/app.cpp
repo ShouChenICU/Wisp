@@ -752,6 +752,10 @@ Result<void> App::start() {
                     ? std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>(
                           [scenes](const std::string& id) { return scenes->shell_icon(id); })
                     : nullptr,
+            .listing_current = scenes != nullptr ? std::function<bool()>([scenes] {
+                return scenes->shell_listing_current();
+            })
+                                                 : nullptr,
             .scene_has_data = scenes != nullptr ? std::function<bool(const std::string&)>(
                                                       [scenes](const std::string& id) {
                                                           return scenes->scene_has_data(id);

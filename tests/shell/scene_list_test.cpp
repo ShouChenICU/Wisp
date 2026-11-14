@@ -1,5 +1,6 @@
 // The scene list page (wisp/shell/scene_list.hpp, mvp spec 6.4) in the
-// shell: listed on the storage worker, sorted by SceneRecents, greyed and
+// shell: listed on the shell's listing task (which waits for the storage
+// worker, as the app's lister does), sorted by SceneRecents, greyed and
 // marked, opened with a tap and deleted from the long-press card.
 
 #include "wisp/shell/scene_list.hpp"
@@ -13,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -68,9 +70,18 @@ protected:
         };
         d.list_scenes = [this] {
             on_worker_listing = agent.worker.on_worker();
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                listing_thread = std::this_thread::get_id();
+            }
+            // As the app's lister does: it waits for the storage worker.
+            (void)agent.worker.run_sync([] {}, wisp::os::kForever);
+            if (on_list) on_list();
             std::lock_guard<std::mutex> lock(mu);
             return wisp::shell::ShellListing{scenes, false};
         };
+        d.decode_icon = decode;
+        d.listing_current = current;
         d.read_scene_icon = [this](const std::string& id) {
             std::lock_guard<std::mutex> lock(mu);
             icon_reads.push_back(id);
@@ -103,6 +114,17 @@ protected:
     }
 
     SceneList* page() { return harness->shell().scene_list(); }
+    // Until no listing runs, and its posts have reached the UI thread.
+    void settle() {
+        ASSERT_TRUE(wisp::test::wait_until(
+            [&] {
+                bool busy = true;
+                harness->on_ui([&] { busy = harness->shell().listing(); });
+                return !busy;
+            },
+            5000));
+        harness->on_ui([] {});
+    }
     void open_page(size_t want) {
         harness->show(Page::Scenes);
         ASSERT_NE(page(), nullptr);
@@ -124,6 +146,16 @@ protected:
     int data_asks = 0;
     std::vector<std::string> icon_reads;
     std::atomic<bool> on_worker_listing{false};
+    // The thread the last listing ran on.
+    std::thread::id listing_thread;
+    // Run by list_scenes before it answers (on the listing task); a test
+    // holds a listing up with it.
+    std::function<void()> on_list;
+    // ShellDeps::decode_icon and listing_current, set before boot().
+    std::function<std::shared_ptr<const wisp::shell::SceneIcon>(const wisp::os::LargeBuffer&,
+                                                                int32_t)>
+        decode;
+    std::function<bool()> current;
     std::atomic<bool> on_worker_has_data{false};
 };
 
@@ -142,7 +174,7 @@ TEST_F(SceneListTest, SortedMarkedAndGreyed) {
     recents->opened("todo");
     recents->opened("counter");
     open_page(4);
-    EXPECT_TRUE(on_worker_listing.load());
+    EXPECT_FALSE(on_worker_listing.load());
     harness->on_ui([&] {
         // Most recent first, then by id.
         EXPECT_EQ(page()->scene(0).id, "counter");
@@ -311,7 +343,7 @@ TEST_F(SceneListTest, IconByHashReadOnlyWhenUnknown) {
     ASSERT_TRUE(harness->ui_until([&] { return page()->icon(0) != nullptr; }));
     harness->show(Page::Home);
     harness->show(Page::Scenes);
-    (void)agent.worker.drain(5000);
+    settle();
     harness->on_ui([&] { EXPECT_NE(page()->icon(0), nullptr); });
     {
         std::lock_guard<std::mutex> lock(mu);
@@ -463,9 +495,9 @@ TEST_F(SceneListTest, RefreshKeepsTheLongPressCard) {
     harness->hold(harness->centre_of(page()->card(0)), 700);
     harness->on_ui([&] { ASSERT_NE(page()->popup(), nullptr); });
     harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "running"}}});
-    // The listing ran and its answer, posted before drain() returns, is
+    // The listing ran and its answer, posted before the task ends, is
     // handled before the next call on the UI thread.
-    (void)agent.worker.drain(2000);
+    settle();
     harness->on_ui([&] { EXPECT_NE(page()->popup(), nullptr); });
     {
         std::lock_guard<std::mutex> lock(mu);
@@ -558,7 +590,7 @@ TEST_F(SceneListTest, ScenesPageShowsCachedListAtOnce) {
         EXPECT_EQ(page()->card_builds(), 1u);
     });
     held.release();
-    (void)agent.worker.drain(5000);
+    settle();
     harness->on_ui([&] {
         EXPECT_EQ(page()->cards(), 2u);
         EXPECT_EQ(page()->card_builds(), 1u);
@@ -632,7 +664,7 @@ TEST_F(SceneListTest, IconsSwapInAfterCards) {
         EXPECT_NE(page()->icon(0), nullptr);
         EXPECT_EQ(page()->icon_swaps(), 0u);
     });
-    (void)agent.worker.drain(5000);
+    settle();
     harness->on_ui([&] {
         EXPECT_EQ(page()->card_builds(), 1u);
         EXPECT_EQ(page()->icon_swaps(), 0u);
@@ -668,4 +700,169 @@ TEST_F(SceneListTest, NoDragWhileTheLongPressCardIsUp) {
         EXPECT_NE(page()->popup(), nullptr);
         page()->close_popup();
     });
+}
+
+namespace {
+
+// Holds up whoever waits on it until released (or the test ends).
+class Gate {
+public:
+    Gate() : waited_(gate_.get_future().share()) {}
+    ~Gate() { release(); }
+    Gate(const Gate&) = delete;
+    Gate& operator=(const Gate&) = delete;
+    void wait() const { waited_.wait(); }
+    void release() {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!released_) gate_.set_value();
+        released_ = true;
+    }
+
+private:
+    std::promise<void> gate_;
+    std::shared_future<void> waited_;
+    std::mutex mu_;
+    bool released_ = false;
+};
+
+}  // namespace
+
+// The listing runs on its own task: not on the storage worker (which it
+// waits for, one job at a time) and not on the UI thread.
+TEST_F(SceneListTest, ListingRunsOffTheWorkerAndTheUiThread) {
+    scenes = {scene("a", "A")};
+    boot();
+    std::thread::id ui;
+    harness->on_ui([&] { ui = std::this_thread::get_id(); });
+    open_page(1);
+    EXPECT_FALSE(on_worker_listing.load());
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_NE(listing_thread, std::thread::id());
+    EXPECT_NE(listing_thread, ui);
+    EXPECT_NE(listing_thread, std::this_thread::get_id());
+}
+
+// Icons decode on the listing task too: the worker stays free meanwhile.
+TEST_F(SceneListTest, IconsDecodeOffTheWorker) {
+    {
+        ShellScene clock = scene("clock", "时钟");
+        clock.icon_png = icon();
+        scenes = {std::move(clock)};
+    }
+    Gate release;
+    std::atomic<bool> decoding{false};
+    std::atomic<bool> decoded_on_worker{true};
+    decode = [&](const wisp::os::LargeBuffer& png, int32_t side) {
+        decoded_on_worker = agent.worker.on_worker();
+        decoding = true;
+        release.wait();
+        return wisp::shell::decode_scene_icon(png, side);
+    };
+    boot();
+    harness->show(Page::Scenes);
+    ASSERT_TRUE(wisp::test::wait_until([&] { return decoding.load(); }, 5000));
+    EXPECT_FALSE(decoded_on_worker.load());
+    EXPECT_TRUE(agent.worker.run_sync([] {}, 5000));
+    release.release();
+    ASSERT_TRUE(harness->ui_until([&] { return page()->icon(0) != nullptr; }));
+}
+
+// Events while a listing runs ask for one more, however many there are.
+TEST_F(SceneListTest, BurstOfEventsDuringAListingListsOnceMore) {
+    scenes = {scene("a", "A")};
+    Gate release;
+    std::atomic<int> calls{0};
+    on_list = [&] {
+        if (calls.fetch_add(1) == 0) release.wait();
+    };
+    boot();
+    // Subscribed after the shell, so the shell's post for each event is
+    // queued before this one's.
+    std::atomic<int> seen{0};
+    const auto sub = harness->bus().subscribe("scene.state", [&](const wisp::core::Event&) {
+        harness->ui().post([&] { seen.fetch_add(1); });
+    });
+    harness->show(Page::Scenes);
+    ASSERT_TRUE(wisp::test::wait_until([&] { return calls.load() == 1; }, 5000));
+    for (int i = 0; i < 3; ++i)
+        harness->bus().publish({"scene.state", "test", 0, {{"id", "a"}, {"state", "running"}}});
+    ASSERT_TRUE(wisp::test::wait_until([&] { return seen.load() == 3; }, 5000));
+    release.release();
+    ASSERT_TRUE(wisp::test::wait_until([&] { return calls.load() == 2; }, 5000));
+    settle();
+    harness->on_ui([&] { EXPECT_EQ(page()->cards(), 1u); });
+    EXPECT_EQ(calls.load(), 2);
+    harness->bus().unsubscribe(sub);
+}
+
+// stop() waits for a listing still running; what it posts afterwards finds
+// the shell stopped and touches nothing.
+TEST_F(SceneListTest, StopJoinsTheListingTask) {
+    scenes = {scene("a", "A")};
+    Gate release;
+    std::atomic<bool> in_list{false};
+    on_list = [&] {
+        in_list = true;
+        release.wait();
+    };
+    boot();
+    harness->show(Page::Scenes);
+    ASSERT_TRUE(wisp::test::wait_until([&] { return in_list.load(); }, 5000));
+    std::atomic<bool> stopping{false};
+    std::thread helper([&] {
+        EXPECT_TRUE(wisp::test::wait_until([&] { return stopping.load(); }, 5000));
+        release.release();
+    });
+    stopping = true;
+    harness->on_ui([&] { harness->shell().stop(); });
+    helper.join();
+    harness->on_ui([&] {
+        EXPECT_FALSE(harness->shell().listing());
+        EXPECT_EQ(harness->shell().scene_list(), nullptr);
+    });
+}
+
+// With a lister that can tell nothing changed (ShellDeps::listing_current),
+// a warm open shows the last listing and starts no listing at all; any
+// scene.state since, or the lister knowing better, lists again.
+TEST_F(SceneListTest, WarmOpenListsOnlyWhenSomethingChanged) {
+    scenes = {scene("a", "A")};
+    std::atomic<int> calls{0};
+    on_list = [&] { calls.fetch_add(1); };
+    std::atomic<bool> unchanged{true};
+    current = [&] { return unchanged.load(); };
+    boot();
+    open_page(1);
+    settle();
+    ASSERT_EQ(calls.load(), 1);
+    harness->show(Page::Home);
+    harness->show(Page::Scenes);
+    harness->on_ui([&] {
+        EXPECT_EQ(page()->cards(), 1u);
+        EXPECT_FALSE(harness->shell().listing());
+    });
+    settle();
+    EXPECT_EQ(calls.load(), 1);
+
+    // The lister has news (an install, the card).
+    unchanged = false;
+    harness->show(Page::Home);
+    harness->show(Page::Scenes);
+    settle();
+    EXPECT_EQ(calls.load(), 2);
+    unchanged = true;
+
+    // A scene.state while the page was closed (a scene went to the
+    // background): the marks may be stale.
+    harness->show(Page::Home);
+    std::atomic<int> seen{0};
+    const auto sub = harness->bus().subscribe("scene.state", [&](const wisp::core::Event&) {
+        harness->ui().post([&] { seen.fetch_add(1); });
+    });
+    harness->bus().publish({"scene.state", "test", 0, {{"id", "a"}, {"state", "background"}}});
+    ASSERT_TRUE(wisp::test::wait_until([&] { return seen.load() == 1; }, 5000));
+    harness->show(Page::Scenes);
+    settle();
+    EXPECT_EQ(calls.load(), 3);
+    harness->bus().unsubscribe(sub);
 }

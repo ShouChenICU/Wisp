@@ -51,10 +51,26 @@
 // the scroll position it had, on the talk overlay's tick (at most
 // a quarter of a second later; while a drag runs, once it is over).
 //
-// The scene list is listed on the storage worker (ShellDeps::list_scenes
-// in a submit_io job), sorted by ShellDeps::recents, and handed to the
-// page on the UI thread; while it is open every scene.state event lists it
-// again.
+// The scene list is listed on a one-shot task of the shell's,
+// "wisp.shell.list" (kListStackBytes, its stack in PSRAM: it never touches
+// flash, every read is a storage worker job ShellDeps::list_scenes and
+// read_scene_icon wait for), sorted by ShellDeps::recents, and handed to
+// the page on the UI thread; the task then decodes the icons not decoded
+// before, one at a time, posting each. So neither the UI thread nor the
+// worker holds a whole listing or a PNG decode. While the page is open
+// every scene.state event lists it again. At most one such task runs: a
+// request while it lists makes it list once more when done, however many
+// requests came (Idle -> Running -> Again). Opening the page shows the
+// last listing at once; it lists again only when something may have
+// changed (a scene.state since that listing, a lost post, or
+// ShellDeps::listing_current saying so). Results carry the lister's
+// generation and an older one than shown is dropped. The decoded icons are
+// shared: the icon cache (on the task), the last listing and the cards (on
+// the UI thread) each hold a reference, and whichever lets go last frees
+// the pixels (Mem::Large, no LVGL state). stop() joins the task: what is
+// left of the listing it is in (one short worker job per scene, while the
+// workers still run -- App::stop() stops the shell first) then ends
+// without decoding, and its posts find the shell stopped.
 //
 // The hardware diagnostics (the self-check screen, "System -> Hardware
 // diagnostics" in spec 6.4) is not built at boot: open_diagnostics() has
@@ -167,16 +183,27 @@ struct ShellDeps {
     // that does runs inside a submit_io job.
     // The history's conversation and "new conversation".
     agent::AgentService* agent = nullptr;
-    // The installed scenes, on the storage worker (a submit_io job): icon
-    // bytes at most kIconMaxBytes (or only their icon_hash), available
-    // false while the scene's files are on an SD card that is out. Asked
-    // each time the scene list opens or a scene changes, so it should keep
+    // The installed scenes, on the shell's listing task "wisp.shell.list",
+    // one call at a time: it may wait for the storage worker and must not
+    // touch flash itself. Icon bytes at most kIconMaxBytes (or only their
+    // icon_hash), available false while the scene's files are on an SD
+    // card that is out. Asked when the scene list opens and something may
+    // have changed, or a scene changes while it is open, so it should keep
     // what it read rather than read it all again.
     std::function<ShellListing()> list_scenes;
     // Scene `id`'s icon file (at most kIconMaxBytes), or null, on the
-    // storage worker: for an icon list_scenes named by its hash alone that
-    // the shell has not decoded. Empty: such an icon is not shown.
+    // listing task like list_scenes: for an icon list_scenes named by its
+    // hash alone that the shell has not decoded. Empty: such an icon is not
+    // shown.
     std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)> read_scene_icon;
+    // Decodes an icon file on the listing task. Empty: decode_scene_icon
+    // (a test seam).
+    std::function<std::shared_ptr<const SceneIcon>(const os::LargeBuffer&, int32_t side)>
+        decode_icon;
+    // Whether list_scenes would find nothing new since its last call (no
+    // install, update or remove, no card change). UI thread, no file work.
+    // Empty: the scene list is read each time it opens.
+    std::function<bool()> listing_current;
     // Whether deleting scene `id` would find data to delete with it, on the
     // storage worker, asked when its long-press card opens. Empty: the card
     // never offers to delete data.
@@ -187,7 +214,7 @@ struct ShellDeps {
     // Asks the user and deletes (SceneWiring::ask_delete(), which never
     // waits); an error if it could not even ask.
     std::function<Result<void>(const std::string&, bool with_data)> delete_scene;
-    // The scene list's order; read on the storage worker.
+    // The scene list's order; read on the listing task (any thread).
     SceneRecents* recents = nullptr;
     // The system settings as last stored (a cache, no flash).
     std::function<core::SystemSettingsValues()> settings;
@@ -209,8 +236,14 @@ struct ShellDeps {
 
 class Shell {
 public:
+    // The scene listing task "wisp.shell.list": a manifest parse or
+    // LodePNG's decode of one icon, with a margin.
+    static constexpr size_t kListStackBytes = 12288;
+    static constexpr int kListPriority = 2;
+
     explicit Shell(ShellDeps deps);
-    // Makes no LVGL call: stop() first when started.
+    // Makes no LVGL call: stop() first when started. Joins a listing task
+    // still running (none once stop() has run).
     ~Shell();
 
     Shell(const Shell&) = delete;
@@ -219,7 +252,8 @@ public:
     // Builds the home screen and loads it. Idempotent.
     void start();
     // Closes the diagnostics if open, loads the screen that was active
-    // before start() and deletes the home screen. Idempotent.
+    // before start() and deletes the home screen. Idempotent. Joins the
+    // scene listing task first.
     void stop();
 
     // Logs "shell: page <name>" and loads the page's screen, after sending
@@ -241,6 +275,8 @@ public:
     ui::WispView* wisp() const;
     // The home screen's content; nullptr before start() and after stop().
     Home* home() const { return home_.get(); }
+    // Whether the scene listing task is running (tests).
+    bool listing() const;
     // The open sub-page, or nullptr when another page (or none) is open.
     HistoryPage* history() const { return history_.get(); }
     SceneList* scene_list() const { return scenes_.get(); }
@@ -282,8 +318,16 @@ private:
     void follow_lang();
     // Destroys the sub-page objects (their screen stays).
     void drop_pages();
-    // Lists the scenes on the worker for the open scene list.
-    void list_scenes();
+    // Lists the scenes on the listing task for the open scene list; when
+    // `opening`, not if the last listing is known to be current.
+    void list_scenes(bool opening = false);
+    // Whether the last listing is still what list_scenes would say.
+    bool scene_cache_current() const;
+    // Marks the listing task stopping and joins it.
+    void join_listing();
+    // The listing task's state, and what it runs (shell.cpp).
+    struct ListRun;
+    struct ListJob;
 
     // Page drags.
     enum class DragPhase : uint8_t { Idle, Following, Sliding };
@@ -381,18 +425,24 @@ private:
     std::shared_ptr<bool> page_alive_;
     // scene.state while started.
     core::SubscriptionId scene_sub_ = 0;
-    // Set while a listing for the current page waits on the worker, so a
-    // burst of events queues one. Replaced with each sub-page, like
-    // page_alive_: a new page never waits on an old page's listing, whose
-    // answer it would not get.
-    std::shared_ptr<std::atomic<bool>> listing_;
+    // The listing task and its requests (see the file header); shared
+    // with the task, made by start().
+    std::shared_ptr<ListRun> list_run_;
     // Decoded icons by scene id, kept across listings and pages so an
-    // unchanged icon is decoded once. Touched on the worker only.
+    // unchanged icon is decoded once. Touched on the listing task only.
     struct IconCache;
     std::shared_ptr<IconCache> icons_;
-    // The last listing shown, icons as decoded so far: what the scene list
-    // shows at once when it opens again. Empty before the first.
+    // The last listing, icons as decoded so far: what the scene list shows
+    // at once when it opens again. Empty before the first. Kept up to date
+    // while the page is closed too, so a warm open can trust it.
     std::optional<std::vector<ShellScene>> scene_cache_;
+    // Its lister's generation, and scene_events_ as it was when that
+    // listing started.
+    uint64_t cache_gen_ = 0;
+    uint64_t cache_events_ = 0;
+    // scene.state events seen (bumped on the bus thread), and lost posts
+    // of a listing: either makes the last listing stale.
+    std::atomic<uint64_t> scene_events_{0};
     // The open scene list's timing, until its first listing takes it.
     struct ListTiming;
     std::shared_ptr<ListTiming> open_timing_;
