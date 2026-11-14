@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "app/ui_net_harness.hpp"
+#include "storage_io.hpp"
 #include "support/fake_http.hpp"
 #include "support/fake_settings_backend.hpp"
 #include "support/lvgl_probe.hpp"
@@ -858,17 +859,36 @@ TEST(FactoryReset, ResetCompletesWhileASetWaitsForTheFlashThread) {
     auto setter = wisp::os::Task::spawn({.name = "test.set"}, [&] {
         set_ok.store(static_cast<bool>(app.system_settings().set({{"agent_turn_min", 20}})));
     });
+    std::unique_ptr<wisp::os::Task> resetter;
+    // A failed ASSERT below leaves the flash thread parked, and the task
+    // handles join on destruction: this lets it go first (it is declared
+    // after both handles, so it is destroyed before them), so the failure
+    // reports as a test failure, not as a hang in teardown.
+    struct Release {
+        std::shared_ptr<wisp::os::Semaphore> sem;
+        bool given = false;
+        void give() {
+            if (!given) sem->give();
+            given = true;
+        }
+        ~Release() { give(); }
+    } unpark{release};
     ASSERT_TRUE(entered->take(5000));
 
-    // The wipe job queues behind it.
+    // The 2 s storage-refresh timer may queue a job of its own while the
+    // flash thread is parked, which would end the wait below before the
+    // wipe job is queued. Queue that refresh now: until it has run (not
+    // before the flash thread is released), the timer queues no other, so
+    // only the wipe job can raise the count from here.
+    (void)wisp::app::queue_storage_refresh(app);
     const size_t queued = worker->pending();
     std::atomic<bool> reset_returned{false};
-    auto resetter = wisp::os::Task::spawn({.name = "test.reset"}, [&] {
+    resetter = wisp::os::Task::spawn({.name = "test.reset"}, [&] {
         wisp::app::factory_reset(app);
         reset_returned.store(true);
     });
     ASSERT_TRUE(wait_until([&] { return worker->pending() > queued; }, 5000));
-    release->give();
+    unpark.give();
 
     ASSERT_TRUE(wait_until([&] { return reset_returned.load(); }, 10000));
     resetter->join();
