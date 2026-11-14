@@ -229,9 +229,14 @@ Result<void> App::start() {
                     .notes = notes,
                     // The worker or nothing: a timer callback must never
                     // end up running a pass (which writes flash) itself.
+                    // Interactive: a pass rewrites one small file and a
+                    // reminder should ring on time. stop() waits for a
+                    // queued pass by queuing behind it, and the router's
+                    // todo actions must run before that too, so all three
+                    // use this one lane (a full lane: the retry timer).
                     .submit_io =
                         [worker](std::function<void()> job) {
-                            return worker->submit(std::move(job));
+                            return worker->submit(std::move(job), core::IoLane::Interactive);
                         },
                     .wall_s = [impl] { return impl->wall_now(); },
                     .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
@@ -561,10 +566,13 @@ Result<void> App::start() {
             .notify_volume = [impl] { return impl->notify_vol.load(); },
             .ui = impl_->ui.get(),
             .reminders = impl_->reminders.get(),
+            // The reminders' lane (see their submit_io above), so their
+            // stop() waits for a todo action queued before it.
             .submit_io = impl_->reminders && scenes != nullptr
                              ? std::function<bool(std::function<void()>)>(
                                    [worker = &scenes->worker()](std::function<void()> job) {
-                                       return worker->submit(std::move(job));
+                                       return worker->submit(std::move(job),
+                                                             core::IoLane::Interactive);
                                    })
                              : nullptr,
             // The shell is built later, and goes before the router is
@@ -1195,6 +1203,11 @@ void App::build_agent(const hal::ScreenShape& shape) {
             [impl](std::function<void()> job) {
                 return impl->run_io(std::move(job), os::kForever);
             },
+        .run_io_interactive =
+            [impl](std::function<void()> job) {
+                return impl->run_io(std::move(job), os::kForever, App::Impl::kIoBusyBudgetMs,
+                                    core::IoLane::Interactive);
+            },
         .delete_scene =
             [impl](const std::string& id, bool with_data, std::function<void(Result<void>)> done) {
                 impl->scenes->delete_scene(id, with_data, std::move(done));
@@ -1236,19 +1249,19 @@ bool App::Impl::submit_io(std::function<void()> job) {
 }
 
 Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms,
-                               uint32_t busy_budget_ms) {
+                               uint32_t busy_budget_ms, core::IoLane lane) {
     core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
     if (worker == nullptr) {
         job();
         return Result<void>::ok();
     }
-    // A full Normal lane drains within a few jobs; a worker that is
-    // stopping stays Busy until it has stopped, and then runs it inline.
-    Result<void> r = worker->run_sync(job, timeout_ms);
+    // A full lane drains within a few jobs; a worker that is stopping
+    // stays Busy until it has stopped, and then runs it inline.
+    Result<void> r = worker->run_sync(job, timeout_ms, lane);
     for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < busy_budget_ms;
          waited += kIoBusyPollMs) {
         os::sleep_ms(kIoBusyPollMs);
-        r = worker->run_sync(job, timeout_ms);
+        r = worker->run_sync(job, timeout_ms, lane);
     }
     return r;
 }

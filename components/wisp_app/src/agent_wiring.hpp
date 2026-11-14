@@ -197,6 +197,9 @@ struct AgentWiringDeps {
     net::HttpClient* http = nullptr;
     // StorageWorker::run_sync() with an unbounded wait.
     std::function<Result<void>(std::function<void()>)> run_io{};
+    // The same on the Interactive lane (AgentDeps::run_io_interactive).
+    // Empty: run_io.
+    std::function<Result<void>(std::function<void()>)> run_io_interactive{};
     // SceneWiring::delete_scene.
     std::function<void(const std::string& id, bool with_data,
                        std::function<void(Result<void>)> done)>

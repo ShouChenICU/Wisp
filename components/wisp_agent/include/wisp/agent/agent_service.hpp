@@ -7,8 +7,9 @@
 //
 // A turn
 //   - is framed by turn_begin/turn_end markers in the ConversationStore;
-//     every message is appended on the storage worker (run_io) and the
-//     loop waits for it, so the file always holds what listeners saw;
+//     every message is appended on the storage worker (run_io_interactive)
+//     and the loop waits for it, so the file always holds what listeners
+//     saw;
 //   - runs at most max_steps tool calls and turn_ms in all (AgentConfig's
 //     values until set_turn_limits() changes them; a turn keeps the limits
 //     it started with);
@@ -66,11 +67,11 @@
 //
 // wisp.agent declares flash_access = false (its stack may be in PSRAM):
 // everything it calls that touches flash -- the conversation file -- goes
-// through run_io. The model client, the tool registry (which posts
-// each tool to the thread it declares), the wake locks, the event bus and
-// NotificationService::post_system() (which saves on the storage worker)
-// do not touch flash themselves; deps.lang, screen_off, network_up, wall_s
-// and context must read cached values only.
+// through run_io or run_io_interactive. The model client, the tool
+// registry (which posts each tool to the thread it declares), the wake
+// locks, the event bus and NotificationService::post_system() (which saves
+// on the storage worker) do not touch flash themselves; deps.lang,
+// screen_off, network_up, wall_s and context must read cached values only.
 //
 // Logs carry metadata only (no user or model text):
 //   agent: turn <n> start source=<s>
@@ -166,6 +167,11 @@ struct AgentDeps {
     // unbounded. Production: StorageWorker::run_sync with os::kForever.
     // Empty: jobs run on the calling thread (tests without a worker).
     std::function<Result<void>(std::function<void()>)> run_io;
+    // run_io on the worker's Interactive lane, for the conversation
+    // appends (short, and the turn waits for each); the archive, the clear
+    // and the load keep run_io. Production: App::Impl::run_io() with
+    // core::IoLane::Interactive. Empty: run_io.
+    std::function<Result<void>(std::function<void()>)> run_io_interactive;
     core::WakeLockRegistry* locks = nullptr;
     core::NotificationService* notes = nullptr;  // the agent_done notice
     std::function<bool()> screen_off;            // empty: never off

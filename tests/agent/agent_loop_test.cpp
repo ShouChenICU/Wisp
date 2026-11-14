@@ -1697,3 +1697,19 @@ TEST_F(AgentLoop, ClearIsBusyDuringATurn) {
     svc->stop_turn();
     ASSERT_TRUE(wait_turns(1));
 }
+
+// Appends are short and someone waits for them: they take the Interactive
+// lane. Archiving (a rename and a new file) keeps the Normal one.
+TEST_F(AgentLoop, AppendsUseTheInteractiveIo) {
+    start();
+    const int io_before = h->io_calls.load();
+    const int interactive_before = h->interactive_io_calls.load();
+    run_turn("hello", "hi");
+    // turn_begin, the user message, the reply, turn_end.
+    EXPECT_EQ(h->interactive_io_calls.load() - interactive_before, 4);
+    EXPECT_EQ(h->io_calls.load(), io_before);
+
+    ASSERT_TRUE(svc->new_conversation());
+    EXPECT_EQ(h->io_calls.load(), io_before + 1);
+    EXPECT_EQ(h->interactive_io_calls.load() - interactive_before, 4);
+}

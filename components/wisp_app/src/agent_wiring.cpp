@@ -434,6 +434,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         .ui = [ui](std::function<void()> fn) { return ui->post(std::move(fn)); },
         .fs = on_worker,
         .io = on_worker,
+        .fs_interactive =
+            [worker](std::function<void()> fn) {
+                return worker->submit(std::move(fn), core::IoLane::Interactive);
+            },
     });
     inspector_ = std::make_unique<scene::UiInspector>(scene::InspectorDeps{
         .ui = deps_.ui,
@@ -467,6 +471,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             .llm = *llm_,
             .models = deps_.models,
             .run_io = deps_.run_io,
+            .run_io_interactive = deps_.run_io_interactive,
             .locks = deps_.locks,
             .notes = &deps_.notes,
             .screen_off = deps_.screen_off,

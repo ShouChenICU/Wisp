@@ -260,6 +260,9 @@ ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
         case ToolThread::Io:
             post = &ex_.io;
             break;
+        case ToolThread::FsInteractive:
+            post = ex_.fs_interactive ? &ex_.fs_interactive : &ex_.fs;
+            break;
         case ToolThread::Agent:
             break;
     }

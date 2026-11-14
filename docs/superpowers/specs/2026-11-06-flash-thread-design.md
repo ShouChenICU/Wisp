@@ -109,29 +109,38 @@ AGENTS.md 第 5 节"内部 RAM 预算"改写为：内部 SRAM 只留给
 
 ## 3. 组件
 
-### 3.1 `StorageWorker`：两条队列与同步等待
+### 3.1 `StorageWorker`：三条队列与同步等待
 
 `components/wisp_core/include/wisp/core/storage_worker.hpp`：
 
 ```cpp
-enum class IoLane : uint8_t { Normal, Bulk };
+// In priority order.
+enum class IoLane : uint8_t { Interactive, Normal, Bulk };
 
-// Queues `job` on `lane`. Normal jobs (settings, JSON documents, scene
-// data) always run before queued Bulk jobs (firmware chunks, file
-// download chunks); within a lane, FIFO.
+// Queues `job` on `lane`; within a lane, FIFO; across lanes, no order.
 bool submit(std::function<void()> job, IoLane lane = IoLane::Normal);
 
 // Runs `job` on the worker and waits for it. Runs it inline when called
 // on the worker, or before start() / after stop() (the single-threaded
-// boot and shutdown phases). Fails with ErrorCode::Busy if the queue is
+// boot and shutdown phases). Fails with ErrorCode::Busy if the lane is
 // full, and ErrorCode::Timeout if it did not finish in `timeout_ms`; the
 // job may still run later, so it must own what it touches.
 Result<void> run_sync(std::function<void()> job, uint32_t timeout_ms,
                       IoLane lane = IoLane::Normal);
 ```
 
-- 实现：两条 `os::Queue`（Normal 32 项、Bulk 4 项），用一个计数信号量唤醒线程。线程每次先取 Normal，Normal 空了再取 Bulk。
-- 时延上限按**单个任务**计：任何一个任务（两条队列都算）最多读写 32 KB（`kIoChunk`），单次耗时以 flash 擦写为上限（几十 ms）。线程不抢占正在执行的任务，所以排队任务的最坏等待就是正在执行的那一个任务的耗时。
+- 三条 `os::Queue`，按优先级：
+  - **Interactive**（`wisp.fs` 16 项）：短小、有人在等的任务。设置落盘（`CachedSettingsBackend` 的保存与 `flush()`，以及没有缓存时 `SettingsFront` 的直接调用），对话追加（`ConversationStore::append`，经 `AgentDeps::run_io_interactive`），记忆与待办（`memory.*`、`todo.*` 工具声明 `ToolThread::FsInteractive`；管理后台删除笔记与待办；`ReminderScheduler` 的提醒检查；通知上"完成/稍后提醒"按钮的待办操作）。
+  - **Normal**（`wisp.fs` 32 项）：其他 JSON 文档（通知、Wi-Fi、配对、模型配置、场景顺序）、场景数据与列表、设置的开机加载、对话的加载/归档/清空、记忆与待办的开机加载、恢复出厂设置、场景安装/导出、文件工具等较长的工作。
+  - **Bulk**（`wisp.fs` 4 项）：固件块、下载块（每块至多 `kIoChunk`）。
+  - `wisp.sd.io` 的容量是 Interactive 1、Normal 16、Bulk 4。
+- 用一个计数信号量唤醒线程。挑选规则：`passed[L]` 记录车道 L 有任务等待期间、自它上次执行以来跑过的更高车道任务数。上一次不是强制轮次，且某个非空车道 `passed >= kLaneTurnAfter`（8）时，取其中最低的那条（强制轮次）；否则取最高的非空车道。执行车道 L 的一个任务后 `passed[L] = 0`，比它低的每条非空车道 `passed` 加一。
+- 等待上限（除了入队时正在执行的那一个任务）：队首的 Interactive 任务至多再等一个低车道的强制轮次（所以 Bulk 至多让它多等一块）；Bulk 至多 9 个任务；Normal 至多 10 个任务。所以连续的 Interactive 负载也饿不死 Normal 和 Bulk。
+- 顺序约定：每个 worker 的每条车道内先进先出；跨车道、跨 worker 没有顺序。需要两个任务有先后的生产者，等第一个完成（`run_sync`、`call_on_worker`）再提交第二个。改到 Interactive 的调用方都满足这一点：对话的每次读写 `wisp.agent` 都同步等待，所以追加（Interactive）与归档/清空/加载（Normal）仍按调用顺序；工具调用一个一个同步执行；设置保存写的是执行那一刻的全部脏键，与谁先谁后无关；`ReminderScheduler::stop()` 靠在同一条 Interactive 车道上排在后面等待已排队的检查和按钮操作。
+- 车道满时：设置保存（以及 `flush()` 的任务）改投 Normal，因为它与顺序无关，不能让修改一直留在内存里；同步等待的调用方照旧（`call_on_worker` 与 `App::Impl::run_io()` 重试至多 2 s 后返回 `Busy`，工具返回 `busy`，管理后台返回忙）；提醒检查由重试定时器再提交，按钮操作记警告。
+- Interactive 任务必须短：一次 NVS 批量写、一行对话追加、一次笔记或待办文件重写（笔记至多 64 条 × 200 字、待办至多 200 条 × 100 字，最坏几十 KB，通常几 KB）。长的工作（场景安装、导出、文件工具、对话归档与损坏尾部修复）留在 Normal。
+- `drain()`、`stop()` 等所有车道排空，`App::flush_storage()` 因此也等 Interactive 任务（3.8）。
+- 时延按**单个任务**计：线程不抢占正在执行的任务；Normal 和 Bulk 任务最多读写 32 KB（`kIoChunk`），单次耗时以 flash 擦写为上限（几十 ms）。
 - 长操作一律拆成多个任务，每个任务至多 32 KB，其他任务（设置落盘、下载块）在块与块之间执行：
   - OTA：每块 `esp_ota_write` 一个 Bulk 任务（3.6）；
   - 场景文件下载：每块 `read_range` 一个 Bulk 任务（3.6）；
@@ -210,9 +219,9 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 - 脏键由缓存记录，不由平台后端记录：落盘任务把脏键整理成一批 `SettingsChange` 交给 `write_batch()`。
 - 新类 `core::CachedSettingsBackend` 包装平台后端（NVS 或 JSON 文件）：
   - `get()` 只读缓存，缓存放在 PSRAM（`os::LargeString`），互斥锁保护，任何线程可调用；
-  - `set()`/`erase()` 先改缓存，记下脏键；如果还没有待执行的落盘任务，就提交一个 Normal 任务。同一个键的连续写入在落盘前合并为一次；
+  - `set()`/`erase()` 先改缓存，记下脏键；如果还没有待执行的落盘任务，就提交一个 Interactive 任务（Interactive 满时改投 Normal，3.1）。同一个键的连续写入在落盘前合并为一次；
   - 落盘失败：缓存保留新值、脏键保留，记 `WLOG_W`，等下一次 `set()` 或 `flush()` 重试；连续 3 次失败时发一条系统通知（"设置未能保存"）；
-  - `flush(timeout_ms)`：同步等待脏键写完，给恢复出厂、重启、深度待机前调用。
+  - `flush(timeout_ms)`：同步等待脏键写完（Interactive 车道，满时改投 Normal），给恢复出厂、重启、深度待机前调用；`load()` 只在开机时执行一次，用 Normal。
 - 模拟器的 JSON 文件后端本来就有内存表，每次 `write_batch()` 整文件重写一次。
 - NVS 后端的 `load_all()` 用 `nvs_entry_find` 遍历 Wisp 自己的分区与命名空间。值都是字符串（现有格式不变），不涉及数据迁移。
 - `Settings` 类的公有接口不变，所有调用方不用改。

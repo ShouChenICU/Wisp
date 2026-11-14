@@ -312,12 +312,15 @@ struct App::Impl {
     // the three saving services alike (spec 3.4, 3.5), after their third
     // failed write in a row. Any thread.
     void report_persist_failed();
-    // run_io() waits up to `timeout_ms` for `job` (os::kForever allowed);
-    // StorageWorker::run_sync()'s errors. A full queue (or a worker
-    // stopping) is retried for up to `busy_budget_ms` before Busy is
-    // returned.
+    // run_io() waits up to `timeout_ms` for `job` (os::kForever allowed)
+    // on `lane`; StorageWorker::run_sync()'s errors. A full lane (or a
+    // worker stopping) is retried for up to `busy_budget_ms` before Busy
+    // is returned. Interactive is for short jobs someone waits for (the
+    // conversation appends); see flash-thread spec 3.1.
+    static constexpr uint32_t kIoBusyBudgetMs = 2000;
     Result<void> run_io(std::function<void()> job, uint32_t timeout_ms,
-                        uint32_t busy_budget_ms = 2000);
+                        uint32_t busy_budget_ms = kIoBusyBudgetMs,
+                        core::IoLane lane = core::IoLane::Normal);
 
     // Both the constructor and destructor are declared here but defined
     // out-of-line in self_check_screen.cpp, the one TU where SelfCheck's

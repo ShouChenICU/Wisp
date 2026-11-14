@@ -8,19 +8,24 @@
 // JSON file) once. From then on get() only reads memory, so any thread may
 // call it, the UI and the scene task included. set()/erase()/erase_all()
 // change memory at once, remember which keys are dirty and, unless a save
-// is already queued, queue one Normal job on the StorageWorker. That job
-// hands every dirty key to the platform's write_batch() in one go, so a
-// key set many times before the job runs is written once, with its last
-// value.
+// is already queued, queue one job on the StorageWorker's Interactive lane
+// (so a change is on flash soon even behind a backlog of scene work; spec
+// 3.1). That job hands every dirty key to the platform's write_batch() in
+// one go, so a key set many times before the job runs is written once,
+// with its last value. load() stays on the Normal lane: it runs once, at
+// boot, before anything else is queued.
 //
 // A failed save keeps the new values in memory and the keys dirty; it is
 // logged and retried on the next change or flush(). On the third failure
 // in a row `on_persist_failed` is called once (App posts the "设置未能保存"
 // system notice); a successful save starts the count again.
 //
-// When the worker's Normal lane is full the save is not queued: the
-// change stays in memory (and dirty) until the next change, a flush() or
-// the shutdown flush writes it.
+// A save writes whatever is dirty when it runs, so its order relative to
+// other jobs does not matter: when the Interactive lane is full, the save
+// (and flush()'s job) goes to the Normal lane instead. Only when both are
+// full is the save not queued: the change then stays in memory (and
+// dirty) until the next change, a flush() or the shutdown flush writes
+// it.
 //
 // set() and write_batch() refuse, with InvalidArgument and at once, a
 // name validate_settings_name() rejects or a value larger than
@@ -77,8 +82,9 @@ public:
 
     // Waits up to `timeout_ms` (or os::kForever) for every dirty key to be
     // written; Ok at once when nothing is dirty. Timeout if the worker did
-    // not get to it in time (the save still happens later), Busy if its
-    // queue was full, or the platform's error if the save failed. For the
+    // not get to it in time (the save still happens later), Busy if both
+    // its Interactive and Normal lanes were full, or the platform's error
+    // if the save failed. For the
     // factory reset, a restart and deep standby.
     Result<void> flush(uint32_t timeout_ms);
 
