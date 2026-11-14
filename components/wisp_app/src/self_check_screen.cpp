@@ -513,6 +513,21 @@ void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
 
 void stop_self_check(std::unique_ptr<SelfCheck>& self_check) { self_check.reset(); }
 
+void set_self_check_end_room(const std::unique_ptr<SelfCheck>& self_check, int32_t room) {
+    if (self_check) self_check->set_end_room(room);
+}
+
+void SelfCheck::set_end_room(int32_t room) {
+    if (root_ == nullptr) return;
+    const hal::Area safe = compute_safe_area();
+    const int32_t own = lv_display_get_vertical_resolution(nullptr) - 1 - safe.y2 + kInnerPad;
+    lv_obj_set_style_pad_bottom(root_, std::max(own, room), 0);
+    // Scrolled into room that has just gone: back to the page's end, as
+    // LVGL does when content shrinks.
+    lv_obj_update_layout(root_);
+    lv_obj_readjust_scroll(root_, LV_ANIM_OFF);
+}
+
 App::Impl::Impl(Platform p)
     : platform(with_settings_front(std::move(p))), storage(registry, bus), buttons(registry, bus) {}
 App::Impl::~Impl() = default;

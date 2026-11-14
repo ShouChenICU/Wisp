@@ -26,6 +26,9 @@ constexpr int32_t kRowGap = ui::theme::kGapSm;
 constexpr int32_t kDotSize = 14;
 constexpr int32_t kBarH = 10;
 constexpr int32_t kMaxLines = 3;
+// Set on the label rather than inherited, so fit() can size the card
+// for a text before the label holds it.
+constexpr int32_t kLineSpace = 0;
 constexpr uint32_t kPulseMs = 900;
 
 // The card's box, `h` pixels tall (no taller than the safe area), its
@@ -42,6 +45,16 @@ lv_area_t overlay_rect(const hal::ScreenShape& s, int32_t h) {
     const hal::Span b = hal::row_span(s, y2);
     if (a.empty() || b.empty()) return {safe.x1, y1, safe.x2, y2};
     return {std::max(a.x1, b.x1) + kPad, y1, std::min(a.x2, b.x2) - kPad, y2};
+}
+
+// The text's height at `lines` lines.
+int32_t text_height(int32_t lines) {
+    return lines * lv_font_get_line_height(ui::default_font()) + (lines - 1) * kLineSpace;
+}
+
+// The card's height for text `text_h` high.
+int32_t card_height(int32_t text_h) {
+    return std::max(kCardH, text_h + 2 * (kPadV + ui::theme::kBorderWidth));
 }
 
 bool same(const os::LargeString& a, const os::LargeString& b) {
@@ -102,6 +115,8 @@ TalkOverlay::TalkOverlay(ui::SystemLayer& layer, const hal::ScreenShape& shape,
     lv_obj_set_flex_grow(label_, 1);
     lv_label_set_long_mode(label_, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(label_, lv_color_hex(ui::theme::kText), 0);
+    lv_obj_set_style_text_font(label_, ui::default_font(), 0);
+    lv_obj_set_style_text_line_space(label_, kLineSpace, 0);
     lv_obj_set_style_text_align(label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text_static(label_, "");
     lv_obj_add_flag(label_, LV_OBJ_FLAG_HIDDEN);
@@ -121,11 +136,15 @@ void TalkOverlay::take(const TurnView& t, uint64_t now_ms) {
     // Another turn: what the last one showed is over.
     if (t.running && t.started_ms != seen_started_) timed_ = Timed::None;
     seen_started_ = t.started_ms;
-    running_ = t.running;
+    // Only a spoken turn shows its progress and its say: one from the web
+    // page or device text can run for minutes, and the card would cover
+    // the last rows of the page in front all that time.
+    const bool voice = t.source == agent::Source::Voice;
+    voice_running_ = t.running && voice;
     if (t.turn != seen_turn_ || !same(t.say, seen_say_)) {
         seen_turn_ = t.turn;
         seen_say_.assign(t.say.data(), t.say.size());
-        if (!t.say.empty()) {
+        if (!t.say.empty() && voice) {
             timed_ = Timed::Say;
             timed_since_ = now_ms;
         } else if (timed_ == Timed::Say) {
@@ -149,7 +168,7 @@ void TalkOverlay::take(const TurnView& t, uint64_t now_ms) {
         }
     }
     // The step under way, while thinking.
-    const TurnStep* step = t.running && !t.thinking ? t.running_step() : nullptr;
+    const TurnStep* step = voice_running_ && !t.thinking ? t.running_step() : nullptr;
     if (step != nullptr) {
         step_shown_.assign(step->label.data(), step->label.size());
     } else {
@@ -162,7 +181,7 @@ TalkOverlay::Phase TalkOverlay::decide(const TurnView& t, voice::VoiceState v) c
     if (v == voice::VoiceState::Transcribing) return Phase::Thinking;
     if (timed_ == Timed::Say) return Phase::Saying;
     if (timed_ == Timed::Note) return Phase::Note;
-    if (t.running) return Phase::Thinking;
+    if (voice_running_) return Phase::Thinking;
     return Phase::Hidden;
 }
 
@@ -185,7 +204,7 @@ void TalkOverlay::tick(uint64_t now_ms) {
     timed_ = Timed::None;
     if (phase_ != Phase::Saying && phase_ != Phase::Note) return;
     // A turn still running shows as thinking again.
-    phase_ = running_ ? Phase::Thinking : Phase::Hidden;
+    phase_ = voice_running_ ? Phase::Thinking : Phase::Hidden;
     apply(0);
 }
 
@@ -239,13 +258,11 @@ void TalkOverlay::apply(uint8_t level) {
 }
 
 void TalkOverlay::fit(const char* text) {
-    const lv_font_t* font = lv_obj_get_style_text_font(label_, LV_PART_MAIN);
-    const int32_t line = lv_font_get_line_height(font);
-    const int32_t space = lv_obj_get_style_text_line_space(label_, LV_PART_MAIN);
+    const lv_font_t* font = ui::default_font();
     const int32_t letter = lv_obj_get_style_text_letter_space(label_, LV_PART_MAIN);
     auto place = [&](int32_t text_h) {
-        const int32_t border = ui::theme::kBorderWidth;
-        const lv_area_t box = overlay_rect(shape_, std::max(kCardH, text_h + 2 * (kPadV + border)));
+        const lv_area_t box = overlay_rect(shape_, card_height(text_h));
+        card_top_ = box.y1;
         lv_obj_set_pos(obj_, box.x1, box.y1);
         lv_obj_set_size(obj_, std::max<int32_t>(lv_area_get_width(&box), 0),
                         lv_area_get_height(&box));
@@ -255,17 +272,22 @@ void TalkOverlay::fit(const char* text) {
     // that height (a taller card is narrower on a round screen); past
     // kMaxLines the label ends it with "...". The width is read back from
     // the laid-out label rather than worked out from the card's.
-    int32_t text_h = line;
+    int32_t text_h = text_height(1);
     for (int32_t n = 1; text != nullptr && n <= kMaxLines; ++n) {
-        text_h = n * line + (n - 1) * space;
+        text_h = text_height(n);
         place(text_h);
         lv_obj_update_layout(obj_);
         lv_point_t size{0, 0};
-        lv_text_get_size(&size, text, font, letter, space,
+        lv_text_get_size(&size, text, font, letter, kLineSpace,
                          std::max<int32_t>(lv_obj_get_content_width(label_), 1), LV_TEXT_FLAG_NONE);
         if (size.y <= text_h) return;
     }
     if (text == nullptr) place(text_h);
+}
+
+int32_t TalkOverlay::end_room() const {
+    if (phase_ == Phase::Hidden) return 0;
+    return shape_.height - card_top_ + ui::theme::kGapSm;
 }
 
 void TalkOverlay::set_pulse(bool on) {

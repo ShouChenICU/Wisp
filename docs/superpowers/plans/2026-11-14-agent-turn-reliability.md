@@ -208,7 +208,7 @@ TEST(Context, RunningTurnCallArgsStayWhole) {
   - `std::optional<std::pair<uint64_t, uint64_t>> pick_compression(std::span<const Message> history, uint32_t window, size_t fixed_tokens = 0, uint32_t keep_recent = kKeepRecentTurns);`
   - `struct BuildOptions { size_t live_tool_bytes = kLiveToolResultBytes; };` and `BuiltRequest build_request(std::span<const Message>, const DeviceSnapshot&, BuildOptions = {});` (same extra parameter on `build_history`).
   - In `Impl`: `uint32_t est_scale_pct = 100;` (estimate multiplier, clamped to 50..300), updated after each successful request as `usage.prompt * 100 / max(1, req.est_tokens + tools_tokens)`.
-  - New string `AgentErrContext`: zh "对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型。", en "The conversation no longer fits the model. Start a new one or use a model with a larger context.", ja the equivalent.
+  - New string `AgentErrContext`: zh "对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型", en "The conversation no longer fits the model. Start a new one or use a model with a larger context", ja the equivalent.
 
 Behaviour the loop must have, in order, before each request:
 1. Estimate = `(req.est_tokens + tools_tokens) * est_scale_pct / 100`.

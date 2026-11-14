@@ -242,9 +242,24 @@ bool contains_folded(std::string_view text, std::string_view lower_needle) {
     return false;
 }
 
+// Whether `code` holds the whole key, or any run of kMinKeyPiece bytes or
+// more of it (a longer run holds a kMinKeyPiece one, so those are all
+// that need looking for). A shorter piece is not dropped: short real codes
+// ("invalid") can occur in a key by chance and say nothing about it.
+bool holds_key_piece(std::string_view code, std::string_view key) {
+    constexpr size_t kMinKeyPiece = 8;
+    if (key.empty()) return false;
+    if (code.find(key) != std::string_view::npos) return true;
+    for (size_t i = 0; i + kMinKeyPiece <= code.size(); ++i) {
+        if (key.find(code.substr(i, kMinKeyPiece)) != std::string_view::npos) return true;
+    }
+    return false;
+}
+
 // {"error":{"code","type","message"}} as OpenAI and most gateways send it.
-// The body may quote the key (a 401's often does), so only a code that is
-// a plain identifier without the key comes out of here.
+// The body may quote the key (a 401's often does), whole or a piece of
+// it, so only a code that is a plain identifier holding neither the key
+// nor a piece of it long enough to matter comes out of here.
 ProviderError read_provider_error(std::string_view body, int status, std::string_view key) {
     ProviderError out;
     auto parsed = from_json(body, kMaxEventDepth);
@@ -252,9 +267,9 @@ ProviderError read_provider_error(std::string_view body, int status, std::string
     if (error == nullptr) return out;
     const std::string* code = string_field(*error, "code");
     if (code == nullptr) code = string_field(*error, "type");
+    const bool holds_key = code != nullptr && holds_key_piece(*code, key);
     if (code != nullptr && !code->empty() && code->size() <= 64 &&
-        std::all_of(code->begin(), code->end(), code_char) &&
-        (key.empty() || code->find(key) == std::string::npos))
+        std::all_of(code->begin(), code->end(), code_char) && !holds_key)
         out.code = *code;
     if (code != nullptr && *code == "context_length_exceeded") {
         out.context_length = true;
@@ -464,9 +479,13 @@ LlmResult LlmClient::complete(const LlmCall& call) {
     if (result.error.empty()) {
         WLOG_I(kTag, "model=%s status=%d ms=%u tokens=%u", result.model.c_str(), result.status, ms,
                tokens);
-    } else {
+    } else if (result.code.empty()) {
         WLOG_W(kTag, "model=%s status=%d ms=%u tokens=%u error=%s", result.model.c_str(),
                result.status, ms, tokens, result.error.c_str());
+    } else {
+        // The code is read_provider_error()'s: scrubbed of the key.
+        WLOG_W(kTag, "model=%s status=%d ms=%u tokens=%u error=%s code=%s", result.model.c_str(),
+               result.status, ms, tokens, result.error.c_str(), result.code.c_str());
     }
     return result;
 }

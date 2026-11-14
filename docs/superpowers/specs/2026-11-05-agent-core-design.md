@@ -122,8 +122,16 @@
 
 ### 3.3 上下文长度
 
-- 用"字节数 ÷ 3"粗估 token。超过激活配置 `context_window` 的 75% 时，额外请求一次，把最早的若干轮压成一段摘要，替换原文。原文仍保存在对话记录里。
-- 历史中每条工具结果最多保留 4 KB，超出部分截断并注明总长度。网页上可以展开查看完整内容。
+- 用"字节数 ÷ 3"粗估 token，再乘以按模型校准的系数 `est_scale_pct`（百分比，默认 100，限定在 50–300）：每次请求成功后，取回复 `usage.prompt` 与这次请求粗估值之比更新它，跨轮保留；一轮开始时激活的模型名与上次校准的不同，就回到 100。超过激活配置 `context_window` 的 75%（`kCompressPercent`）时，额外请求一次，把最早的若干轮压成一段摘要，替换原文，压到 40%（`kCompressTargetPercent`）以下。原文仍保存在对话记录里。
+- 工具结果分两种（2026-11-14 修订）：
+  - **正在进行的一轮**的工具结果整段发给模型，最多 `kLiveToolResultBytes`（96 KB：最大的工具载荷 64 KB，即 `kReadMaxBytes` / `kHttpMaxMaxBytes`，加上 JSON 转义和元数据）。模型这一轮刚读的文件要能完整看到，否则它会基于截断的内容改写场景；
+  - **更早各轮**的工具结果最多保留 `kToolResultKeepBytes`（4 KB），超出部分截断并注明总长度。网页上可以展开查看完整内容。
+- 更早各轮的工具调用参数超过 `kCallArgsKeepBytes`（2 KB）时，发给模型的参数换成 `{"elided_bytes":N}`（N 是原参数的字节数，仍是合法 JSON）。参数是模型自己写的（例如整份场景文件），结果已经说明了它的效果，每轮重发没有意义。正在进行的一轮的调用参数原样发送。摘要请求对所有调用都这样省略。
+- 上下文溢出的恢复（2026-11-14 修订），每次请求前按顺序：
+  1. 校准后的估算超过 75% 时，先按上面的规则压缩，保留最近 `kKeepRecentTurns`（2）轮不动；
+  2. 还是超过、或者已经没有可压缩的范围时，再压缩一次，只保留正在进行的一轮；
+  3. 仍然超过整个窗口时，正在进行的一轮的工具结果也按 `kToolResultKeepBytes` 截断，截断说明提示模型分小段读取；
+  4. 模型回复 `context_length`（3.6）时，`est_scale_pct` 至少提到 150，把这次请求当作超过窗口，按 1–3 处理后重试；每轮只重试一次。如果处理后的请求估算不比被拒的那次小（什么都没压缩、没截断），就不再发送。第二次被拒或不再发送时，这一轮以 `AgentErrContext`（"对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型"）结束，原因 `context`。
 - 截图只保留最新一张，更早的替换为"[截图已省略]"。
 
 ### 3.4 中止、排队与出错
@@ -131,8 +139,9 @@
 - 网页和设备都有"停止"按钮：断开 HTTP，能取消的工具立即取消，对话里记一条"已中止"。
 - 同一时间只跑一轮。忙碌时新消息排队，最多 1 条，这一轮结束后自动开始；再多返回 `busy`。
 - 出错处理：
-  - 429、5xx 退避后重试 2 次（1 s、4 s）；
+  - 429、5xx 退避后重试 2 次（1 s、4 s，`kRetryDelaysMs`）。连接失败、超时这类传输错误，只要回复还一个字节都没到（`any_body` 为假），也按同样的间隔重试，和 429/5xx 共用这 2 次（2026-11-14 修订）；回复已经开始后断开的不重试，否则屏幕上和朗读里会出现重复的文字。细节见 3.6；
   - 401 提示用户检查模型配置；
+  - 模型以上下文过长拒绝请求时按 3.3 恢复；
   - 没有激活的 `llm` 配置，或网络不可用，直接在对话中说明；
   - 达到 `agent/day_tokens` 上限时，拒绝开始新的一轮并说明原因。
 - 设备在一轮进行中重启，开机后把这一轮标为"已中断"。
@@ -155,6 +164,13 @@
 - API Key 只在这里经 `ModelProfileService::active_for_request(llm)` 取得，加到请求头。Key 不进对话、日志、工具结果或界面。
 - TLS 握手经已有的 `TlsGate`，同一时间只有一次握手。
 - 日志只记元信息：模型名、token 用量、耗时、状态码，不记录请求和回复的内容。
+- 重试与出错（2026-11-14 修订）：
+  - 429、5xx 和没有收到任何回复内容的传输错误共用一份预算：最多重试 2 次，间隔 `kRetryDelaysMs`（1 s、4 s）。等待中途用户停止会立即结束；剩下的时间不够等完时不再重试。
+  - 429/5xx 带 `Retry-After` 且是整秒数（delta-seconds）时，用它代替这一次的间隔，上限 `kMaxRetryAfterMs`（30 s），也不超过这次调用剩下的时间；等待时间达到剩余时间时直接放弃。HTTP 日期格式的 `Retry-After` 忽略，按原间隔。
+  - 失败响应的正文最多读 `kErrorBodyBytes`（2 KB），按 JSON 取 `error.code`（没有时取 `error.type`）和 `error.message`，然后丢弃，从不写日志、不保存。正文可能引用 Key，所以只有 `LlmResult::code` 带出去：最多 64 字节，只含 `[A-Za-z0-9_.-]`，包含 Key 的、或者 8 字节以上且是 Key 一部分的都丢掉。
+  - `error.code` 为 `context_length_exceeded`，或状态码为 400/413 且 message 含 "context length"、"maximum context"、"too many tokens"（不分大小写）时，结果的 `error` 为 `context_length`，不重试，由 Agent 按 3.3 处理。
+  - 已知行为：一个没有正文、`Retry-After` 很长的 429，等待期间没有字节到达，可能先触发 Agent 的 60 秒卡顿检测（`kStallMs`），这一轮以"网络中断"（原因 `network_lost`）结束。
+  - 边界：这些重试只覆盖 TCP/TLS 层的失败（没有收到任何回复内容）。Wi-Fi 断开事件（`net.wifi.state` 不再是 connected）仍然结束这一轮：请求进行中时经 `Abort::Network` 中止，原因 `network_lost`；两步之间由每步开始前的 `network_up()` 检查结束，原因 `network`。等 Wi-Fi 重连后接着跑这一轮暂不做，记在 `docs/backlog.md`。
 
 ### 3.7 电源
 
@@ -175,6 +191,8 @@
 网页、设备浮层和以后的鬼火主界面（基础 spec 1.9）都订阅它。
 
 `AgentService` 的监听者另外收到逐轮的细节：轮次开始与结束、流式文字、工具开始（ToolStart）与结束（ToolEnd）、确认、消息落定。模型还在流式写一次工具调用时（例如整份场景文件，可能要几十秒）另有 ToolPrep：流里一出现工具名就发一条，之后参数每增长一次，每个调用最多每 500 ms 一条，只带工具名（点分）和已收到的参数字节数，不带参数内容。`LlmClient` 通过可选的流回调报告名字和参数长度，限流在客户端里做；`wisp_net` 不知道 agent，由 agent 把回调转成事件。ToolPrep 不保证之后有 ToolStart：轮次被停止、到了步数上限而跳过的调用，以及回复中途出错时已经写了一半的调用，都不会再有 ToolStart/ToolEnd。一次回复的 ToolStart 都在下一次请求（State Thinking）之前发出，所以监听者到了下一次 Thinking 或 TurnEnd 还没等到 ToolStart 的 ToolPrep，就当作没有执行、不计入步数。
+
+轮次结束（TurnEnd，2026-11-14 修订）除 `status` 外还带 `reason` 和 `note`：`reason` 说明没有正常完成的原因，取值 `stopped`、`step_limit`、`time_limit`、`no_model`、`unauthorized`、`network`（没有连接，或请求没有收到任何回复）、`network_lost`（回复中途断开，或卡顿检测触发）、`server`、`context`（3.3），正常完成（`done`）时为空；`note` 是这一轮写进对话的说明文字（设备语言），最多 `kSummaryChars`（200）个字符，正常完成时为空。设备外壳把它们放进 `TurnView::end_reason` / `end_note`（MVP spec 6.2）；网页不变，它照旧从 `note` 消息和 `turn_end` 标记得知。
 
 ---
 
@@ -247,7 +265,7 @@
 | `settings.get()` | `display/brightness`、`audio/volume`、`audio/notify_vol`、熄屏时间、语言、时间格式 `sys/time_24h` | 普通 | 5 s |
 | `settings.set(key, value)` | 只允许上一行列出的键，校验与网页设置相同（`SystemSettings`） | 说明 | 5 s |
 | `notify.list()`、`notify.dismiss(source, id)` | 通知（3b-1 spec 5） | 普通 | 5 s |
-| `docs.read(topic)` | 主题：`widgets`、`widget/<name>`、`lua`、`lua/<module>`、`screen`、`examples`、`example/<id>`。内容编译进固件，由控件白名单和 `docs/scene-api.md` 生成 | 普通 | 5 s |
+| `docs.read(topic, offset?)` | 主题：`widgets`、`widget/<name>`、`lua`、`lua/<module>`、`screen`、`examples`、`example/<id>`。内容编译进固件，由控件白名单和 `docs/scene-api.md` 生成。长主题分页（2026-11-14 修订）：每页最多 `kDocsPageBytes`（16 KB），在页内最后一个换行处结束（整页没有换行时在 UTF-8 字符边界）；结果带 `total_bytes`，后面还有内容时带 `next_offset`，把它作为下次的 `offset` 接着读。`offset` 超出末尾或落在字符中间时返回 `bad_offset` 并附 `total_bytes` | 普通 | 5 s |
 
 ### 4.5 不提供的工具
 
@@ -494,3 +512,12 @@
 - 1.1：4b 拆出 4b-1，增加 `http.fetch`、`lua.run`、场景导出工具；`wisp.agent.ask/notify` 与外设抢占仍留后续。动态注入改为 `tools.find` / `tools.call` 按需查询，场景工具不注入核心 tools 数组或固定提示词。
 - 第 4 节：增加 `http.fetch`、`lua.run`、`tools.find`、`tools.call`；4.5 的密钥读取禁令不变。
 - 6.3：外部内容包装来源新增 `http:<host>` 与 `lua`，场景工具描述与结果属于 `scene:<id>`；固定防注入提示词以 4b-1 第 7.1 节英文全文为准。原“真正的防线是设备确认”不适用于这四个新工具：它们不经设备确认，依靠第 7.1 节的模型约束。模型实效验收仍交用户在设备执行。
+
+## 2026-11-14 修订：轮次可靠性
+
+本节列出的修订已写进对应章节，以那里的条文为准；计划见 `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`。
+
+- 3.3：正在进行的一轮的工具结果整段发送（`kLiveToolResultBytes`），更早各轮按 `kToolResultKeepBytes` 截断；更早各轮超过 `kCallArgsKeepBytes` 的调用参数省略为 `{"elided_bytes":N}`；估算按模型校准（`est_scale_pct`）；上下文溢出按"压缩（保留 `kKeepRecentTurns` 轮）→ 再压缩（只留本轮）→ 截断本轮结果 → `context_length` 每轮重试一次"恢复，失败时说明 `AgentErrContext`。
+- 3.4、3.6：没有收到任何回复的传输错误也重试，与 429/5xx 共用预算；`Retry-After`；失败正文只取 `error.code`，`LlmResult::code` 去掉 Key。
+- 3.8：TurnEnd 带 `reason` 和 `note`。
+- 4.4：`docs.read` 分页（`kDocsPageBytes`、`offset`、`next_offset`、`total_bytes`）。

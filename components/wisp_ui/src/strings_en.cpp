@@ -264,7 +264,7 @@ const char* strings_en(StrId id) {
             return "The model service returned an error. Try again later";
         case StrId::AgentErrContext:
             return "The conversation no longer fits the model. Start a new one or use a model with "
-                   "a larger context.";
+                   "a larger context";
         case StrId::AgentRolledOver:
             return "The conversation got long, so it was archived and a new one started";
         case StrId::AgentContextDropped:

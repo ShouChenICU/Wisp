@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "shell/shell_fixture.hpp"
 #include "support/fake_devices.hpp"
@@ -19,6 +20,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/shell/home.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/shell/talk_overlay.hpp"
@@ -64,6 +66,7 @@ protected:
                     lv_obj_delete(diag);
                     diag = nullptr;
                 },
+            .diagnostics_end_room = [this](int32_t room) { diag_rooms.push_back(room); },
             .leave_scene = [this]() -> wisp::Result<bool> {
                 ++leaves;
                 if (scene == nullptr) return wisp::Result<bool>::ok(false);
@@ -145,6 +148,7 @@ protected:
     bool leaving = false;
     lv_obj_t* scene = nullptr;
     lv_obj_t* diag = nullptr;
+    std::vector<int32_t> diag_rooms;  // UI thread
 };
 
 }  // namespace
@@ -223,6 +227,83 @@ TEST_F(ShellTalkTest, FailedTurnOnASubPageShowsItsNote) {
     EXPECT_EQ(phase(), Phase::Hidden);
 }
 
+// A turn started from the web page shows nothing over Settings while it
+// runs (it may run for minutes, and the card would cover the page's last
+// rows), nor its say once it ends well; a web turn that fails still says
+// why.
+TEST_F(ShellTalkTest, WebTurnOverSettingsShowsOnlyItsFailure) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    server.llm().push(wisp::test::llm_text("<say>场景做好了。</say>", /*hold_after=*/0));
+
+    ASSERT_TRUE(agent->submit("做一个番茄钟场景", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 5000));
+    ASSERT_TRUE(wait_until([&] { return conv->current().running; }, 2000));
+    h->bus.wait_idle(500);
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Hidden);
+    EXPECT_FALSE(overlay_shown());
+
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(wait_until([&] { return !conv->current().running; }, 2000));
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Hidden);
+
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    ASSERT_TRUE(agent->submit("再做一个", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+    EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_TRUE(overlay_shown());
+}
+
+// A turn that fails with Settings in front, Home shown within a second:
+// Home's hint line says why, in the same short words.
+TEST_F(ShellTalkTest, FailedTurnThenHomeShowsTheShortReason) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+
+    virtual_ms += 900;
+    std::string hint;
+    on_ui([&] {
+        shell_->show(wisp::shell::Page::Home);
+        wisp::shell::Home* home = shell_->home();
+        ASSERT_NE(home, nullptr);
+        home->refresh();
+        lv_obj_t* label = home->hint_label();
+        if (label != nullptr && !lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN))
+            hint = lv_label_get_text(label);
+    });
+    EXPECT_EQ(active(), shell_->home_screen());
+    EXPECT_EQ(hint, wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_EQ(phase(), Phase::Hidden);
+}
+
+// A spoken turn over Settings shows that it is being worked on.
+TEST_F(ShellTalkTest, VoiceTurnOverSettingsShowsThinking) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    server.llm().push(wisp::test::llm_text("<say>好的。</say>", /*hold_after=*/0));
+    server.push_tts(wisp::test::tts_pcm());
+
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 5000));
+    ASSERT_TRUE(wait_phase(Phase::Thinking, 2000));
+    EXPECT_TRUE(overlay_shown());
+
+    server.release();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+}
+
 // Home coming to the front hides the overlay: it shows the same itself.
 TEST_F(ShellTalkTest, HomeInFrontHidesTheOverlay) {
     make_shell();
@@ -285,6 +366,33 @@ TEST_F(ShellTalkTest, TapOnASubPageShowsHome) {
     ASSERT_TRUE(settled());
 }
 
+// The diagnostics get the card's room while it shows and lose it when it
+// hides, as the sub-pages do.
+TEST_F(ShellTalkTest, DiagnosticsGetTheCardsEndRoom) {
+    make_shell();
+    on_ui([&] { shell_->open_diagnostics(); });
+    ASSERT_NE(diag, nullptr);
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+    std::vector<int32_t> rooms;
+    int32_t want = 0;
+    on_ui([&] {
+        rooms = diag_rooms;
+        want = shell_->talk()->end_room();
+    });
+    ASSERT_FALSE(rooms.empty());
+    EXPECT_GT(want, 0);
+    EXPECT_EQ(rooms.back(), want);
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+    ASSERT_TRUE(wait_phase(Phase::Hidden, 2000));
+    on_ui([&] { rooms = diag_rooms; });
+    EXPECT_EQ(rooms.back(), 0);
+}
+
 // On the diagnostics the tap closes them, as their back gesture does.
 TEST_F(ShellTalkTest, TapOnDiagnosticsShowsHome) {
     make_shell();
@@ -338,9 +446,10 @@ TEST_F(ShellTalkTest, SceneHoldGoesListeningThinkingSaying) {
     drop_scene();
 }
 
-// scene.state hides the overlay at once, mid-capture, regardless of what
-// VoiceState/the conversation are doing.
-TEST_F(ShellTalkTest, SceneStateHidesTheOverlay) {
+// A scene.state event only has the overlay look again: while a screen but
+// Home is still in front it keeps showing; once the scene's going brings
+// Home in front, Home's loading hides it.
+TEST_F(ShellTalkTest, SceneStateReevaluatesTheOverlay) {
     make_shell();
     open_scene();
     say_into_mic();
@@ -349,11 +458,42 @@ TEST_F(ShellTalkTest, SceneStateHidesTheOverlay) {
     ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
 
     h->bus.publish({"scene.state", "test", 0, {{"id", "demo"}, {"state", "background"}}});
-    ASSERT_TRUE(wait_phase(Phase::Hidden, 2000));
+    h->bus.wait_idle(500);
+    // Two round-trips: the bus handler's post, then request_talk()'s own.
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Listening);
+    EXPECT_TRUE(overlay_shown());
+
+    on_ui([&] { lv_screen_load(shell_->home_screen()); });
+    EXPECT_EQ(phase(), Phase::Hidden);
+    EXPECT_FALSE(overlay_shown());
 
     conv->hold_cancel();
     ASSERT_TRUE(settled());
     drop_scene();
+}
+
+// A scene.state event that arrives while a turn's failure note shows over
+// a sub-page (a scene closing as the user goes back to the Scenes page)
+// keeps the note: the overlay records a note as seen when it takes it, so
+// hiding it here would lose it for good.
+TEST_F(ShellTalkTest, SceneStateKeepsAFailureNote) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Scenes); });
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+
+    h->bus.publish({"scene.state", "test", 0, {{"id", "demo"}, {"state", "closed"}}});
+    h->bus.wait_idle(500);
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Note);
+    EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_TRUE(overlay_shown());
 }
 
 // A tap sends the foreground scene back through the existing leave_scene()

@@ -715,6 +715,8 @@ Result<void> App::start() {
                                      impl->self_check);
                 },
             .close_diagnostics = [impl] { stop_self_check(impl->self_check); },
+            .diagnostics_end_room =
+                [impl](int32_t room) { set_self_check_end_room(impl->self_check, room); },
             .leave_scene = [impl]() -> Result<bool> {
                 scene::SceneRuntime* rt = impl->scenes ? impl->scenes->runtime() : nullptr;
                 if (rt == nullptr) return Result<bool>::ok(false);

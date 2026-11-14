@@ -126,3 +126,28 @@ TEST(Docs, OffsetPastTheEndIsAnError) {
     EXPECT_EQ(r.find("ok")->as_bool(), false);
     EXPECT_EQ(r.find("error")->as_string(), "bad_offset");
 }
+
+// An offset that is there but not an integer is refused, never read as 0:
+// the registry's schema check refuses it first, and the tool's own body
+// (reached without that check, as a direct run is) says bad_offset.
+TEST(Docs, OffsetThatIsNotAnIntegerIsAnError) {
+    wisp::agent::ToolRegistry reg(wisp::agent::ToolExecutors{});
+    ASSERT_TRUE(wisp::agent::add_docs_tools(reg));
+    const wisp::agent::ToolDef* def = reg.find("docs.read");
+    ASSERT_NE(def, nullptr);
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    for (const char* offset : {R"("12")", "1.5", "true", "null"}) {
+        SCOPED_TRACE(offset);
+        const std::string args = std::string(R"({"topic":"lua","offset":)") + offset + "}";
+        const wisp::agent::ToolOutput via_registry = reg.call("docs_read", args, ctx);
+        EXPECT_FALSE(via_registry.ok);
+        auto parsed = wisp::from_json(args);
+        ASSERT_TRUE(parsed);
+        const wisp::agent::ToolOutput out = def->run(parsed.value(), ctx);
+        EXPECT_FALSE(out.ok);
+        const Value* err = out.result.find("error");
+        ASSERT_NE(err, nullptr) << wisp::to_json(out.result);
+        EXPECT_EQ(err->as_string(), "bad_offset") << wisp::to_json(out.result);
+    }
+}

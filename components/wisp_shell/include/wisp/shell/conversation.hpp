@@ -150,7 +150,11 @@ struct TurnView {
     uint64_t ended_ms = 0;
     bool thinking = false;
     // Set at TurnEnd: AgentEvent::reason and AgentEvent::note ("" for a
-    // turn that went well).
+    // turn that went well). Home and the talk overlay show only the short
+    // per-reason words for end_reason (outcome_text.hpp): the full note
+    // does not fit the small round screens. end_note keeps the agent's
+    // full note for a screen with room for it (the conversation has it
+    // too).
     std::string end_reason;
     os::LargeString end_note;
 

@@ -19,9 +19,7 @@ Deferred work, collected in fast mode from 2026-11-06: Minor review findings, it
   - simulated input (`ui.tap` / `ui.swipe` / `ui.type`).
 - Scene list: pin and export.
 - Settings page: wisp colour, storage management.
-- All of 4b:
-  - `wisp.tools.register`;
-  - headless runs;
+- The rest of 4b:
   - `wisp.agent.ask` / `notify`;
   - dynamic injection;
   - peripheral pre-emption.
@@ -151,7 +149,7 @@ Source: `feat/agent-core` review records.
   - the "已保存的网络" card rows on the network page have no connect button; only a pick in the scan list connects directly;
   - the setup wizard's step indicator marks "输入密码" done when a saved network was joined without one;
   - the firmware's app version string is fixed when CMake configures, so an incremental `app-flash` reports an older `git describe`.
-- Firmware builds with `-Werror=missing-field-initializers`, the host build does not, so `tools/ci.sh` misses designated initializers that omit fields; enable the warning on the host or build the firmware in CI.
+- Firmware builds with `-Werror=missing-field-initializers`, the host build does not, so `tools/ci.sh` misses designated initializers that omit fields until the firmware build in CI catches them; enable the warning on the host.
 
 ## Glyph partition parked review findings
 
@@ -183,7 +181,7 @@ Source: glyph partition review records.
 
 ## Conversation controller (MVP shell)
 
-- After the agent dequeues a message and before its TurnBegin, `view()` shows neither running nor queued, and while `run_turn()` checks for a rollover that gap can be long. During it, a tap can start a capture, and `hold_begin()` does not stop the just-dequeued web turn. Fix: AgentService exposes a busy flag that covers the slot/active state, and `hold_begin()` always calls `stop_turn()`.
+- After the agent dequeues a message and before `run_turn()` sets `running_turn`, `view()` shows neither running nor queued. A hold's transcript that arrives in that gap sees nothing to stop and waits behind the turn instead of replacing it (documented in `conversation.hpp`). The gap is an instant, except when the turn starts with a conversation rollover (`archive()` on flash). Fix if it shows: AgentService exposes a busy flag that covers the slot/active state, and `on_transcript()` stops on it.
 - `voice.state` events carry no capture id. An `idle`/`not_heard` or `error` that arrives late from capture N can mark capture N+1 as "没听清". Fix this when building the shell UI.
 - `notify()` copies the whole `TurnView` once per listener on every Delta, which is O(n²) over a turn. Revisit if long replies show up in WISP_PERF.
 - Test gaps in the shell tests: TalkKey when the screen turns off mid-hold; settings changes reaching the cached tts_mute and volume.
@@ -215,7 +213,34 @@ Source: glyph partition review records.
 
 ## Talk overlay (MVP spec 6.5)
 
-- `TalkOverlay::decide()` has no phase for a voice error (`VoiceState::Error`) or `TurnView::error`/`not_heard`: it falls through to Hidden. Confirm whether that is the intended split with Home (which may already surface these) before adding one.
+- The overlay shows turn-end reasons and voice errors (Note phase), but not "没听清" (`TurnView::not_heard`): a hold over a scene that heard nothing just hides the card. Home shows it. Decide whether the overlay should too.
+
+## Agent turn reliability: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator and unit tests only so far.
+
+- `mem` after a turn with a 64 KB `scene.read_file` result: the `Mem::Large` peak and the `wisp.agent` stack high-water mark.
+- A real turn over weak Wi-Fi that stays associated (requests fail at the TCP/TLS level): the retry is invisible apart from the delay; no doubled text or speech. A Wi-Fi disconnect is not retried: the turn ends `network_lost` (during a request) or `network` (between steps), and Home shows the matching short reason.
+- On the 1.75C round AMOLED panel: the Stop button's touch target and spacing, and the taller talk overlay card with no clipping; with a voice turn's card up, a sub-page scrolled to its end shows its last row above the card. The overlay card on e-paper too.
+- A provider 400 for an over-long context on the owner's gateway: the turn recovers (note which `error.code` the gateway sends).
+- The Stop button's colours on a two-colour panel.
+- A provider's real `Retry-After` and 4xx bodies over TLS.
+
+## Agent turn reliability parked review findings
+
+- Deferred: wait for Wi-Fi to reconnect and resume the turn. Today a Wi-Fi disconnect ends a running turn (`Abort::Network` during a request, the `network_up()` check between steps; agent-core spec 3.6); the retries only cover TCP/TLS failures while the link stays up.
+- `docs.read` has no tests for an `offset` in the middle of a character or exactly at the end of the text.
+- The agent loop has no test for the keep-1 compression step on its own, nor for the 50/300 clamp of `est_scale_pct`.
+- The estimate scale is keyed on the model name only: two profiles with the same model name on different providers share it.
+- A voice text refused "busy" in the window between the stop and the submit shows no outcome on screen.
+- `Home::fitted_url()` and `TalkOverlay::fit()` redo layout work on every refresh.
+- The talk overlay's tap tests send `LV_EVENT_CLICKED` directly and bypass hit-testing.
+- The old no-model / no-ASR / no-TTS hints are cut on the 360 px round test shape; to be replaced by the readiness checklist of the voice-and-wake plan.
+- No boundary test for the elided call arguments at exactly `kCallArgsKeepBytes` and one byte over.
+- No test for a `docs.read` page of a long topic that has no newline to break at (the cut falls back to a character boundary).
+- A summary request's reported usage does not calibrate the estimate scale, and no test pins that down.
+- The same voice error twice in a row is not shown again (Home and the talk overlay only show a change of `TurnView::error`).
+- With a small context window, the keep-1 compression runs before the current turn's live tool results are cut, so one large read can cost the earlier turns' detail; consider cutting the live results first.
 
 ## CI speed
 

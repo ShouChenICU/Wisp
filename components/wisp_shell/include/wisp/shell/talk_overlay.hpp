@@ -11,17 +11,20 @@
 //
 // Shell owns the one instance and decides when to drive it: on_turn()/
 // tick() while Home is not in front, on_home() while it is (and the
-// moment it comes in front), hide() on every "scene.state" event (the
-// scene that was in front may no longer be).
+// moment it comes in front); a "scene.state" event (the scene that was in
+// front may no longer be) only has Shell look again, since a hide would
+// drop a say or note already taken.
 //
 // Phase, from on_turn()'s VoiceState and TurnView: Listening while
 // recording (a pulsing dot and the level bar), Thinking while
-// transcribing, or once a turn is running with nothing newer to show
-// ("思考中…", or the label of the agent's step under way,
-// TurnView::running_step()), Saying once the turn's say text is new, and
-// Note once a turn ends with a reason (TurnView::end_reason) or a voice
+// transcribing, or once a voice turn is running with nothing newer to
+// show ("思考中…", or the label of the agent's step under way,
+// TurnView::running_step()), Saying once a voice turn's say text is new,
+// and Note once any turn ends with a reason (TurnView::end_reason) or a voice
 // error is new: the same short words Home's hint uses (not the agent's
-// full note, which does not fit the small round screens). Saying and Note
+// full note, which does not fit the small round screens). A turn from the
+// web page or device text shows nothing while it runs: it can run for
+// minutes, and the card would cover the page's last rows all that time. Saying and Note
 // each hold for kOverlaySayMs (wisp/shell/limits.hpp) after what they show
 // was first seen (a say: last changed); tick() ends them, and what one
 // showed is not shown again when the view is next seen unchanged (the
@@ -31,7 +34,9 @@
 //
 // The card sits above the safe area's bottom edge and grows upward to fit
 // its text, three lines at most, then the text ends with an ellipsis; at
-// every height it keeps to the rows the screen shows.
+// every height it keeps to the rows the screen shows. While it shows,
+// Shell gives the scrolling screens under it room at their end
+// (end_room()), so their last item can be scrolled clear of it.
 //
 // A tap calls `open_home` (Shell::show(Home): a scene in front is sent
 // back first, as the back gesture does; a sub-page or the diagnostics
@@ -81,6 +86,10 @@ public:
 
     Phase phase() const { return phase_; }
     lv_obj_t* obj() const { return obj_; }
+    // The rows a scrolling screen under the card keeps clear at its end
+    // while the card shows: from kGapSm above the card's top to the
+    // screen's bottom edge, at the card's current height; 0 while hidden.
+    int32_t end_room() const;
 
 private:
     // What a Saying or Note shows, and since when.
@@ -107,11 +116,12 @@ private:
     lv_obj_t* bar_ = nullptr;
     lv_obj_t* label_ = nullptr;
     bool pulsing_ = false;
+    int32_t card_top_ = 0;  // the card's top row, as fit() last placed it
 
     Phase phase_ = Phase::Hidden;
     os::LargeString step_shown_;  // the running step's label, while thinking
 
-    bool running_ = false;  // the last view's turn still runs
+    bool voice_running_ = false;  // the last view's turn is spoken and still runs
 
     // The last view seen: its turn, its say, how its last turn ended and
     // its voice error, so only what changed starts a Saying or a Note.

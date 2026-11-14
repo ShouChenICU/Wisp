@@ -114,15 +114,19 @@ void Shell::start() {
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
     icons_ = std::make_shared<IconCache>();
-    // Always subscribed: a scene.state event hides the talk overlay (the
-    // scene that was in front may no longer be) whether or not the scene
-    // list is also listening for it.
+    // Always subscribed: a scene.state event has the talk overlay look
+    // again (the scene that was in front may no longer be) whether or not
+    // the scene list is also listening for it. Not a hide: the overlay
+    // records a say or note as seen when it takes one, so a hide here would
+    // lose it for good; Home coming in front hides it on its own.
     scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
         // On the bus's thread: the list is read again from the UI
         // thread, which knows whether it is open.
         deps_.ui.post([this, alive] {
             if (!*alive) return;
-            if (talk_) talk_->hide();
+            // Posted again: the screen that replaces a closing scene may
+            // still be loading.
+            request_talk();
             if (scenes_) list_scenes();
         });
     });
@@ -170,6 +174,9 @@ void Shell::stop() {
     }
     delete_page();
     talk_.reset();
+    // The room is the card's: no card, no room (the setter's state
+    // outlives this shell).
+    sync_end_room();
     home_->stop();  // deletes the home screen and the wisp with it
     home_.reset();
     home_screen_ = nullptr;
@@ -212,9 +219,18 @@ void Shell::update_talk() {
         deps_.conversation != nullptr ? deps_.conversation->current() : TurnView{};
     if (home_in_front()) {
         talk_->on_home(view);
-        return;
+    } else {
+        talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
     }
-    talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
+    sync_end_room();
+}
+
+void Shell::sync_end_room() {
+    const int32_t room = talk_ ? talk_->end_room() : 0;
+    if (room == end_room_) return;
+    end_room_ = room;
+    detail::set_overlay_end_room(room);
+    if (diag_ != nullptr && deps_.diagnostics_end_room) deps_.diagnostics_end_room(room);
 }
 
 void Shell::home_loaded_cb(lv_event_t* e) {
@@ -247,7 +263,10 @@ void Shell::on_voice_bus(const core::Event& e) {
 
 void Shell::talk_timer_cb(lv_timer_t* t) {
     auto* self = static_cast<Shell*>(lv_timer_get_user_data(t));
-    if (self->talk_) self->talk_->tick(self->deps_.now_ms());
+    if (self->talk_) {
+        self->talk_->tick(self->deps_.now_ms());
+        self->sync_end_room();
+    }
     self->check_drag();
     self->follow_lang();
 }
@@ -854,6 +873,7 @@ void Shell::open_diagnostics() {
         return;
     }
     diag_ = now;
+    if (deps_.diagnostics_end_room) deps_.diagnostics_end_room(end_room_);
     lv_obj_add_event_cb(diag_, &Shell::diag_loaded_cb, LV_EVENT_SCREEN_LOADED, this);
     set_diag_back_handler();
     WLOG_I(kTag, "diagnostics open");
