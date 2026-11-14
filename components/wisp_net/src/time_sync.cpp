@@ -18,8 +18,9 @@ static_assert(std::is_trivially_copyable_v<core::TimeSyncResult>,
               "a set() of the result must not allocate");
 
 // Reproduces the system.time event the service published at the end of
-// every attempt. Built from the cell's value: its server cannot have been
-// cut, as ntp_servers entries fit (see TimeSyncResult::server).
+// every attempt. Built from the cell's value: a server that comes from
+// the ntp_servers setting is never cut, as its entries fit (see
+// TimeSyncResult::server).
 void result_mirror(core::EventBus& bus, const core::TimeSyncResult&,
                    const core::TimeSyncResult& after) {
     if (after.outcome == core::TimeSyncResult::Outcome::None) return;

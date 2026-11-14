@@ -61,7 +61,8 @@
 // whose cell publishes system.time {"state":"synced","server":"debug",
 // "time"} as a sync would (the service's own status, and so "Sync now",
 // is left alone), and answers "clock-advance=ok" or
-// "clock-advance=<error>" ("no time sync" without the service).
+// "clock-advance=<error>" ("no time sync" without the service, as when
+// the simulator runs with --disable net.wifi).
 // "debug voice-text <text>" hands the text to the conversation as a
 // transcript (ConversationController::voice_text(): source voice, spoken
 // unless muted) and answers "voice-text=ok" or "voice-text=<error>".
