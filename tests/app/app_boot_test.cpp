@@ -319,11 +319,20 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     ASSERT_FALSE(busy);
     EXPECT_EQ(busy.error().code, wisp::ErrorCode::Busy);
     // The App's power.state handler maps the state names; one it does not
-    // know leaves the level as it was.
+    // know leaves the level as it was, for the sensors as for the devices.
+    wisp::core::SensorService* sensors = h.app.sensors();
+    ASSERT_NE(sensors, nullptr);
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 50, "test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    EXPECT_EQ(sensors->imu_rate(), 0u);
     publish("hibernate");
     EXPECT_FALSE(devices->get("haptic.main", "level"));
+    EXPECT_EQ(sensors->imu_rate(), 0u);
     publish("dim");
     EXPECT_TRUE(devices->get("haptic.main", "level"));
+    EXPECT_EQ(sensors->imu_rate(), 50u);
+    sensors->unsubscribe(sub.value());
     publish("deep_standby");
     EXPECT_FALSE(devices->get("haptic.main", "level"));
     publish("active");

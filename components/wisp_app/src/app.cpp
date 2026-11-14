@@ -482,11 +482,16 @@ Result<void> App::start() {
             auto it = e.payload.find("state");
             if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
             const std::string& state = it->second.as_string();
-            sensors->set_standby(state == "standby" || state == "deep_standby");
-            for (hal::PowerLevel level : {hal::PowerLevel::Active, hal::PowerLevel::Dim,
-                                          hal::PowerLevel::Standby, hal::PowerLevel::DeepStandby}) {
-                if (state == hal::to_string(level)) devices->set_power_level(level);
+            std::optional<hal::PowerLevel> level;
+            for (hal::PowerLevel l : {hal::PowerLevel::Active, hal::PowerLevel::Dim,
+                                      hal::PowerLevel::Standby, hal::PowerLevel::DeepStandby}) {
+                if (state == hal::to_string(l)) level = l;
             }
+            // A state this build does not know changes nothing for either.
+            if (!level) return;
+            sensors->set_standby(*level == hal::PowerLevel::Standby ||
+                                 *level == hal::PowerLevel::DeepStandby);
+            devices->set_power_level(*level);
         });
 
     auto power_key = impl_->registry.by_role<hal::Button>(hal::role::kPower);
