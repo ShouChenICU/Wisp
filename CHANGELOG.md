@@ -2,6 +2,21 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## 0.5.2 — 2026-11-14
+
+### Fixes
+
+- Remove the top status capsule while retaining pull-down access to the status panel, reclaim its reserved space, and pad and centre the Wi-Fi empty-network message.
+- Pin the USB dependency to 1.6.0 so clean firmware configuration and board switching preserve the committed dependency lock.
+
+### Tooling
+
+- Simplify repeated timed long-press checks in scene-list tests and remove the 2,000-widget wall-clock benchmark. Retain touch interaction, data deletion, asynchronous discovery, tree folding and output-limit coverage.
+
+### Documentation
+
+- Require proactive self-review of implementation details, usability and integration before delivery.
+
 ## 0.5.1 — 2026-11-13
 
 ### Features

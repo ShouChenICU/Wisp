@@ -115,6 +115,9 @@ cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <board> 
 
 ## 7. Workflow
 
+- **Quality ownership**: proactively resolve implementation details within the agreed scope. Trace the complete affected flow, compare reasonable approaches and choose a simple, maintainable solution that fits the project. Inspect related uses for the same root cause. Users should not need to repeatedly identify routine defects or specify every detail.
+- **Self-review before delivery**: check behaviour, usability and integration, in addition to compilation. For UI changes, inspect rendered spacing, padding, alignment, text wrapping, touch/scroll behaviour and state transitions, including relevant empty, loading, error and disabled states. For logic changes, check invariants, boundary inputs, failure and cancellation paths, asynchronous lifetimes, persistence and resource costs where applicable. Resolve issues found before reporting completion.
+- **Proportionate verification**: verify the affected behaviour and common edge cases with focused checks; use actual rendered layouts for visual changes. Avoid redundant combinations and unrelated expansion. State remaining device-only checks explicitly; distinguish verified results from assumptions. See `docs/testing.md` for automated check scope.
 - **Process**: a new feature or sub-project starts with a design spec. After the user approves it, write the implementation plan. Implementation starts only after the user has reviewed the plan (brainstorming → writing-plans → subagent-driven-development).
 - **Branches**: do not develop directly on `main`; use feature branches. Ask the user before you push, merge or release.
 - **Commits**: use the Conventional Commits style (`feat(core): ...`, `docs: ...`). Commits created by an agent carry the `Co-Authored-By` line required by the current environment's attribution rules.

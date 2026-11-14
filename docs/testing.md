@@ -13,6 +13,12 @@ scheduling, firmware upload and scene lifecycle variations. CI uses this mode on
 pushes to main and manual workflow runs. PRs and other branches use daily mode.
 Both firmware board builds remain required.
 
+Firmware CI also requires the final `firmware/dependencies.lock` to remain
+unchanged after initial configuration and both board builds. The first
+configuration runs before bmgr generates its dependency manifest and therefore
+resolves a smaller graph. Pin USB in `firmware/main/idf_component.yml` as well as
+the lock file so this bootstrap step cannot upgrade usb_host_uac's dependency.
+
 Tool self-tests can be selected with `WISP_CI_BASE=<revision> bash tools/ci.sh`.
 The selector compares the merge base with HEAD and local tracked edits, and
 includes new files under tools. Tool changes and known input changes select their
@@ -28,6 +34,12 @@ invalid input, empty states, cancellation, network failures, persistence recover
 secret handling and thread restrictions. Do not multiply combinations that
 exercise the same behaviour. Real-time timeout and recovery tests remain enabled;
 shorter CI must not weaken their guarantees or change product timing.
+
+UI tree folding and output limits are checked with pure unit tests; CI does not
+render a 2,000-widget scene as a wall-clock performance benchmark. Scene-list
+deletion tests reuse the long-press action directly for business checks, while
+the initial long press still exercises the touch path. Repeated timed gestures
+are unnecessary for checking data deletion and asynchronous data discovery.
 
 Connection screenshot previews are manual because functional tests already cover
 their interactions. After building, run:

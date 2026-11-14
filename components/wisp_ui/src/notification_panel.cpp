@@ -162,7 +162,6 @@ bool SystemLayer::has_panel() const {
 void SystemLayer::set_panel_handlers(PanelHandlers h) {
     panel_handlers_ = std::move(h);
     if (!has_panel()) close_panel();
-    update_capsule_touch();
     update_pointer_hook();
 }
 

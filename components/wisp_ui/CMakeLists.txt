@@ -1,7 +1,7 @@
 # wisp_ui: the LVGL 9.5 runtime over wisp::hal::Display/Touch (see
 # wisp/ui/ui_runtime.hpp), the device UI strings (wisp/ui/strings.hpp,
 # wisp/ui/system_notice.hpp) and the system layer (wisp/ui/system_layer.hpp,
-# implemented across src/system_layer.cpp, status_capsule.cpp,
+# implemented across src/system_layer.cpp, status_geometry.cpp,
 # notification_panel.cpp and banner.cpp) and the wisp renderer
 # (wisp/ui/wisp_view.hpp over wisp/ui/wisp_model.hpp, implemented across
 # src/wisp_model.cpp, wisp_shape.cpp, wisp_spans.cpp and wisp_view.cpp). src/pinyin_dict.cpp is generated
@@ -28,7 +28,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 set(WISP_UI_SRCS
     src/a8_font.cpp src/align.cpp src/dialog.cpp src/font_image.cpp src/fonts.cpp src/glyph_image.cpp
     src/overlay.cpp src/theme.cpp src/ui_runtime.cpp src/strings.cpp src/strings_zh.cpp
-    src/strings_ja.cpp src/strings_en.cpp src/system_layer.cpp src/status_capsule.cpp
+    src/strings_ja.cpp src/strings_en.cpp src/system_layer.cpp src/status_geometry.cpp
     src/notification_panel.cpp src/banner.cpp src/system_notice.cpp src/pinyin_dict.cpp
     src/clock_text.cpp src/drag.cpp
     src/wisp_model.cpp src/wisp_shape.cpp src/wisp_spans.cpp src/wisp_view.cpp

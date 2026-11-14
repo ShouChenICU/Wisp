@@ -2,7 +2,7 @@
 
 // The system layer (scene runtime spec 3.5/3.6/8, scene-device spec
 // 5.3/5.5/5.6): what the system shows above whatever screen is up -- the
-// back gesture, the status capsule, the pull-down panel and its top-edge
+// back gesture, the pull-down panel and its top-edge
 // swipe, notification banners, the scene error panel, the on-screen
 // keyboard and the modal confirm dialogs.
 //
@@ -26,8 +26,6 @@
 //     same way, by the same observer: a press from the top zone that has
 //     moved far enough down is taken from the widget under it. Whichever
 //     of the two gestures crosses its trigger first owns the press.
-//   - The status capsule is a small opaque pill at status_area(), shown
-//     only while there is something to count, and marked.
 //   - A banner is an opaque card near the top, shown for kBannerMs, one
 //     at a time, and marked.
 //   - The pull-down panel is a full-screen opaque backdrop without
@@ -77,12 +75,6 @@ struct ErrorPanelInfo {
     std::string file;
     int line = 0;
     std::string message;
-};
-
-// What the status capsule counts (spec 5.5).
-struct StatusCounts {
-    int background = 0;
-    int unread = 0;
 };
 
 // The panel's model is in PSRAM: with up to 50 notifications and their
@@ -170,7 +162,8 @@ public:
     // maps can be constant tables.
     static constexpr const char* kPinyinKey = "中";
     static constexpr const char* kLatinKey = "EN";
-    // The status capsule's size and its gap below the safe area's top
+    // Legacy status_area geometry retained for existing scene layouts.
+    // The former capsule's size and gap below the safe area's top
     // (spec 5.5; see status_area()).
     static constexpr int32_t kCapsuleW = 72, kCapsuleH = 24, kCapsuleTopGap = 4;
     // The top-edge swipe (spec 5.6): the zone's depth below each column's
@@ -213,20 +206,10 @@ public:
     // The back arrow while a swipe shows it, else nullptr.
     lv_obj_t* back_arrow() const;
 
-    // Shows the counts in the status capsule, at status_area(): the
-    // background scenes after LV_SYMBOL_PLAY and the unread notifications
-    // after LV_SYMBOL_BELL, each only when it is not 0 and as "9+" above
-    // 9, so the text always fits. Both 0 hides it. The pill is drawn
-    // exactly at status_area(); its touch target reaches kPanelRowMinH.
-    void set_status(StatusCounts c);
-    // The capsule while it is shown, else nullptr.
-    lv_obj_t* capsule() const;
-
-    // Sets what the pull-down panel's rows do. With any handler set, a tap
-    // on the capsule or a top-edge swipe opens the panel; with none, there
-    // is no panel (an open one closes), no swipe, and the capsule takes no
-    // touches. The swipe is watched like the back gesture: a press from
-    // the top zone (in_top_zone()) reaches the screen below, and once it
+    // Sets what the pull-down panel's rows do. With any handler set, a
+    // top-edge swipe opens the panel; with none there is no panel (an open
+    // one closes) and no swipe. The swipe is watched like the back gesture:
+    // a press from the top zone (in_top_zone()) reaches the screen below, and once it
     // has moved kTopTriggerPercent down (is_top_swipe()) it is taken from the
     // widget under it, which gets LV_EVENT_PRESS_LOST. Then on_open is
     // called and the panel comes down over the screen with the finger,
@@ -342,7 +325,7 @@ public:
     lv_obj_t* open_dialog();
     bool confirm_open() const { return confirm_box_ != nullptr; }
     // What of the layer is on screen now, for ui.tree() (agent-core spec
-    // 5.2): ("capsule" | "banner" | "panel" | "error" | "keyboard" |
+    // 5.2): ("banner" | "panel" | "error" | "keyboard" |
     // "confirm", its object), in that order. UI thread.
     std::vector<std::pair<const char*, lv_obj_t*>> visible_pieces() const;
     // Closes `box` (if it is the open dialog) without calling its
@@ -350,7 +333,7 @@ public:
     void close_confirm(lv_obj_t* box);
 
     // Moves every piece that is up to the front of the top layer, from
-    // the bottom: the capsule, the banner, the panel, the error panel, the
+    // the bottom: the banner, the panel, the error panel, the
     // keyboard, the back arrow and the dialog (with its backdrop). Whoever
     // adds other top-layer objects calls this afterwards. A modal form
     // keeps its own keyboard above the dialog backdrop.
@@ -365,9 +348,8 @@ public:
     // any angle.
     static bool is_back_swipe(const hal::ScreenShape& s, lv_point_t start, lv_point_t end);
 
-    // The capsule's box: kCapsuleW x kCapsuleH, centred horizontally,
-    // kCapsuleTopGap below the safe area's top. The same whether or not
-    // the capsule shows, so a scene can keep clear of it.
+    // Legacy scene API geometry, retained for saved scenes. No system
+    // indicator is drawn here and new layouts need not reserve this area.
     static hal::Area status_area(const hal::ScreenShape& s);
     // Whether (x, y) is in the top-edge zone: visible, and less than
     // kTopZonePercent below the first visible pixel of column x (on a
@@ -399,7 +381,6 @@ private:
     // A panel exists, is not open, and nothing it would open under is up
     // (the keyboard, the error panel, a dialog).
     bool can_open_panel() const;
-    void update_capsule_touch();
 
     void build_panel();
     void fill_panel();
@@ -429,7 +410,6 @@ private:
     void show_next_banner();
     void hide_banner();
 
-    static void capsule_cb(lv_event_t* e);
     static void panel_cb(lv_event_t* e);
     static void banner_cb(lv_event_t* e);
     static void banner_timer_cb(lv_timer_t* t);
@@ -492,9 +472,6 @@ private:
     lv_obj_t* confirm_box_ = nullptr;
     lv_obj_t* confirm_yes_ = nullptr;
     std::function<void(bool)> on_answer_;
-
-    lv_obj_t* capsule_ = nullptr;  // hidden while both counts are 0
-    lv_obj_t* capsule_label_ = nullptr;
 
     PanelHandlers panel_handlers_;
     PanelModel model_;

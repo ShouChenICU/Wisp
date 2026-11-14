@@ -192,7 +192,7 @@ dependencies:
       require: private
       version: '>=5.5.3'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     targets:
     - esp32s2
@@ -274,10 +274,11 @@ direct_dependencies:
 - espressif/esp_lcd_touch
 - espressif/esp_new_jpeg
 - espressif/mdns
+- espressif/usb
 - idf
 - joltwallet/littlefs
 - lvgl/lvgl
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: 53b35cd766ec46e47e228b5cf9bd14855fbed4c29eeac14ba9424dc0aecc8299
+manifest_hash: c7316dfb091b60a16a67dbd0247fa28aceea8ff95c18c176c4569fe1e4f98176
 target: esp32s3
 version: 3.0.0

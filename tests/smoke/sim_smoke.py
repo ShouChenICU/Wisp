@@ -1319,7 +1319,7 @@ def banner_shown(sim, scene, start):
 
 def case_scene_background(sim_path, tmp_root):
     """pomodoro declares "background": the back gesture sends it there and
-    the capsule counts it, a swipe from the top edge opens the panel, and a
+    a swipe from the top edge opens the panel, and a
     tap on the panel's first row brings it back and closes the panel."""
     scenes = copy_examples(tmp_root, "scene-background")
     sim = scene_sim(sim_path, tmp_root / "scene-background" / "data",

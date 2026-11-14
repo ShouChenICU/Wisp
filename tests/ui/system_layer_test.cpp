@@ -262,7 +262,7 @@ protected:
     uint32_t top_children_before = 0;
 };
 
-// The three screens every shape-dependent test of the capsule, the
+// The three screens every shape-dependent test of the legacy status area, the
 // pull-down panel and the banners runs on: 480 x 480 as a rectangle, as
 // the reference board's rounded rectangle and as a circle.
 struct ShapeCase {
@@ -1638,17 +1638,7 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
         on_ui(hide);
     };
 
-    // The capsule stays up for the checks after it: shown and unmarked, it
-    // would keep every area that touches it from being cut.
     on_ui([&] { layer->set_panel_handlers({.on_open = [] {}}); });
-    check(
-        "capsule",
-        [&] {
-            layer->set_status({1, 2});
-            return layer->capsule();
-        },
-        [] {});
-
     check(
         "error panel",
         [&] {
@@ -1687,12 +1677,11 @@ TEST_F(SystemLayerTest, OverlaysKeepOcclusionSkip) {
             return layer->panel();
         },
         [&] { layer->close_panel(); });
-    on_ui([&] { EXPECT_NE(layer->capsule(), nullptr); });
 }
 
-// --- Status capsule, top-edge swipe, pull-down panel, banners ---
+// --- Legacy geometry, top-edge swipe, pull-down panel, banners ---
 
-TEST(StatusCapsule, AreaPerShape) {
+TEST(SystemLayer, LegacyStatusAreaPerShape) {
     EXPECT_TRUE(same_area(SystemLayer::status_area(rect480()), {204, 4, 275, 27}));
     EXPECT_TRUE(same_area(SystemLayer::status_area(rounded480()), {204, 28, 275, 51}));
     EXPECT_TRUE(same_area(SystemLayer::status_area(circle480()), {204, 78, 275, 101}));
@@ -1700,99 +1689,8 @@ TEST(StatusCapsule, AreaPerShape) {
     EXPECT_TRUE(same_area(SystemLayer::status_area(sim), {204, 19, 275, 42}));
 }
 
-TEST_F(SystemLayerTest, StatusCapsuleHiddenWhenBothZeroAndShowsCounts) {
-    for (const ShapeCase& c : kShapeCases) {
-        SCOPED_TRACE(c.shape);
-        TearDown();
-        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
-        on_ui([&] {
-            layer->set_status({0, 0});
-            EXPECT_EQ(layer->capsule(), nullptr);
-
-            layer->set_status({2, 0});
-            lv_obj_t* cap = layer->capsule();
-            ASSERT_NE(cap, nullptr);
-            EXPECT_EQ(lv_obj_get_parent(cap), lv_layer_top());
-            lv_obj_update_layout(cap);
-            lv_area_t a;
-            lv_obj_get_coords(cap, &a);
-            const Area want = SystemLayer::status_area(shape);
-            EXPECT_TRUE(same_area({a.x1, a.y1, a.x2, a.y2}, want)) << area_str(a);
-            EXPECT_TRUE(fully_visible(shape, a)) << area_str(a);
-            std::string text = lv_label_get_text(find_obj_of_class(cap, &lv_label_class));
-            EXPECT_NE(text.find('2'), std::string::npos) << text;
-            EXPECT_NE(text.find(LV_SYMBOL_PLAY), std::string::npos) << text;
-            EXPECT_EQ(text.find(LV_SYMBOL_BELL), std::string::npos) << text;
-
-            layer->set_status({0, 3});
-            cap = layer->capsule();
-            ASSERT_NE(cap, nullptr);
-            text = lv_label_get_text(find_obj_of_class(cap, &lv_label_class));
-            EXPECT_NE(text.find('3'), std::string::npos) << text;
-            EXPECT_NE(text.find(LV_SYMBOL_BELL), std::string::npos) << text;
-            EXPECT_EQ(text.find(LV_SYMBOL_PLAY), std::string::npos) << text;
-
-            // Counts above 9 read "9+"; the widest text fits the capsule,
-            // which is always exactly status_area().
-            layer->set_status({12, 50});
-            cap = layer->capsule();
-            lv_obj_t* label = find_obj_of_class(cap, &lv_label_class);
-            text = lv_label_get_text(label);
-            EXPECT_EQ(text, LV_SYMBOL_PLAY "9+ " LV_SYMBOL_BELL "9+");
-            lv_obj_update_layout(cap);
-            EXPECT_LE(lv_obj_get_width(label), lv_obj_get_content_width(cap));
-            lv_obj_get_coords(cap, &a);
-            EXPECT_TRUE(same_area({a.x1, a.y1, a.x2, a.y2}, want)) << area_str(a);
-            layer->set_status({9, 10});
-            text = lv_label_get_text(label);
-            EXPECT_EQ(text, LV_SYMBOL_PLAY "9 " LV_SYMBOL_BELL "9+");
-
-            layer->set_status({0, 0});
-            EXPECT_EQ(layer->capsule(), nullptr);
-        });
-    }
-}
-
-TEST_F(SystemLayerTest, StatusCapsuleTapOpensPanel) {
-    for (const ShapeCase& c : kShapeCases) {
-        SCOPED_TRACE(c.shape);
-        TearDown();
-        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
-        int opens = 0;
-        int clicks = 0;
-        lv_point_t at{};
-        on_ui([&] {
-            make_counting_button(0, 0, kSide, 200, &clicks);
-            layer->set_status({1, 1});
-            ASSERT_NE(layer->capsule(), nullptr);
-            at = center_of(layer->capsule());
-        });
-        // Without panel handlers the capsule takes no touches.
-        tap(at);
-        EXPECT_EQ(clicks, 1);
-        on_ui([&] {
-            EXPECT_FALSE(layer->panel_open());
-            layer->set_panel_handlers({.on_open = [&] { ++opens; }});
-        });
-        tap(at);
-        EXPECT_EQ(clicks, 1);
-        EXPECT_EQ(opens, 1);
-        on_ui([&] {
-            EXPECT_TRUE(layer->panel_open());
-            EXPECT_NE(layer->panel(), nullptr);
-            layer->close_panel();
-        });
-        // The touch target reaches kPanelRowMinH: a tap just below the
-        // drawn capsule still opens the panel.
-        tap(at.x, static_cast<int16_t>(at.y + SystemLayer::kPanelRowMinH / 2 - 2));
-        EXPECT_EQ(clicks, 1);
-        EXPECT_EQ(opens, 2);
-        on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
-    }
-}
-
 // The panel never opens under the keyboard, the error panel or a dialog:
-// not from the capsule, a top swipe or the owner.
+// neither from a top swipe nor from the owner.
 TEST_F(SystemLayerTest, PanelRefusesToOpenUnderOtherPieces) {
     start("rect");
     int opens = 0;
@@ -1800,8 +1698,7 @@ TEST_F(SystemLayerTest, PanelRefusesToOpenUnderOtherPieces) {
     lv_obj_t* ta = nullptr;
     on_ui([&] {
         layer->set_panel_handlers({.on_open = [&] { ++opens; }});
-        layer->set_status({1, 1});
-        at = center_of(layer->capsule());
+        at = {240, 4};
         ta = lv_textarea_create(lv_screen_active());
         lv_obj_set_pos(ta, 100, 150);
         layer->show_keyboard(ta);
@@ -1831,7 +1728,11 @@ TEST_F(SystemLayerTest, PanelRefusesToOpenUnderOtherPieces) {
         layer->close_confirm(box);
     });
     EXPECT_EQ(opens, 0);
-    tap(at);
+    feed({{240, 4, 0}});
+    feed({{240, 4, 0}});
+    feed({{240, 400, 0}});
+    feed({});
+    ASSERT_TRUE(panel_settled());
     EXPECT_EQ(opens, 1);
     on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
 }
@@ -2904,16 +2805,13 @@ TEST_F(BannerTest, TapCallsBackAndSwipeUpOnlyHides) {
 TEST_F(BannerTest, StacksBelowConfirm) {
     start("circle");
     on_ui([&] {
-        layer->set_status({1, 1});
         layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {});
         lv_obj_t* banner = top_level(layer->banner());
-        EXPECT_GT(lv_obj_get_index(banner), lv_obj_get_index(layer->capsule()));
         lv_obj_t* box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
         ASSERT_NE(box, nullptr);
         layer->raise();
         lv_obj_t* backdrop = lv_obj_get_parent(box);
         EXPECT_GT(lv_obj_get_index(backdrop), lv_obj_get_index(banner));
-        EXPECT_GT(lv_obj_get_index(banner), lv_obj_get_index(layer->capsule()));
         layer->close_confirm(box);
     });
     // A banner shown while a dialog is open goes under it too.

@@ -479,7 +479,11 @@ void ConnectionsPage::render_networks() {
             result_ = lv_obj_get_child(text, -1);
         }
     }
-    if (!count) detail::make_text(card, ui::tr(StrId::WifiEmpty), true);
+    if (!count) {
+        lv_obj_set_style_pad_all(card, ui::theme::kGapMd, 0);
+        auto* hint = detail::make_text(card, ui::tr(StrId::WifiEmpty), true);
+        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    }
     detail::bubble_tree(content_);
 }
 void ConnectionsPage::open_details(const std::string& ssid, bool secured, bool saved) {

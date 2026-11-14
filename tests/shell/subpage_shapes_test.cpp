@@ -1,6 +1,6 @@
 // The sub-pages on every screen shape (AGENTS.md, screen shape; spec 5.6
 // of the base spec): the title is the list's first item and scrolls with
-// it; scrolled to the top, the title (below the status capsule) and the
+// it; scrolled to the top, the title (inside the safe area) and the
 // first row lie wholly on the visible screen, scrolled to the bottom the
 // last row does, and every row or card is a thumb's height at least.
 
@@ -122,7 +122,7 @@ protected:
     static lv_obj_t* title_of(lv_obj_t* list) { return lv_obj_get_child(list, 0); }
 
     // Scrolled to the top the title and `first` are visible, the title
-    // below the status capsule; to the bottom `last` is. In between the
+    // inside the safe area; to the bottom `last` is. In between the
     // title moves with the rows. Left scrolled to the bottom.
     void check_ends(lv_obj_t* list, lv_obj_t* first, lv_obj_t* last) {
         const wisp::hal::ScreenShape& s = h->shape();
@@ -131,7 +131,7 @@ protected:
         lv_obj_update_layout(list);
         const lv_area_t t = coords_of(title);
         EXPECT_TRUE(box_visible(s, t)) << "title " << str(t);
-        EXPECT_GT(t.y1, wisp::ui::SystemLayer::status_area(s).y2) << "title " << str(t);
+        EXPECT_EQ(t.y1, wisp::hal::safe_rect(s).y1) << "title " << str(t);
         EXPECT_GT(coords_of(first).y1, t.y2);
         EXPECT_TRUE(box_visible(s, coords_of(first))) << "first " << str(coords_of(first));
         // The list starts at the screen's top: the title's rows are the

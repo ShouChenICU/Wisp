@@ -169,14 +169,12 @@ TEST_F(SceneApiTest, DeviceInfoCornerRadiusRoundedRect) {
 
 TEST_F(SceneApiTest, DeviceInfoCornerRadiusRect) { EXPECT_EQ(corner_radius_on("rect"), "0"); }
 
-// status_area: the status capsule's box (SystemLayer::status_area()),
-// given whether or not the capsule shows, so a layout never jumps.
+// status_area retains its original geometry for existing scenes.
 TEST_F(SceneApiTest, DeviceInfoHasStatusArea) {
     start("circle");
     install("area", std::string(R"(local a = wisp.device.info().status_area
 print(a.x1, a.y1, a.x2, a.y2)
 )") + kScreen);
-    on_ui([&] { ASSERT_EQ(layer->capsule(), nullptr); });
     ASSERT_TRUE(rt->open("area"));
     EXPECT_EQ(scene_log("area"), (std::vector<std::string>{"204\t78\t275\t101"}));
     const wisp::hal::Area want = wisp::ui::SystemLayer::status_area(shape);

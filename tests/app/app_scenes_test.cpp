@@ -350,27 +350,20 @@ TEST(AppScenes, PanelHeaderShowsWifiOnlyWithWifi) {
         SCOPED_TRACE(with_wifi);
         UiNetOptions opts;
         opts.with_wifi = with_wifi;
+        opts.with_touch = true;
         Booted b(opts);
         ASSERT_TRUE(b.start());
         b.h.app->notifications()->post_system(wisp::core::notice::kBatteryLow, "9");
-        // Opens the panel from the capsule once the capsule shows.
-        auto open = [&] {
-            std::string result;
-            run_on_ui_blocking(b.h.app->ui(), [&] {
-                // The capsule's own text: the banner shows a bell too.
-                lv_obj_t* cap = find_label_containing(lv_layer_top(), LV_SYMBOL_BELL "1");
-                while (cap != nullptr && !lv_obj_has_flag(cap, LV_OBJ_FLAG_CLICKABLE))
-                    cap = lv_obj_get_parent(cap);
-                if (cap == nullptr) {
-                    result = "no capsule";
-                    return;
-                }
-                lv_obj_send_event(cap, LV_EVENT_CLICKED, nullptr);
-                result = "ok";
-            });
-            return result;
+        // Open through the same top-edge gesture as the device UI.
+        auto feed = [&](std::vector<wisp::hal::TouchPoint> points) {
+            b.h.touch->set_points(std::move(points));
+            run_on_ui_blocking(b.h.app->ui(), [] { lv_indev_read(lv_indev_get_next(nullptr)); });
         };
-        ASSERT_TRUE(wait_until([&] { return open() == "ok"; }, 3000)) << open();
+        feed({{240, 4, 0}});
+        feed({{240, 4, 0}});
+        feed({{240, 400, 0}});
+        feed({});
+        wisp::os::sleep_ms(300);
         std::string wifi;
         std::string clear_all;
         run_on_ui_blocking(b.h.app->ui(), [&] {

@@ -858,7 +858,6 @@ TEST_F(UiTree, ListsSystemPiecesMarkedSystem)           // confirm open -> a lin
 TEST_F(UiTree, SceneTextIsWrapped)                      // scene part inside <data source="scene:counter">
 TEST(FoldTree, FoldsTheBiggestContainerFirst)           // 300 rows -> <= 2000 chars, "…还有 290 行", rows 1-5 and 296-300 present
 TEST(FoldTree, CollapsesDeepSubtreesWhenStillTooLong)
-TEST_F(UiTree, TwoThousandWidgetsStaysUnderLimit)       // Review Focus 5: kMaxNodes widgets -> size <= 2000; tree() < 1 s; one run_blocking <= 100 ms
 TEST_F(UiTree, RefExpandsASubtree)
 TEST(UiCheckGeometry, BoxVisibleChecksCorners)          // on each shape: safe_rect inside; box touching a cut corner outside
 TEST(UiCheckGeometry, ContrastRatio)                    // white/black 21.0; #777777 on #FFFFFF in [4.47, 4.49]

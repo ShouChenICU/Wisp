@@ -14,6 +14,7 @@ The spec takes priority over the plan and the code. If you find a problem in the
 
 ## Code requirements
 
+- **Quality ownership**: follow `AGENTS.md` section 7's self-review requirements. Resolve routine UI, logic and integration details proactively, inspect the complete affected flow and related uses, and verify relevant states before delivery. Choose focused checks that match the risk; users should not have to discover basic defects through repeated feedback.
 - **Layering**: the portable layers do not include platform headers and do not depend on higher layers. Board-specific constants may appear only in `boards/` and `drivers/`.
 - **Language**: use C++20, compiled with `-fno-exceptions -fno-rtti`. All errors are returned with `wisp::Result<T>`.
 - **Testing**: write a failing GoogleTest test first, then the implementation (TDD). Test output must be clean, with no warnings.

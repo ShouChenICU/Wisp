@@ -50,8 +50,11 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     std::atomic<bool> stopped{false};
     // A refresh is posted and has not run yet.
     std::atomic<bool> refresh_queued{false};
-    // UI thread only: the counts last shown.
-    ui::StatusCounts shown{-1, -1};
+    // UI thread only: the counts last logged.
+    struct Counts {
+        int background = -1;
+        int unread = -1;
+    } shown;
     // UI thread only: names of scenes read from their manifests ("" for
     // one not installed: it reads as its id), and the reads on their way.
     std::map<std::string, std::string, std::less<>> names;
@@ -218,13 +221,12 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
 
     // UI thread.
     void refresh() {
-        const ui::StatusCounts c{static_cast<int>(background().size()),
-                                 static_cast<int>(deps.notes.unread_count())};
+        const Counts c{static_cast<int>(background().size()),
+                       static_cast<int>(deps.notes.unread_count())};
         if (c.background != shown.background || c.unread != shown.unread) {
             WLOG_I(kTag, "status: background=%d unread=%d", c.background, c.unread);
             shown = c;
         }
-        deps.layer.set_status(c);
         if (deps.layer.panel_open()) deps.layer.update_panel(model());
     }
 };
