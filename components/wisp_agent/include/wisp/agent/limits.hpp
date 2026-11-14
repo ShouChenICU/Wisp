@@ -26,6 +26,10 @@ inline constexpr size_t kToolResultKeepBytes = 4096;
 // tool payload (kReadMaxBytes / kHttpMaxMaxBytes, 64 KB) plus JSON escaping
 // and metadata.
 inline constexpr size_t kLiveToolResultBytes = 96 * 1024;
+// A call of an earlier turn whose arguments exceed this is sent as
+// {"elided_bytes":N}: the model wrote them, and the tool result says what
+// came of them, so resending a whole scene file every turn buys nothing.
+inline constexpr size_t kCallArgsKeepBytes = 2048;
 inline constexpr uint32_t kDefaultContextWindow = 65536;
 // Compress past this share of the window, down to the target share,
 // never touching the most recent turns.

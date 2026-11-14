@@ -105,7 +105,7 @@ public:
             case Role::Assistant: {
                 size_t n = m.text.size();
                 for (const ToolCallRec& c : m.calls)
-                    if (kept(c)) n += c.id.size() + c.name.size() + c.args.size();
+                    if (kept(c)) n += c.id.size() + c.name.size() + args_bytes(m, c);
                 return n;
             }
             case Role::Tool:
@@ -151,7 +151,7 @@ public:
                     if (!kept(c)) continue;
                     calls.push_back({.id = std::string(sv(c.id)),
                                      .name = wire_name(sv(c.name)),
-                                     .arguments = c.args});
+                                     .arguments = call_args(m, c)});
                 }
                 if (m.text.empty() && calls.empty()) break;
                 r.calls.push_back(std::move(calls));
@@ -193,6 +193,24 @@ private:
     // them yet, or is still working from them. Earlier turns keep a short cut.
     size_t tool_cap(const Message& m) const {
         return m.turn == live_turn_ ? kLiveToolResultBytes : kToolResultKeepBytes;
+    }
+
+    bool elides(const Message& m, const ToolCallRec& c) const {
+        return m.turn != live_turn_ && c.args.size() > kCallArgsKeepBytes;
+    }
+
+    static std::string elided_args(const ToolCallRec& c) {
+        return R"({"elided_bytes":)" + std::to_string(c.args.size()) + "}";
+    }
+
+    size_t args_bytes(const Message& m, const ToolCallRec& c) const {
+        return elides(m, c) ? elided_args(c).size() : c.args.size();
+    }
+
+    os::LargeString call_args(const Message& m, const ToolCallRec& c) const {
+        if (!elides(m, c)) return c.args;
+        const std::string e = elided_args(c);
+        return os::LargeString(e.data(), e.size());
     }
 
     size_t tool_text_bytes(const Message& m) const {
@@ -364,7 +382,10 @@ BuiltRequest build_summary_request(std::span<const Message> history, uint64_t fi
                 for (const ToolCallRec& c : m.calls) {
                     line("Assistant called ", wire_name(sv(c.name)));
                     r.arena += '(';
-                    r.arena += c.args;
+                    if (c.args.size() > kCallArgsKeepBytes)
+                        r.arena += R"({"elided_bytes":)" + std::to_string(c.args.size()) + "}";
+                    else
+                        r.arena += c.args;
                     r.arena += ')';
                 }
                 break;
