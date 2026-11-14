@@ -1,6 +1,8 @@
 #include "wisp/net/llm_client.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -216,6 +218,70 @@ private:
     bool finished_ = false;
 };
 
+// The provider's own words about a failed request, read from at most
+// kErrorBodyBytes of its body.
+struct ProviderError {
+    std::string code;
+    bool context_length = false;
+};
+
+bool code_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+           c == '.' || c == '-';
+}
+
+bool contains_folded(std::string_view text, std::string_view lower_needle) {
+    if (lower_needle.size() > text.size()) return false;
+    for (size_t i = 0; i + lower_needle.size() <= text.size(); ++i) {
+        size_t j = 0;
+        while (j < lower_needle.size() &&
+               std::tolower(static_cast<unsigned char>(text[i + j])) == lower_needle[j])
+            ++j;
+        if (j == lower_needle.size()) return true;
+    }
+    return false;
+}
+
+// {"error":{"code","type","message"}} as OpenAI and most gateways send it.
+// The body may quote the key (a 401's often does), so only a code that is
+// a plain identifier without the key comes out of here.
+ProviderError read_provider_error(std::string_view body, int status, std::string_view key) {
+    ProviderError out;
+    auto parsed = from_json(body, kMaxEventDepth);
+    const Value* error = parsed ? field(parsed.value(), "error") : nullptr;
+    if (error == nullptr) return out;
+    const std::string* code = string_field(*error, "code");
+    if (code == nullptr) code = string_field(*error, "type");
+    if (code != nullptr && !code->empty() && code->size() <= 64 &&
+        std::all_of(code->begin(), code->end(), code_char) &&
+        (key.empty() || code->find(key) == std::string::npos))
+        out.code = *code;
+    if (code != nullptr && *code == "context_length_exceeded") {
+        out.context_length = true;
+    } else if (const std::string* message = string_field(*error, "message");
+               message != nullptr && (status == 400 || status == 413)) {
+        out.context_length = contains_folded(*message, "context length") ||
+                             contains_folded(*message, "maximum context") ||
+                             contains_folded(*message, "too many tokens");
+    }
+    return out;
+}
+
+// A Retry-After in delta-seconds; nullopt for an HTTP-date or anything
+// else.
+std::optional<uint64_t> retry_after_ms(const HttpClientResponse& res) {
+    for (const auto& [name, value] : res.headers) {
+        if (name != "retry-after") continue;
+        uint32_t seconds = 0;
+        const char* end = value.data() + value.size();
+        // from_chars also refuses a sign, blanks and overflow.
+        auto [ptr, ec] = std::from_chars(value.data(), end, seconds);
+        if (value.empty() || ec != std::errc() || ptr != end) return std::nullopt;
+        return uint64_t{seconds} * 1000;
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessage> msgs,
@@ -271,8 +337,8 @@ LlmResult LlmClient::complete(const LlmCall& call) {
     req.headers.emplace_back("Accept", "text/event-stream");
     if (!profile->api_key.empty())
         req.headers.emplace_back("Authorization", "Bearer " + profile->api_key);
-    // Only the header copy in `req` is needed from here on.
-    profile->api_key.clear();
+    // Kept only to scrub error codes; never logged or returned.
+    const std::string key = std::move(profile->api_key);
     req.body_ref = {reinterpret_cast<const uint8_t*>(body.data()), body.size()};
     req.max_response_bytes = kMaxStreamBytes;
     req.cancelled = call.cancelled;
@@ -299,12 +365,21 @@ LlmResult LlmClient::complete(const LlmCall& call) {
         int status = 0;
         SseParser parser;
         StreamReader reader(call, result);
+        // A failed request's body may quote the key: it stays in here, is
+        // never logged, and only read_provider_error()'s scrubbed code
+        // leaves this attempt.
+        os::LargeString error_body;
+        result.code.clear();
         req.timeout_ms = left;
         req.on_status = [&status](int s) { status = s; };
         req.on_body = [&](std::span<const uint8_t> bytes) {
             if (call.on_bytes) call.on_bytes();
-            // A failed request's body is dropped unread (it may quote the key).
-            if (status < 200 || status >= 300) return true;
+            if (status < 200 || status >= 300) {
+                const size_t room = kErrorBodyBytes - error_body.size();
+                error_body.append(reinterpret_cast<const char*>(bytes.data()),
+                                  std::min(room, bytes.size()));
+                return true;
+            }
             parser.feed(bytes, [&reader](std::string_view data) { reader.on_event(data); });
             if (parser.overflowed()) reader.mark_bad();
             return !reader.done() && !reader.bad();
@@ -330,27 +405,49 @@ LlmResult LlmClient::complete(const LlmCall& call) {
             result.transport = TransportError::None;
             break;
         }
+        // 429, 5xx and transport failures share one budget of retries.
+        const bool may_retry = retry < std::size(kRetryDelaysMs);
+        uint32_t delay = may_retry ? kRetryDelaysMs[retry] : 0;
         if (res.transport != TransportError::None) {
-            result.error = res.transport == TransportError::Cancelled ? "cancelled" : "transport";
-            break;
+            if (res.transport == TransportError::Cancelled) {
+                result.error = "cancelled";
+                break;
+            }
+            result.error = "transport";
+            // Once part of the reply reached the caller a retry would
+            // repeat it; before that, nothing is lost by asking again.
+            if (result.any_body) break;
+        } else {
+            const int s = result.status;
+            if (s >= 200 && s < 300) {
+                if (!reader.complete()) result.error = "bad_stream";
+                break;
+            }
+            const ProviderError provider =
+                read_provider_error({error_body.data(), error_body.size()}, s, key);
+            result.code = provider.code;
+            if (s == 401) {
+                result.error = "unauthorized";
+                break;
+            }
+            if (provider.context_length) {
+                result.error = "context_length";
+                break;
+            }
+            if (s != 429 && s < 500) {
+                result.error = "http";
+                break;
+            }
+            result.error = s == 429 ? "rate_limited" : "server";
+            if (std::optional<uint64_t> after = retry_after_ms(res); after && may_retry) {
+                delay = static_cast<uint32_t>(
+                    std::min<uint64_t>({*after, kMaxRetryAfterMs, left_ms()}));
+            }
         }
-        const int s = result.status;
-        if (s >= 200 && s < 300) {
-            if (!reader.complete()) result.error = "bad_stream";
-            break;
-        }
-        if (s == 401) {
-            result.error = "unauthorized";
-            break;
-        }
-        if (s != 429 && s < 500) {
-            result.error = "http";
-            break;
-        }
-        result.error = s == 429 ? "rate_limited" : "server";
-        if (retry >= std::size(kRetryDelaysMs) || kRetryDelaysMs[retry] >= left_ms()) break;
+        if (!may_retry || delay >= left_ms()) break;
         result.error.clear();
-        for (uint32_t wait = kRetryDelaysMs[retry]; wait > 0 && !stopped();) {
+        result.transport = TransportError::None;
+        for (uint32_t wait = delay; wait > 0 && !stopped();) {
             const uint32_t slice = std::min(wait, kWaitSliceMs);
             sleep_ms_(slice);
             wait -= slice;

@@ -7,15 +7,22 @@
 // The profile, API key included, comes from ModelProfileService::
 // active_for_request(Llm) on every call, and the key goes into the
 // Authorization header only: never into the result, a log line or an
-// error. Response bodies of failed requests are dropped unread (a 401
-// body may quote the key). The only log line per call is metadata under
-// the "llm" tag: "model=<m> status=<s> ms=<t> tokens=<u>", plus
-// " error=<code>" when it failed.
+// error. The body of a failed request (a 401's may quote the key) is read
+// up to kErrorBodyBytes for its error code, never logged or kept: only
+// LlmResult::code, an identifier with the key scrubbed, comes out of it.
+// The only log line per call is metadata under the "llm" tag:
+// "model=<m> status=<s> ms=<t> tokens=<u>", plus " error=<code>" when it
+// failed.
 //
-// Retries: a 429 or 5xx is retried at most twice, kRetryDelaysMs apart
-// (Retry-After is ignored); waiting ends early when `cancelled` says so.
-// A 401 is "unauthorized", any other non-2xx "http", a transport error
-// "transport"; none of those is retried. A 2xx is never retried either.
+// Retries: a 429, a 5xx and a transport error that came before any of
+// the reply (any_body false) share one budget of two retries,
+// kRetryDelaysMs apart; a 429/5xx's Retry-After in whole seconds
+// replaces the delay (capped at kMaxRetryAfterMs). Waiting ends early
+// when `cancelled` says so, and no retry starts that the call's timeout
+// could not wait for. A 401 is "unauthorized", a refusal of the prompt's
+// size "context_length", any other non-2xx "http"; none of those is
+// retried, nor is a 2xx, a cancellation or a transport error once part
+// of the reply has arrived.
 //
 // Memory: the request body, the reply text and tool arguments live in
 // os::LargeString (PSRAM on the device); each event is parsed on its own.
@@ -64,7 +71,9 @@ struct LlmUsage {
 
 struct LlmResult {
     // "" ok; "no_model" "unauthorized" "rate_limited" "server" "http"
-    // "transport" "cancelled" "bad_stream"
+    // "transport" "cancelled" "bad_stream"; "context_length" when the
+    // provider refused the prompt as too long for the model (error.code
+    // context_length_exceeded, or a 400/413 whose message says so).
     std::string error;
     TransportError transport = TransportError::None;
     int status = 0;  // last attempt; 0 without a response
@@ -75,6 +84,10 @@ struct LlmResult {
     uint32_t attempts = 0;
     bool any_body = false;  // a delta or tool fragment arrived
     std::string model;      // the profile's model name
+    // The provider's error.code (else error.type) from a failed
+    // attempt's body: at most 64 bytes of [A-Za-z0-9_.-], "" when absent,
+    // malformed or holding the API key.
+    std::string code;
 };
 
 // A tool call the model is still writing (LlmCall::on_tool).
@@ -137,6 +150,10 @@ private:
 class LlmClient {
 public:
     static constexpr uint32_t kRetryDelaysMs[2] = {1000, 4000};
+    // The longest Retry-After wait honoured.
+    static constexpr uint32_t kMaxRetryAfterMs = 30000;
+    // How much of a failed request's body is read for its error code.
+    static constexpr size_t kErrorBodyBytes = 2048;
     // How long a retry wait sleeps before asking `cancelled` again.
     static constexpr uint32_t kWaitSliceMs = 100;
     // The response cap handed to the HTTP client: a long reply streams

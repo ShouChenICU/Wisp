@@ -1231,14 +1231,16 @@ TEST_F(AgentLoop, SummaryWithoutConnectionKeepsTheTurns) {
     run_turn("q1", big);
     run_turn("q2", big);
     run_turn("q3", big);
-    h->server.push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    // The client retries a connect failure twice before it gives up.
+    for (int i = 0; i < 3; ++i)
+        h->server.push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
     run_turn("q4", "done");
-    ASSERT_EQ(h->server.requests().size(), 5u);
+    ASSERT_EQ(h->server.requests().size(), 7u);
     EXPECT_EQ(last_status(), "done");
     EXPECT_FALSE(last_of(history(), Role::Summary));
     EXPECT_TRUE(notes().empty());
     // Sent whole: the turns are kept for a later attempt.
-    const Value body_msgs = h->server.body_json(4);
+    const Value body_msgs = h->server.body_json(6);
     const List& msgs = body_msgs.find("messages")->as_list();
     EXPECT_EQ(msgs[0].find("content")->as_string(), "q1");
 }
