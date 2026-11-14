@@ -855,3 +855,190 @@ TEST(UiRuntime, SmallSizesUseBodyFont) {
 }
 
 TEST(UiRuntime, DefaultUiStackIs10K) { EXPECT_EQ(wisp::ui::UiConfig{}.task_stack, 10240u); }
+
+namespace {
+
+using wisp::core::DispatchSlot;
+
+// A slot counting its runs on a UiRuntime; records its name into `order`
+// (touched only on the UI task), what the runtime said about the thread it
+// ran on, and optionally blocks on `gate` inside its run after announcing
+// `entered`.
+struct UiSlot : DispatchSlot {
+    UiSlot(wisp::ui::UiRuntime* ui_, char name_ = '?') : ui(ui_), name(name_) {
+        run = [](DispatchSlot& s) {
+            auto& self = static_cast<UiSlot&>(s);
+            self.on_ui.store(self.ui->on_ui_thread());
+            self.on_dispatch.store(self.ui->on_dispatch_thread());
+            if (self.order != nullptr) self.order->push_back(self.name);
+            if (self.gate != nullptr) {
+                self.entered.give();
+                self.gate->take(wisp::os::kForever);
+            }
+            self.runs.fetch_add(1);
+        };
+    }
+    wisp::ui::UiRuntime* ui;
+    char name;
+    std::string* order = nullptr;
+    wisp::os::Semaphore* gate = nullptr;
+    wisp::os::Semaphore entered{1, 0};
+    std::atomic<int> runs{0};
+    std::atomic<bool> on_ui{false};
+    std::atomic<bool> on_dispatch{false};
+};
+
+}  // namespace
+
+TEST(UiRuntime, ScheduledSlotRunsOnTheUiThread) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    UiSlot a(&ui);
+    ui.schedule(a);
+    ASSERT_TRUE(wait_until([&] { return a.runs.load() == 1; }, 1000));
+    EXPECT_TRUE(a.on_ui.load());
+    EXPECT_TRUE(a.on_dispatch.load());
+    EXPECT_FALSE(ui.on_dispatch_thread());
+    ui.stop();
+}
+
+TEST(UiRuntime, SlotsRunInFifoOrder) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    std::string order;
+    UiSlot a(&ui, 'a'), b(&ui, 'b'), c(&ui, 'c');
+    for (UiSlot* s : {&a, &b, &c}) s->order = &order;
+    // From a posted job, so all three are queued before the loop next
+    // looks at the slots.
+    ASSERT_TRUE(ui.post([&] {
+        ui.schedule(a);
+        ui.schedule(b);
+        ui.schedule(c);
+    }));
+    ASSERT_TRUE(wait_until([&] { return c.runs.load() == 1; }, 1000));
+    std::string seen;
+    ui.run_blocking([&] { seen = order; });
+    EXPECT_EQ(seen, "abc");
+    ui.stop();
+}
+
+TEST(UiRuntime, SlotScheduledWhilePausedRunsWithoutAPost) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    ui.set_paused(true);
+    // Once this has run, the task has reached the paused branch.
+    ui.run_blocking([] {});
+    UiSlot a(&ui);
+    ui.schedule(a);
+    EXPECT_TRUE(wait_until([&] { return a.runs.load() == 1; }, 1000));
+    ui.stop();
+}
+
+TEST(UiRuntime, SlotRunsWhenThePostQueueIsFull) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    ui.set_paused(true);
+    wisp::os::Semaphore gate(1, 0);
+    std::atomic<bool> holding{false};
+    ASSERT_TRUE(ui.post([&] {
+        holding = true;
+        gate.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(wait_until([&] { return holding.load(); }, 2000));
+    while (ui.post([] {})) {
+    }
+    // The wake post schedule() makes fails here; the queued jobs wake the
+    // task instead.
+    UiSlot a(&ui);
+    ui.schedule(a);
+    gate.give();
+    EXPECT_TRUE(wait_until([&] { return a.runs.load() == 1; }, 2000));
+    ui.stop();
+}
+
+namespace {
+
+// Cancels itself through the runtime inside its run; finish records how
+// many runs had returned by then.
+struct SelfCancellingUiSlot : DispatchSlot {
+    explicit SelfCancellingUiSlot(wisp::ui::UiRuntime* ui_) : ui(ui_) {
+        run = [](DispatchSlot& s) {
+            auto& self = static_cast<SelfCancellingUiSlot&>(s);
+            self.cancel_result.store(self.ui->cancel(self) ? 1 : 0);
+            self.run_returned.fetch_add(1);
+        };
+        finish = [](DispatchSlot& s) {
+            auto& self = static_cast<SelfCancellingUiSlot&>(s);
+            self.finish_after_run.store(self.run_returned.load());
+            self.finished.fetch_add(1);
+        };
+    }
+    wisp::ui::UiRuntime* ui;
+    std::atomic<int> cancel_result{-1};
+    std::atomic<int> run_returned{0};
+    std::atomic<int> finish_after_run{0};
+    std::atomic<int> finished{0};
+};
+
+}  // namespace
+
+TEST(UiRuntime, CancelInsideItsOwnRunDefersTheFinish) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    SelfCancellingUiSlot a(&ui);
+    ui.schedule(a);
+    ASSERT_TRUE(wait_until([&] { return a.finished.load() == 1; }, 1000));
+    EXPECT_EQ(a.cancel_result.load(), 0);
+    EXPECT_EQ(a.finish_after_run.load(), 1);
+    ui.run_blocking([] {});
+    EXPECT_EQ(a.finished.load(), 1);
+    EXPECT_EQ(a.run_returned.load(), 1);
+    ui.stop();
+}
+
+TEST(UiRuntime, CancelFromAnotherThreadWaitsForTheRun) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    wisp::os::Semaphore gate(1, 0);
+    UiSlot a(&ui);
+    a.gate = &gate;
+    ui.schedule(a);
+    ASSERT_TRUE(a.entered.take(1000));
+    std::atomic<bool> returned{false};
+    std::atomic<bool> result{false};
+    std::thread canceller([&] {
+        result.store(ui.cancel(a));
+        returned.store(true);
+    });
+    // A window to observe that it waits, not synchronisation: the run
+    // cannot return before the gate opens.
+    wisp::os::sleep_ms(20);
+    EXPECT_FALSE(returned.load());
+    gate.give();
+    canceller.join();
+    EXPECT_TRUE(result.load());
+    EXPECT_EQ(a.runs.load(), 1);
+    ui.stop();
+}
+
+TEST(UiRuntime, NoSlotRunsAfterStopAndCancelDoesNotWait) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    UiSlot a(&ui);
+    ui.attach();
+    ui.stop();
+    ui.schedule(a);
+    uint64_t before = wisp::os::now_ms();
+    EXPECT_TRUE(ui.cancel(a));
+    EXPECT_LT(wisp::os::now_ms() - before, 100u);
+    EXPECT_EQ(a.runs.load(), 0);
+    ui.detach();
+    // Destroyed here with nothing attached: no misuse report.
+}

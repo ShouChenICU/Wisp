@@ -83,6 +83,10 @@ struct UiRuntime::Impl {
     UiConfig config;
 
     os::Queue<std::function<void()>> post_queue{kPostQueueCapacity};
+    // The dispatcher's ready list (UiRuntime::schedule()). Intrusive, so
+    // making a slot ready never allocates and never meets the post queue's
+    // capacity limit.
+    core::SlotQueue slots;
     std::unique_ptr<os::Task> task;
     std::atomic<bool> running{false};
 
@@ -165,6 +169,7 @@ struct UiRuntime::Impl {
 
     void ui_main();
     void drain_post_queue();
+    void run_slots();
     void record_busy(uint32_t duration_ms);
     void record_flush(uint32_t duration_us);
     void add_flush_wait(uint32_t duration_us);
@@ -185,6 +190,15 @@ void UiRuntime::Impl::drain_post_queue() {
     while (post_queue.pop(fn, 0)) {
         fn();
         fn = nullptr;  // release captured state before the next pop
+    }
+}
+
+void UiRuntime::Impl::run_slots() {
+    while (core::DispatchSlot* slot = slots.take()) {
+        slot->run(*slot);
+        // done() may hand the slot to its owner's finish(), which frees
+        // it: nothing touches `slot` after this line.
+        slots.done(*slot);
     }
 }
 
@@ -218,11 +232,17 @@ void UiRuntime::Impl::ui_main() {
             // UiRuntime::stop()) -- without that, a paused UI task would
             // never notice `running` went false until the next
             // post()'d job happened to arrive, which might be never.
+            // Slots run on both sides of the wait: those already queued
+            // before it (whose wake post may have been consumed by an
+            // earlier pop), and those the job, or the wake post it
+            // stands for, brought.
+            run_slots();
             std::function<void()> fn;
             if (post_queue.pop(fn, os::kForever)) {
                 fn();
                 fn = nullptr;
             }
+            run_slots();
             continue;
         }
         if (was_paused) {
@@ -236,6 +256,10 @@ void UiRuntime::Impl::ui_main() {
 
         uint64_t loop_start = os::now_ms();
         drain_post_queue();
+        // Before the paused re-check and the frame hook, so slots the
+        // jobs just scheduled run in this iteration and their UI changes
+        // land in this frame.
+        run_slots();
         if (paused.load(std::memory_order_acquire)) {
             // A job drained just above may itself have called
             // set_paused(true) (e.g. PowerManager::enter_standby()
@@ -266,7 +290,8 @@ void UiRuntime::Impl::ui_main() {
     }
     // stop() may have post()'d a final piece of work (or one may already
     // have been queued) right before flipping `running` to false; drain it
-    // now so it still runs before the caller tears LVGL down.
+    // now so it still runs before the caller tears LVGL down. Slots do
+    // not run here: after stop() none runs (UiRuntime::schedule()).
     drain_post_queue();
 }
 
@@ -478,7 +503,10 @@ UiRuntime::UiRuntime(std::shared_ptr<hal::Display> display, std::shared_ptr<hal:
     impl_->config = config;
 }
 
-UiRuntime::~UiRuntime() { stop(); }
+UiRuntime::~UiRuntime() {
+    stop();
+    check_detached("UiRuntime");
+}
 
 Result<void> UiRuntime::start() {
     if (impl_->running.load()) {
@@ -729,6 +757,23 @@ void UiRuntime::run_blocking(const std::function<void()>& fn) {
         os::sleep_ms(1);
     }
     done.take(os::kForever);
+}
+
+void UiRuntime::schedule(core::DispatchSlot& slot) {
+    // Only the empty-to-non-empty push needs a wake, and only off the UI
+    // task (on it, the loop runs slots again before it next blocks). The
+    // no-op fits std::function's inline storage, so this does not
+    // allocate; a full queue refuses it, and is non-empty, so wakes the
+    // task anyway.
+    if (impl_->slots.push(slot) && !on_ui_thread()) {
+        impl_->post_queue.push([] {}, 0);
+    }
+}
+
+bool UiRuntime::cancel(core::DispatchSlot& slot) {
+    // After stop() the UI task has exited, so no run is in progress and
+    // this never waits.
+    return impl_->slots.cancel(slot, on_ui_thread());
 }
 
 bool UiRuntime::on_ui_thread() const {

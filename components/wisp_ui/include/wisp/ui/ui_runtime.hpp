@@ -5,7 +5,10 @@
 // work onto it, aligned partial flushes (see align.hpp), an off-thread
 // snapshot_rgb888(), and a rolling 1s perf window. See AGENTS.md's "Single UI
 // thread" rule: nothing outside UiRuntime's own UI task may call lv_*
-// directly.
+// directly. It is also a core::Dispatcher: slots scheduled on it (a state
+// cell's UI-side subscriptions) run on the UI task, between the post()'d
+// jobs and the frame, without allocating and without the post queue's
+// capacity limit.
 //
 // This header (like ui_runtime.cpp) is built against the exact same
 // components/wisp_ui/config/lv_conf.h on both the PC simulator and the
@@ -22,6 +25,7 @@
 
 #include "lvgl.h"
 #include "wisp/base/result.hpp"
+#include "wisp/core/dispatcher.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/touch.hpp"
@@ -81,13 +85,16 @@ struct UiPerf {
 
 // Runs a single-threaded LVGL 9.5 instance over a wisp::hal::Display (and,
 // optionally, a wisp::hal::Touch -- pass nullptr to run display-only).
-class UiRuntime {
+// As a dispatcher it runs its queued slots in every loop iteration, paused
+// or not, and none after stop().
+class UiRuntime : public core::Dispatcher {
 public:
     UiRuntime(std::shared_ptr<hal::Display> display, std::shared_ptr<hal::Touch> touch,
               UiConfig config = {});
 
-    // Calls stop() if start() succeeded and stop() wasn't already called.
-    ~UiRuntime();
+    // Calls stop() if start() succeeded and stop() wasn't already called,
+    // then reports misuse if any slot owner is still attached.
+    ~UiRuntime() override;
 
     UiRuntime(const UiRuntime&) = delete;
     UiRuntime& operator=(const UiRuntime&) = delete;
@@ -139,12 +146,24 @@ public:
     // post()'d function, or an LVGL event/timer callback it triggered).
     bool on_ui_thread() const;
 
+    // core::Dispatcher. schedule() from another thread also posts a no-op
+    // to wake a paused task blocked on the post queue; when that post fails
+    // the queue is non-empty, which wakes it just the same. Slots run in
+    // FIFO order once per iteration of the UI loop (see set_paused()); a
+    // slot scheduled from another thread runs within about one loop sleep
+    // (10 ms) while rendering. After stop() nothing runs them, so cancel()
+    // never waits.
+    void schedule(core::DispatchSlot& slot) override;
+    [[nodiscard]] bool cancel(core::DispatchSlot& slot) override;
+    bool on_dispatch_thread() const override { return on_ui_thread(); }
+
     // Pauses/resumes rendering (spec 6.7's standby). Safe to call from
     // any thread, including the UI task itself. While paused, the UI
     // task never calls lv_timer_handler() (so no LVGL timer fires and no
     // flush happens) -- it only blocks waiting for, and running,
     // whatever is post()'d to it, exactly like the unpaused loop already
-    // does on top of its own lv_timer_handler() call. This is purely an
+    // does on top of its own lv_timer_handler() call, and runs the queued
+    // dispatch slots before and after each such wait. This is purely an
     // atomic flag: pausing never blocks, and never fights stop() for the
     // UI task (ui_main() keeps checking `running` -- see
     // ui_runtime.cpp -- even while the paused branch is blocked waiting
