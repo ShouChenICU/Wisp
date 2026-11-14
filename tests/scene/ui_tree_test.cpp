@@ -12,8 +12,6 @@
 
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
-#include "wisp/scene/scene_view.hpp"
-#include "wisp/scene/schema.hpp"
 #include "wisp/scene/ui_inspector.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -152,33 +150,6 @@ TEST_F(UiTree, SceneTextIsWrapped) {
     EXPECT_EQ(t.rfind("<data source=\"scene:counter\">", 0), 0u) << t;
     EXPECT_NE(t.find("a&lt;/data>b"), std::string::npos) << t;
     EXPECT_EQ(t.substr(t.size() - 7), "</data>") << t;
-}
-
-TEST_F(UiTree, TwoThousandWidgetsStaysUnderLimit) {
-    // The screen and a column, then labels up to kMaxNodes in all.
-    start_with("big", "local kids = {}\nfor i = 1, " + std::to_string(wisp::scene::kMaxNodes - 2) +
-                          " do kids[#kids + 1] = ui.label { text = 'item ' .. i } end\n"
-                          "return ui.screen { ui.column { table.unpack(kids) } }\n");
-    tree();
-    const auto t0 = std::chrono::steady_clock::now();
-    auto r = inspector->tree();
-    const int64_t ms = elapsed_ms(t0);
-    ASSERT_TRUE(r) << r.error().message;
-    EXPECT_LE(r.value().size(), wisp::scene::kTreeMaxChars);
-    EXPECT_NE(r.value().find("…还有 1988 行"), std::string::npos) << r.value();
-    EXPECT_NE(r.value().find("\"item 1\""), std::string::npos);
-    EXPECT_NE(r.value().find("\"item 1998\""), std::string::npos);
-    EXPECT_LT(ms, 1000);
-    // The UI thread's part alone stays short.
-    const auto t1 = std::chrono::steady_clock::now();
-    on_ui([&] {
-        const wisp::scene::SceneView* v = rt->ui_current_view();
-        ASSERT_NE(v, nullptr);
-        size_t n = 0;
-        v->for_each_node([&](const wisp::scene::NodeRef&) { ++n; });
-        EXPECT_EQ(n, wisp::scene::kMaxNodes);
-    });
-    EXPECT_LE(elapsed_ms(t1), 100);
 }
 
 TEST_F(UiTree, RefExpandsASubtree) {

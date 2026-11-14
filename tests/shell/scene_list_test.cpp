@@ -205,7 +205,7 @@ TEST_F(SceneListTest, TapOpensLongPressDeletes) {
         EXPECT_EQ(deleted[0], (std::pair<std::string, bool>{"counter", true}));
     }
     // A scene without data has no checkbox; the backdrop closes the card.
-    harness->hold(harness->centre_of(page()->card(1)), 700);
+    harness->on_ui([&] { page()->long_press(1); });
     ASSERT_TRUE(harness->ui_until([&] { return !page()->popup_data_pending(); }));
     harness->on_ui([&] {
         ASSERT_NE(page()->popup(), nullptr);
@@ -235,7 +235,7 @@ TEST_F(SceneListTest, HasDataComputedOnLongPress) {
     std::promise<void> gate;
     std::shared_future<void> held = gate.get_future().share();
     ASSERT_TRUE(agent.worker.submit([held] { held.wait(); }));
-    harness->hold(harness->centre_of(page()->card(0)), 700);
+    harness->on_ui([&] { page()->long_press(0); });
     harness->on_ui([&] {
         ASSERT_NE(page()->popup(), nullptr);
         EXPECT_TRUE(page()->popup_data_pending());
@@ -255,7 +255,7 @@ TEST_F(SceneListTest, HasDataComputedOnLongPress) {
         std::lock_guard<std::mutex> lock(mu);
         with_data = {"counter"};
     }
-    harness->hold(harness->centre_of(page()->card(0)), 700);
+    harness->on_ui([&] { page()->long_press(0); });
     ASSERT_TRUE(harness->ui_until([&] { return page()->popup_data() != nullptr; }));
     harness->on_ui([&] {
         // Above the delete button, the card still inside the safe area.

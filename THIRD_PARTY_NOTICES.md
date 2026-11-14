@@ -825,7 +825,7 @@ license file under `firmware/managed_components/`:
 | `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `espressif/esp_lcd_panel_io_additions` | 1.0.1~1 | esp_board_manager, gen_bmgr_codes | Apache-2.0 |
 | `espressif/esp_io_expander` | 1.2.1 | esp_lcd_panel_io_additions | Apache-2.0 |
-| `espressif/usb` | 1.6.0 | esp_board_manager (via usb_host_uac) | Apache-2.0 |
+| `espressif/usb` | 1.6.0 | `firmware/main` (pinned to keep initial configuration reproducible), usb_host_uac | Apache-2.0 |
 | `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
 | `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
 | `espressif/mdns` | 1.14.0 | `firmware/main` (direct dependency; the `wisp.local` responder started by `wisp::port::esp::EspWifi`, `components/wisp_port_esp/net/esp_wifi.cpp`) | Apache-2.0 |
