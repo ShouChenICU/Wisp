@@ -390,7 +390,11 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
 - Other errors: `dns`, `connect`, `tls`, `other`, `deferred_queue_full`,
   `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table
   that cannot be sent as JSON). Errors always arrive through `cb`; only arguments
-  of the wrong type are a Lua error at the call.
+  of the wrong type, and a call past the limit below, are a Lua error at the call.
+- At most 16 calls of `wisp.http` and `wisp.files` together may wait for their results;
+  one more raises the Lua error `too many calls waiting for results (at most 16)`,
+  which `pcall` can catch. A place is free again as soon as a call's result
+  arrives (its callback runs, or a waiting task resumes).
 
 ### wisp.http.request
 
@@ -599,6 +603,10 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
 - Other codes: `not_found` (no such file), `unavailable`, `busy` (the storage worker
   has too much queued: try again later), `no_memory`, or the name of a storage
   error.
+- At most 16 calls of `wisp.http` and `wisp.files` together may wait for their results;
+  one more raises the Lua error `too many calls waiting for results (at most 16)`,
+  which `pcall` can catch. A place is free again as soon as a call's result
+  arrives (its callback runs, or a waiting task resumes).
 
 ## wisp.http.download and deep standby
 
@@ -609,6 +617,9 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
   scene's quota. `cb(err, res)`: `res = {status, size, deferred}`. A response that
   is not 2xx leaves the file as it was and gives `size = 0`. Errors are those of
   `wisp.http` and of `wisp.files`.
+- At most 2 downloads wait device-wide (`download_queue`); one more is answered
+  `rate_limited`. A download and an ordinary request of one scene may complete in
+  either order.
 - In deep standby (the screen has been off for a while) Wi-Fi is off. Requests and
   downloads then wait in a queue, at most 4 per scene (`deferred_queue_full` past
   it), until the system turns Wi-Fi on for a short network window, at most every 15
@@ -716,7 +727,7 @@ a nested coroutine cannot wait, even when its parent is a task.
 `wisp.sleep(ms)` waits only in a task, accepts integers from 0 to 300000 and
 returns nil. Values below 50 ms wait 50 ms because of the timer resolution.
 Waiting does not use CPU execution-slice time. Each resume starts a new slice:
-200 ms for scene tools, 1000 ms for Agent Lua. The overall tool deadline includes
+200 ms for scene tools and for Agent Lua. The overall tool deadline includes
 waiting. VM faults stop further resume attempts.
 
 ## wisp.json

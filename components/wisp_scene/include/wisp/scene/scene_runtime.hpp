@@ -31,9 +31,36 @@
 // no slot has is dropped (stale_dropped()), so nothing from a closed
 // scene reaches the next one; neither do the view's events for a scene
 // that has gone to the background. Requests from the SceneHost methods
-// carry instance 0 and name the scene by id. Each message still has its
-// own 200 ms, so a scene in the background cannot hold up the one in
-// front.
+// carry instance 0 and name the scene by id.
+//
+// Scheduling (scene-runtime-core spec 3.1): every step the task runs
+// (a message, a result, a timer callback, a slice of the agent's Lua) has
+// at most 200 ms, and before each one it picks from three lanes, so that
+// the scene in front is answered before background work:
+//   1. the queue: one message, in arrival order (the view's events and
+//      every control message, whose order must hold);
+//   2. the front: one item of the scene in front, its oldest result, else
+//      one of its due timers (its wisp.tools call's resumptions are
+//      results and timers of the same VM);
+//   3. the back: one item of the next source after the last one that ran
+//      (by instance, wrapping) that has work: a scene in the background or
+//      headless (as 2), or the agent's run.
+// Strict order would let a front that never runs dry stop the other
+// lanes, so after kQueueBurst messages in a row while a lane item waits,
+// one lane item runs, and once kFrontBurst front items have run while a
+// back item waited (queue messages in between do not reset that count),
+// the next lane item is a back one. With the queue and the front both
+// saturated, a waiting back item so runs after at most
+// (kQueueBurst + 1) * kFrontBurst + kQueueBurst other items. Within one
+// VM a waiting result is taken before a due timer. Due timers are taken
+// all at once (TimerSet::due()) and run one per item; one cancelled
+// meanwhile runs nothing. Before every item the task does its housekeeping: the
+// screen's visibility, the stores' delayed calls, the eviction check
+// (scene-device spec 3.5) with a scene in front, the agent run's
+// deadline, the minute polls, the tool calls' timeouts and ends, the
+// background list and the scenes that asked to close. With no lane item
+// waiting it blocks on the queue until the next timer, minute or
+// deadline.
 //
 // Lifecycle (scene-runtime-core spec 3.4, scene-device spec 3.2):
 //   open    launch(User or Notification): a scene in the background comes
@@ -180,18 +207,37 @@
 // event's time_24h, else the seed_time_24h() value, else true; a change
 // fires "minute" the same way.
 //
+// Results: every VM (a scene's, the agent's run) has a CompletionBox
+// (completion_box.hpp), made with the VM. A finished wisp.http or
+// wisp.files call is put there, from the proxy's task, the wisp.fs worker
+// or the scene task itself (a refusal answered inside the call), and the
+// queue carries only a Completed wake-up. A VM never has more than
+// kMaxCallsInFlight calls waiting (scene_api.hpp), so the box never fills
+// and no result is dropped for want of room, however full the queue is.
+// Results go to the box of the instance that made the call, so none ever
+// reaches a later instance of the same scene. The scene task runs them
+// oldest first, each as an item of its VM's lane (Scheduling, above) with
+// its own 200 ms budget and the slow message log ("slow message
+// http|files"). When a VM goes
+// (a close, a fault, the end of a run) its box closes: the results still
+// in it are freed with no callback run and counted in stale_dropped(),
+// and any that arrive later are freed unseen. A result with no memory to
+// keep it still runs its callback, with "other" (wisp.http) or "no_memory"
+// (wisp.files). The box's lock is a leaf: producers put without waiting
+// for Lua, and take Link::mu only after it, to post the wake-up.
+//
 // HTTP (scene-runtime-core spec 5.3): opening a scene gives the proxy
-// (SceneRuntimeDeps::http) its declared hosts; each wisp.http result is an
-// HttpDone message whose callback runs with its own 200 ms budget, in
+// (SceneRuntimeDeps::http) its declared hosts; each wisp.http result
+// waits in the scene's box (Results, above) until its callback runs, in
 // front or in the background. Closing, reloading or faulting cancels the
 // scene's requests (SceneHttp::cancel_scene): queued ones are dropped, the
-// one in flight is stopped, and no callback runs for them; a result
-// already queued for the old instance is dropped as stale.
+// one in flight is stopped, and no callback runs for them; results
+// already in the box are freed with it and counted stale.
 //
 // Files (scene-device spec 7.1): each wisp.files call is a job on the
-// wisp.fs worker (SceneRuntimeDeps::files) whose result is a FilesDone
-// message with its own 200 ms; a job already queued when the scene closes
-// still runs, and its result is dropped as stale. wisp.http.download
+// wisp.fs worker (SceneRuntimeDeps::files) whose result waits in the
+// scene's box like an HTTP result; a job already queued when the scene
+// closes still runs, and its result is freed unseen. wisp.http.download
 // begins the file on the worker, then sends the request through the proxy
 // with the body streamed into it (core::FileDownload, fed on the proxy's
 // task) and finishes it on the worker. Closing or faulting cancels the
@@ -207,20 +253,24 @@
 // wisp.device, wisp.log, wisp.json and wisp.sleep). It draws on the
 // scenes' VmPool, never more than is left there (no scene is evicted for
 // it), and runs the script as a task (lua_task.hpp) with
-// kLuaRunSliceMs slices. Each slice, each result the script waits for and
-// each of its wisp.sleep timers is a message of its own, between the
-// scenes' messages, so the scenes keep running while the script waits.
+// kLuaRunSliceMs slices, the same 200 ms as a scene's step. Each slice,
+// each result the script waits for (from the run's own box) and each of
+// its wisp.sleep timers is a step of its own in the back lane
+// (Scheduling, above), so the scene in front is answered first and the
+// scenes keep running while the script waits. The run's own timeout_ms
+// counts from the call, whatever the slices.
 // print and wisp.log go to the log (tag "agent.lua") and into the
-// result's output. The VM gets a new instance number, so a result that
-// arrives after it is gone is dropped as stale.
+// result's output. The VM gets a new instance number and a box of its own,
+// so a result that arrives after it is gone is freed unseen.
 //
 // Scene tools (agent-tools spec 5.2, 5.4; scene_runtime_tools.cpp):
 // call_tool() hands the call to the scene task, which runs the function
 // the scene bound with wisp.tools.register as a task (lua_task.hpp) in the
 // scene's own VM, with the scene's own 200 ms slices, whether the scene is
-// in front, in the background or headless (above). Each slice and each
-// result it waits for is a message of the scene's own, run and flushed as
-// any other. One call per scene at a time. The call ends with the task;
+// in front, in the background or headless (above). Each slice, each result
+// it waits for (from the scene's own box) and each of its wisp.sleep
+// timers is a step of its own, run and flushed as any other of the scene's.
+// One call per scene at a time. The call ends with the task;
 // at its timeout_ms, or when its caller cancels, the task alone is
 // cancelled (cancel_task(), so the script can never resume it) and the
 // scene runs on; a fault in a slice (its 200 ms, its memory) faults the
@@ -298,6 +348,7 @@ struct SceneQuery;
 struct LuaRunJob;
 struct ToolCallJob;
 struct SceneApi;
+class CompletionBox;
 class SceneView;
 struct DeviceInfo;
 enum class DeviceEvent : uint8_t;
@@ -337,7 +388,13 @@ inline constexpr uint32_t kEvalMs = 200;
 // run_lua() (agent-tools spec 4.1, 4.2): one slice's limit, the output
 // kept, the least memory a run starts with, the source's and the run's
 // limits.
-inline constexpr uint32_t kLuaRunSliceMs = 1000;
+inline constexpr uint32_t kLuaRunSliceMs = 200;
+
+// The scene task's lanes (file header, "Scheduling"): after kQueueBurst
+// messages in a row, one item of the scenes waits no longer; after
+// kFrontBurst items of the scene in front in a row, one background item.
+inline constexpr uint32_t kQueueBurst = 8;
+inline constexpr uint32_t kFrontBurst = 4;
 inline constexpr size_t kLuaRunOutputBytes = 8 * 1024;
 inline constexpr size_t kLuaRunMinMemory = 256 * 1024;
 inline constexpr size_t kLuaRunMaxMemory = 2 * 1024 * 1024;
@@ -631,8 +688,10 @@ public:
     // What the scenes' VmPool holds right now (and the run_lua() VM with it).
     size_t vm_pool_used() const { return pool_.used(); }
 
-    // Messages dropped because no running scene has their instance, and
-    // view events for a scene that has gone to the background.
+    // Messages dropped because no running scene has their instance (a
+    // Completed wake-up among them, on top of the results its box freed when
+    // the VM went), and view events for a scene that has gone to the
+    // background.
     uint64_t stale_dropped() const { return stale_dropped_.load(); }
 
 private:
@@ -788,13 +847,16 @@ private:
     Slot* add_slot(SceneMessage& m, LaunchReason reason, const VmLimits* limits = nullptr,
                    bool headless = false);
     // Gives the scene's wisp.http its proxy: the declared hosts, and
-    // results that come back as HttpDone messages for this instance.
+    // results that come back into the slot's box.
     void wire_http(Slot& s);
     // wire_http()'s and wire_files()'s work on `api`, for scene `id`'s
-    // `instance`. `hosts`: what a download is checked against; null for
-    // the Agent principal, whose URLs SceneHttp checks its own way.
-    void wire_http_api(SceneApi& api, const std::string& id, uint32_t instance);
+    // `instance`, whose results go into `box`. `hosts`: what a download is
+    // checked against; null for the Agent principal, whose URLs SceneHttp
+    // checks its own way.
+    void wire_http_api(SceneApi& api, const std::string& id, uint32_t instance,
+                       const std::shared_ptr<CompletionBox>& box);
     void wire_files_api(SceneApi& api, const std::string& id, uint32_t instance,
+                        const std::shared_ptr<CompletionBox>& box,
                         const std::shared_ptr<FilesGate>& gate,
                         const std::vector<std::string>* hosts);
     // cancel_files()'s work on a gate.
@@ -803,7 +865,7 @@ private:
     // back as Sensor messages for this instance.
     void wire_sensors(Slot& s);
     // Gives the scene's wisp.files its jobs on the worker and its
-    // downloads, whose results come back as FilesDone messages.
+    // downloads, whose results come back into the slot's box.
     void wire_files(Slot& s);
     // The scene is closing or faulted: its downloads stop (each .dl is
     // removed on the worker) and none starts after this.
@@ -852,12 +914,27 @@ private:
     // Hides or shows to match want_visible_ if visible_ differs.
     void follow_visibility();
     void run_delayed();
+    // The lanes (file header, "Scheduling"). The per-item steps that do
+    // not belong to any lane, in their order.
+    void housekeeping();
+    // Whether `s` (running) has a result or a timer due.
+    bool slot_has_work(Slot& s, uint64_t now);
+    bool front_has_work(uint64_t now);
+    bool back_has_work(uint64_t now);
+    void run_front_item();
+    void run_back_item();
+    // One result of `s`, else one due timer; false if it had neither.
+    bool run_item(Slot& s, uint64_t now);
+    // Runs the first of Slot::due_timers (not empty).
+    void run_due_timer(Slot& s);
+    // Every timer of `front` due now (show_scene(), spec 3.4's order).
+    void run_timers_of(Slot& front);
     void drain_queue();
     // How long the task may wait for the scenes' timers and minute tickers.
     uint32_t scene_wait_ms();
-    // Fires due timers, then the minutes (and the battery checks with them).
+    // The agent run's deadline, then the minutes (and the battery checks
+    // with them).
     void run_scene_clock();
-    void run_timers();
     // A network time sync set the wall clock (system.time "synced").
     void clock_set();
     void minute(uint32_t instance);
@@ -877,17 +954,18 @@ private:
     void lua_start(const std::shared_ptr<LuaRunJob>& job);
     // The caller stopped waiting (`cancelled`) or the runtime stops.
     void lua_stop(const LuaRunJob* job, const char* error, std::string message);
-    // A result for the run's VM (HttpDone, FilesDone); false if `m` is not
-    // for it.
-    bool lua_message(SceneMessage& m);
     // After each step of the run: ends it once its task has ended or `err`
     // (what the step returned) stopped it.
     void lua_settle(const std::optional<ScriptError>& err);
     // Ends the run: the result goes to its caller, every request and
     // download of the VM is cancelled and the VM goes.
     void lua_end(LuaRunResult r);
-    // Fires the run's due wisp.sleep timers, and stops it at its deadline.
+    // Stops the run at its deadline.
     void lua_clock();
+    // The run has a result or a wisp.sleep timer due.
+    bool agent_has_work(uint64_t now);
+    // One result of the run, else one due timer (the back lane).
+    void run_agent_item(uint64_t now);
     // How long the task may wait for the run's timers and deadline.
     uint64_t lua_wait_ms(uint64_t now) const;
 
@@ -1037,6 +1115,9 @@ private:
     std::vector<ToolRun> tool_runs_;
     // Scene task only; destroyed before pool_ (declared after it).
     os::LargeUnique<AgentRun> agent_;
+    // Scene task only: queue messages and front items run in a row while
+    // another lane waited, and the instance the back lane ran last.
+    uint32_t queue_run_ = 0, front_run_ = 0, back_cursor_ = 0;
 };
 
 }  // namespace wisp::scene

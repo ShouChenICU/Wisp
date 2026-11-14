@@ -147,6 +147,9 @@ struct SceneView::Node {
     ListWindow window;
     os::LargeVector<Row> built;
     bool resetting = false;  // inside apply_list_reset(): scroll events wait
+    // A ListReset came and no ListRows since: `built` holds the old items'
+    // rows, kept on screen until the new ones arrive.
+    bool rows_stale = false;
     // The root of a list row: its list and index.
     NodeId row_of = 0;
     uint32_t row_index = 0;

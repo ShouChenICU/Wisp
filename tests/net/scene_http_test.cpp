@@ -8,7 +8,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,6 +23,7 @@
 namespace {
 
 using wisp::net::AgentHttpLimits;
+using wisp::net::HttpLane;
 using wisp::net::HttpPrincipal;
 using wisp::net::kAgentHttpId;
 using wisp::net::Method;
@@ -422,6 +426,23 @@ TEST(SceneHttpStart, NoWatchTimerLeavesItDisabled) {
     wisp::port::sim::set_timer_failure(true);
     auto started = http.start();
     wisp::port::sim::set_timer_failure(false);
+    ASSERT_FALSE(started.is_ok());
+    EXPECT_EQ(started.error().code, wisp::ErrorCode::NoMemory);
+    http.set_hosts("s", kHosts);
+    Results r;
+    http.submit(get("https://api.example.com/"), r.sink());
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r.got[0].error, "other");
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// Without its worker tasks the proxy does not run either.
+TEST(SceneHttpStart, NoTaskLeavesItDisabled) {
+    wisp::test::FakeHttpClient client;
+    SceneHttp http(client, SceneHttpLimits{}, [] { return wisp::os::now_ms(); });
+    wisp::port::sim::set_task_failure(true);
+    auto started = http.start();
+    wisp::port::sim::set_task_failure(false);
     ASSERT_FALSE(started.is_ok());
     EXPECT_EQ(started.error().code, wisp::ErrorCode::NoMemory);
     http.set_hosts("s", kHosts);
@@ -1116,13 +1137,17 @@ TEST_F(SceneHttpTest, AgentPrincipalLogPrivacy) {
     EXPECT_NE(log.find("POST"), std::string::npos) << log;
 }
 
-TEST(SceneHttpTask, Config) {
-    const auto t = SceneHttp::task_config();
-    EXPECT_STREQ(t.name, "wisp.shttp");
-    EXPECT_EQ(t.stack_bytes, 8192u);
-    EXPECT_EQ(t.priority, 3);
-    EXPECT_EQ(t.core, -1);
-    EXPECT_FALSE(t.flash_access);
+TEST(SceneHttpTask, ConfigOfBothLanes) {
+    const auto i = SceneHttp::task_config(HttpLane::Interactive);
+    const auto d = SceneHttp::task_config(HttpLane::Download);
+    EXPECT_STREQ(i.name, "wisp.shttp");
+    EXPECT_STREQ(d.name, "wisp.shttp.dl");
+    for (const wisp::os::TaskConfig& t : {i, d}) {
+        EXPECT_EQ(t.stack_bytes, 8192u);
+        EXPECT_EQ(t.priority, 3);
+        EXPECT_EQ(t.core, -1);
+        EXPECT_FALSE(t.flash_access);
+    }
 }
 
 }  // namespace
@@ -1169,6 +1194,255 @@ TEST_F(SceneHttpTest, DownloadStreamsWithoutResponseCap) {
     capped.max_body = 1000;
     capped.on_body = [](std::span<const uint8_t>) { return true; };
     EXPECT_EQ(run(std::move(capped)).error, "too_large");
+}
+
+// The two lanes: a download streams on its own worker, so ordinary
+// requests (a scene's, the agent's) still complete meanwhile. A
+// download's URL ends in "/dl" and gets a 64 KB body; every other URL an
+// empty one, so only a download ever reaches before_piece.
+class SceneHttpLaneTest : public SceneHttpTest {
+protected:
+    void SetUp() override {
+        SceneHttpTest::SetUp();
+        client.responder = [](const wisp::net::HttpClientRequest& req) {
+            wisp::net::HttpClientResponse res{.transport = TransportError::None, .status = 200};
+            const std::string_view url = req.url;
+            if (url.size() >= 3 && url.substr(url.size() - 3) == "/dl")
+                res.body = std::string(64 * 1024, 'd');
+            return res;
+        };
+        // One-shot: the first piece of the first download waits for
+        // `release`; later pieces and downloads go straight through.
+        client.before_piece = [this] {
+            if (!gate_armed.exchange(false)) return;
+            gate_waiting = true;
+            while (!release.load()) wisp::os::sleep_ms(1);
+        };
+    }
+
+    void TearDown() override {
+        release = true;
+        SceneHttpTest::TearDown();
+    }
+
+    static SceneHttpRequest download(std::string url, std::string scene = "s") {
+        SceneHttpRequest r = get(std::move(url), std::move(scene));
+        r.download = true;
+        r.on_body = [](std::span<const uint8_t>) { return true; };
+        return r;
+    }
+
+    // Submits a download and waits until its first piece is held.
+    void hold_download(Results& r, std::string url = "https://api.example.com/a/dl") {
+        http->submit(download(std::move(url)), r.sink());
+        ASSERT_TRUE(wait_until([&] { return gate_waiting.load(); }, 3000));
+    }
+
+    std::atomic<bool> gate_armed{true};
+    std::atomic<bool> gate_waiting{false};
+    std::atomic<bool> release{false};
+};
+
+TEST_F(SceneHttpLaneTest, RequestCompletesWhileADownloadStreams) {
+    make();
+    Results dl;
+    hold_download(dl);
+    Results r;
+    http->submit(get("https://api.example.com/x"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    {
+        std::lock_guard<std::mutex> lock(r.mu);
+        EXPECT_EQ(r.got[0].error, "");
+        EXPECT_EQ(r.got[0].status, 200);
+    }
+    EXPECT_EQ(dl.size(), 0u);
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return dl.size() == 1; }, 3000));
+    std::lock_guard<std::mutex> lock(dl.mu);
+    EXPECT_EQ(dl.got[0].error, "");
+    EXPECT_EQ(dl.got[0].status, 200);
+}
+
+TEST_F(SceneHttpLaneTest, AgentFetchCompletesWhileADownloadStreams) {
+    make();
+    Results dl;
+    hold_download(dl);
+    Results r;
+    http->submit(agent_get("https://x.example.com/"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    {
+        std::lock_guard<std::mutex> lock(r.mu);
+        EXPECT_EQ(r.got[0].error, "");
+        EXPECT_EQ(r.got[0].status, 200);
+    }
+    EXPECT_EQ(dl.size(), 0u);
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return dl.size() == 1; }, 3000));
+}
+
+TEST_F(SceneHttpLaneTest, DownloadsRunOneAtATime) {
+    make();
+    Results r;
+    hold_download(r);
+    http->submit(download("https://api.example.com/b/dl"), r.sink());
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(client.calls(), 1u);
+    EXPECT_EQ(r.size(), 0u);
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 2; }, 3000));
+    EXPECT_EQ(client.urls(), (std::vector<std::string>{"https://api.example.com/a/dl",
+                                                       "https://api.example.com/b/dl"}));
+}
+
+TEST_F(SceneHttpLaneTest, FullDownloadQueueIsRateLimited) {
+    SceneHttpLimits limits;
+    limits.download_queue = 1;
+    make(limits);
+    Results r;
+    hold_download(r);
+    http->submit(download("https://api.example.com/b/dl"), r.sink());
+    EXPECT_EQ(r.size(), 0u);
+    http->submit(download("https://api.example.com/c/dl"), r.sink());
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r.got[0].error, "rate_limited");
+    // The other lane's queue is not the download queue's.
+    EXPECT_EQ(run(get("https://api.example.com/x")).error, "");
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 3; }, 3000));
+    std::lock_guard<std::mutex> lock(r.mu);
+    EXPECT_EQ(r.got[1].error, "");
+    EXPECT_EQ(r.got[2].error, "");
+}
+
+TEST_F(SceneHttpLaneTest, AgentDownloadBypassesTheDownloadQueueCap) {
+    SceneHttpLimits limits;
+    limits.download_queue = 1;
+    make(limits);
+    Results r;
+    hold_download(r);
+    http->submit(download("https://api.example.com/b/dl"), r.sink());
+    SceneHttpRequest agent = agent_get("https://x.example.com/c/dl");
+    agent.download = true;
+    agent.on_body = [](std::span<const uint8_t>) { return true; };
+    Results ar;
+    http->submit(std::move(agent), ar.sink());
+    EXPECT_EQ(ar.size(), 0u);
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return ar.size() == 1 && r.size() == 2; }, 3000));
+    std::lock_guard<std::mutex> lock(ar.mu);
+    EXPECT_EQ(ar.got[0].error, "");
+}
+
+TEST_F(SceneHttpLaneTest, CancelSceneStopsBothLanes) {
+    make();
+    Results r;
+    hold_download(r);
+    client.hold = true;
+    http->submit(get("https://api.example.com/x"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 3000));
+    http->cancel_scene("s");
+    release = true;
+    client.hold = false;
+    ASSERT_TRUE(wait_until([&] { return http->idle(); }, 3000));
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_TRUE(client.saw_cancel.load());
+}
+
+// stop() reaches both workers: neither calls done() and both are joined.
+TEST_F(SceneHttpLaneTest, StopStopsBothLanes) {
+    make();
+    Results r;
+    hold_download(r);
+    client.hold = true;
+    http->submit(get("https://api.example.com/x"), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.held.load() == 1; }, 3000));
+    std::thread releaser([this] {
+        wisp::os::sleep_ms(50);
+        release = true;
+    });
+    http->stop();
+    releaser.join();
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_TRUE(client.saw_cancel.load());
+}
+
+TEST_F(SceneHttpLaneTest, DeferredRequestsGoToTheirLanes) {
+    make();
+    gate_armed = false;
+    http->set_deferring(true);
+    Results dl;
+    Results r;
+    http->submit(download("https://api.example.com/a/dl"), dl.sink());
+    http->submit(get("https://api.example.com/x"), r.sink());
+    EXPECT_EQ(http->deferred_count(), 2u);
+    http->set_deferring(false);
+    ASSERT_TRUE(wait_until([&] { return dl.size() == 1 && r.size() == 1; }, 3000));
+    std::lock_guard<std::mutex> l1(dl.mu);
+    std::lock_guard<std::mutex> l2(r.mu);
+    EXPECT_EQ(dl.got[0].error, "");
+    EXPECT_TRUE(dl.got[0].deferred);
+    EXPECT_EQ(r.got[0].error, "");
+    EXPECT_TRUE(r.got[0].deferred);
+}
+
+// Only the interactive worker times out deferred requests, so a download
+// deferred while it sleeps (nothing else waiting) must still wake it.
+TEST_F(SceneHttpLaneTest, DeferredDownloadTimesOut) {
+    SceneHttpLimits limits;
+    limits.deferred_check_ms = 10;
+    make(limits);
+    http->set_deferring(true);
+    // Both workers have seen the empty deferred list and gone to sleep.
+    wisp::os::sleep_ms(50);
+    Results r;
+    http->submit(download("https://api.example.com/a/dl"), r.sink());
+    EXPECT_EQ(http->deferred_count(), 1u);
+    now += 3600001;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 1; }, 3000));
+    std::lock_guard<std::mutex> lock(r.mu);
+    EXPECT_EQ(r.got[0].error, "deferred_timeout");
+    EXPECT_TRUE(r.got[0].deferred);
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// The same for a download that lines up behind a deferred backlog of its
+// own lane (deferring already off, the download worker busy).
+TEST_F(SceneHttpLaneTest, DownloadBehindTheBacklogTimesOut) {
+    SceneHttpLimits limits;
+    limits.deferred_check_ms = 10;
+    limits.download_queue = 1;
+    make(limits);
+    Results held;
+    hold_download(held);
+    http->set_deferring(true);
+    Results r;
+    http->submit(download("https://api.example.com/b/dl"), r.sink());
+    http->set_deferring(false);
+    // B waits for the busy download worker; C lines up behind it.
+    wisp::os::sleep_ms(50);
+    http->submit(download("https://api.example.com/c/dl"), r.sink());
+    EXPECT_EQ(http->deferred_count(), 2u);
+    now += 3600001;
+    ASSERT_TRUE(wait_until([&] { return r.size() == 2; }, 3000));
+    {
+        std::lock_guard<std::mutex> lock(r.mu);
+        EXPECT_EQ(r.got[0].error, "deferred_timeout");
+        EXPECT_EQ(r.got[1].error, "deferred_timeout");
+    }
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return held.size() == 1; }, 3000));
+    EXPECT_EQ(client.calls(), 1u);
+}
+
+TEST_F(SceneHttpLaneTest, IdleCoversBothLanes) {
+    make();
+    Results r;
+    hold_download(r);
+    EXPECT_FALSE(http->idle());
+    release = true;
+    ASSERT_TRUE(wait_until([&] { return http->idle(); }, 3000));
+    EXPECT_EQ(r.size(), 1u);
 }
 
 }  // namespace

@@ -285,6 +285,164 @@ print(pcall(wisp.http.request, {url = "https://api.example.com/"}))
                                               {"https://api.example.com/default", M::Get}}));
 }
 
+// At most kMaxCallsInFlight calls may wait for their results; one more
+// raises at the call, and the ones already made are still answered.
+TEST_F(HttpBinding, CallsPastTheCapRaise) {
+    start();
+    install_http("h", R"(
+local function show(err) print(err) end
+for i = 1, 16 do wisp.http.get("https://other.example.com/", show) end
+print(pcall(wisp.http.get, "https://other.example.com/", show))
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 17);
+    ASSERT_EQ(lines.size(), 17u);
+    EXPECT_EQ(lines[0].rfind("false\t", 0), 0u) << lines[0];
+    EXPECT_NE(lines[0].find("too many calls waiting"), std::string::npos) << lines[0];
+    for (size_t i = 1; i < lines.size(); ++i) EXPECT_EQ(lines[i], "permission_denied");
+    EXPECT_EQ(rt->status("h").state, SceneState::Running);
+}
+
+// A callback that has run frees its place: the 16th callback can make one
+// more call.
+TEST_F(HttpBinding, ARunCallbackFreesItsPlace) {
+    start();
+    install_http("h", R"(
+local n = 0
+local function again(err) print("again", err) end
+local function answered(err)
+  n = n + 1
+  if n == 16 then
+    local ok, e = pcall(wisp.http.get, "https://other.example.com/", again)
+    if not ok then print(e) end
+  end
+end
+for i = 1, 16 do wisp.http.get("https://other.example.com/", answered) end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 1);
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0], "again\tpermission_denied");
+    for (const auto& l : printed("h")) EXPECT_EQ(l.find("too many"), std::string::npos) << l;
+}
+
+// Calls answered while new ones are made keep the count exact: after 16
+// refused-and-answered calls a 17th goes through, and so on across the cap.
+TEST_F(HttpBinding, CompletionsAndCallsInterleaveAcrossTheCap) {
+    start();
+    install_http("h", R"(
+local waiting, answered, refused, started = 0, 0, 0, 0
+local function cb()
+  waiting = waiting - 1
+  answered = answered + 1
+  -- Two new calls per answer until 40 have started: the scene keeps
+  -- pressing on the cap while answers come back.
+  for _ = 1, 2 do
+    if started < 40 then
+      if pcall(wisp.http.get, "https://other.example.com/", cb) then
+        started = started + 1
+        waiting = waiting + 1
+        if waiting > 16 then print("over", waiting) end
+      else
+        refused = refused + 1
+      end
+    end
+  end
+  if answered == started then print("done", started, refused > 0) end
+end
+for i = 1, 17 do
+  if pcall(wisp.http.get, "https://other.example.com/", cb) then
+    started = started + 1
+    waiting = waiting + 1
+  else
+    refused = refused + 1
+  end
+end
+print("first", started, refused)
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 2);
+    ASSERT_EQ(lines.size(), 2u) << ::testing::PrintToString(lines);
+    EXPECT_EQ(lines[0], "first\t16\t1");
+    EXPECT_EQ(lines[1], "done\t40\ttrue");
+    EXPECT_EQ(rt->status("h").state, SceneState::Running);
+}
+
+// Results wait in the scene's box, not in its queue: refusals answered
+// inside submit() on the scene task itself all arrive, in order, even
+// past a queue with room for two messages.
+TEST_F(HttpBinding, RefusalsPastAFullQueueAllArrive) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 2; };
+    start();
+    install_http("h", R"(
+for i = 1, 6 do
+  wisp.http.get("https://other.example.com/" .. i, function(err) print(i, err) end)
+end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 6);
+    EXPECT_EQ(lines, (std::vector<std::string>{"1\tpermission_denied", "2\tpermission_denied",
+                                               "3\tpermission_denied", "4\tpermission_denied",
+                                               "5\tpermission_denied", "6\tpermission_denied"}));
+    EXPECT_FALSE(log_has("scene.h", "dropped"));
+    EXPECT_EQ(rt->status("h").state, SceneState::Running);
+}
+
+// A scene that exits while results wait in its box runs none of their
+// callbacks: they are freed and counted stale.
+TEST_F(HttpBinding, ExitDropsWaitingResults) {
+    wisp::test::StallGate gate;
+    configure_deps = [this, &gate](wisp::scene::SceneRuntimeDeps& d) {
+        d.http = http.get();
+        d.device_status = [&gate] { return gate.device_status(); };
+    };
+    start();
+    install("h", R"(
+return ui.screen {
+  ui.button { ref = "stall", text = "stall", on_click = function()
+    for i = 1, 3 do
+      wisp.http.get("https://other.example.com/" .. i, function(err) print("late", i, err) end)
+    end
+    wisp.device.info()
+  end },
+}
+)",
+            {{"scene.json", manifest_with_hosts("h")}});
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_label("stall"));
+    const uint64_t stale = rt->stale_dropped();
+    gate.arm();
+    ASSERT_TRUE(rt->click_ref("stall"));
+    ASSERT_TRUE(gate.wait_entered());
+    rt->close_async("h", {});
+    gate.release();
+    EXPECT_TRUE(wait_until([&] { return rt->status("h").state == SceneState::Stopped; }, 2000));
+    EXPECT_TRUE(wait_until([&] { return rt->stale_dropped() == stale + 3; }, 1000))
+        << rt->stale_dropped() - stale;
+    wisp::os::sleep_ms(50);
+    EXPECT_FALSE(log_has("scene.h", "late")) << ::testing::PrintToString(scene_log("h"));
+    EXPECT_EQ(rt->stale_dropped(), stale + 3);
+}
+
+// A callback that faults the scene: the results still in its box run no
+// callback.
+TEST_F(HttpBinding, FaultDropsWaitingResults) {
+    start();
+    install_http("h", R"(
+for i = 1, 3 do
+  wisp.http.get("https://other.example.com/" .. i, function(err)
+    if i == 1 then error("boom") end
+    print("late", i, err)
+  end)
+end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("h").state == SceneState::Error; }, 3000));
+    EXPECT_NE(rt->status("h").error.find("boom"), std::string::npos) << rt->status("h").error;
+    wisp::os::sleep_ms(50);
+    EXPECT_FALSE(log_has("scene.h", "late")) << ::testing::PrintToString(scene_log("h"));
+}
+
 TEST_F(HttpBinding, UnavailableWithoutAProxy) {
     configure_deps = {};
     start();

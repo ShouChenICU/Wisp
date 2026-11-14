@@ -22,7 +22,9 @@
 //       deferred_timeout (waited an hour without a window that connected),
 //       dns, connect, tls, timeout, other (from the proxy), or
 //       not_serializable, too_deep (a table body that cannot be encoded)
-//       -- always through cb, never at the call.
+//       -- always through cb, never at the call. Only a call made while
+//       kMaxCallsInFlight calls (with wisp.files) already wait for their
+//       results raises, "too many calls waiting for results".
 //   wisp.http.download(url, name, opts, cb) (scene-device spec 7.1): GET
 //       url into the scene's file `name` (wisp.files) through
 //       SceneApi::files_download; opts as for get. cb(err, nil) or
@@ -61,6 +63,7 @@
 #include <utility>
 
 #include "scene_api.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/scene/lua_json.hpp"
 
 namespace wisp::scene {
@@ -221,14 +224,23 @@ int check_opts(lua_State* L, int opts) {
 int submit(lua_State* L, SendArgs& a, int cb, bool waits) {
     SceneApi& api = detail::api_of(L);
     luaL_checkstack(L, kLuaJsonStackSlots, "wisp.http");
+    if (api.calls_in_flight >= kMaxCallsInFlight)
+        return luaL_error(L, "too many calls waiting for results (at most %d)",
+                          static_cast<int>(kMaxCallsInFlight));
     a.id = api.next_http_id++;
     if (api.next_http_id == 0) api.next_http_id = 1;
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kCallbacksKey);
     lua_pushvalue(L, cb);
     lua_rawseti(L, -2, a.id);
     lua_pop(L, 1);
+    // Counted once the callback is in place: from here every path hands the
+    // id over, so exactly one result comes back for it, except the one
+    // below.
+    ++api.calls_in_flight;
 
     if (!do_send(L, api, a)) {
+        // Nothing was handed over, so no result will ever count it down.
+        --api.calls_in_flight;
         Vm::of(L)->check_limits(L);
         return luaL_error(L, "wisp.http: limits reached");
     }
@@ -463,6 +475,19 @@ void install_http(lua_State* L, int wisp) {
 
 std::optional<ScriptError> run_http_callback(Vm& vm, uint32_t id, const net::SceneHttpResult& r) {
     lua_State* L = vm.L();
+    // Every call that was counted gets exactly one result, also when its
+    // callback was dropped (a cancelled task, a fault), so count it down
+    // before anything can return early.
+    if (SceneApi* api = detail::find_api(L); api != nullptr) {
+        // At 0 a result came for a call that was not counted, or one was
+        // counted down twice: the count is low, and more than
+        // kMaxCallsInFlight calls could wait.
+        if (api->calls_in_flight > 0)
+            --api->calls_in_flight;
+        else
+            WLOG_W("scene", "%s: http result %u arrived with no call waiting",
+                   api->scene_id.c_str(), static_cast<unsigned>(id));
+    }
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     RunCtx ctx{id, &r};
     if (detail::is_waiting(L, &kCallbacksKey, id))

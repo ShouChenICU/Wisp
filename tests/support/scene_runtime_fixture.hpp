@@ -10,6 +10,8 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -75,6 +77,40 @@ public:
 private:
     std::promise<void> released_;
     bool done_ = false;
+};
+
+// A one-shot gate for SceneRuntimeDeps::device_status: once arm()ed, the
+// next device_status() call (on the scene task: wisp.device.info() and
+// the battery checks) stops there until release(), so a test can queue
+// work behind a scene task that is busy. Unarmed it returns Value().
+class StallGate {
+public:
+    ~StallGate() { release(); }
+    void arm() { armed_ = true; }
+    // Waits until the scene task is held (false after `ms`).
+    bool wait_entered(uint32_t ms = 2000) {
+        return entered_future_.wait_for(std::chrono::milliseconds(ms)) == std::future_status::ready;
+    }
+    void release() {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!released_) released_promise_.set_value();
+        released_ = true;
+    }
+    wisp::Value device_status() {
+        if (!armed_.exchange(false)) return wisp::Value();
+        entered_promise_.set_value();
+        released_future_.wait();
+        return wisp::Value();
+    }
+
+private:
+    std::atomic<bool> armed_{false};
+    std::promise<void> entered_promise_;
+    std::future<void> entered_future_ = entered_promise_.get_future();
+    std::promise<void> released_promise_;
+    std::shared_future<void> released_future_ = released_promise_.get_future().share();
+    std::mutex mu_;
+    bool released_ = false;
 };
 
 class SceneRuntimeFixture : public ::testing::Test {

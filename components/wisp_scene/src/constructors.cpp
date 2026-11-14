@@ -323,6 +323,13 @@ int set_value(lua_State* L) {
     if (!lua_isinteger(L, 1) || lua_tointeger(L, 1) < 0 || lua_tointeger(L, 1) > UINT32_MAX)
         return luaL_error(L, "set_value: bad node id");
     lua_settop(L, 2);
+    // A Change from a row the scene already dropped (one the view still
+    // shows after a list reset, or one reported just before it went):
+    // its value has no node left to belong to.
+    const bool known = lua_rawgetp(L, LUA_REGISTRYINDEX, &kNodesKey) == LUA_TTABLE &&
+                       lua_rawgeti(L, -1, lua_tointeger(L, 1)) != LUA_TNIL;
+    lua_settop(L, 2);
+    if (!known) return 0;
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kValuesKey);
     lua_insert(L, 1);
     lua_rawset(L, 1);

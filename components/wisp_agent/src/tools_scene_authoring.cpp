@@ -137,8 +137,8 @@ Result<void> add_scene_authoring_tools(ToolRegistry& reg, SceneWorkspace& ws) {
     WISP_TRY(reg.add({
         .name = "scene.install",
         .description = "Checks the draft (scene.json, Lua syntax, the widget tree), installs it "
-                       "keeping the old version for scene.rollback, opens it and reports a "
-                       "check: Lua errors, new W/E logs and the UI tree.",
+                       "keeping the version from before this turn for scene.rollback, opens it "
+                       "and reports a check: Lua errors, new W/E logs and the UI tree.",
         .schema_json = kIdOnly,
         .risk = ToolRisk::Note,
         .thread = ToolThread::Agent,
@@ -164,8 +164,9 @@ Result<void> add_scene_authoring_tools(ToolRegistry& reg, SceneWorkspace& ws) {
     }));
     WISP_TRY(reg.add({
         .name = "scene.rollback",
-        .description = "Swaps the installed scene with its previous version, opens it and "
-                       "reports the same check as scene.install.",
+        .description = "Swaps the installed scene with its previous version (the version from "
+                       "before the last turn that installed it), opens it and reports the same "
+                       "check as scene.install. Calling it again swaps back.",
         .schema_json = kIdOnly,
         .risk = ToolRisk::Note,
         .thread = ToolThread::Agent,

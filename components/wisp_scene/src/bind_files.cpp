@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "scene_api.hpp"
+#include "wisp/core/log.hpp"
 
 namespace wisp::scene {
 
@@ -256,12 +257,18 @@ int wait_files(lua_State* L, uint32_t id) { return wait(L, &kCallbacksKey, id, f
 
 uint32_t register_files_callback(lua_State* L, SceneApi& api, int cb) {
     cb = lua_absindex(L, cb);
+    if (api.calls_in_flight >= kMaxCallsInFlight)
+        luaL_error(L, "too many calls waiting for results (at most %d)",
+                   static_cast<int>(kMaxCallsInFlight));
     const uint32_t id = api.next_files_id++;
     if (api.next_files_id == 0) api.next_files_id = 1;
     lua_rawgetp(L, LUA_REGISTRYINDEX, &kCallbacksKey);
     lua_pushvalue(L, cb);
     lua_rawseti(L, -2, id);
     lua_pop(L, 1);
+    // Every caller hands the id to files_run, files_fail or files_download
+    // right after, so exactly one result comes back to count it down.
+    ++api.calls_in_flight;
     return id;
 }
 
@@ -290,6 +297,18 @@ void install_files(lua_State* L, int wisp) {
 
 std::optional<ScriptError> run_files_callback(Vm& vm, uint32_t id, const FilesResult& r) {
     lua_State* L = vm.L();
+    // As run_http_callback(): one result per counted call, whatever became
+    // of its callback, so count it down first.
+    if (SceneApi* api = detail::find_api(L); api != nullptr) {
+        // At 0 a result came for a call that was not counted, or one was
+        // counted down twice: the count is low, and more than
+        // kMaxCallsInFlight calls could wait.
+        if (api->calls_in_flight > 0)
+            --api->calls_in_flight;
+        else
+            WLOG_W("scene", "%s: files result %u arrived with no call waiting",
+                   api->scene_id.c_str(), static_cast<unsigned>(id));
+    }
     if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
     RunCtx ctx{id, &r};
     if (detail::is_waiting(L, &kCallbacksKey, id))

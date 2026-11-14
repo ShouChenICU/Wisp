@@ -105,7 +105,8 @@ Result<void> add_lua_tools(ToolRegistry& reg, LuaToolDeps deps) {
         "request/download and wisp.files.* wait for their result and return err, res; "
         "wisp.sleep(ms) waits. Also wisp.json, wisp.device, wisp.notify, wisp.log. HTTP goes "
         "out as the agent (any http/https URL); files live in the agent's own area. Each "
-        "uninterrupted stretch of computation may run at most 1 s.";
+        "uninterrupted stretch of computation may run at most 200 ms; split long work or "
+        "wait (wisp.sleep) between pieces.";
     def.schema_json.assign(schema.data(), schema.size());
     def.risk = ToolRisk::Note;
     def.thread = ToolThread::Agent;

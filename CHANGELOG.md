@@ -20,13 +20,20 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - A spoken reply no longer pauses after its first sentence while the model writes a long answer: speech continues as soon as the say block closes, its last sentence included, while the text still streams (still one speech request at a time).
 - Words said right as you press are no longer lost: the microphone opens at the press of the talk key or the wisp and keeps the last 500 ms before the hold starts (`VoiceConfig::preroll_ms`; 0 turns this off for a board). The start tone is now part of such a recording. "Listening" shows only once the microphone is actually recording.
 - Talking right after the device wakes from deep standby works: a hold records while Wi-Fi reconnects to a saved network, and recognition waits up to 8 s for it instead of failing "offline" at once. When no connection is being made (Wi-Fi turned off, no saved network, disconnected in Settings, the only network's password rejected, or a saved network out of range and waiting to retry) a hold is still refused at once and Home says there is no Wi-Fi.
+- Taps on the scene in front are answered before background work: the scene task picks each step from three lanes (UI events and control messages in arrival order, then the scene in front, then background and headless scenes and the agent's Lua in turn), with bursts (`kQueueBurst` 8, `kFrontBurst` 4) that keep any lane from starving.
+- The agent's `lua.run` CPU slice drops from 1000 ms to 200 ms, the same as a scene's step; a run still lasts its own `timeout_ms`, but a script that computes for more than 200 ms without waiting now ends in `timeout`.
+- A scene, or a `lua.run` script, may have at most 16 `wisp.http`, `wisp.http.download` and `wisp.files` calls waiting for results (`kMaxCallsInFlight`); one more raises the Lua error "too many calls waiting for results (at most 16)", which `pcall` catches, and a place frees once its callback has run. An entry file that starts more than 16 at load fails the install check.
+- Downloads run on their own worker (`wisp.shttp.dl`): a download that streams for minutes no longer holds up a scene's other requests or the agent's `http.fetch`. At most two downloads wait behind the one running; a download and an ordinary request of one scene may now complete in either order.
+- `scene.rollback` returns to the version from before the agent's turn: within one turn only a scene's first install keeps the installed version as the previous one, so two installs and an "undo" no longer land on the turn's own first attempt.
 
 ### Fixes
 
 - Recover from an over-long context: summarize harder, then cut the current turn's results, and retry once when the model refuses the request as too long; the token estimate calibrates itself from the model's reported usage.
 - Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key. These retries cover connection and TLS failures only: a Wi-Fi disconnect still ends the running turn ("lost connection" during a request, "no network" between steps).
+- A scene no longer loses an HTTP or files result when its message queue is full: results wait in a box of the scene's own, sized for its 16 calls, and the queue only carries a wake-up.
+- Replacing a list's items no longer shows an empty list for a frame: the old rows stay on screen until the new ones arrive, and a tap on an old row in that moment does nothing.
 
-Device checks are pending for both the turn reliability and the voice and wake changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run" and "Voice and wake responsiveness: device checks not run"); these changes are verified in the simulator and unit tests only.
+Device checks are pending for the turn reliability, the voice and wake, and the scene scheduling and install safety changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run" and "Scene scheduling: device checks not run"); these changes are verified in the simulator and unit tests only.
 
 ## 0.5.2 — 2026-11-14
 

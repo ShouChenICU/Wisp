@@ -46,6 +46,10 @@ struct ToolCtx {
     std::function<bool()> cancelled;
     uint64_t deadline_ms = 0;  // os::now_ms() based, 0 for none
     std::string lang;          // "zh" | "ja" | "en", for note text
+    // Identifies the turn the call belongs to; unique per boot (not the
+    // conversation's turn number, which restarts in a new conversation);
+    // 0 outside a turn.
+    uint32_t turn = 0;
 };
 
 struct ToolOutput {
