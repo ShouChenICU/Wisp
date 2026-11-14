@@ -50,6 +50,9 @@ struct UiNetOptions {
     // Writes every `saved` network as parked (auth_failed), as three
     // rejected passwords in a row on an earlier boot leave it.
     bool saved_auth_failed = false;
+    // Writes "enabled": false into wifi.json (with `saved`, possibly none),
+    // as turning Wi-Fi off on an earlier boot leaves it.
+    bool wifi_disabled = false;
     bool wifi_reachable = true;
     bool with_server = false;
     // Platform::pairing.code_ttl_ms; 0 keeps the two-minute default.
@@ -175,7 +178,7 @@ struct UiNetHarness {
             std::filesystem::create_directories(root + "/sd");
             sd = std::make_shared<FakeStorage>("storage.sd", root + "/sd", /*removable=*/true);
         }
-        if (!opts.saved.empty()) {
+        if (!opts.saved.empty() || opts.wifi_disabled) {
             wisp::List nets;
             for (const auto& [ssid, pw] : opts.saved) {
                 wisp::Map entry{{"ssid", wisp::Value(ssid)}, {"password", wisp::Value(pw)}};
@@ -183,8 +186,9 @@ struct UiNetHarness {
                 nets.push_back(wisp::Value(std::move(entry)));
             }
             std::filesystem::create_directories(root + "/system/net");
-            std::ofstream(root + "/system/net/wifi.json")
-                << wisp::to_json_raw(wisp::Value(wisp::Map{{"networks", wisp::Value(nets)}}));
+            wisp::Map doc{{"networks", wisp::Value(nets)}};
+            if (opts.wifi_disabled) doc.emplace("enabled", wisp::Value(false));
+            std::ofstream(root + "/system/net/wifi.json") << wisp::to_json_raw(wisp::Value(doc));
         }
 
         wisp::app::Platform platform;

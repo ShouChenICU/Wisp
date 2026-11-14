@@ -6,6 +6,9 @@
 // CellMirror and that WsHub::forwards(). Those are the events a state
 // cell's mirror publishes, so a golden list of these frames shows that
 // moving a publisher behind a cell left the wire byte-identical.
+// The recorder sees the same events in the same order as the hub, by
+// construction: every publish goes through the bus's one FIFO and is handed
+// to every subscriber by its one dispatcher thread.
 //
 // One field depends on the clock: a non-zero "expires_ms" of
 // net.pairing.code (now + the code's lifetime) is replaced with the string

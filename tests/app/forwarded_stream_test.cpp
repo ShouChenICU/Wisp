@@ -1,21 +1,30 @@
 // The frames the admin WebSocket sends an "events" client for every topic a
 // state cell mirrors (support/forwarded_recorder.hpp), pinned as literal
-// golden lists: one for a scripted sequence that moves every such topic at
-// least once, one for what boot publishes. Moving a publisher behind a
-// cell must leave both byte-identical (state-cells design, section 5).
+// golden lists: a scripted sequence that moves every such topic at least
+// once, a confirmed factory reset, the firmware outcomes, and what boot
+// publishes. Moving a publisher behind a cell must leave all of them
+// byte-identical (state-cells design, section 5). The paths whose frames
+// depend on a timer (Wi-Fi failures and their retries, the power-level
+// round trip of the radio, forget_all(), code expiry) are pinned where time
+// is an argument, in net/wifi_forwarded_test.cpp.
 //
 // Ordering. Each step waits until its frames have arrived (and the bus is
 // idle) before the next step starts, so frames of different steps never
 // interleave. Within a step every pair of frames is ordered by the code:
 // either one thread publishes both, in that order, or the second one is
 // caused by the first (it is published by work that starts only after the
-// first was published). The comment on each step says which. The only
-// timer that could add a frame inside the sequence is the Wi-Fi retry after
-// a failed attempt (5 s, WifiServiceConfig::backoff_min_ms), which the
-// script pre-empts within milliseconds by a direct attempt; time sync
-// retries after 30 s, the pairing code lives two minutes, the hotspot's
-// idle timeout is ten minutes and the screen never turns off by itself
-// (screen_off_s 0).
+// first was published). The comment on each step says which.
+//
+// Timers. No Wi-Fi attempt fails here, so no Wi-Fi retry is ever due. The
+// PowerMonitor sample (1 s) and the SD probe (2 s) publish only the changes
+// the script makes, and a step waits for them. What else runs on a clock
+// is far from the milliseconds a step takes: a failed time sync retries
+// after 30 s (and the script turns Wi-Fi off a few steps later), a good one
+// after 6 h; a pairing code lives two minutes and a firmware image waits
+// two minutes for its answer, both answered at once; the hotspot's idle
+// timeout is ten minutes; the screen never turns off by itself
+// (screen_off_s 0), and standby lasts milliseconds, far from deep standby's
+// five minutes.
 
 #include <gtest/gtest.h>
 
@@ -164,6 +173,27 @@ constexpr char kPairingInactive[] =
 
 using Frames = std::vector<std::string>;
 
+// Pairs a browser as the admin page does (a code issued and used up, on
+// this thread: kPairingActive, kPairingInactive) and returns its token.
+std::string pair_browser(UiNetHarness& h) {
+    wisp::net::PairingService* pairing = h.app->pairing();
+    EXPECT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    const auto code = pairing->active_code(wisp::os::now_ms());
+    EXPECT_TRUE(code.has_value());
+    auto token = pairing->confirm(code.value_or(""), wisp::net::ClientInfo{}, wisp::os::now_ms());
+    EXPECT_TRUE(token);
+    return token ? token.value() : std::string();
+}
+
+// After the boot frames: once the first power sample and an SD probe have
+// run, they have added nothing.
+void expect_quiet_after_boot(UiNetHarness& h, ForwardedRecorder& rec) {
+    ASSERT_TRUE(wait_until([&] { return h.power->status_calls.load() > 0; }, kStepMs));
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*h.app); }, kStepMs));
+    ASSERT_TRUE(h.app->storage_worker()->drain(kStepMs));
+    EXPECT_STEP(h, rec, Frames{});
+}
+
 }  // namespace
 
 // The topics the golden lists cover, derived from the registry: a change of
@@ -226,7 +256,15 @@ TEST(ForwardedStream, ScriptedSequenceIsUnchanged) {
     EXPECT_STEP(h, rec, Frames{});
 
     // Power level, PowerManager::publish_state() on the UI thread, one
-    // transition after the other.
+    // transition after the other: first back to back in one UI job, then
+    // in two.
+    run_on_ui_blocking(h.app->ui(), [&] {
+        pm->enter_standby();
+        pm->exit_standby();
+    });
+    EXPECT_STEP(h, rec,
+                (Frames{R"({"payload":{"state":"standby"},"t":"event","topic":"power.state"})",
+                        R"({"payload":{"state":"active"},"t":"event","topic":"power.state"})"}));
     run_on_ui_blocking(h.app->ui(), [&] { pm->enter_standby(); });
     EXPECT_STEP(h, rec,
                 (Frames{R"({"payload":{"state":"standby"},"t":"event","topic":"power.state"})"}));
@@ -242,29 +280,23 @@ TEST(ForwardedStream, ScriptedSequenceIsUnchanged) {
     EXPECT_FALSE(h.app->system_settings().set({{"brightness", wisp::Value(int64_t{300})}}));
     EXPECT_STEP(h, rec, (Frames{kSettingsEn, kSettingsEn}));
 
-    // A failed attempt: "connecting" from add_network() on this thread,
-    // then the failure from the net task's tick, which only attempts after
-    // add_network() scheduled it.
-    ASSERT_TRUE(wifi->add_network("Home", "wrong-password", wisp::os::now_ms()));
-    EXPECT_STEP(h, rec,
-                (Frames{kWifiConnectingHome,
-                        R"({"payload":{"ip":"","reason":"auth_failed","rssi":0,"ssid":"Home",)"
-                        R"("ssid_hex":"486f6d65","state":"backoff"},"t":"event",)"
-                        R"("topic":"net.wifi.state"})"}));
-
-    // The right password: "connecting" (this thread), "connected" (the net
+    // A network added: "connecting" (this thread), "connected" (the net
     // task's tick), then the time sync the new link starts (the ntp task,
     // which the net task wakes only after publishing "connected").
     ASSERT_TRUE(wifi->add_network("Home", "password1", wisp::os::now_ms()));
     EXPECT_STEP(h, rec, (Frames{kWifiConnectingHome, kWifiConnectedHome, kTimeSynced}));
 
     // A failed time sync: every server down; the last one tried is named.
+    // Twice: every attempt publishes its outcome, an unchanged one too.
     h.sntp->set_down("pool.ntp.org", true);
     h.sntp->set_down("ntp.aliyun.com", true);
-    ASSERT_TRUE(time->sync_now().has_value());
-    EXPECT_STEP(h, rec,
-                (Frames{R"({"payload":{"server":"ntp.aliyun.com","state":"failed"},"t":"event",)"
-                        R"("topic":"system.time"})"}));
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        ASSERT_TRUE(time->sync_now().has_value());
+        EXPECT_STEP(
+            h, rec,
+            (Frames{R"({"payload":{"server":"ntp.aliyun.com","state":"failed"},"t":"event",)"
+                    R"("topic":"system.time"})"}));
+    }
     h.sntp->all_up();
 
     // The hotspot, opened and closed on this thread.
@@ -335,19 +367,23 @@ TEST(ForwardedStream, ScriptedSequenceIsUnchanged) {
         h, rec,
         (Frames{
             R"({"payload":{"state":"cancelled"},"t":"event","topic":"system.factory_reset"})"}));
+    // Cancelled again once the dialog has gone (this thread): the same
+    // state published a second time.
+    ASSERT_TRUE(wait_until([&] { return msgboxes(h) == 0; }, kStepMs));
+    wisp::app::cancel_factory_reset(*h.app);
+    EXPECT_STEP(
+        h, rec,
+        (Frames{
+            R"({"payload":{"state":"cancelled"},"t":"event","topic":"system.factory_reset"})"}));
 
     // A firmware upload: the browser pairs (a code issued and used up on
     // this thread), the image is received (this thread), then refused on
     // the screen (the UI thread, once the dialog is up).
     ASSERT_TRUE(wait_until([&] { return msgboxes(h) == 0; }, kStepMs));
-    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
-    const auto code = pairing->active_code(wisp::os::now_ms());
-    ASSERT_TRUE(code.has_value());
-    auto token = pairing->confirm(*code, wisp::net::ClientInfo{}, wisp::os::now_ms());
-    ASSERT_TRUE(token);
+    const std::string token = pair_browser(h);
     ImageSpec spec;
     spec.version = "0.3.0";
-    EXPECT_EQ(upload(h, token.value(), make_firmware_image(spec)), 202);
+    EXPECT_EQ(upload(h, token, make_firmware_image(spec)), 202);
     EXPECT_STEP(
         h, rec,
         (Frames{
@@ -375,9 +411,102 @@ TEST(ForwardedStream, BootPublishesTheSame) {
     ForwardedRecorder rec(h.app->bus());
     ASSERT_TRUE(h.start());
     EXPECT_STEP(h, rec, (Frames{kWifiConnectingAny, kWifiConnectedHome, kTimeSynced}));
-    // The first power sample and SD probe have run by now and added nothing.
-    ASSERT_TRUE(wait_until([&] { return h.power->status_calls.load() > 0; }, kStepMs));
-    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*h.app); }, kStepMs));
-    ASSERT_TRUE(h.app->storage_worker()->drain(kStepMs));
+    expect_quiet_after_boot(h, rec);
+}
+
+// With nothing saved WifiService::init() finds the state already "off"
+// (set_state_locked() publishes only a change): boot publishes nothing.
+TEST(ForwardedStream, BootWithoutASavedNetworkPublishesNothing) {
+    UiNetHarness h(stream_opts());
+    ForwardedRecorder rec(h.app->bus());
+    ASSERT_TRUE(h.start());
     EXPECT_STEP(h, rec, Frames{});
+    expect_quiet_after_boot(h, rec);
+}
+
+// Wi-Fi turned off on an earlier boot, with a network saved: init() keeps
+// the radio off and the state "off", so again nothing.
+TEST(ForwardedStream, BootWithWifiDisabledPublishesNothing) {
+    UiNetOptions opts = stream_opts();
+    opts.saved = {{"Home", "password1"}};
+    opts.wifi_disabled = true;
+    UiNetHarness h(opts);
+    ForwardedRecorder rec(h.app->bus());
+    ASSERT_TRUE(h.start());
+    EXPECT_STEP(h, rec, Frames{});
+    expect_quiet_after_boot(h, rec);
+}
+
+// A factory reset confirmed on the device, with Wi-Fi turned off first (the
+// case where forget_all() turns it back on). "requested" comes from this
+// thread; everything after it from the one wipe job on wisp.fs
+// (factory_reset.cpp, erase_everything), in program order, which ends in
+// the reboot the harness counts.
+TEST(ForwardedStream, FactoryResetIsUnchanged) {
+    UiNetOptions opts = stream_opts();
+    opts.saved = {{"Home", "password1"}};
+    UiNetHarness h(opts);
+    ForwardedRecorder rec(h.app->bus());
+    ASSERT_TRUE(h.start());
+    EXPECT_STEP(h, rec, (Frames{kWifiConnectingAny, kWifiConnectedHome, kTimeSynced}));
+    ASSERT_TRUE(h.app->wifi()->set_enabled(false, wisp::os::now_ms()));
+    EXPECT_STEP(
+        h, rec,
+        (Frames{R"({"payload":{"ip":"","reason":"","rssi":0,"ssid":"","ssid_hex":"",)"
+                R"("state":"off"},"t":"event","topic":"net.wifi.state"})",
+                R"({"payload":{"enabled":false},"t":"event","topic":"net.wifi.enabled"})"}));
+
+    wisp::app::request_factory_reset(*h.app);
+    ASSERT_TRUE(wait_until([&] { return msgboxes(h) == 1; }, kStepMs));
+    ASSERT_TRUE(click(h, wisp::ui::tr(wisp::ui::StrId::Yes, wisp::ui::Lang::Zh)));
+    ASSERT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, kStepMs));
+    EXPECT_STEP(
+        h, rec,
+        (Frames{R"({"payload":{"state":"requested"},"t":"event","topic":"system.factory_reset"})",
+                R"({"payload":{"state":"done"},"t":"event","topic":"system.factory_reset"})"}));
+}
+
+// The firmware outcomes the scripted sequence does not reach. Every upload
+// runs on this thread and publishes its outcome before it returns; the
+// confirmation comes from the dialog's answer on the UI thread and the
+// restart follows it, so it goes last.
+TEST(ForwardedStream, FirmwareOutcomesAreUnchanged) {
+    UiNetHarness h(stream_opts());
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.app->bus().wait_idle(2000));
+    ForwardedRecorder rec(h.app->bus());
+    const std::string token = pair_browser(h);
+    EXPECT_STEP(h, rec, (Frames{kPairingActive, kPairingInactive}));
+
+    // Another board's image: refused once its head is parsed, so the
+    // version is the image's (firmware_update.cpp, write()).
+    ImageSpec other;
+    other.version = "0.3.0";
+    other.board = "other_board";
+    EXPECT_NE(upload(h, token, make_firmware_image(other)), 202);
+    EXPECT_STEP(h, rec,
+                (Frames{R"({"payload":{"error":"wrong_board","state":"failed","version":"0.3.0"},)"
+                        R"("t":"event","topic":"system.firmware"})"}));
+
+    // A head that does not parse: no version is known yet.
+    ImageSpec good;
+    good.version = "0.3.0";
+    std::vector<uint8_t> corrupt = make_firmware_image(good);
+    corrupt[0] = 0;  // the image magic
+    EXPECT_NE(upload(h, token, corrupt), 202);
+    EXPECT_STEP(h, rec,
+                (Frames{R"({"payload":{"error":"invalid_image","state":"failed","version":""},)"
+                        R"("t":"event","topic":"system.firmware"})"}));
+
+    // A good image, confirmed on the screen: installed, then the restart.
+    EXPECT_EQ(upload(h, token, make_firmware_image(good)), 202);
+    EXPECT_STEP(h, rec,
+                (Frames{R"({"payload":{"state":"received","version":"0.3.0"},"t":"event",)"
+                        R"("topic":"system.firmware"})"}));
+    ASSERT_TRUE(wait_until([&] { return msgboxes(h) == 1; }, kStepMs));
+    ASSERT_TRUE(click(h, wisp::ui::tr(wisp::ui::StrId::Yes, wisp::ui::Lang::Zh)));
+    ASSERT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, kStepMs));
+    EXPECT_STEP(h, rec,
+                (Frames{R"({"payload":{"state":"confirmed","version":"0.3.0"},"t":"event",)"
+                        R"("topic":"system.firmware"})"}));
 }
