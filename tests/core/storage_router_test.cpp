@@ -140,9 +140,10 @@ TEST(StorageRouter, StopSdRunsQueuedSdJobsFirst) {
         s1_before_return = s1.load();
         stopped = true;
     });
-    // Declared after `stopper`: releases the gate before joining it.
-    ReleaseOnExit release_first{release};
+    // Destroyed in reverse order: the gate is released before `stopper`
+    // is joined, so an early return cannot hang on the gated job.
     JoinOnExit join{stopper};
+    ReleaseOnExit release_first{release};
     // stop_sd() has begun (the SD worker no longer accepts work) and waits
     // on the gated job; nothing of the SD lane ran yet.
     while (sd.running()) wisp::os::sleep_ms(1);
@@ -250,8 +251,9 @@ TEST(StorageRouter, AnSdJobRunSyncWhileStoppingRunsInline) {
     }));
     ASSERT_TRUE(started.take(5000));
     std::thread stopper([&] { r.stop_sd(); });
-    ReleaseOnExit release_first{release};
+    // Released before `stopper` is joined (reverse order of destruction).
     JoinOnExit join{stopper};
+    ReleaseOnExit release_first{release};
     while (sd.running()) wisp::os::sleep_ms(1);
 
     release.give();

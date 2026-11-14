@@ -156,7 +156,9 @@ public:
     // Stops accepting jobs, lets the worker finish every job already
     // queued in every lane, then joins it. Idempotent; a no-op before
     // start(), and for a Flash-role worker on the SD I/O thread (it would
-    // wait for the flash worker; see the file header).
+    // wait for the flash worker; see the file header). So a Flash-role
+    // worker must not be destroyed on the SD I/O thread: its destructor's
+    // stop() would return without joining the task.
     void stop();
 
     // Queues `job` on `lane`. Returns false without queuing it if that
