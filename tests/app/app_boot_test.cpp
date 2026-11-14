@@ -299,7 +299,21 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
 // device boots headless, as with no display at all.
 TEST(AppBoot, ADisplayWithoutTheRoleIsLikeNoDisplay) {
     auto h = make_app({.with_display = true, .display_role = ""});
+    // The log ring is shared by the whole process, so only lines logged by
+    // this start() count.
+    const auto before = wisp::log::ring_entries();
+    const uint32_t last_seq = before.empty() ? 0 : before.back().seq;
     ASSERT_TRUE(h.app.start());
+    // The board's mistake is named at boot.
+    const auto entries = wisp::log::ring_entries();
+    EXPECT_EQ(std::count_if(entries.begin(), entries.end(),
+                            [last_seq](const auto& e) {
+                                return e.seq > last_seq && e.tag == "app" &&
+                                       e.msg ==
+                                           "no device with role main among display: "
+                                           "display.main";
+                            }),
+              1);
     auto rep = wisp::from_json(h.lines[0].substr(17)).value();
     const wisp::Value* mode = rep.find("notes")->find("mode");
     ASSERT_NE(mode, nullptr);

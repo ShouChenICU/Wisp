@@ -111,4 +111,16 @@ private:
     std::vector<std::shared_ptr<hal::Device>> devices_;
 };
 
+// An interface whose role main portable code looks up (wisp/hal/roles.hpp:
+// Display, Touch, Power, Clock, Imu, AudioOut, AudioIn, Wifi) with
+// registered devices none of which holds that role.
+struct RoleGap {
+    hal::Interface iface;
+    std::vector<std::string> ids;  // sorted
+};
+
+// Every such interface, in the order above. An interface with no devices
+// at all is not a gap (the boot report already shows it missing).
+std::vector<RoleGap> main_role_gaps(const DeviceRegistry& registry);
+
 }  // namespace wisp::core

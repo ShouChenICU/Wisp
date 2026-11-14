@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "support/fake_devices.hpp"
 #include "support/fake_wifi.hpp"
@@ -309,6 +311,26 @@ TEST(DeviceRegistry, GenericRolesAreUniquePerKind) {
     ASSERT_FALSE(added);
     EXPECT_EQ(added.error().code, wisp::ErrorCode::AlreadyExists);
     EXPECT_EQ(added.error().message, "role main already taken by haptic.main");
+}
+
+// A board that registers a device but forgets its role would otherwise
+// lose it silently: by_role() returns null as for a missing device.
+TEST(DeviceRegistry, MainRoleGapsNameTheInterfacesAndIds) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_TRUE(wisp::core::main_role_gaps(reg).empty());  // no display at all
+
+    ASSERT_TRUE(reg.add(
+        std::make_shared<FakeDisplay>("display.panel", 480, 480, 1, "rounded_rect", /*role=*/"")));
+    // Buttons and storage have no role main; they are not checked.
+    ASSERT_TRUE(reg.add(std::make_shared<FakeButton>("button.side")));
+    auto gaps = wisp::core::main_role_gaps(reg);
+    ASSERT_EQ(gaps.size(), 1u);
+    EXPECT_EQ(gaps[0].iface, wisp::hal::Interface::Display);
+    EXPECT_EQ(gaps[0].ids, std::vector<std::string>{"display.panel"});
+
+    ASSERT_TRUE(reg.remove("display.panel"));
+    ASSERT_TRUE(reg.add(std::make_shared<FakeDisplay>("display.panel", 480, 480)));
+    EXPECT_TRUE(wisp::core::main_role_gaps(reg).empty());
 }
 
 TEST(DeviceClass, StringRoundTrip) {

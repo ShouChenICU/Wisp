@@ -188,4 +188,25 @@ Value DeviceRegistry::manifest(const std::string& board) const {
     return Value(std::move(root));
 }
 
+std::vector<RoleGap> main_role_gaps(const DeviceRegistry& registry) {
+    using hal::Interface;
+    static constexpr Interface kWithMain[] = {
+        Interface::Display, Interface::Touch,    Interface::Power,   Interface::Clock,
+        Interface::Imu,     Interface::AudioOut, Interface::AudioIn, Interface::Wifi,
+    };
+    const auto devices = registry.all();
+    std::vector<RoleGap> gaps;
+    for (Interface iface : kWithMain) {
+        RoleGap gap{iface, {}};
+        bool has_main = false;
+        for (const auto& device : devices) {
+            if (device->interface() != iface) continue;
+            gap.ids.push_back(device->info().id);
+            if (hal::has_role(device->info(), hal::role::kMain)) has_main = true;
+        }
+        if (!gap.ids.empty() && !has_main) gaps.push_back(std::move(gap));
+    }
+    return gaps;
+}
+
 }  // namespace wisp::core

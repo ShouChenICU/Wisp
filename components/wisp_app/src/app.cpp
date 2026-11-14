@@ -147,6 +147,17 @@ Result<void> App::start() {
                 {device->info().id, device->info().cls, core::DeviceState::Ok, ""});
         }
     }
+    // The wiring below finds these devices by role main; one registered
+    // without it would be treated as missing with nothing saying why.
+    for (const core::RoleGap& gap : core::main_role_gaps(impl_->registry)) {
+        std::string ids;
+        for (const std::string& id : gap.ids) {
+            if (!ids.empty()) ids += ", ";
+            ids += id;
+        }
+        WLOG_W("app", "no device with role main among %s: %s", hal::to_string(gap.iface),
+               ids.c_str());
+    }
 
     // Step 3: core services.
     impl_->bus.start();
