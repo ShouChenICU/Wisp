@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "wisp/core/log.hpp"
+
 namespace wisp::core::cell_detail {
 
 namespace {
@@ -14,8 +16,12 @@ thread_local const CellCore* tls_held = nullptr;
 #endif
 
 // How often a cell destroyed while a release() is still in flight looks
-// again (device builds only: on the host that destruction aborts first).
+// again (device builds only: on the host that destruction aborts first),
+// and for how long. A release() waits only for one run, which does
+// memory work, so a wait this long means it never ends: the cell is being
+// destroyed from the very run that release() waits for.
 constexpr uint32_t kReleasePollMs = 1;
+constexpr uint32_t kReleaseWaitLimitMs = 3000;
 
 void free_sub(CellSub& sub) { sub.finish(sub); }
 
@@ -65,7 +71,9 @@ void CellCore::link(CellSub& sub, Dispatcher& on) const {
 }
 
 void CellCore::changed_locked() {
-    revision_.fetch_add(1, std::memory_order_release);
+    // Only writers move it, all under this lock, so load-then-store is safe.
+    revision_.store(next_revision(revision_.load(std::memory_order_relaxed)),
+                    std::memory_order_release);
     for (CellSub* s = head_; s != nullptr; s = s->next_sub) {
         s->on->schedule(*s);
     }
@@ -111,11 +119,14 @@ void CellCore::release(CellSub* sub) {
     // may have to wait for. Unlinked first, so no set() can schedule the
     // slot again once cancel() has unqueued it.
     bool free_now = on->cancel(*sub);
-    // Last touch of the cell: once a run has returned (or, inside our own
-    // run, is past reading the cell) nothing here needs it.
-    core.releasing_.fetch_sub(1, std::memory_order_release);
     on->detach();
     bus->note_cell_subscription(-1);
+    // Last touch of the cell, after the dispatcher and the bus: once a run
+    // has returned (or, inside our own run, is past reading the cell)
+    // nothing here needs it, and a destructor waiting for this count may
+    // complete, after which the owner may free the bus or the dispatcher
+    // too. From here on only the subscription itself is touched.
+    core.releasing_.fetch_sub(1, std::memory_order_release);
     if (free_now) {
         free_sub(*sub);
     }
@@ -142,6 +153,7 @@ void CellCore::release_all() {
 
     // Device builds: misuse returned. Detach every subscription so that
     // no run, set() or later reset() touches this cell again.
+    const uint64_t start = os::now_ms();
     while (true) {
         CellSub* claimed = nullptr;
         bool in_flight = false;
@@ -166,6 +178,13 @@ void CellCore::release_all() {
         if (claimed != nullptr) {
             orphan(*claimed);
         } else if (in_flight) {
+            if (os::now_ms() - start >= kReleaseWaitLimitMs) {
+                // As orphan() below: crash with a reason rather than hang.
+                WLOG_E("core",
+                       "StateCell destroyed while a reset() waits for a run that "
+                       "cannot end (destroyed from that run?)");
+                std::abort();
+            }
             os::sleep_ms(kReleasePollMs);
         } else {
             return;

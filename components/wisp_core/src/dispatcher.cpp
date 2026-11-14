@@ -151,12 +151,26 @@ void SlotQueue::unlink_locked(DispatchSlot& slot) {
     }
 }
 
+#if !defined(ESP_PLATFORM)
+namespace {
+std::atomic<MisuseHandler> g_misuse_handler{nullptr};
+}  // namespace
+
+MisuseHandler set_misuse_handler(MisuseHandler handler) {
+    return g_misuse_handler.exchange(handler, std::memory_order_acq_rel);
+}
+#endif
+
 void dispatch_misuse(const char* what) {
 #if defined(ESP_PLATFORM)
     // As WISP_ASSERT_FLASH_THREAD does on the device: report and keep
     // running; the host builds' abort is what catches the bug in tests.
     WLOG_E("core", "misuse: %s", what);
 #else
+    if (MisuseHandler handler = g_misuse_handler.load(std::memory_order_acquire)) {
+        handler(what);
+        return;
+    }
     std::fprintf(stderr, "wisp: misuse: %s\n", what);
     std::fflush(stderr);
     std::abort();

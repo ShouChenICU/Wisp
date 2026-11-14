@@ -2,7 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -10,6 +13,7 @@
 #include <vector>
 
 #include "support/manual_dispatcher.hpp"
+#include "support/wait.hpp"
 #include "wisp/base/fixed_string.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/os/os.hpp"
@@ -19,6 +23,26 @@ using wisp::core::EventBus;
 template <class T>
 using Cell = wisp::core::StateCell<T>;
 using wisp::test::ManualDispatcher;
+using wisp::test::wait_until;
+
+namespace wisp::core::cell_detail {
+// Reaches the state the teardown tests gate on (friend of the cell types).
+struct CellTestPeer {
+    static CellSub* sub(const CellSubscription& s) { return s.sub_; }
+    static uint8_t claim(const CellSub* s) { return s->claim.load(); }
+    template <class T>
+    static uint32_t releasing(const StateCell<T>& c) {
+        return static_cast<const CellCore&>(c).releasing_.load();
+    }
+    template <class T>
+    static void set_revision(StateCell<T>& c, uint32_t r) {
+        static_cast<CellCore&>(c).revision_.store(r);
+    }
+};
+}  // namespace wisp::core::cell_detail
+
+using wisp::core::cell_detail::CellSub;
+using Peer = wisp::core::cell_detail::CellTestPeer;
 
 namespace {
 
@@ -60,6 +84,19 @@ struct Recorder {
 std::atomic<int> g_mirror_calls{0};
 void count_mirror(EventBus&, const int&, const int&) { g_mirror_calls.fetch_add(1); }
 
+// With this installed, dispatch_misuse() records and returns, as on the
+// device, so the tests can run what the device does after a report.
+std::mutex g_misuse_mu;
+std::vector<std::string> g_misuses;
+void record_misuse(const char* what) {
+    std::lock_guard<std::mutex> lock(g_misuse_mu);
+    g_misuses.emplace_back(what);
+}
+std::vector<std::string> misuses() {
+    std::lock_guard<std::mutex> lock(g_misuse_mu);
+    return g_misuses;
+}
+
 struct RestoreDeathStyle {
     std::string old = GTEST_FLAG_GET(death_test_style);
     ~RestoreDeathStyle() { GTEST_FLAG_SET(death_test_style, old); }
@@ -70,8 +107,19 @@ protected:
     void SetUp() override {
         ASSERT_TRUE(bus.start().is_ok());
         g_mirror_calls = 0;
+        std::lock_guard<std::mutex> lock(g_misuse_mu);
+        g_misuses.clear();
     }
-    void TearDown() override { bus.stop(); }
+    void TearDown() override {
+        wisp::core::set_misuse_handler(nullptr);
+        bus.stop();
+    }
+    void expect_nothing_attached() {
+        EXPECT_EQ(md.attached(), 0u);
+        EXPECT_EQ(md.queued(), 0u);
+        EXPECT_EQ(bus.attached(), 0u);
+        EXPECT_EQ(bus.cell_subscriptions(), 0u);
+    }
 
     EventBus bus;
     ManualDispatcher md;
@@ -442,4 +490,181 @@ TEST_F(StateCell, WorksWithAStructOfFixedStrings) {
     EXPECT_EQ(got.rssi, -40);
     EXPECT_FALSE(c.set(Net{std::string_view("home"), -40}));
     EXPECT_EQ(c.revision(), 2u);
+}
+
+TEST_F(StateCell, RevisionSkipsZeroWhenItWraps) {
+    using wisp::core::cell_detail::next_revision;
+    EXPECT_EQ(next_revision(1), 2u);
+    EXPECT_EQ(next_revision(UINT32_MAX), 1u);
+    Cell<int> c(bus, 0);
+    Peer::set_revision(c, UINT32_MAX);
+    EXPECT_TRUE(c.set(1));
+    EXPECT_EQ(c.revision(), 1u);
+    // A subscription's "nothing delivered yet" is 0: made now, it still
+    // gets the current value.
+    Recorder r;
+    CellSubscription sub = c.subscribe(r.callback(), &md);
+    EXPECT_EQ(md.run_all(), 1u);
+    EXPECT_EQ(r.last(), 1);
+}
+
+TEST_F(StateCell, CallbackThatSetsItsOwnCellIsCalledOncePerChange) {
+    Cell<int> c(bus, 0);
+    int depth = 0, max_depth = 0;
+    std::vector<int> seen;
+    CellSubscription sub = c.subscribe(
+        [&](const int& v) {
+            max_depth = std::max(max_depth, ++depth);
+            seen.push_back(v);
+            if (v < 5) {
+                c.set(v + 1);
+            }
+            --depth;
+        },
+        &md);
+    EXPECT_EQ(md.run_all(), 6u);
+    EXPECT_EQ(seen, (std::vector<int>{0, 1, 2, 3, 4, 5}));
+    EXPECT_EQ(max_depth, 1);
+    EXPECT_EQ(c.get(), 5);
+    EXPECT_EQ(md.run_all(), 0u);
+}
+
+TEST_F(StateCell, OwnerDestroysTheCellAfterACallbackReleasedItsOwnSubscription) {
+    wisp::core::set_misuse_handler(&record_misuse);
+    auto c = std::make_unique<Cell<int>>(bus, 0);
+    CellSubscription sub;
+    sub = c->subscribe([&](const int&) { sub.reset(); }, &md);
+    EXPECT_EQ(md.run_all(), 1u);
+    c.reset();
+    EXPECT_TRUE(misuses().empty());
+    expect_nothing_attached();
+}
+
+// The tests below install record_misuse, so a cell destroyed with live
+// subscriptions takes the device's path instead of aborting.
+
+TEST_F(StateCell, DestroyedWithIdleSubscriptionsDetachesThemAndResetOnlyFrees) {
+    wisp::core::set_misuse_handler(&record_misuse);
+    Recorder ran, queued_rec;
+    CellSubscription ran_sub, queued_sub;
+    auto c = std::make_unique<Cell<int>>(bus, 0);
+    ran_sub = c->subscribe(ran.callback(), &md);
+    EXPECT_EQ(md.run_all(), 1u);
+    queued_sub = c->subscribe(queued_rec.callback(), &md);  // first run still queued
+    c.reset();
+    EXPECT_EQ(misuses(),
+              (std::vector<std::string>{"StateCell destroyed with 2 live subscriptions"}));
+    expect_nothing_attached();
+    EXPECT_EQ(md.run_all(), 0u);
+    EXPECT_EQ(queued_rec.calls(), 0u);
+    EXPECT_TRUE(ran_sub);
+    ran_sub.reset();
+    queued_sub.reset();
+    expect_nothing_attached();
+}
+
+TEST_F(StateCell, ResetRacingDestructionWhenTheHandleClaimsFirst) {
+    wisp::core::set_misuse_handler(&record_misuse);
+    auto c = std::make_unique<Cell<int>>(bus, 0);
+    wisp::os::Semaphore entered(1, 0), gate(1, 0);
+    CellSubscription sub = c->subscribe([&](const int&) {
+        entered.give();
+        gate.take(kGateMs);
+    });
+    ASSERT_TRUE(entered.take(kGateMs));
+    // The handle unlinks the subscription, then waits in cancel() for the
+    // run blocked on `gate`.
+    std::thread handle([&] { sub.reset(); });
+    ASSERT_TRUE(wait_until([&] { return Peer::releasing(*c) == 1; }, kGateMs));
+    std::atomic<bool> destroyed{false};
+    std::thread owner([&] {
+        c.reset();
+        destroyed = true;
+    });
+    ASSERT_TRUE(wait_until([] { return misuses().size() == 1; }, kGateMs));
+    EXPECT_EQ(misuses()[0], "StateCell destroyed with 1 live subscription");
+    // The destructor waits for the reset in flight: its run may still be
+    // about to take the cell's lock.
+    EXPECT_FALSE(destroyed.load());
+    gate.give();
+    handle.join();
+    owner.join();
+    EXPECT_TRUE(destroyed.load());
+    ASSERT_TRUE(bus.wait_idle(1000));
+    expect_nothing_attached();
+}
+
+TEST_F(StateCell, ResetRacingDestructionWhenTheCellClaimsFirst) {
+    wisp::core::set_misuse_handler(&record_misuse);
+    auto c = std::make_unique<Cell<int>>(bus, 0);
+    wisp::os::Semaphore entered(1, 0), gate(1, 0);
+    CellSubscription sub = c->subscribe([&](const int&) {
+        entered.give();
+        gate.take(kGateMs);
+    });
+    ASSERT_TRUE(entered.take(kGateMs));
+    CellSub* raw = Peer::sub(sub);
+    // The cell takes the subscription over, then waits in cancel() for
+    // the run blocked on `gate`.
+    std::thread owner([&] { c.reset(); });
+    ASSERT_TRUE(wait_until([&] { return (Peer::claim(raw) & CellSub::kCellOwned) != 0; }, kGateMs));
+    // The handle loses the claim: it returns at once and leaves the free
+    // to the cell, which still uses the subscription.
+    sub.reset();
+    EXPECT_FALSE(sub);
+    gate.give();
+    owner.join();
+    EXPECT_EQ(misuses(),
+              (std::vector<std::string>{"StateCell destroyed with 1 live subscription"}));
+    ASSERT_TRUE(bus.wait_idle(1000));
+    expect_nothing_attached();
+}
+
+TEST_F(StateCell, DestructionWaitsForARunningCallbackThatReadsTheCell) {
+    wisp::core::set_misuse_handler(&record_misuse);
+    auto c = std::make_unique<Cell<int>>(bus, 5);
+    Cell<int>* cell = c.get();
+    wisp::os::Semaphore entered(1, 0), gate(1, 0);
+    std::atomic<int> read_back{-1};
+    CellSubscription sub = c->subscribe([&](const int&) {
+        entered.give();
+        gate.take(kGateMs);
+        read_back = cell->get();  // the cell is mid-destruction, still whole
+    });
+    ASSERT_TRUE(entered.take(kGateMs));
+    CellSub* raw = Peer::sub(sub);
+    std::thread owner([&] { c.reset(); });
+    ASSERT_TRUE(wait_until([&] { return (Peer::claim(raw) & CellSub::kCellOwned) != 0; }, kGateMs));
+    gate.give();
+    owner.join();
+    EXPECT_EQ(read_back.load(), 5);
+    EXPECT_EQ(misuses().size(), 1u);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    expect_nothing_attached();
+    sub.reset();  // only frees
+}
+
+TEST_F(StateCell, CallbackResetsItsOwnHandleWhileTheCellIsDestroyed) {
+    wisp::core::set_misuse_handler(&record_misuse);
+    auto c = std::make_unique<Cell<int>>(bus, 0);
+    wisp::os::Semaphore entered(1, 0), gate(1, 0);
+    std::atomic<int> calls{0};
+    CellSubscription sub;
+    sub = c->subscribe([&](const int&) {
+        calls.fetch_add(1);
+        entered.give();
+        gate.take(kGateMs);
+        sub.reset();
+    });
+    ASSERT_TRUE(entered.take(kGateMs));
+    CellSub* raw = Peer::sub(sub);
+    std::thread owner([&] { c.reset(); });
+    ASSERT_TRUE(wait_until([&] { return (Peer::claim(raw) & CellSub::kCellOwned) != 0; }, kGateMs));
+    gate.give();
+    owner.join();
+    EXPECT_FALSE(sub);
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(misuses().size(), 1u);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    expect_nothing_attached();
 }

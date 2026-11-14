@@ -32,6 +32,8 @@
 // release any subscription, its own included. From inside a cell's own
 // read() body, update() mutator or mirror it may not touch that cell
 // again: its lock is not recursive (host builds report this as misuse).
+// A callback may destroy its own cell only after every subscription of
+// it, the callback's own first, has been released.
 //
 // Callbacks run on wisp.bus or the UI task, neither of which may touch
 // flash (AGENTS.md section 5): hand flash work to StorageWorker.
@@ -62,6 +64,13 @@ class StateCell;
 namespace cell_detail {
 
 class CellCore;
+// Defined only by tests: reaches the claim and revision state they gate on.
+struct CellTestPeer;
+
+// Next revision after `r`. Skips 0, which a subscription's `delivered`
+// uses for "nothing delivered yet": a subscription made while the
+// revision read 0 would otherwise get no first call.
+constexpr uint32_t next_revision(uint32_t r) { return r + 1 != 0 ? r + 1 : 1; }
 
 // One subscription. The dispatcher owns the DispatchSlot fields; the
 // list links are guarded by the cell's lock; `delivered` is touched only
@@ -132,6 +141,7 @@ protected:
     std::atomic<uint32_t> revision_{1};
 
 private:
+    friend struct CellTestPeer;
     void unlink_locked(CellSub& sub) const;
     void orphan(CellSub& sub);
 
@@ -183,6 +193,7 @@ public:
 private:
     template <class T>
     friend class StateCell;
+    friend struct cell_detail::CellTestPeer;
     explicit CellSubscription(cell_detail::CellSub* sub) : sub_(sub) {}
 
     cell_detail::CellSub* sub_ = nullptr;
@@ -276,6 +287,8 @@ public:
     }
 
 private:
+    friend struct cell_detail::CellTestPeer;
+
     struct Sub : cell_detail::CellSub {
         Callback callback;
     };
