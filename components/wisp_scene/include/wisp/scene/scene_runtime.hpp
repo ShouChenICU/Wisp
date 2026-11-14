@@ -688,8 +688,10 @@ public:
     // What the scenes' VmPool holds right now (and the run_lua() VM with it).
     size_t vm_pool_used() const { return pool_.used(); }
 
-    // Messages dropped because no running scene has their instance, and
-    // view events for a scene that has gone to the background.
+    // Messages dropped because no running scene has their instance (a
+    // Completed wake-up among them, on top of the results its box freed when
+    // the VM went), and view events for a scene that has gone to the
+    // background.
     uint64_t stale_dropped() const { return stale_dropped_.load(); }
 
 private:
