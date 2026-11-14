@@ -5,9 +5,11 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::core {
@@ -58,7 +60,39 @@ FirmwareOutcome outcome(FirmwareFailure failure, std::string message) {
     return r;
 }
 
+static_assert(std::is_trivially_copyable_v<FirmwareProgress>,
+              "a set() of the progress must not allocate");
+
+const char* phase_name(FirmwareProgress::Phase phase) {
+    switch (phase) {
+        case FirmwareProgress::Phase::Idle:
+            return "";
+        case FirmwareProgress::Phase::Received:
+            return "received";
+        case FirmwareProgress::Phase::Confirmed:
+            return "confirmed";
+        case FirmwareProgress::Phase::Rejected:
+            return "rejected";
+        case FirmwareProgress::Phase::Failed:
+            return "failed";
+    }
+    return "";
+}
+
+// Reproduces the system.firmware event the service published for every
+// outcome. Idle is the value before the first one, never published.
+void progress_mirror(EventBus& bus, const FirmwareProgress&, const FirmwareProgress& after) {
+    if (after.phase == FirmwareProgress::Phase::Idle) return;
+    bus.publish(Event{topics::kSystemFirmware, kFirmwareSource, 0, firmware_payload(after)});
+}
+
 }  // namespace
+
+Properties firmware_payload(const FirmwareProgress& p) {
+    Properties out{{"state", Value(phase_name(p.phase))}, {"version", Value(p.version.str())}};
+    if (p.phase == FirmwareProgress::Phase::Failed) out.emplace("error", Value(p.error.str()));
+    return out;
+}
 
 // One chunk of the image on its way to FirmwareUpdater::write().
 struct FirmwareUpdateService::Chunk {
@@ -90,8 +124,10 @@ const char* to_string(FirmwareFailure failure) {
     return "";
 }
 
-FirmwareUpdateService::FirmwareUpdateService(Deps deps, StorageWorker* worker)
-    : deps_(std::move(deps)), worker_(worker) {
+FirmwareUpdateService::FirmwareUpdateService(Deps deps, EventBus& bus, StorageWorker* worker)
+    : deps_(std::move(deps)),
+      worker_(worker),
+      progress_cell_(bus, FirmwareProgress{}, &progress_mirror) {
     if (deps_.updater != nullptr) target_ = deps_.updater->target();
 }
 
@@ -133,12 +169,29 @@ void FirmwareUpdateService::reset_locked() {
     pending_since_ms_ = 0;
 }
 
-void FirmwareUpdateService::publish(const char* state, const std::string& version,
+void FirmwareUpdateService::publish(FirmwareProgress::Phase phase, const std::string& version,
                                     const char* error) {
-    if (!deps_.publish) return;
-    Properties p{{"state", Value(state)}, {"version", Value(version)}};
-    if (error != nullptr) p.emplace("error", Value(error));
-    deps_.publish(std::move(p));
+    // Filled before the cell's lock is taken, so that the lock covers
+    // memory work only. Neither is ever cut: version_ comes from
+    // parse_firmware_head() (at most 31 characters) and every error is a
+    // to_string(FirmwareFailure) or "aborted" (at most 17); a cut is
+    // logged all the same rather than passed on silently.
+    decltype(FirmwareProgress::version) v;
+    if (!v.assign(version)) {
+        WLOG_W(kTag, "firmware version cut to %u bytes", static_cast<unsigned>(v.capacity()));
+    }
+    decltype(FirmwareProgress::error) e;
+    if (error != nullptr && !e.assign(error)) {
+        WLOG_W(kTag, "firmware error cut to %u bytes", static_cast<unsigned>(e.capacity()));
+    }
+    // Never an equal value, so never a lost system.firmware: every outcome
+    // moves `seq`, even one that repeats the last.
+    progress_cell_.update([&](FirmwareProgress& p) {
+        p.phase = phase;
+        p.version = v;
+        p.error = e;
+        ++p.seq;
+    });
 }
 
 FirmwareOutcome FirmwareUpdateService::begin(size_t size, uint32_t* id) {
@@ -183,7 +236,7 @@ FirmwareOutcome FirmwareUpdateService::fail_upload(uint32_t id, FirmwareFailure 
     abort_updater_and_reset();
     if (event_error == nullptr) event_error = to_string(failure);
     WLOG_W(kTag, "firmware upload failed: %s (%s)", event_error, message.c_str());
-    publish("failed", version, event_error);
+    publish(FirmwareProgress::Phase::Failed, version, event_error);
     return outcome(failure, std::move(message));
 }
 
@@ -314,7 +367,7 @@ FirmwareOutcome FirmwareUpdateService::end(uint32_t id) {
         version = version_;
     }
     WLOG_I(kTag, "firmware %s received; waiting for confirmation on the device", version.c_str());
-    publish("received", version);
+    publish(FirmwareProgress::Phase::Received, version);
     deps_.request_confirm();
     FirmwareOutcome done;
     done.version = std::move(version);
@@ -349,11 +402,11 @@ FirmwareOutcome FirmwareUpdateService::confirm() {
         abort_updater_and_reset();
         WLOG_E(kTag, "activating firmware %s failed: %s", version.c_str(),
                r.error().message.c_str());
-        publish("failed", version, to_string(FirmwareFailure::WriteFailed));
+        publish(FirmwareProgress::Phase::Failed, version, to_string(FirmwareFailure::WriteFailed));
         return outcome(FirmwareFailure::WriteFailed, r.error().message);
     }
     WLOG_W(kTag, "firmware %s confirmed; restarting into it", version.c_str());
-    publish("confirmed", version);
+    publish(FirmwareProgress::Phase::Confirmed, version);
     if (deps_.restart) {
         deps_.restart();
     } else {
@@ -377,7 +430,7 @@ FirmwareOutcome FirmwareUpdateService::decline() {
     }
     abort_updater_and_reset();
     WLOG_I(kTag, "firmware %s declined on the device", version.c_str());
-    publish("rejected", version);
+    publish(FirmwareProgress::Phase::Rejected, version);
     return {};
 }
 
@@ -394,7 +447,7 @@ void FirmwareUpdateService::tick(uint64_t now_ms) {
     }
     abort_updater_and_reset();
     WLOG_I(kTag, "firmware %s not confirmed in time; discarded", version.c_str());
-    publish("rejected", version);
+    publish(FirmwareProgress::Phase::Rejected, version);
 }
 
 void FirmwareUpdateService::mark_running_valid() {

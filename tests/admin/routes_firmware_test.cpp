@@ -24,6 +24,7 @@
 #include "wisp/core/cached_settings.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/os/os.hpp"
 
@@ -63,19 +64,36 @@ struct FirmwareFixture {
             FirmwareUpdateService::Deps deps;
             deps.updater = &updater;
             deps.running_version = "0.2.0-test";
-            deps.publish = [this](Properties p) { events.push_back(std::move(p)); };
             deps.request_confirm = [this] {
                 ++confirm_requests;
                 if (on_confirm_request) on_confirm_request();
             };
-            service = std::make_unique<FirmwareUpdateService>(std::move(deps), worker);
+            service = std::make_unique<FirmwareUpdateService>(std::move(deps), f.bus, worker);
         }
+        // AdminFixture's bus is started.
+        events_sub = f.bus.subscribe(wisp::core::topics::kSystemFirmware,
+                                     [this](const wisp::core::Event& e) {
+                                         std::lock_guard<std::mutex> lock(events_mutex);
+                                         recorded.push_back(e.payload);
+                                     });
         f.srv.reset();
         wisp::admin::AdminDeps deps = f.make_deps();
         deps.firmware = service.get();
         f.srv = std::make_unique<wisp::admin::AdminServer>(std::move(deps));
         token = f.token();
         stream = f.srv->stream_handler();
+    }
+
+    // The record goes before the bus stops (~AdminFixture); unsubscribe()
+    // waits for a delivery in progress.
+    ~FirmwareFixture() { f.bus.unsubscribe(events_sub); }
+
+    // The system.firmware payloads published so far, once the bus has
+    // delivered everything queued.
+    std::vector<Properties> events() {
+        EXPECT_TRUE(f.bus.wait_idle(2000));
+        std::lock_guard<std::mutex> lock(events_mutex);
+        return recorded;
     }
 
     // POST head for an upload of `length` bytes, authenticated and with
@@ -113,7 +131,9 @@ struct FirmwareFixture {
 
     AdminFixture f;
     FakeFirmwareUpdater updater;
-    std::vector<Properties> events;
+    std::mutex events_mutex;
+    std::vector<Properties> recorded;
+    wisp::core::SubscriptionId events_sub = 0;
     int confirm_requests = 0;
     // Runs inside the service's request_confirm, like a screen that
     // answers at once.
@@ -177,8 +197,8 @@ TEST(AdminFirmware, AcceptedVersionSurvivesAnImmediateAnswer) {
     HttpResponse res = fx.upload(make_firmware_image(spec));
     EXPECT_EQ(res.status, 202) << res.body;
     EXPECT_EQ(at(body_json(res), "version").as_string(), "0.3.0");
-    ASSERT_EQ(fx.events.size(), 2u);
-    EXPECT_EQ(fx.events[1].at("state").as_string(), "rejected");
+    ASSERT_EQ(fx.events().size(), 2u);
+    EXPECT_EQ(fx.events()[1].at("state").as_string(), "rejected");
 }
 
 TEST(AdminFirmware, UploadPassesTheSameChecksAsTheApi) {
@@ -223,7 +243,7 @@ TEST(AdminFirmware, UploadPassesTheSameChecksAsTheApi) {
     // None of it reached the platform or the device.
     EXPECT_EQ(fx.updater.begins, 0);
     EXPECT_EQ(fx.confirm_requests, 0);
-    EXPECT_TRUE(fx.events.empty());
+    EXPECT_TRUE(fx.events().empty());
 }
 
 TEST(AdminFirmware, ForeignOrBrokenImagesAreRefused) {
@@ -268,9 +288,9 @@ TEST(AdminFirmware, DroppedConnectionFreesTheSlot) {
         EXPECT_FALSE(start->sink->on_data(std::span<const uint8_t>(image).first(4096)));
         start->sink->on_abort();
     }
-    ASSERT_FALSE(fx.events.empty());
-    EXPECT_EQ(fx.events.back().at("state").as_string(), "failed");
-    EXPECT_EQ(fx.events.back().at("error").as_string(), "aborted");
+    ASSERT_FALSE(fx.events().empty());
+    EXPECT_EQ(fx.events().back().at("state").as_string(), "failed");
+    EXPECT_EQ(fx.events().back().at("error").as_string(), "aborted");
 
     // A sink dropped without either ending (a server stopping mid-request)
     // gives the slot back too.

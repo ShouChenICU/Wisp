@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "agent_wiring.hpp"
+#include "factory_reset.hpp"
 #include "net_wiring.hpp"
 #include "notification_router.hpp"
 #include "scene_wiring.hpp"
@@ -92,6 +93,11 @@ struct App::Impl {
                                                  power_manager->set_brightness(level);
                                              }
                                          }};
+    // The factory reset's state (factory_reset.hpp); its mirror publishes
+    // system.factory_reset. Declared after `bus`, which its constructor
+    // takes. A plain member, it outlives App::stop() (and bus.stop()) and
+    // is destroyed before the bus object.
+    core::StateCell<ResetStatus> reset_status{bus, ResetStatus{}, &mirror_reset_status};
 
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;

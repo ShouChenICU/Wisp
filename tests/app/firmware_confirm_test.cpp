@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -142,6 +143,30 @@ TEST(FirmwareConfirm, YesInstallsAndRestartsOffTheUiThread) {
     EXPECT_EQ(h.firmware->activations, 1);
     EXPECT_EQ(states(h), (std::vector<std::string>{"received", "confirmed"}));
     EXPECT_EQ(msgboxes(h), 0);
+}
+
+// The browser hears "confirmed" before the device goes down: the event is
+// on the bus, and delivered, by the time Platform::reboot runs.
+TEST(FirmwareConfirm, ConfirmedReachesTheBusBeforeTheRestart) {
+    UiNetHarness h(firmware_opts());
+    std::atomic<bool> confirmed_at_reboot{false};
+    h.on_reboot = [&h, &confirmed_at_reboot] {
+        std::lock_guard<std::mutex> lock(h.events_mutex);
+        for (const auto& e : h.events) {
+            if (e.topic == "system.firmware" && e.payload.at("state").as_string() == "confirmed") {
+                confirmed_at_reboot.store(true);
+            }
+        }
+    };
+    ASSERT_TRUE(h.start("system."));
+    const std::string token = pair_browser(h);
+
+    EXPECT_EQ(upload(h, token, image_of("0.3.0")), 202);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "固件更新"); }, 3000));
+    ASSERT_TRUE(click(h, "是"));
+    ASSERT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, 5000));
+    EXPECT_TRUE(confirmed_at_reboot.load());
+    EXPECT_EQ(states(h), (std::vector<std::string>{"received", "confirmed"}));
 }
 
 TEST(FirmwareConfirm, NoKeepsTheRunningImage) {

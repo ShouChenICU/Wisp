@@ -16,20 +16,24 @@
 // the first one has left Pending (or Aborting). write() checks the image as soon as its first
 // kFirmwareHeadBytes have arrived and refuses a foreign one before a single
 // byte reaches FirmwareUpdater::write(). end() has the platform verify the
-// whole image, publishes system.firmware {state:"received", version} and
-// asks the device's user to confirm (Deps::request_confirm). confirm()
-// makes the new image the boot image, publishes {state:"confirmed"} and
-// calls Deps::restart; decline() and the confirmation timeout publish
-// {state:"rejected"} and drop the image. A failure after begin() publishes
-// {state:"failed", version, error} (spec 5.5). Every outcome frees the slot
-// for the next upload, except a confirm() that worked (the device is
-// restarting).
+// whole image, moves the progress cell to Received (published as
+// system.firmware {state:"received", version}) and asks the device's user
+// to confirm (Deps::request_confirm). confirm() makes the new image the
+// boot image, moves the cell to Confirmed ({state:"confirmed"}) and calls
+// Deps::restart; decline() and the confirmation timeout move it to
+// Rejected ({state:"rejected"}) and drop the image. A failure after
+// begin() moves it to Failed ({state:"failed", version, error}, spec 5.5).
+// The cell's mirror publishes each of these events; nothing else does.
+// Every outcome frees the slot for the next upload, except a confirm()
+// that worked (the device is restarting).
 //
 // Threading: every method may be called from any thread. The state lives
 // under one mutex that is never held while the platform writes flash, so
 // status()/pending() (read by the UI thread) never wait for an erase. Only
 // the caller holding the current upload id calls write()/end(), so the
-// platform sees one writer at a time.
+// platform sees one writer at a time. The progress cell is set with
+// mutex_ released (lock order: cell -> bus; mutex_ is never held with the
+// cell's lock).
 //
 // Flash (spec 3.6 of docs/superpowers/specs/2026-11-06-flash-thread-design.md):
 // with a StorageWorker every FirmwareUpdater call that touches flash runs
@@ -53,9 +57,12 @@
 #include <span>
 #include <string>
 
+#include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_image.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/os/os.hpp"
 
@@ -137,6 +144,31 @@ struct FirmwarePending {
     bool downgrade = false;
 };
 
+// Event::source of system.firmware: App published it before the cell did.
+inline constexpr char kFirmwareSource[] = "app";
+
+// The last outcome of an upload, as system.firmware announces it
+// (FirmwareUpdateService::progress_cell()).
+struct FirmwareProgress {
+    enum class Phase : uint8_t { Idle, Received, Confirmed, Rejected, Failed };
+    // Idle until the first outcome of this service's life.
+    Phase phase = Phase::Idle;
+    // The uploaded image's, "" when it failed before its head was parsed.
+    // parse_firmware_head() bounds it to 31 characters (esp_app_desc_t's
+    // version[32]), so it is never cut.
+    FixedString<31> version;
+    // Failed only: invalid_image, wrong_board, write_failed or aborted.
+    FixedString<23> error;
+    // Moves with every published outcome, so two equal ones in a row (the
+    // same failure on two uploads) are two changes, and two events.
+    uint32_t seq = 0;
+    bool operator==(const FirmwareProgress&) const = default;
+};
+
+// The system.firmware payload for `p`: {state, version, error (Failed
+// only)}.
+Properties firmware_payload(const FirmwareProgress& p);
+
 class FirmwareUpdateService {
 public:
     static constexpr uint32_t kConfirmTimeoutMs = 2 * 60 * 1000;
@@ -147,8 +179,6 @@ public:
         // Null: this board has no OTA slots; every upload is Unsupported.
         FirmwareUpdater* updater = nullptr;
         std::string running_version;
-        // system.firmware payloads (spec 5.5); the App publishes them.
-        std::function<void(Properties)> publish;
         // Shows the confirmation dialog. Empty: nothing on the device can
         // confirm, so uploads are refused as Unavailable.
         std::function<void()> request_confirm;
@@ -162,7 +192,9 @@ public:
         uint32_t finish_timeout_ms = kFinishTimeoutMs;
     };
 
-    explicit FirmwareUpdateService(Deps deps, StorageWorker* worker = nullptr);
+    // `bus` carries system.firmware (the progress cell's mirror) and must
+    // outlive the service.
+    FirmwareUpdateService(Deps deps, EventBus& bus, StorageWorker* worker = nullptr);
 
     FirmwareUpdateService(const FirmwareUpdateService&) = delete;
     FirmwareUpdateService& operator=(const FirmwareUpdateService&) = delete;
@@ -170,6 +202,11 @@ public:
     FirmwareStatus status() const;
     // Set while an image awaits the user's answer.
     std::optional<FirmwarePending> pending() const;
+    // The last outcome, as system.firmware announces it: it moves exactly
+    // when that event is published. Followers must release their
+    // subscription before the service is destroyed (App::stop() resets it
+    // before the bus stops; wisp/core/state_cell.hpp).
+    const StateCell<FirmwareProgress>& progress_cell() const { return progress_cell_; }
 
     // --- The upload (POST /system/firmware). ---
     // Claims the single upload slot for an image of `size` bytes; *id
@@ -225,7 +262,10 @@ private:
     // `event_error` (default: to_string(failure)). A stale id only returns.
     FirmwareOutcome fail_upload(uint32_t id, FirmwareFailure failure, std::string message,
                                 const char* event_error = nullptr);
-    void publish(const char* state, const std::string& version, const char* error = nullptr);
+    // Moves the progress cell to one more outcome (its mirror publishes
+    // system.firmware). Called without mutex_.
+    void publish(FirmwareProgress::Phase phase, const std::string& version,
+                 const char* error = nullptr);
     uint64_t now() const;
 
     struct Chunk;
@@ -249,6 +289,9 @@ private:
     std::shared_ptr<Chunk> chunk_;
     std::string version_;  // of the image being uploaded or awaiting an answer
     uint64_t pending_since_ms_ = 0;
+    // Set by publish() only, outside mutex_. Its constructor takes the bus;
+    // App::stop() destroys the service before the bus stops.
+    StateCell<FirmwareProgress> progress_cell_;
 };
 
 }  // namespace wisp::core

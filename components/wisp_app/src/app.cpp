@@ -506,13 +506,10 @@ Result<void> App::start() {
     core::FirmwareUpdateService::Deps firmware_deps;
     firmware_deps.updater = impl_->platform.firmware.get();
     firmware_deps.running_version = impl_->platform.firmware_version;
-    firmware_deps.publish = [this](Properties p) {
-        impl_->bus.publish({core::topics::kSystemFirmware, "app", 0, std::move(p)});
-    };
     if (impl_->ui) firmware_deps.request_confirm = [this] { request_firmware_confirm(*this); };
     firmware_deps.restart = [this] { restart_for_firmware(*this); };
-    impl_->firmware =
-        std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps), storage_worker());
+    impl_->firmware = std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps),
+                                                                    impl_->bus, storage_worker());
 
     // The scene runtime, built (not started) before networking so the
     // admin routes can be handed it.

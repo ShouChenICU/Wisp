@@ -11,16 +11,46 @@
 // start_factory_reset(), which runs factory_reset() on a one-shot
 // "wisp.reset" task -- never on the UI thread, since the reset waits for
 // the network and writes flash.
+//
+// Every state goes into the App's reset status cell (reset_status()),
+// whose mirror publishes the system.factory_reset event; nothing else
+// does.
 
 #include <cstdint>
 #include <functional>
 #include <memory>
 
+#include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::app {
 
 class App;
+
+// Event::source of system.factory_reset: App published it before the cell
+// did.
+inline constexpr char kFactoryResetSource[] = "app";
+
+// The last factory reset state, as system.factory_reset announces it.
+struct ResetStatus {
+    enum class Phase : uint8_t { Idle, Requested, Cancelled, Done, Failed };
+    // Idle until the first request of the App's life.
+    Phase phase = Phase::Idle;
+    // Moves with every published state, so a repeated one (two
+    // "cancelled" in a row) is still a change, and still an event.
+    uint32_t seq = 0;
+    bool operator==(const ResetStatus&) const = default;
+};
+
+// The reset status cell's mirror: publishes system.factory_reset {state}
+// for every state but Idle. Called under the cell's lock.
+void mirror_reset_status(core::EventBus& bus, const ResetStatus& before, const ResetStatus& after);
+
+// The reset status: it moves exactly when system.factory_reset is
+// published. Followers must release their subscription before the App is
+// destroyed (the cell lives in App::Impl, after its bus). Any thread.
+const core::StateCell<ResetStatus>& reset_status(App& app);
 
 using TaskSpawner =
     std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>;
@@ -48,7 +78,8 @@ void cancel_factory_reset(App& app);
 //      that asked still has a token, hence a socket to hear it on;
 //   2. waits (at most 500 ms in all) for the event bus to deliver it and
 //      the admin WebSocket sender to put it on the wire;
-//   3. erases Settings, forgets the Wi-Fi networks, revokes every paired
+//   3. erases Settings (and seeds the settings cell again from what is
+//      left), forgets the Wi-Fi networks, revokes every paired
 //      browser (closing their sockets), clears the model profiles and the
 //      agent's conversations;
 //   4. writes what still waits for flash (App::flush_storage());

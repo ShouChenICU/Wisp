@@ -372,7 +372,12 @@ TEST(FactoryReset, AnnouncesDoneBeforeRevokingTokens) {
         ++revokes;
         std::lock_guard<std::mutex> lock(h.events_mutex);
         for (const auto& e : h.events) {
-            if (e.topic == "system.factory_reset") done_seen_at_revoke.store(true);
+            // "done" itself, delivered: the status cell's mirror publishes it
+            // inside the wipe job, ahead of the bus wait that precedes the
+            // erase.
+            if (e.topic == "system.factory_reset" && e.payload.at("state").as_string() == "done") {
+                done_seen_at_revoke.store(true);
+            }
         }
     });
 
@@ -381,6 +386,61 @@ TEST(FactoryReset, AnnouncesDoneBeforeRevokingTokens) {
     EXPECT_EQ(revokes.load(), 1);
     EXPECT_TRUE(done_seen_at_revoke.load());
     EXPECT_EQ(h.reboots.load(), 1);
+    EXPECT_EQ(wisp::app::reset_status(*h.app).get(),
+              (wisp::app::ResetStatus{wisp::app::ResetStatus::Phase::Done, 1}));
+}
+
+// The status cell moves with every system.factory_reset, and `seq` makes a
+// repeated state a change: two "cancelled" in a row are two events, as
+// they always were. Headless, so no dialog answers on its own.
+TEST(FactoryReset, StatusCellFollowsEveryState) {
+    using wisp::app::ResetStatus;
+    UiNetOptions opts;
+    opts.with_display = false;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    const auto& cell = wisp::app::reset_status(*h.app);
+    EXPECT_EQ(cell.get(), ResetStatus{});
+
+    wisp::app::request_factory_reset(*h.app);
+    EXPECT_EQ(cell.get(), (ResetStatus{ResetStatus::Phase::Requested, 1}));
+    wisp::app::cancel_factory_reset(*h.app);
+    EXPECT_EQ(cell.get(), (ResetStatus{ResetStatus::Phase::Cancelled, 2}));
+    wisp::app::cancel_factory_reset(*h.app);
+    EXPECT_EQ(cell.get(), (ResetStatus{ResetStatus::Phase::Cancelled, 3}));
+    wisp::app::request_factory_reset(*h.app);
+    EXPECT_EQ(cell.get(), (ResetStatus{ResetStatus::Phase::Requested, 4}));
+
+    ASSERT_TRUE(h.app->bus().wait_idle(2000));
+    EXPECT_EQ(reset_states(h),
+              (std::vector<std::string>{"requested", "cancelled", "cancelled", "requested"}));
+    for (const auto& e : h.topic("system.factory_reset")) EXPECT_EQ(e.source, "app");
+}
+
+// The wipe erases Settings behind SystemSettings' back, so the settings
+// cell is seeded again from the erased storage: it holds the defaults, and
+// no system.settings goes out for it (none did before the cell).
+TEST(FactoryReset, SettingsCellHoldsTheDefaultsAfterReset) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const wisp::core::SystemSettingsValues defaults = app.system_settings().get();
+    ASSERT_TRUE(app.system_settings().set({{"language", "en"}, {"brightness", 120}}));
+    ASSERT_EQ(app.system_settings().cell().get().language, "en");
+    ASSERT_TRUE(app.bus().wait_idle(2000));
+    const size_t settings_events = h.topic("system.settings").size();
+    ASSERT_EQ(settings_events, 1u);
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_EQ(h.reboots.load(), 1);
+    const wisp::core::SystemSettingsValues held = app.system_settings().cell().get();
+    EXPECT_EQ(held.language, defaults.language);
+    EXPECT_EQ(held.brightness, defaults.brightness);
+    EXPECT_TRUE(held == defaults);
+    EXPECT_TRUE(held == app.system_settings().get());
+    ASSERT_TRUE(app.bus().wait_idle(2000));
+    EXPECT_EQ(h.topic("system.settings").size(), settings_events);
 }
 
 TEST(FactoryReset, CancelPublishesCancelled) {

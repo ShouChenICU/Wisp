@@ -12,11 +12,15 @@
 
 #include "support/fake_firmware.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 
 using wisp::Properties;
+using wisp::core::Event;
+using wisp::core::EventBus;
 using wisp::core::FirmwareFailure;
 using wisp::core::FirmwareOutcome;
 using wisp::core::FirmwareUpdateService;
@@ -28,19 +32,44 @@ using wisp::test::make_firmware_image;
 
 namespace {
 
+// Records the system.firmware payloads on a started bus. Declared before
+// the bus, which is declared before the service: the service (and its
+// cell) goes first, then the bus stops, then the record.
+struct Recorder {
+    void attach(EventBus& bus) {
+        bus.start();
+        bus.subscribe(wisp::core::topics::kSystemFirmware, [this](const Event& e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            payloads.push_back(e.payload);
+        });
+    }
+    // The payloads so far, once the bus has delivered everything queued.
+    std::vector<Properties> all(EventBus& bus) {
+        EXPECT_TRUE(bus.wait_idle(2000));
+        std::lock_guard<std::mutex> lock(mutex);
+        return payloads;
+    }
+
+    std::mutex mutex;
+    std::vector<Properties> payloads;
+};
+
 struct Fixture {
     explicit Fixture(bool with_updater = true, bool can_confirm = true, bool can_restart = true,
                      StorageWorker* worker = nullptr, uint32_t chunk_timeout_ms = 0) {
+        recorder.attach(bus);
         FirmwareUpdateService::Deps deps;
         deps.updater = with_updater ? &updater : nullptr;
         deps.running_version = "0.1.0-10-g1111111";
-        deps.publish = [this](Properties p) { events.push_back(std::move(p)); };
         if (can_confirm) deps.request_confirm = [this] { ++confirm_requests; };
         if (can_restart) deps.restart = [this] { ++restarts; };
         deps.now_ms = [this] { return now; };
         if (chunk_timeout_ms != 0) deps.chunk_timeout_ms = chunk_timeout_ms;
-        service = std::make_unique<FirmwareUpdateService>(std::move(deps), worker);
+        service = std::make_unique<FirmwareUpdateService>(std::move(deps), bus, worker);
     }
+
+    // The system.firmware payloads published so far.
+    std::vector<Properties> events() { return recorder.all(bus); }
 
     // Streams `image` in `piece`-byte pieces; the first failure ends it.
     FirmwareOutcome upload(const std::vector<uint8_t>& image, uint32_t* id_out = nullptr,
@@ -59,14 +88,15 @@ struct Fixture {
         return service->end(id);
     }
 
-    std::string state(size_t i) const { return events.at(i).at("state").as_string(); }
-    std::string last_state() const { return events.back().at("state").as_string(); }
+    std::string state(size_t i) { return events().at(i).at("state").as_string(); }
+    std::string last_state() { return events().back().at("state").as_string(); }
 
     FakeFirmwareUpdater updater;
-    std::vector<Properties> events;
     int confirm_requests = 0;
     int restarts = 0;
     uint64_t now = 1000;
+    Recorder recorder;
+    EventBus bus;
     std::unique_ptr<FirmwareUpdateService> service;
 };
 
@@ -126,7 +156,7 @@ TEST(FirmwareUpdate, RefusesWhatCannotFit) {
     EXPECT_EQ(fx.service->begin(100, &id).failure, FirmwareFailure::InvalidImage);
     EXPECT_EQ(fx.updater.begins, 0);
     // Nothing started, so nothing is announced.
-    EXPECT_TRUE(fx.events.empty());
+    EXPECT_TRUE(fx.events().empty());
 }
 
 TEST(FirmwareUpdate, WrongBoardRejectedBeforeWriting) {
@@ -146,10 +176,10 @@ TEST(FirmwareUpdate, WrongBoardRejectedBeforeWriting) {
     EXPECT_STREQ(wisp::core::to_string(r.failure), "wrong_board");
     EXPECT_EQ(fx.updater.writes, 0);
     EXPECT_GE(fx.updater.aborts, 1);
-    ASSERT_EQ(fx.events.size(), 1u);
+    ASSERT_EQ(fx.events().size(), 1u);
     EXPECT_EQ(fx.state(0), "failed");
-    EXPECT_EQ(fx.events[0].at("error").as_string(), "wrong_board");
-    EXPECT_EQ(fx.events[0].at("version").as_string(), "0.3.0");
+    EXPECT_EQ(fx.events()[0].at("error").as_string(), "wrong_board");
+    EXPECT_EQ(fx.events()[0].at("version").as_string(), "0.3.0");
     EXPECT_EQ(fx.confirm_requests, 0);
 
     // The upload is over: later pieces are refused, and the slot is free.
@@ -164,7 +194,7 @@ TEST(FirmwareUpdate, NotAnImageRejectedBeforeWriting) {
     EXPECT_EQ(r.failure, FirmwareFailure::InvalidImage);
     EXPECT_EQ(fx.updater.writes, 0);
     EXPECT_EQ(fx.last_state(), "failed");
-    EXPECT_EQ(fx.events.back().at("error").as_string(), "invalid_image");
+    EXPECT_EQ(fx.events().back().at("error").as_string(), "invalid_image");
 }
 
 TEST(FirmwareUpdate, CorruptImageFailsVerification) {
@@ -201,7 +231,7 @@ TEST(FirmwareUpdate, WriteFailureFreesTheSlot) {
     FirmwareOutcome r = fx.upload(make_firmware_image());
     EXPECT_EQ(r.failure, FirmwareFailure::WriteFailed);
     EXPECT_EQ(fx.last_state(), "failed");
-    EXPECT_EQ(fx.events.back().at("error").as_string(), "write_failed");
+    EXPECT_EQ(fx.events().back().at("error").as_string(), "write_failed");
     fx.updater.fail_write = false;
     EXPECT_TRUE(fx.upload(make_firmware_image()).ok());
 }
@@ -211,9 +241,9 @@ TEST(FirmwareUpdate, ReceivedAsksTheDevice) {
     ImageSpec spec;
     spec.version = "0.1.0-20-g2222222";
     ASSERT_TRUE(fx.upload(make_firmware_image(spec)).ok());
-    ASSERT_EQ(fx.events.size(), 1u);
+    ASSERT_EQ(fx.events().size(), 1u);
     EXPECT_EQ(fx.state(0), "received");
-    EXPECT_EQ(fx.events[0].at("version").as_string(), "0.1.0-20-g2222222");
+    EXPECT_EQ(fx.events()[0].at("version").as_string(), "0.1.0-20-g2222222");
     EXPECT_EQ(fx.confirm_requests, 1);
 
     auto pending = fx.service->pending();
@@ -243,9 +273,9 @@ TEST(FirmwareUpdate, UnprintableVersionRejectedBeforeWriting) {
     EXPECT_EQ(r.failure, FirmwareFailure::InvalidImage);
     EXPECT_EQ(r.message.find('\n'), std::string::npos) << r.message;
     EXPECT_EQ(fx.updater.begins, 0);
-    ASSERT_EQ(fx.events.size(), 1u);
+    ASSERT_EQ(fx.events().size(), 1u);
     EXPECT_EQ(fx.state(0), "failed");
-    EXPECT_EQ(fx.events[0].at("version").as_string(), "");
+    EXPECT_EQ(fx.events()[0].at("version").as_string(), "");
     EXPECT_EQ(fx.confirm_requests, 0);
 }
 
@@ -312,10 +342,10 @@ TEST(FirmwareUpdate, DeclineOrTimeoutDiscards) {
 
     // Nobody answered for two minutes.
     ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
-    const size_t before = fx.events.size();
+    const size_t before = fx.events().size();
     fx.service->tick(fx.now + FirmwareUpdateService::kConfirmTimeoutMs - 1);
     EXPECT_TRUE(fx.service->pending());
-    EXPECT_EQ(fx.events.size(), before);
+    EXPECT_EQ(fx.events().size(), before);
     fx.service->tick(fx.now + FirmwareUpdateService::kConfirmTimeoutMs);
     EXPECT_FALSE(fx.service->pending());
     EXPECT_EQ(fx.last_state(), "rejected");
@@ -335,18 +365,83 @@ TEST(FirmwareUpdate, AbortedUploadFreesTheSlot) {
     ASSERT_TRUE(fx.service->write(id, std::span<const uint8_t>(image).first(2048)).ok());
     fx.service->abort(id);
     EXPECT_EQ(fx.last_state(), "failed");
-    EXPECT_EQ(fx.events.back().at("error").as_string(), "aborted");
+    EXPECT_EQ(fx.events().back().at("error").as_string(), "aborted");
     EXPECT_GE(fx.updater.aborts, 1);
 
     // A second abort for the same (now stale) id changes nothing.
-    const size_t events = fx.events.size();
+    const size_t events = fx.events().size();
     fx.service->abort(id);
-    EXPECT_EQ(fx.events.size(), events);
+    EXPECT_EQ(fx.events().size(), events);
 
     EXPECT_TRUE(fx.upload(image).ok());
     // Nor can a stale abort cancel the pending image.
     fx.service->abort(id);
     EXPECT_TRUE(fx.service->pending());
+}
+
+// The cell moves exactly where system.firmware is published, with the
+// same state, version and error; `seq` makes every outcome a change, so
+// two equal failures in a row are two events, as they always were.
+TEST(FirmwareUpdate, ProgressCellFollowsEveryState) {
+    using wisp::core::FirmwareProgress;
+    using Phase = FirmwareProgress::Phase;
+    auto progress = [](Phase phase, const char* version, const char* error, uint32_t seq) {
+        FirmwareProgress p;
+        p.phase = phase;
+        EXPECT_TRUE(p.version.assign(version));
+        EXPECT_TRUE(p.error.assign(error));
+        p.seq = seq;
+        return p;
+    };
+    Fixture fx;
+    const auto& cell = fx.service->progress_cell();
+    EXPECT_EQ(cell.get(), FirmwareProgress{});
+
+    ImageSpec spec;
+    spec.version = "0.3.0";
+    ASSERT_TRUE(fx.upload(make_firmware_image(spec)).ok());
+    EXPECT_EQ(cell.get(), progress(Phase::Received, "0.3.0", "", 1));
+    ASSERT_TRUE(fx.service->decline().ok());
+    EXPECT_EQ(cell.get(), progress(Phase::Rejected, "0.3.0", "", 2));
+
+    ImageSpec other;
+    other.board = "another_board";
+    other.version = "0.3.1";
+    const auto foreign = make_firmware_image(other);
+    EXPECT_EQ(fx.upload(foreign).failure, FirmwareFailure::WrongBoard);
+    EXPECT_EQ(cell.get(), progress(Phase::Failed, "0.3.1", "wrong_board", 3));
+    // The same failure again: a second change and a second event.
+    EXPECT_EQ(fx.upload(foreign).failure, FirmwareFailure::WrongBoard);
+    EXPECT_EQ(cell.get(), progress(Phase::Failed, "0.3.1", "wrong_board", 4));
+    // Each upload starts without a version: one refused before its head
+    // parses names none, whatever the last one named.
+    std::vector<uint8_t> junk(8192, 0x41);
+    EXPECT_EQ(fx.upload(junk).failure, FirmwareFailure::InvalidImage);
+    EXPECT_EQ(cell.get(), progress(Phase::Failed, "", "invalid_image", 5));
+
+    const std::vector<Properties> events = fx.events();
+    ASSERT_EQ(events.size(), 5u);
+    EXPECT_EQ(events[0],
+              (Properties{{"state", wisp::Value("received")}, {"version", wisp::Value("0.3.0")}}));
+    EXPECT_EQ(events[1],
+              (Properties{{"state", wisp::Value("rejected")}, {"version", wisp::Value("0.3.0")}}));
+    const Properties wrong{{"state", wisp::Value("failed")},
+                           {"version", wisp::Value("0.3.1")},
+                           {"error", wisp::Value("wrong_board")}};
+    EXPECT_EQ(events[2], wrong);
+    EXPECT_EQ(events[3], wrong);
+    EXPECT_EQ(events[4], (Properties{{"state", wisp::Value("failed")},
+                                     {"version", wisp::Value("")},
+                                     {"error", wisp::Value("invalid_image")}}));
+    // The payload is built from the cell's value alone.
+    EXPECT_EQ(wisp::core::firmware_payload(cell.get()), events[4]);
+
+    // Confirmed, as the last state before the restart.
+    ASSERT_TRUE(fx.upload(make_firmware_image(spec)).ok());
+    ASSERT_TRUE(fx.service->confirm().ok());
+    EXPECT_EQ(cell.get(), progress(Phase::Confirmed, "0.3.0", "", 7));
+    EXPECT_EQ(fx.events().back(),
+              (Properties{{"state", wisp::Value("confirmed")}, {"version", wisp::Value("0.3.0")}}));
 }
 
 TEST(FirmwareUpdate, MarkRunningValidReachesThePlatform) {
@@ -436,9 +531,9 @@ TEST(FirmwareUpdate, ChunkTimeoutFailsTheUpload) {
     const auto image = make_firmware_image(big_image());
     FirmwareOutcome r = fx.upload(image);
     EXPECT_EQ(r.failure, FirmwareFailure::WriteFailed);
-    ASSERT_FALSE(fx.events.empty());
+    ASSERT_FALSE(fx.events().empty());
     EXPECT_EQ(fx.last_state(), "failed");
-    EXPECT_EQ(fx.events.back().at("error").as_string(), "write_failed");
+    EXPECT_EQ(fx.events().back().at("error").as_string(), "write_failed");
 
     release.give();
     ASSERT_TRUE(ft.worker.drain(5000));

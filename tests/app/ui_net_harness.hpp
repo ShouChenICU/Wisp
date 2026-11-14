@@ -152,6 +152,9 @@ struct UiNetHarness {
     std::vector<int64_t> wall_clock_sets;
     std::atomic<int> reboots{0};
     std::atomic<bool> rebooted_on_ui_thread{false};
+    // Runs inside Platform::reboot, before it is counted; set it before
+    // start().
+    std::function<void()> on_reboot;
     std::unique_ptr<wisp::app::App> app;
 
     std::mutex lines_mutex;
@@ -224,6 +227,7 @@ struct UiNetHarness {
             if (app && app->ui() != nullptr && app->ui()->on_ui_thread()) {
                 rebooted_on_ui_thread.store(true);
             }
+            if (on_reboot) on_reboot();
             reboots.fetch_add(1);
         };
         if (opts.with_server) {

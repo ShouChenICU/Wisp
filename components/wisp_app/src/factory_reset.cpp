@@ -34,16 +34,47 @@ constexpr uint32_t kEraseMs = 30000;
 // Waits for the network and the flash thread; touches no flash itself.
 constexpr size_t kResetStackBytes = 6144;
 
-void publish_state(App& app, const char* state) {
-    app.bus().publish(core::Event{kTopic, "app", 0, Properties{{"state", Value(state)}}});
+const char* phase_name(ResetStatus::Phase phase) {
+    switch (phase) {
+        case ResetStatus::Phase::Idle:
+            return "";
+        case ResetStatus::Phase::Requested:
+            return "requested";
+        case ResetStatus::Phase::Cancelled:
+            return "cancelled";
+        case ResetStatus::Phase::Done:
+            return "done";
+        case ResetStatus::Phase::Failed:
+            return "failed";
+    }
+    return "";
+}
+
+// Moves the reset status (App::Impl::reset_status) to `phase`; its mirror
+// publishes the event on the caller's thread, at this point of its flow,
+// as the publish here used to. Never an equal value, so never a lost
+// event: every call moves `seq`, even one that repeats the last state.
+void publish_state(core::StateCell<ResetStatus>& cell, ResetStatus::Phase phase) {
+    cell.update([phase](ResetStatus& s) {
+        s.phase = phase;
+        ++s.seq;
+    });
 }
 
 }  // namespace
 
+void mirror_reset_status(core::EventBus& bus, const ResetStatus&, const ResetStatus& after) {
+    if (after.phase == ResetStatus::Phase::Idle) return;
+    bus.publish(core::Event{kTopic, kFactoryResetSource, 0,
+                            Properties{{"state", Value(phase_name(after.phase))}}});
+}
+
+const core::StateCell<ResetStatus>& reset_status(App& app) { return app.impl_->reset_status; }
+
 void request_factory_reset(App& app) {
     // Set before the event goes out, so whoever handles the event finds it.
     app.impl_->reset_pending.store(true);
-    publish_state(app, "requested");
+    publish_state(app.impl_->reset_status, ResetStatus::Phase::Requested);
 }
 
 bool take_factory_reset_request(App& app) { return app.impl_->reset_pending.exchange(false); }
@@ -51,7 +82,7 @@ bool take_factory_reset_request(App& app) { return app.impl_->reset_pending.exch
 void cancel_factory_reset(App& app) {
     WLOG_I(kTag, "factory reset cancelled on the device");
     app.impl_->reset_pending.store(false);
-    publish_state(app, "cancelled");
+    publish_state(app.impl_->reset_status, ResetStatus::Phase::Cancelled);
 }
 
 void factory_reset(App& app) {
@@ -72,7 +103,7 @@ void factory_reset(App& app) {
     // socket to hear it on. The services' own writes queued from here run
     // inline (App::Impl::submit_io() on the worker).
     auto erase_everything = [&app] {
-        publish_state(app, "done");
+        publish_state(app.impl_->reset_status, ResetStatus::Phase::Done);
         const uint64_t deadline = os::now_ms() + kFlushMs;
         auto remaining = [deadline] {
             const uint64_t now = os::now_ms();
@@ -89,6 +120,13 @@ void factory_reset(App& app) {
             // The cache erases the platform in its save, run inline here.
             WLOG_E(kTag, "erasing settings failed: %s", f.error().message.c_str());
         }
+        // The erase bypasses SystemSettings::set(), so its cell still holds
+        // the old values: seed it from what storage holds now (the defaults,
+        // unless the erase failed), publishing nothing, as nothing was
+        // published for the erase before the cell. It reads the backend
+        // the erase above has just written, on the same thread, so it adds
+        // no flash access of its own.
+        app.impl_->system_settings.seed_cell();
         if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
         if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
         app.models().clear();
@@ -152,7 +190,7 @@ void factory_reset(App& app) {
         WLOG_E(kTag, "factory reset could not start (%s); nothing erased, not restarting",
                erased.error().message.c_str());
         app.impl_->reset_failed.store(true);
-        publish_state(app, "failed");
+        publish_state(app.impl_->reset_status, ResetStatus::Phase::Failed);
         return;
     }
     const bool still_running = !erased;
@@ -195,7 +233,7 @@ bool start_factory_reset(App& app) {
         impl.reset_spawner ? impl.reset_spawner(config, body) : os::Task::spawn(config, body);
     if (!impl.reset_task) {
         WLOG_E(kTag, "factory reset task could not start; nothing was erased");
-        publish_state(app, "cancelled");
+        publish_state(app.impl_->reset_status, ResetStatus::Phase::Cancelled);
         return false;
     }
     return true;
