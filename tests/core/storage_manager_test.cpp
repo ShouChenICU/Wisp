@@ -1055,6 +1055,8 @@ TEST(StorageManager, MalformedPathOnTheSdIoThreadIsInvalidArgument) {
     ASSERT_TRUE(f.mgr->write_atomic(good, bytes("b")));
     const uint64_t before = f.mgr->calls();
     wisp::ErrorCode write_code{}, read_code{}, remove_code{}, rename_to_code{}, rename_from_code{};
+    wisp::ErrorCode append_code{}, visit_code{}, list_code{}, size_code{};
+    bool visited = false;
     auto t = wisp::os::Task::spawn({}, [&] {
         wisp::os::set_sd_io_thread();
         write_code = f.mgr->write_atomic(bad, bytes("a")).error().code;
@@ -1062,6 +1064,17 @@ TEST(StorageManager, MalformedPathOnTheSdIoThreadIsInvalidArgument) {
         remove_code = f.mgr->remove_tree(bad).error().code;
         rename_to_code = f.mgr->rename(good, bad).error().code;
         rename_from_code = f.mgr->rename(bad, good).error().code;
+        append_code = f.mgr->append(bad, bytes("a")).error().code;
+        visit_code = f.mgr
+                         ->visit_dir(bad,
+                                     [&](const auto&) {
+                                         visited = true;
+                                         return true;
+                                     })
+                         .error()
+                         .code;
+        list_code = f.mgr->list_dir(bad).error().code;
+        size_code = f.mgr->tree_size(bad).error().code;
         wisp::os::clear_sd_io_thread();
     });
     t->join();
@@ -1070,9 +1083,15 @@ TEST(StorageManager, MalformedPathOnTheSdIoThreadIsInvalidArgument) {
     EXPECT_EQ(remove_code, wisp::ErrorCode::InvalidArgument);
     EXPECT_EQ(rename_to_code, wisp::ErrorCode::InvalidArgument);
     EXPECT_EQ(rename_from_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(append_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(visit_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(list_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(size_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(visited);
     // write, read, remove: one each; rename with a bad target: both of its
-    // paths; rename with a bad source: stops at the first.
-    EXPECT_EQ(f.mgr->calls(), before + 3 + 2 + 1);
+    // paths; rename with a bad source: stops at the first; append,
+    // visit_dir, list_dir, tree_size: one each.
+    EXPECT_EQ(f.mgr->calls(), before + 3 + 2 + 1 + 4);
     EXPECT_TRUE(exists(good));
 }
 
