@@ -57,7 +57,9 @@ When a change touches a sub-project, read its spec first, then the matching plan
 - **Single UI thread**: only the UI thread may call LVGL. Every other thread hands its work to the UI thread through `UiRuntime::post()`. Scripts do not call LVGL directly either.
 - **UI layout**: follow `docs/ui-style-guide.md`. Independent controls must have visible gaps (at least `theme::kGapSm`, 8 px); never place standalone buttons edge to edge. Centre trailing icons vertically within the full row and verify final geometry on all screen shapes.
 - **Device model**:
-  - Devices are registered in `DeviceRegistry`, with ids of the form `<class>.<name>`.
+  - Devices are registered in `DeviceRegistry` under ids of the form `<class>.<name>`. An id is a name the board chooses (event topics and the manifest use it); code does not find devices by id.
+  - Portable code finds a device by interface and role: `registry.by_role<hal::Display>(hal::role::kMain)` (vocabulary in `wisp/hal/roles.hpp`, caps `role`). A role is unique per interface. `tools/check_layering.py` rejects device-id literals outside the ports.
+  - One typed interface per device object: `Device::interface()` is a non-virtual tag set by the interface's base class (`kInterface`), so typed lookups need no RTTI. `DeviceClass` is a display category (`other` for generic devices).
   - Device capabilities are declared through caps and exposed by the manifest.
   - A device declares its standby policy through the caps `standby` (`off`/`throttle`/`wake_source`, see `wisp/hal/device.hpp`). A device that declares one must implement `set_power(PowerLevel)`. New code drives devices uniformly by their caps `standby`, not one by one by name.
   - A missing device or a device that fails to initialise only degrades the system; it must never block boot.
