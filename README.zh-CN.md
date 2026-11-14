@@ -170,7 +170,7 @@ speech serve qwen3-tts-0.6b qwen3-asr-0.6b --host 0.0.0.0
 | 场景开发与运行 | `scene.*`、`ui.tree`、`docs.read`、`tools.find`、`tools.call` | 查阅内置 API 文档，创建和修改场景、安装或回滚版本，管理场景运行、数据和文件，检查控件树与日志来调试；发现并调用场景导出的工具，无需修改固件就能扩展可复用的能力。 |
 | 联网与脚本 | `http.fetch`、`lua.run` | 通过 HTTP/HTTPS 访问网页、API 和局域网服务，提取 HTML 文本、分段读取长响应；用 Lua 5.5 沙箱脚本完成计算、JSON 处理、连续请求、文件下载和 Agent 自有文件读写。HTTP 和文件操作可以等待结果，内存和执行时间均有上限。 |
 | 记忆与待办 | `memory.*`、`todo.*` | 记住偏好、维护任务清单，设置到期时间或重复提醒，到点亮屏并响铃。 |
-| 设备与通知 | `device.status`、`device.list`、`device.call`、`settings.*`、`notify.list`、`notify.dismiss` | 查看电量、网络、存储和外设状态；读取和控制能自我描述的外设，例如振动马达；调整亮度、音量、息屏时间、语言和时钟格式；查看或清除通知。 |
+| 设备与通知 | `device.status`、`device.list`、`device.call`、`settings.*`、`notify.list`、`notify.dismiss` | 查看电量、网络、存储和外设状态；读取和控制能自我描述的外设，例如振动马达（当开发板上有这类外设时）；调整亮度、音量、息屏时间、语言和时钟格式；查看或清除通知。 |
 
 这些工具可以在一次对话中组合使用，例如：
 

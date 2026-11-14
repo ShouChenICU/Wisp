@@ -183,7 +183,8 @@ TEST(AppAgent, BootStartsAgentWithAScreen) {
 // device.list and device.call sit right after the notification tools,
 // before docs.read: the order the model sees (and the provider caches).
 TEST(AppAgent, DeviceToolsFollowTheNotificationTools) {
-    UiNetHarness h(with_server(true));
+    ManualClock clock;
+    UiNetHarness h(with_haptic(clock));
     ASSERT_TRUE(h.start());
     const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
     ASSERT_NE(tools, nullptr);
@@ -201,13 +202,47 @@ TEST(AppAgent, DeviceToolsFollowTheNotificationTools) {
     EXPECT_LT(call, docs);
 }
 
+// On a board without a device that describes itself the two device tools
+// are not offered (they could only ever list nothing), and every other
+// tool is exactly what a board with such a device gets.
+TEST(AppAgent, DeviceToolsAreAbsentWithoutADescribedDevice) {
+    auto tool_list = [](const UiNetOptions& opts) {
+        UiNetHarness h(opts);
+        EXPECT_TRUE(h.start());
+        const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
+        EXPECT_NE(tools, nullptr);
+        if (tools == nullptr) return wisp::List{};
+        auto parsed = wisp::from_json(
+            std::string_view(tools->tools_json().data(), tools->tools_json().size()));
+        EXPECT_TRUE(parsed);
+        return parsed ? parsed.value().as_list() : wisp::List{};
+    };
+    ManualClock clock;
+    wisp::List with_device = tool_list(with_haptic(clock));
+    const wisp::List without = tool_list(with_server(true));
+    auto wire_of = [](const Value& t) { return t.find("function")->find("name")->as_string(); };
+    for (const Value& t : without) {
+        EXPECT_NE(wire_of(t), "device_list");
+        EXPECT_NE(wire_of(t), "device_call");
+    }
+    const size_t before = with_device.size();
+    std::erase_if(with_device, [&](const Value& t) {
+        return wire_of(t) == "device_list" || wire_of(t) == "device_call";
+    });
+    EXPECT_EQ(before - with_device.size(), 2u);
+    EXPECT_TRUE(wisp::to_json(Value(with_device)) == wisp::to_json(Value(without)));
+}
+
 // Every tool the wired agent registers has an activity label of its own in
-// every language, so a new tool cannot show "Call <tool>" to the user.
+// every language, so a new tool cannot show "Call <tool>" to the user. The
+// App has a described device, so the device tools are covered too.
 TEST(AppAgent, EveryRegisteredToolHasAnActivityLabel) {
-    UiNetHarness h(with_server(true));
+    ManualClock clock;
+    UiNetHarness h(with_haptic(clock));
     ASSERT_TRUE(h.start());
     const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
     ASSERT_NE(tools, nullptr);
+    ASSERT_NE(tools->find_wire("device_list"), nullptr);
     auto parsed =
         wisp::from_json(std::string_view(tools->tools_json().data(), tools->tools_json().size()));
     ASSERT_TRUE(parsed);

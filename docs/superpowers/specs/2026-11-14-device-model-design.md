@@ -366,6 +366,8 @@ public:
 
 > In the code: the list is rendered one device at a time and stops at 32 devices or 64 KiB of JSON, whole entries only, adding `"truncated": true` when it was cut.
 
+> In the code: `device.list` and `device.call` are registered only when `DeviceService` lists at least one device when the agent is built (`AgentWiring`); the registry does not change after boot (section 1.4), so a board's tool list is fixed, and on a board without such a device the request carries neither tool. `wisp.device.*` is the same on every board.
+
 Alternative considered: one tool `device.call` with an `op: "list"`. Rejected: the argument schema would have to allow `id`/`name` to be missing for one op and required for another, which the validator's JSON Schema subset (`components/wisp_agent/src/args_schema.cpp`) cannot express; two small tools are clearer to the model. The roadmap's "one agent tool" therefore becomes two (section 18).
 
 ### 4.2 `device.call`

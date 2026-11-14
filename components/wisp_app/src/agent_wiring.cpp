@@ -536,7 +536,18 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                                   .notes = deps_.notes,
                                                   .submit_io = on_worker,
                                               }));
+    // Offered only when some device describes itself: elsewhere the tools
+    // could only list nothing, yet cost every request their JSON. Decided
+    // once, so the list stays byte-stable: no service re-resolves devices
+    // after boot (device model spec 1.4).
+    bool described = false;
     if (deps_.devices != nullptr) {
+        deps_.devices->for_each([&](Value) {
+            described = true;
+            return false;
+        });
+    }
+    if (described) {
         check("device call", agent::add_device_call_tools(
                                  *registry_, agent::DeviceCallToolDeps{.devices = *deps_.devices}));
     }
