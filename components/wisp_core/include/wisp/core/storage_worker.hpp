@@ -11,6 +11,17 @@
 // wisp.fs is also the flash thread (spec 2.1 of
 // docs/superpowers/specs/2026-11-06-flash-thread-design.md): its first
 // act is os::set_flash_thread() and its last os::clear_flash_thread().
+// A second instance with WorkerRole::SdIo ("wisp.sd.io", see
+// sd_io_config()) runs card-only work; it registers with
+// os::set_sd_io_thread() instead, so it may touch the card but never
+// internal flash, and its stack need not be internal. start() returns
+// only once the role is registered. The guard holds one thread per role:
+// a second worker of the same role started while the first runs takes
+// the role over (wisp/os/flash_guard.hpp), so the app runs one of each;
+// StorageRouter (wisp/core/storage_router.hpp) picks between them.
+// The SD I/O worker never waits for the flash worker: run_sync() and
+// drain() of a Flash-role worker refuse a caller on the SD I/O thread, so
+// a card job cannot block on wisp.fs while wisp.fs waits for a card lock.
 //
 // Jobs run one at a time on the one worker task, from three lanes in
 // priority order (spec 3.1): Interactive (short jobs a user or the agent
@@ -70,7 +81,14 @@ struct LaneStats {
     uint64_t max_job_us = 0;
 };
 
+// Which thread rule the worker's thread registers for (see the file
+// header): Flash may touch internal flash and the card, SdIo the card only.
+enum class WorkerRole : uint8_t { Flash, SdIo };
+
 struct StorageWorkerConfig {
+    // The task's name.
+    const char* name = "wisp.fs";
+    WorkerRole role = WorkerRole::Flash;
     // Interactive lane capacity.
     size_t interactive_capacity = 16;
     // Normal lane capacity.
@@ -109,15 +127,30 @@ public:
     StorageWorker(const StorageWorker&) = delete;
     StorageWorker& operator=(const StorageWorker&) = delete;
 
-    // The task this worker spawns: "wisp.fs", unpinned, declaring flash
-    // access (flash_access = true) because every job touches flash, so its
-    // stack stays in internal RAM.
+    // The task this worker spawns: named by the config, unpinned, never a
+    // hot stack. A Flash-role worker declares flash access because its jobs
+    // touch flash, so its stack stays in internal RAM; an SdIo-role worker
+    // does not, so its stack may go to PSRAM.
     static os::TaskConfig task_config(const StorageWorkerConfig& c);
 
-    // Spawns the worker task. Fails with ErrorCode::Busy if it is already
+    // The SD I/O worker "wisp.sd.io": small Interactive and Normal lanes,
+    // since card work is mostly asynchronous scene file streams and their
+    // queue storage is internal RAM; same stack size and priority as
+    // wisp.fs.
+    static StorageWorkerConfig sd_io_config();
+
+    // Spawns the worker task and waits until it has registered its role
+    // with the thread guard. Fails with ErrorCode::Busy if it is already
     // running or has been stopped (a worker is started at most once), and
     // ErrorCode::NoMemory if the task cannot be created.
     Result<void> start();
+
+    // True between a successful start() and the start of stop(): the
+    // worker accepts jobs.
+    bool running() const;
+
+    const char* name() const { return config_.name; }
+    WorkerRole role() const { return config_.role; }
 
     // Stops accepting jobs, lets the worker finish every job already
     // queued in every lane, then joins it. Idempotent; a no-op before
@@ -136,7 +169,10 @@ public:
     // job then never runs), and ErrorCode::Timeout if it did not finish
     // in time: it may still run later, so unless the wait is kForever the
     // job must own what it touches (capture shared_ptrs, not references
-    // to the caller's stack). An empty job is InvalidArgument.
+    // to the caller's stack). An empty job is InvalidArgument, and so is
+    // a Flash-role worker called on the SD I/O thread (the SD I/O worker
+    // never waits for the flash worker; see the file header): checked
+    // before the inline paths, so the job never runs.
     Result<void> run_sync(std::function<void()> job, uint32_t timeout_ms,
                           IoLane lane = IoLane::Normal);
 
@@ -146,7 +182,8 @@ public:
 
     // Waits up to `timeout_ms` (or os::kForever) until no job is queued or
     // running. Returns false on timeout, and at once when called from a
-    // job (the running job itself would never finish).
+    // job (the running job itself would never finish) or, for a Flash-role
+    // worker, on the SD I/O thread (see run_sync()).
     bool drain(uint32_t timeout_ms);
 
     // Jobs submitted and not yet finished (queued plus the one running, if
@@ -188,10 +225,12 @@ private:
     // one from stop(): the worker sleeps on this, not on a lane, and exits
     // on a wake-up that finds every lane empty once stopping_ is set.
     os::Semaphore work_;
+    // Given by run() once the role is registered; start() waits for it.
+    os::Semaphore registered_{1, 0};
     std::unique_ptr<os::Task> task_;
     // Guards accepting_ together with the push and give in submit(), so
     // every accepted job is queued and counted before stop() gives work_.
-    os::Mutex mutex_;
+    mutable os::Mutex mutex_;
     bool accepting_ = false;
     bool started_ = false;
     // Set once stop() has joined the worker; from then on run_sync() runs
@@ -211,7 +250,8 @@ private:
 // fn() (returning Result<T>) on `worker` and its result, waiting as long as
 // it takes: inline without a worker, on the worker, or outside its run (see
 // run_sync()). A full lane is retried for up to `busy_retry_ms` before
-// failing with ErrorCode::Busy. Since the wait has no timeout, fn may
+// failing with ErrorCode::Busy; any other refusal (a Flash-role worker
+// called on the SD I/O thread) is returned at once. Since the wait has no timeout, fn may
 // capture references to the caller's stack: once queued it has finished
 // before this returns, and a refused job never runs.
 template <typename T, typename Fn>

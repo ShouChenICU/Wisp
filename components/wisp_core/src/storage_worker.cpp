@@ -45,13 +45,51 @@ StorageWorker::~StorageWorker() { stop(); }
 
 os::TaskConfig StorageWorker::task_config(const StorageWorkerConfig& c) {
     os::TaskConfig t;
-    t.name = "wisp.fs";
+    t.name = c.name;
     t.stack_bytes = c.stack_bytes;
     t.priority = c.priority;
     t.core = -1;
-    t.flash_access = true;
+    t.flash_access = c.role == WorkerRole::Flash;
+    t.hot_stack = false;
     return t;
 }
+
+StorageWorkerConfig StorageWorker::sd_io_config() {
+    return StorageWorkerConfig{.name = "wisp.sd.io",
+                               .role = WorkerRole::SdIo,
+                               .interactive_capacity = 1,
+                               .queue_capacity = 16,
+                               .bulk_capacity = 4,
+                               .stack_bytes = 8192,
+                               .priority = 3};
+}
+
+namespace {
+
+void register_role(WorkerRole role) {
+    if (role == WorkerRole::Flash) {
+        os::set_flash_thread();
+    } else {
+        os::set_sd_io_thread();
+    }
+}
+
+void clear_role(WorkerRole role) {
+    if (role == WorkerRole::Flash) {
+        os::clear_flash_thread();
+    } else {
+        os::clear_sd_io_thread();
+    }
+}
+
+// A Flash-role worker waited on from the SD I/O thread: refused, since
+// wisp.fs may itself be waiting for a card lock that the waiting SD job
+// holds (or for the SD worker's queue).
+bool sd_thread_waits_for_flash(WorkerRole role) {
+    return role == WorkerRole::Flash && os::on_sd_io_thread();
+}
+
+}  // namespace
 
 Result<void> StorageWorker::start() {
     std::lock_guard<os::Mutex> lock(mutex_);
@@ -60,8 +98,12 @@ Result<void> StorageWorker::start() {
     }
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });
     if (!task_) {
-        return Result<void>::err(ErrorCode::NoMemory, "cannot spawn wisp.fs");
+        return Result<void>::err(ErrorCode::NoMemory, "cannot spawn storage worker");
     }
+    // Until the worker has registered, no thread is the flash thread and
+    // the guard would let every thread touch flash; run() takes no lock
+    // before giving this, so waiting under mutex_ is safe.
+    registered_.take(os::kForever);
     started_ = true;
     accepting_ = true;
     return Result<void>::ok();
@@ -86,6 +128,11 @@ void StorageWorker::stop() {
     stopped_ = true;
 }
 
+bool StorageWorker::running() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return accepting_;
+}
+
 bool StorageWorker::submit(std::function<void()> job, IoLane lane) {
     if (!job) {
         return false;
@@ -107,6 +154,10 @@ bool StorageWorker::submit(std::function<void()> job, IoLane lane) {
 Result<void> StorageWorker::run_sync(std::function<void()> job, uint32_t timeout_ms, IoLane lane) {
     if (!job) {
         return Result<void>::err(ErrorCode::InvalidArgument, "empty storage job");
+    }
+    if (sd_thread_waits_for_flash(config_.role)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "the sd worker must not wait for the flash worker");
     }
     if (on_worker()) {
         job();
@@ -180,7 +231,7 @@ size_t StorageWorker::pick_lane(const bool (&queued)[kLaneCount]) {
 }
 
 bool StorageWorker::drain(uint32_t timeout_ms) {
-    if (on_worker()) {
+    if (on_worker() || sd_thread_waits_for_flash(config_.role)) {
         return false;
     }
     uint64_t start = os::now_ms();
@@ -194,8 +245,9 @@ bool StorageWorker::drain(uint32_t timeout_ms) {
 }
 
 void StorageWorker::run() {
-    os::set_flash_thread();
+    register_role(config_.role);
     t_current_worker = this;
+    registered_.give();
     while (true) {
         work_.take(os::kForever);
         bool queued[kLaneCount];
@@ -232,7 +284,7 @@ void StorageWorker::run() {
         --pending_;
     }
     t_current_worker = nullptr;
-    os::clear_flash_thread();
+    clear_role(config_.role);
 }
 
 }  // namespace wisp::core

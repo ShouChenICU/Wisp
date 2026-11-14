@@ -517,3 +517,99 @@ TEST(StorageWorker, InlineRunsAreNotCounted) {
         EXPECT_EQ(w.stats(lane).jobs, 0u);
     }
 }
+
+using wisp::core::WorkerRole;
+
+TEST(StorageWorker, SdIoConfig) {
+    StorageWorkerConfig sd = StorageWorker::sd_io_config();
+    EXPECT_EQ(sd.role, WorkerRole::SdIo);
+    EXPECT_EQ(sd.interactive_capacity, 1u);
+    EXPECT_EQ(sd.queue_capacity, 16u);
+    EXPECT_EQ(sd.bulk_capacity, 4u);
+    auto c = StorageWorker::task_config(sd);
+    EXPECT_STREQ(c.name, "wisp.sd.io");
+    EXPECT_FALSE(c.flash_access);
+    EXPECT_FALSE(c.hot_stack);
+    EXPECT_EQ(c.stack_bytes, 8192u);
+    EXPECT_EQ(c.priority, 3);
+
+    EXPECT_EQ(StorageWorkerConfig{}.role, WorkerRole::Flash);
+    EXPECT_FALSE(StorageWorker::task_config({}).hot_stack);
+}
+
+TEST(StorageWorker, SdIoWorkerRegistersItsThread) {
+    StorageWorker w(StorageWorker::sd_io_config());
+    EXPECT_EQ(w.role(), WorkerRole::SdIo);
+    EXPECT_STREQ(w.name(), "wisp.sd.io");
+    ASSERT_TRUE(w.start());
+    std::atomic<bool> sd{false};
+    std::atomic<bool> flash{true};
+    ASSERT_TRUE(w.run_sync(
+        [&] {
+            sd = wisp::os::on_sd_io_thread();
+            flash = wisp::os::on_flash_thread();
+        },
+        5000));
+    EXPECT_TRUE(sd);
+    EXPECT_FALSE(flash);
+    EXPECT_FALSE(wisp::os::on_sd_io_thread());
+    w.stop();
+    // The role is given back, so a later worker or test starts clean.
+    std::atomic<bool> sd_after{true};
+    ASSERT_TRUE(w.run_sync([&] { sd_after = wisp::os::on_sd_io_thread(); }, 0));
+    EXPECT_FALSE(sd_after);
+}
+
+TEST(StorageWorker, RoleIsRegisteredWhenStartReturns) {
+    StorageWorker w;
+    ASSERT_TRUE(w.start());
+    // No window after start() in which every thread still passes the flash
+    // rule because the worker has not reached its first line yet.
+    EXPECT_FALSE(wisp::os::on_flash_thread());
+    w.stop();
+    EXPECT_TRUE(wisp::os::on_flash_thread());
+}
+
+TEST(StorageWorker, RunningTracksStartAndStop) {
+    StorageWorker w;
+    EXPECT_STREQ(w.name(), "wisp.fs");
+    EXPECT_EQ(w.role(), WorkerRole::Flash);
+    EXPECT_FALSE(w.running());
+    ASSERT_TRUE(w.start());
+    EXPECT_TRUE(w.running());
+    w.stop();
+    EXPECT_FALSE(w.running());
+    EXPECT_FALSE(w.start());
+    EXPECT_FALSE(w.running());
+}
+
+TEST(StorageWorker, RunSyncFromTheSdIoThreadOntoTheFlashWorkerIsRefused) {
+    for (bool flash_started : {true, false}) {
+        SCOPED_TRACE(flash_started ? "flash worker running" : "flash worker never started");
+        StorageWorker f;
+        StorageWorker s(StorageWorker::sd_io_config());
+        if (flash_started) ASSERT_TRUE(f.start());
+        ASSERT_TRUE(s.start());
+        std::atomic<bool> flag{false};
+        std::atomic<int> code{-1};
+        std::atomic<int> busy_code{-1};
+        std::atomic<bool> drained{true};
+        ASSERT_TRUE(s.run_sync(
+            [&] {
+                auto r = f.run_sync([&] { flag = true; }, wisp::os::kForever);
+                code = r ? 0 : static_cast<int>(r.error().code);
+                // call_on_worker() does not keep retrying the refusal.
+                auto c = wisp::core::call_on_worker<int>(&f, [&] {
+                    flag = true;
+                    return wisp::Result<int>::ok(1);
+                });
+                busy_code = c ? 0 : static_cast<int>(c.error().code);
+                drained = f.drain(wisp::os::kForever);
+            },
+            5000));
+        EXPECT_EQ(code.load(), static_cast<int>(wisp::ErrorCode::InvalidArgument));
+        EXPECT_EQ(busy_code.load(), static_cast<int>(wisp::ErrorCode::InvalidArgument));
+        EXPECT_FALSE(drained);
+        EXPECT_FALSE(flag);
+    }
+}
