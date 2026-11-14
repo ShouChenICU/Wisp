@@ -33,6 +33,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/console_esp.hpp"
 #include "wisp/port/esp/esp_firmware.hpp"
 #include "wisp/port/esp/esp_font_partition.hpp"
@@ -82,8 +83,9 @@ void apply_pm_config(bool light_sleep_enable) {
     }
 }
 
-// Set once App exists; the light-sleep hook below reads power.main through
-// it. Light sleep is only switched by PowerManager, which App starts.
+// Set once App exists; the light-sleep hook below finds the main power
+// device through it. Light sleep is only switched by PowerManager, which
+// App starts.
 wisp::app::App* g_app = nullptr;
 
 // Automatic light sleep on or off, bracketed by a light-sleep statistics
@@ -92,7 +94,8 @@ wisp::app::App* g_app = nullptr;
 // touch read, and takes none of PowerManager's locks.
 void set_light_sleep(bool on) {
     std::shared_ptr<wisp::hal::Power> power =
-        g_app != nullptr ? g_app->registry().get<wisp::hal::Power>("power.main") : nullptr;
+        g_app != nullptr ? g_app->registry().by_role<wisp::hal::Power>(wisp::hal::role::kMain)
+                         : nullptr;
     if (on) {
         wisp::port::esp::sleep_stats_begin(power.get());
         apply_pm_config(/*light_sleep_enable=*/true);
