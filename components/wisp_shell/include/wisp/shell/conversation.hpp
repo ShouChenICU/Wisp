@@ -37,8 +37,9 @@
 // stopped turn still reports. A transcript that comes in the instant
 // after the agent took a message up and before it marked the turn
 // running sees nothing to stop, and waits behind that turn instead. A
-// cancelled hold, or one that heard nothing, stops nothing. stop_turn() (the screen's Stop) stops
-// the speech, the running turn and a waiting voice text. While readiness() is not Ready neither
+// cancelled hold, or one that heard nothing, stops nothing. stop_turn()
+// (the screen's Stop) stops the speech, the running turn and a waiting
+// voice text. While readiness() is not Ready neither
 // hold_begin()/hold_end()/hold_cancel() nor voice_text() sends anything.
 //
 // Threads. The triggers, voice_text(), readiness(), current() and the
