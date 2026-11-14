@@ -539,7 +539,16 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertIn("(AGENTS.md section 3)", errors[0])
 
     def test_every_listed_device_id_literal_fails(self):
-        for lit in ("imu.main", "net.wifi", "button.power", "storage.int", "storage.sd"):
+        for lit in (
+            "imu.main",
+            "net.wifi",
+            "button.power",
+            "button.vol_up",
+            "button.vol_down",
+            "button.boot",
+            "storage.int",
+            "storage.sd",
+        ):
             write(self.root, "simulator/x.cpp", f'auto d = get("{lit}");\n')
             self.assertEqual(len(check_layering.run(self.root)), 1, lit)
 
@@ -560,9 +569,60 @@ class CheckLayeringTest(unittest.TestCase):
         write(
             self.root,
             "components/wisp_app/src/x.cpp",
-            'a("storage.sd.inserted"); b("net.wifi.state"); c("button.power.short");\n',
+            'a("storage.sd.inserted"); b("net.wifi.state"); c("button.power.short");\n'
+            'd("button."); e("button.vol_up.down");\n',
         )
         self.assertEqual(check_layering.run(self.root), [])
+
+    def test_literal_after_a_string_containing_slashes_is_caught(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("http://x"); get("display.main");\n',
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
+    def test_literal_after_a_block_comment_on_the_same_line_is_caught(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a(/* "button.power" */ "button.power");\n',
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
+    def test_literal_in_a_line_comment_after_a_string_passes(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("x"); // get("display.main")\n',
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_literal_after_a_string_containing_a_block_opener_is_caught(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("/*");\nget("display.main");\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("x.cpp:2:", errors[0])
+
+    def test_escaped_quote_and_char_literal_do_not_end_the_scan_early(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            "a(\"\\\" //\", '\"'); get(\"display.main\");\n",
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
+    def test_raw_string_does_not_hide_later_code(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'auto r = R"x(a // b "q" )x"; get("display.main");\n',
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
 
     def test_third_party_and_managed_components_are_not_scanned(self):
         write(self.root, "managed_components/x/a.c", "void f() { nvs_commit(h); }\n")
