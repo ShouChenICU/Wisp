@@ -10,17 +10,22 @@
 // No RTTI: wisp_* components are built with -fno-rtti, so code that needs
 // to recover a concrete device type from a `std::shared_ptr<Device>` (e.g.
 // wisp::core::DeviceRegistry::get<T>()) must not use dynamic_cast/typeid.
-// Instead, every typed interface declares `static constexpr Interface
-// kInterface` and overrides `interface()` as `final`, and callers compare
+// Instead, Device stores an Interface tag, and callers compare
 // `device->interface() == T::kInterface` before a plain
-// `std::static_pointer_cast<T>`. A concrete device cannot change the tag
-// it inherits, so the cast is sound; `info().cls` is a data field a device
-// fills in itself and is only a display category (spec 2.1).
+// `std::static_pointer_cast<T>`, with T restricted to an interface class
+// (TypedInterface below). The compiler guarantees the tag is right: only
+// the interface classes can reach the constructor that sets a tag (they
+// pass their own kInterface), interface() is not virtual, and Device
+// cannot be copied, so a class deriving from Device directly always
+// reports None and an object reports X only if it is an X. `info().cls`
+// is a data field a device fills in itself and is only a display category
+// (spec 2.1).
 
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -116,21 +121,63 @@ struct DeviceInfo {
 // Base interface every HAL device implements. Concrete interfaces (see
 // display.hpp, touch.hpp, imu.hpp, power.hpp, clock.hpp, button.hpp,
 // audio.hpp, storage.hpp, wifi.hpp) add the operations for their device class.
+class Display;
+class Touch;
+class Imu;
+class Power;
+class Clock;
+class Button;
+class AudioOut;
+class AudioIn;
+class Storage;
+class Wifi;
+
 class Device {
 public:
     virtual ~Device() = default;
+    Device(const Device&) = delete;
+    Device& operator=(const Device&) = delete;
+
     virtual const DeviceInfo& info() const = 0;
 
-    // The typed interface this object implements. Each interface class
-    // overrides it as `final`; only a device deriving from Device itself
-    // reports None.
-    virtual Interface interface() const { return Interface::None; }
+    // The typed interface this object implements; None for a device that
+    // derives from Device directly. See the file header.
+    Interface interface() const { return interface_; }
 
     // Moves the device to `level`. A device that declares caps "standby"
     // overrides this; calling it again with a level that maps to the
     // state the device is already in must not resend hardware commands.
     // The default reports ErrorCode::Unsupported.
     virtual Result<void> set_power(PowerLevel level);
+
+protected:
+    Device() = default;
+
+private:
+    // Reachable only from the interface classes below, each passing its
+    // own kInterface; friendship is not inherited, so a concrete device
+    // cannot call it.
+    explicit Device(Interface tag) : interface_(tag) {}
+    friend class Display;
+    friend class Touch;
+    friend class Imu;
+    friend class Power;
+    friend class Clock;
+    friend class Button;
+    friend class AudioOut;
+    friend class AudioIn;
+    friend class Storage;
+    friend class Wifi;
+
+    const Interface interface_ = Interface::None;
 };
+
+// An interface class itself (Display, Wifi, ...), not a device deriving
+// from one: each interface names itself as InterfaceType, which a concrete
+// device inherits unchanged. DeviceRegistry::get<T>/list<T> require it,
+// since the tag check cannot tell one Display implementation from another.
+template <class T>
+concept TypedInterface =
+    requires { typename T::InterfaceType; } && std::is_same_v<T, typename T::InterfaceType>;
 
 }  // namespace wisp::hal

@@ -133,6 +133,42 @@ TEST(DeviceRegistry, TypedLookupChecksTheInterfaceNotTheId) {
 
 namespace {
 
+// A typed lookup names an interface class, never a concrete device: the
+// tag check cannot tell one Display implementation from another, so
+// get<FakeDisplay> would cast an EspDisplay to a FakeDisplay.
+template <class T>
+concept Gettable = requires(const wisp::core::DeviceRegistry& reg) { reg.get<T>(std::string()); };
+template <class T>
+concept Listable = requires(const wisp::core::DeviceRegistry& reg) { reg.list<T>(); };
+
+static_assert(Gettable<wisp::hal::Display>);
+static_assert(Listable<wisp::hal::Display>);
+static_assert(Gettable<wisp::hal::Wifi>);
+static_assert(!Gettable<FakeDisplay>);
+static_assert(!Listable<FakeDisplay>);
+static_assert(!Gettable<wisp::test::FakeWifi>);
+static_assert(!Gettable<wisp::hal::Device>);
+
+}  // namespace
+
+// A generic device can say Display in its class, but has no way to report
+// the Display interface: add() refuses the mismatch and the typed lookup
+// never sees it.
+TEST(DeviceRegistry, AGenericDeviceCannotPassAsATypedOne) {
+    auto liar = std::make_shared<FakeGeneric>("display.main", wisp::hal::DeviceClass::Display);
+    EXPECT_EQ(liar->interface(), wisp::hal::Interface::None);
+
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(liar);
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "display.main: class display does not match interface none");
+    EXPECT_EQ(reg.get<wisp::hal::Display>("display.main"), nullptr);
+    EXPECT_TRUE(reg.list<wisp::hal::Display>().empty());
+}
+
+namespace {
+
 // An IMU that claims to be a display: the class is a data field a device
 // can get wrong, the interface is not.
 class MislabelledImu : public FakeImu {

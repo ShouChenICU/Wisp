@@ -26,7 +26,7 @@ class Button : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Button;
     static constexpr Interface kInterface = Interface::Button;
-    Interface interface() const final { return kInterface; }
+    using InterfaceType = Button;
 
     virtual bool pressed() = 0;
     virtual ButtonInputMode input_mode() const { return ButtonInputMode::PollOnly; }
@@ -42,6 +42,9 @@ public:
     // may update level-wake/sleep inhibition here, never in the ISR callback.
     virtual void service_input() {}
     virtual uint32_t standby_poll_ms() const { return 0; }
+
+protected:
+    Button() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

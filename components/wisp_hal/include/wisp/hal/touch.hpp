@@ -21,10 +21,13 @@ class Touch : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Touch;
     static constexpr Interface kInterface = Interface::Touch;
-    Interface interface() const final { return kInterface; }
+    using InterfaceType = Touch;
 
     // Returns the currently active touch points (empty if none).
     virtual Result<std::vector<TouchPoint>> read() = 0;
+
+protected:
+    Touch() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

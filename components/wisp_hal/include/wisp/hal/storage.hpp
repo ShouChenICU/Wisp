@@ -19,7 +19,7 @@ class Storage : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Storage;
     static constexpr Interface kInterface = Interface::Storage;
-    Interface interface() const final { return kInterface; }
+    using InterfaceType = Storage;
 
     virtual std::string mount_point() const = 0;
 
@@ -44,6 +44,9 @@ public:
     // and the simulator's directory-backed fake) have no such background
     // polling to pause in the first place.
     virtual void set_standby(bool /*standby*/) {}
+
+protected:
+    Storage() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

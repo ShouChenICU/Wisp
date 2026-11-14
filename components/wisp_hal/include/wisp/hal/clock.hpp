@@ -11,10 +11,13 @@ class Clock : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Clock;
     static constexpr Interface kInterface = Interface::Clock;
-    Interface interface() const final { return kInterface; }
+    using InterfaceType = Clock;
 
     virtual Result<int64_t> get_unix() = 0;
     virtual Result<void> set_unix(int64_t seconds) = 0;
+
+protected:
+    Clock() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

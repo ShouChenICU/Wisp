@@ -47,10 +47,12 @@ public:
     // Like find(), but also requires the device to implement interface T
     // (device->interface() == T::kInterface), returning nullptr instead of
     // the device if it doesn't, whatever its id or class say. No RTTI is
-    // used: the cast below is a plain static_pointer_cast, safe because
-    // each interface class overrides interface() as final. See
-    // device.hpp's file header.
-    template <class T>
+    // used: the cast below is a plain static_pointer_cast, sound because
+    // only an object of interface T can carry T's tag and T must be the
+    // interface class itself, never a concrete device (a SimDisplay
+    // lookup would pass the tag check for any Display). See device.hpp's
+    // file header.
+    template <hal::TypedInterface T>
     std::shared_ptr<T> get(const std::string& id) const {
         auto device = find(id);
         if (!device || device->interface() != T::kInterface) {
@@ -61,7 +63,7 @@ public:
 
     // Returns every registered device that implements interface T, in the
     // same (sorted-by-id) order as all().
-    template <class T>
+    template <hal::TypedInterface T>
     std::vector<std::shared_ptr<T>> list() const {
         std::vector<std::shared_ptr<T>> result;
         for (const auto& device : all()) {

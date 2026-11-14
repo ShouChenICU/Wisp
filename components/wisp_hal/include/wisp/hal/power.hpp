@@ -20,10 +20,13 @@ class Power : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Power;
     static constexpr Interface kInterface = Interface::Power;
-    Interface interface() const final { return kInterface; }
+    using InterfaceType = Power;
 
     virtual Result<PowerStatus> status() = 0;
     virtual Result<void> power_off() = 0;
+
+protected:
+    Power() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

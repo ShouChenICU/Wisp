@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "dev/sim_devices.hpp"
+#include "support/fake_devices.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -59,6 +60,32 @@ TEST(SimBoardTest, AudioDevicesDegradeWhenSdlAudioNeverInitialized) {
 
     // Every other device is unaffected by audio being unavailable.
     EXPECT_NE(registry.get<wisp::hal::Touch>("touch.main"), nullptr);
+}
+
+// A device the registry refuses is one failed entry in the boot report,
+// even when the device would otherwise also report itself (an SD slot
+// with no card says Missing).
+TEST(SimBoardTest, RefusedRegistrationIsRecordedOnceAsFailed) {
+    auto input = std::make_shared<wisp::port::sim::SimInput>(/*sd_present_initial=*/false);
+    wisp::port::sim::SimBoardConfig config;
+    config.data_dir =
+        (std::filesystem::temp_directory_path() / "wisp_sim_board_refused_test").string();
+    wisp::port::sim::SimBoard board(config, input, [] {});
+
+    wisp::core::DeviceRegistry registry;
+    ASSERT_TRUE(registry.add(std::make_shared<wisp::test::FakeGeneric>("storage.sd")));
+    wisp::core::BootReport report;
+    board.init(registry, report);
+
+    int entries = 0;
+    for (const auto& entry : report.entries()) {
+        if (entry.id == "storage.sd") ++entries;
+    }
+    EXPECT_EQ(entries, 1);
+    auto sd = report.find("storage.sd");
+    ASSERT_TRUE(sd.has_value());
+    EXPECT_EQ(sd->state, wisp::core::DeviceState::Failed);
+    EXPECT_EQ(sd->reason, "registry.add: storage.sd");
 }
 
 namespace {

@@ -54,7 +54,7 @@ class Wifi : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Network;
     static constexpr Interface kInterface = Interface::Wifi;
-    Interface interface() const final { return kInterface; }
+    using InterfaceType = Wifi;
 
     // Blocking; may take up to about 3 s.
     virtual Result<std::vector<WifiScanEntry>> scan() = 0;
@@ -77,6 +77,9 @@ public:
     virtual Result<void> set_radio(bool /*on*/) {
         return Result<void>::err(ErrorCode::Unsupported, "radio cannot be switched off");
     }
+
+protected:
+    Wifi() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

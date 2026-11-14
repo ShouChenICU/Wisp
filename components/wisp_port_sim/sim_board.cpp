@@ -59,13 +59,18 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     // A device the registry refuses (a class that does not match its
     // interface, a duplicate id) is a failed device, as on the ESP boards,
     // never a reason to stop booting.
+    // Returns whether the device is registered.
     auto register_device = [&](const std::shared_ptr<wisp::hal::Device>& device) {
         auto added = registry.add(device);
         if (!added) {
             WLOG_E(kTag, "registry.add: %s", added.error().message.c_str());
-            report.record({device->info().id, device->info().cls, wisp::core::DeviceState::Failed,
-                           "registry.add: " + added.error().message});
+            if (device) {
+                report.record({device->info().id, device->info().cls,
+                               wisp::core::DeviceState::Failed,
+                               "registry.add: " + added.error().message});
+            }
         }
+        return static_cast<bool>(added);
     };
     // Checks --disable *before* constructing the device: avoids doing
     // any device-construction work for an id the caller explicitly
@@ -168,8 +173,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         auto sd_storage = std::make_shared<SimStorage>("storage.sd", config_.data_dir + "/sd",
                                                        /*removable=*/true, "fat", kSdTotalBytes,
                                                        [input] { return input->sd_present(); });
-        register_device(sd_storage);
-        if (!sd_storage->online()) {
+        if (register_device(sd_storage) && !sd_storage->online()) {
             report.record({"storage.sd", wisp::hal::DeviceClass::Storage,
                            wisp::core::DeviceState::Missing, "no SD card"});
         }
