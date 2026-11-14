@@ -108,8 +108,10 @@ public:
 
     // Parses args_json ("" means {}), validates it, runs the tool on its
     // thread and waits up to min(timeout_ms, ctx.deadline_ms), checking
-    // ctx.cancelled() every 20 ms. An Agent tool runs right here.
-    ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx);
+    // ctx.cancelled() every 20 ms. An Agent tool runs right here. Leaves
+    // the registry unchanged, so a const registry (App::agent_tools()) can
+    // call its tools.
+    ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) const;
 
 private:
     struct Entry {

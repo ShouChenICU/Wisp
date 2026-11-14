@@ -212,7 +212,8 @@ void ToolRegistry::append_json(const Entry& e, std::string_view parameters) {
     json_.append("}}]");
 }
 
-ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) {
+ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
+                              ToolCtx& ctx) const {
     const Entry* found = find_entry(wire, /*wire=*/true);
     if (found == nullptr) {
         return tool_error("unknown_tool", "no tool named " + std::string(wire));

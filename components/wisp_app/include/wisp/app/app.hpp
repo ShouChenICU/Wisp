@@ -252,6 +252,10 @@ struct Platform {
     // and the todo reminders read it. Empty: std::time(). The simulator's
     // `debug clock-advance` moves it.
     std::function<int64_t()> wall_s;
+    // The monotonic clock core::DeviceService measures a command's
+    // min_interval_ms with (device model spec 3.6). Empty: os::now_ms().
+    // Tests pass the clock their devices read and move both by hand.
+    std::function<uint64_t()> device_clock_ms;
     // Code pairing's limits; the defaults are spec 6.1's (a code lives two
     // minutes). Tests shorten code_ttl_ms to watch a code expire.
     net::PairingConfig pairing;

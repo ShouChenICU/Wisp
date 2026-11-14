@@ -472,7 +472,10 @@ Result<void> App::start() {
     }
     // Generic devices (device model spec 3.6), for the agent tools and the
     // scenes; it follows the same power.state as the sensors.
-    impl_->devices = std::make_unique<core::DeviceService>(impl_->registry, &impl_->occupancy);
+    impl_->devices = std::make_unique<core::DeviceService>(
+        impl_->registry, &impl_->occupancy,
+        impl_->platform.device_clock_ms ? impl_->platform.device_clock_ms
+                                        : std::function<uint64_t()>(os::now_ms));
     impl_->sensor_sub = impl_->bus.subscribe(
         "power.state",
         [sensors = impl_->sensors.get(), devices = impl_->devices.get()](const core::Event& e) {

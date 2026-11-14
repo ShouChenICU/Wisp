@@ -75,6 +75,8 @@ struct UiNetOptions {
     std::vector<std::shared_ptr<wisp::hal::Device>> extra_devices;
     // The id of the key with role power.
     std::string power_key_id = "button.power";
+    // Platform::device_clock_ms, when set.
+    std::function<uint64_t()> device_clock;
     // Platform::http_client, when set.
     std::function<std::unique_ptr<wisp::net::HttpClient>()> http_client;
 };
@@ -174,6 +176,7 @@ struct UiNetHarness {
             std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out, opts.imu,
                                          opts.extra_devices, opts.power_key_id);
         if (opts.http_client) platform.http_client = opts.http_client();
+        platform.device_clock_ms = opts.device_clock;
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
         if (!opts.lang.empty()) {
