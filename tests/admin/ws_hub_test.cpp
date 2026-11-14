@@ -15,6 +15,7 @@
 
 #include "admin/admin_fixture.hpp"
 #include "support/fake_http.hpp"
+#include "support/forwarded_recorder.hpp"
 #include "support/utf8.hpp"
 #include "support/wait.hpp"
 #include "wisp/base/json.hpp"
@@ -455,6 +456,56 @@ TEST(WsHub, EventFrameIsWhatClientsReceive) {
     ASSERT_EQ(sent.size(), 1u);
     EXPECT_EQ(sent[0], wisp::admin::event_frame(e));
     EXPECT_EQ(sent[0], R"({"payload":{"state":"synced"},"t":"event","topic":"system.time"})");
+    bus.stop();
+}
+
+// The recorder behind the forwarded-stream golden lists
+// (app/forwarded_stream_test.cpp) keeps exactly what an "events" client
+// receives for the pinned topics, frame for frame and in order, and
+// nothing for the rest.
+TEST(ForwardedStream, RecorderMatchesWhatAClientReceives) {
+    wisp::log::reset_for_test();
+    EventBus bus;
+    WsHub hub(bus);
+    wisp::test::ForwardedRecorder rec(bus);
+    ASSERT_TRUE(bus.start());
+    auto events = std::make_shared<FakeWsConnection>(1);
+    ASSERT_TRUE(hub.open(events, "test"));
+    hub.on_message(1, R"({"sub":["events"]})");
+
+    namespace topics = wisp::core::topics;
+    bus.publish(Event{topics::kPowerState, "app.power", 0, {{"state", Value("standby")}}});
+    bus.publish(Event{topics::kPowerWakelock, "app", 0, {{"held", Value(true)}}});
+    bus.publish(Event{topics::kNetWifiState,
+                      "net.wifi",
+                      0,
+                      {{"state", Value("connected")}, {"ssid", Value("Home")}}});
+    bus.publish(Event{topics::kAgentState, "agent", 0, {{"state", Value("idle")}}});
+    bus.publish(Event{topics::kNetPairingCode,
+                      "pairing",
+                      0,
+                      {{"active", Value(false)}, {"expires_ms", Value(int64_t{0})}}});
+    bus.publish(Event{topics::kStorageSdRemoved, "storage.sd", 0, {}});
+    bus.publish(Event{topics::kSceneState, "scene", 0, {{"state", Value("running")}}});
+    bus.publish(Event{topics::kSystemFirmware,
+                      "app",
+                      0,
+                      {{"state", Value("received")}, {"version", Value("0.3.0")}}});
+    bus.publish(Event{topics::kNetPairingFailed, "pairing", 0, {{"locked", Value(false)}}});
+    bus.publish(Event{"button.power.short", "button.power", 0, {}});
+    ASSERT_TRUE(bus.wait_idle(2000));
+    hub.pump();
+
+    std::vector<std::string> received;
+    for (const std::string& frame : events->sent_raw()) {
+        auto v = wisp::from_json(frame);
+        ASSERT_TRUE(v) << frame;
+        if (wisp::test::pinned_topic(str(v.value(), "topic"))) received.push_back(frame);
+    }
+    // Every forwarded topic reached the client, the pinned ones among them.
+    EXPECT_EQ(events->sent_count(), 8u);
+    ASSERT_EQ(received.size(), 5u);
+    EXPECT_EQ(rec.take(), received);
     bus.stop();
 }
 

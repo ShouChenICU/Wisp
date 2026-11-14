@@ -5,8 +5,9 @@
 // self_check_screen_test.cpp's harness it supplies Platform::random (so
 // WifiService/PairingService exist), a reboot hook that counts calls and
 // records whether it ran on the UI thread, every emitted line, and
-// optionally a FakeHttpServer serving the admin router and a
-// FakeFirmwareUpdater behind the firmware upload.
+// optionally a FakeHttpServer serving the admin router, a
+// FakeFirmwareUpdater behind the firmware upload, a FakePower and a
+// removable SD card.
 
 #include <atomic>
 #include <filesystem>
@@ -74,6 +75,15 @@ struct UiNetOptions {
     std::vector<std::shared_ptr<wisp::hal::Device>> extra_devices;
     // Platform::http_client, when set.
     std::function<std::unique_ptr<wisp::net::HttpClient>()> http_client;
+    // Registers a FakePower as "power.main" (UiNetHarness::power), which
+    // PowerMonitor samples. Off by default: its samples publish events.
+    bool with_power = false;
+    // Registers a removable FakeStorage as "storage.sd" (UiNetHarness::sd)
+    // over <root>/sd. Off by default: the storage refresh publishes its
+    // insertions and removals.
+    bool with_sd = false;
+    // Settings power/screen_off_s to boot with; -1: unset (the default).
+    int screen_off_s = -1;
 };
 
 // 2026-01-01 00:00:00 UTC, what the FakeSntp answers.
@@ -85,14 +95,18 @@ public:
                std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr,
                std::shared_ptr<wisp::hal::AudioOut> audio_out = nullptr,
                std::shared_ptr<wisp::hal::Imu> imu = nullptr,
-               std::vector<std::shared_ptr<wisp::hal::Device>> extra = {})
+               std::vector<std::shared_ptr<wisp::hal::Device>> extra = {},
+               std::shared_ptr<FakePower> power = nullptr,
+               std::shared_ptr<FakeStorage> sd = nullptr)
         : root_(std::move(root)),
           wifi_(std::move(wifi)),
           display_(std::move(display)),
           touch_(std::move(touch)),
           audio_out_(std::move(audio_out)),
           imu_(std::move(imu)),
-          extra_(std::move(extra)) {}
+          extra_(std::move(extra)),
+          power_(std::move(power)),
+          sd_(std::move(sd)) {}
 
     std::string name() const override { return "fake-net-ui"; }
 
@@ -105,6 +119,8 @@ public:
         if (audio_out_) registry.add(audio_out_);
         if (imu_) registry.add(imu_);
         for (const auto& d : extra_) registry.add(d);
+        if (power_) registry.add(power_);
+        if (sd_) registry.add(sd_);
     }
 
 private:
@@ -115,6 +131,8 @@ private:
     std::shared_ptr<wisp::hal::AudioOut> audio_out_;
     std::shared_ptr<wisp::hal::Imu> imu_;
     std::vector<std::shared_ptr<wisp::hal::Device>> extra_;
+    std::shared_ptr<FakePower> power_;
+    std::shared_ptr<FakeStorage> sd_;
 };
 
 struct UiNetHarness {
@@ -122,6 +140,8 @@ struct UiNetHarness {
     std::shared_ptr<FakeWifi> wifi;
     std::shared_ptr<FakeDisplay> display;
     std::shared_ptr<FakeTouch> touch;
+    std::shared_ptr<FakePower> power;         // with_power
+    std::shared_ptr<FakeStorage> sd;          // with_sd
     FakeHttpServer* server = nullptr;         // owned by the App's Platform
     FakeFirmwareUpdater* firmware = nullptr;  // likewise
     FakeSntp* sntp = nullptr;                 // likewise
@@ -150,6 +170,11 @@ struct UiNetHarness {
                                                     opts.shape);
         }
         if (opts.with_touch) touch = std::make_shared<FakeTouch>("touch.main");
+        if (opts.with_power) power = std::make_shared<FakePower>("power.main");
+        if (opts.with_sd) {
+            std::filesystem::create_directories(root + "/sd");
+            sd = std::make_shared<FakeStorage>("storage.sd", root + "/sd", /*removable=*/true);
+        }
         if (!opts.saved.empty()) {
             wisp::List nets;
             for (const auto& [ssid, pw] : opts.saved) {
@@ -164,12 +189,16 @@ struct UiNetHarness {
 
         wisp::app::Platform platform;
         platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out,
-                                                      opts.imu, opts.extra_devices);
+                                                      opts.imu, opts.extra_devices, power, sd);
         if (opts.http_client) platform.http_client = opts.http_client();
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
         if (!opts.lang.empty()) {
             (void)wisp::core::Settings(*platform.settings, "sys").set("lang", opts.lang);
+        }
+        if (opts.screen_off_s >= 0) {
+            (void)wisp::core::Settings(*platform.settings, "power")
+                .set("screen_off_s", int64_t{opts.screen_off_s});
         }
         platform.emit_line = [this](const std::string& line) {
             std::lock_guard<std::mutex> lock(lines_mutex);

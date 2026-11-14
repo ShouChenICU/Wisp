@@ -392,6 +392,7 @@ public:
 
     wisp::Result<wisp::hal::PowerStatus> status() override {
         std::lock_guard<std::mutex> lock(mutex_);
+        ++status_calls;
         if (next_error_) {
             return wisp::Result<wisp::hal::PowerStatus>::err(*next_error_, next_error_message_);
         }
@@ -429,6 +430,10 @@ public:
     }
 
     bool powered_off() const { return powered_off_.load(); }
+
+    // How many status() calls have been made: a test waits for a poller's
+    // first sample before changing what the next one reports.
+    std::atomic<int> status_calls{0};
 
 private:
     wisp::hal::DeviceInfo info_;
