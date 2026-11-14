@@ -69,8 +69,8 @@ struct MakeAppOptions {
     // Every settings write_batch() first sleeps this long.
     uint32_t settings_write_delay_ms = 0;
     // The same devices under other ids ("display.panel", "imu.accel",
-    // "storage.flash", "button.side"), with the same roles: the app must
-    // find them by role.
+    // "storage.flash", "button.side"), with the same roles, plus a touch
+    // panel "touch.panel" with role main: the app must find them by role.
     bool renamed_ids = false;
     // The display's caps "role"; empty is no role.
     std::string display_role = wisp::hal::role::kMain;
@@ -138,6 +138,10 @@ public:
                        std::make_shared<FakeButton>(
                            opts_.renamed_ids ? "button.side" : "button.power",
                            wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
+        if (opts_.renamed_ids) {
+            maybe_register(registry, report,
+                           std::make_shared<wisp::test::FakeTouch>("touch.panel"));
+        }
     }
 
 private:
@@ -241,6 +245,15 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
     EXPECT_EQ(notes->find("mode"), nullptr);
     EXPECT_EQ(notes->find("storage"), nullptr);
 
+    // The touch panel: the UI reads it as its pointer.
+    bool pointer = false;
+    wisp::test::run_on_ui_blocking(h.app.ui(), [&] {
+        for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+            if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) pointer = true;
+        }
+    });
+    EXPECT_TRUE(pointer);
+
     // The IMU: a subscription holds it.
     wisp::core::SensorService* sensors = h.app.sensors();
     ASSERT_NE(sensors, nullptr);
@@ -254,26 +267,29 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
     EXPECT_EQ(held[0].holder, "system.test");
     sensors->unsubscribe(sub.value());
 
-    // The power key: in standby only the power-role key is polled, and it
-    // still is under its own id.
+    // The power key: its short press turns the screen off (the system
+    // duties own it) ...
     auto key = h.app.registry().get<wisp::hal::Button>("button.side");
     ASSERT_NE(key, nullptr);
     static_cast<FakeButton&>(*key).standby_poll = 20;
     wisp::app::PowerManager* pm = h.app.power_manager();
     ASSERT_NE(pm, nullptr);
-    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
-    ASSERT_TRUE(h.app.ui()->post([pm, entered] {
-        pm->enter_standby();
-        entered->give();
-    }));
-    entered->take(wisp::os::kForever);
+    h.app.bus().publish(wisp::core::Event{"button.side.short", "button.side"});
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+    // ... in standby only the power-role key is polled, and it still is
+    // under its own id; its down alone does not wake the screen (the
+    // PowerManager leaves the owned key to its owner) ...
     std::atomic<bool> pressed{false};
     const auto key_sub =
         h.app.bus().subscribe("button.side.down", [&](const auto&) { pressed.store(true); });
     static_cast<FakeButton&>(*key).down = true;
     EXPECT_TRUE(wait_until([&] { return pressed.load(); }, 2000));
+    ASSERT_TRUE(h.app.bus().wait_idle(1000));
+    wisp::test::run_on_ui_blocking(h.app.ui(), [] {});
+    EXPECT_TRUE(pm->standby());
+    // ... and the short press its release makes wakes it.
     static_cast<FakeButton&>(*key).down = false;
+    EXPECT_TRUE(wait_until([&] { return !pm->standby(); }, 2000));
     h.app.bus().unsubscribe(key_sub);
 
     h.app.stop();

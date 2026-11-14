@@ -171,7 +171,7 @@ TEST_F(TalkKeyTest, ShortPressWithTheScreenOffDoesNothingElse) {
     EXPECT_FALSE(saw_state("listening"));
 }
 
-TEST(FindTalkButton, UsesRoleCaps) {
+TEST(FindTalkButton, UsesTheTalkRole) {
     wisp::core::DeviceRegistry reg;
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::nullopt);
     ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
@@ -183,4 +183,14 @@ TEST(FindTalkButton, UsesRoleCaps) {
         "button.vol_down",
         wisp::Properties{{"standby", wisp::Value("wake_source")}, {"role", wisp::Value("talk")}})));
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::optional<std::string>("button.vol_down"));
+}
+
+// One key may be both the power and the talk key (wisp/hal/roles.hpp).
+TEST(FindTalkButton, AcceptsARoleList) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
+        "button.side",
+        wisp::Properties{{"role", wisp::Value(wisp::List{wisp::Value(wisp::hal::role::kPower),
+                                                         wisp::Value(wisp::hal::role::kTalk)})}})));
+    EXPECT_EQ(wisp::shell::find_talk_button(reg), std::optional<std::string>("button.side"));
 }

@@ -81,8 +81,8 @@ protected:
                }) == "clicked";
     }
 
-    void press(const char* topic) {
-        h->app->bus().publish(wisp::core::Event{topic, "button.power"});
+    void press(const char* topic, const char* source = "button.power") {
+        h->app->bus().publish(wisp::core::Event{topic, source});
     }
 
     std::string pair_browser() {
@@ -145,6 +145,22 @@ TEST_F(SystemDutiesTest, PowerKeyWithoutSelfCheck) {
 }
 
 // A factory reset and a firmware update both ask over the home screen.
+// Spec 2.3: the power key is the key with role power, whatever its id.
+TEST_F(SystemDutiesTest, PowerKeyWithAnotherIdTurnsTheScreenOff) {
+    boot({.power_key_id = "button.side"});
+    wisp::app::PowerManager* pm = h->app->power_manager();
+    ASSERT_NE(pm, nullptr);
+
+    // Another key's short press is not the power key's.
+    press("button.vol_up.short", "button.vol_up");
+    h->app->bus().wait_idle(1000);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_FALSE(pm->standby());
+
+    press("button.side.short", "button.side");
+    EXPECT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
+}
+
 TEST_F(SystemDutiesTest, ResetAndFirmwareDialogs) {
     UiNetOptions opts;
     opts.with_server = true;

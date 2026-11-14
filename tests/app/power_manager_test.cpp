@@ -95,7 +95,8 @@ struct Fixture {
     // `with_power_monitor=false` passes a null PowerMonitor*; see
     // NullPowerMonitorIsToleratedByStandbyTransitions below.
     explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true,
-                     bool with_power_monitor = true, bool edge_power = false) {
+                     bool with_power_monitor = true, bool edge_power = false,
+                     const std::string& power_key_id = "button.power") {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
         Settings power_settings(*backend, "power");
@@ -112,6 +113,10 @@ struct Fixture {
             power_events.push_back(e);
         });
 
+        if (power_key_id != btn->info().id) {
+            btn = std::make_shared<CountedButton>(
+                power_key_id, wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}});
+        }
         if (edge_power)
             registry.add(edge_btn);
         else
@@ -161,6 +166,7 @@ struct Fixture {
             .power_monitor = with_power_monitor ? power_monitor.get() : nullptr,
             .ui = ui.get(),
             .buttons = buttons.get(),
+            .power_key = power_key_id,
             .set_light_sleep = [this](bool on) { light_sleep_calls.push_back(on); },
         });
     }
@@ -276,19 +282,20 @@ private:
 // exclusive control over what "button.power" does.
 class PowerKeyWiring {
 public:
-    PowerKeyWiring(EventBus& bus, UiRuntime& ui, PowerManager& pm) : bus_(bus), ui_(ui), pm_(pm) {
+    PowerKeyWiring(EventBus& bus, UiRuntime& ui, PowerManager& pm, std::string key = "button.power")
+        : bus_(bus), ui_(ui), pm_(pm), key_(std::move(key)) {
         pm_.set_power_key_owned(true);
         sub_ = bus_.subscribe("button.", [this](const Event& e) {
-            if (e.source != "button.power") {
+            if (e.source != key_) {
                 return;
             }
             std::string topic = e.topic;
             ui_.post([this, topic] {
                 bool screen_on = !pm_.standby();
                 PowerKeyController::Action action = PowerKeyController::Action::None;
-                if (topic == "button.power.short") {
+                if (topic == key_ + ".short") {
                     action = pkc_.on_short(screen_on);
-                } else if (topic == "button.power.long") {
+                } else if (topic == key_ + ".long") {
                     action = pkc_.on_long(screen_on);
                 }
                 switch (action) {
@@ -312,6 +319,7 @@ private:
     EventBus& bus_;
     UiRuntime& ui_;
     PowerManager& pm_;
+    std::string key_;
     PowerKeyController pkc_;
     wisp::core::SubscriptionId sub_ = 0;
 };
@@ -635,6 +643,35 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
     // The next power-key short press must still see the screen as on
     // (PowerManager::standby()==false) and correctly turn it off --
     // not treat it as still "off" from its own last action.
+    press_short(*f.buttons, *f.btn);
+    EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+}
+
+// Spec 2.3: the owned key is the one with role power, whatever its id. A
+// down of that key in standby is left to its owner (which acts on the
+// short that follows), so one press does not wake and re-sleep the screen.
+TEST(PowerManager, PowerKeyOwnershipFollowsTheRoleKey) {
+    Fixture f(/*screen_off_s=*/60, /*with_storage=*/true, /*with_power_monitor=*/true,
+              /*edge_power=*/false, "button.side");
+    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm, "button.side");
+
+    press_short(*f.buttons, *f.btn);
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+
+    const uint64_t t = (input_clock += 5000);
+    f.btn->down = true;
+    f.buttons->poll(t);
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    f.drain_ui();
+    EXPECT_TRUE(f.pm->standby());
+    f.btn->down = false;
+    f.buttons->poll(t + 100);
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+
+    press_short(*f.buttons, *f.btn);
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+    f.bus.publish({"button.vol_up.down", "button.vol_up"});
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     press_short(*f.buttons, *f.btn);
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 }

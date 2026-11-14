@@ -20,10 +20,8 @@ struct ButtonEdgeSink {
 // caps keys: "standby" (string, optional: "wake_source" for a button that
 // must keep working at every power level; see StandbyPolicy in
 // wisp/hal/device.hpp); "role" (optional: "power", or "talk" -- the
-// button held to talk, mvp spec 6.3; see wisp/hal/roles.hpp). The registry
-// also accepts a list of both for one key serving both, but
-// shell::find_talk_button() still matches only the string form, so a talk
-// key declares "talk" as a plain string for now.
+// button held to talk, mvp spec 6.3; see wisp/hal/roles.hpp), or a list of
+// both for one key serving both.
 class Button : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Button;

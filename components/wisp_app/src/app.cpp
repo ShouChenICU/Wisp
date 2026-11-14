@@ -27,6 +27,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/reminders.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/button.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
@@ -460,6 +461,7 @@ Result<void> App::start() {
             sensors->set_standby(state == "standby" || state == "deep_standby");
         });
 
+    auto power_key = impl_->registry.by_role<hal::Button>(hal::role::kPower);
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
         .bus = impl_->bus,
         .registry = impl_->registry,
@@ -470,6 +472,7 @@ Result<void> App::start() {
         .power_monitor = impl_->power_monitor.get(),
         .ui = impl_->ui.get(),
         .buttons = &impl_->buttons,
+        .power_key = power_key ? power_key->info().id : std::string(),
         .set_light_sleep = impl_->platform.set_light_sleep,
         .before_deep_standby = [this] { flush_storage(); },
         .on_activity =
@@ -860,7 +863,7 @@ Result<void> App::start() {
     // spec 9.2 ("--no-sd 时 Library 只有内置根"): surfaces the actual
     // root list, rather than leaving it something only a unit test can
     // see, so a smoke test can assert on it directly without depending
-    // on whether "storage.sd" happened to be registered.
+    // on whether a card happened to be registered.
     {
         wisp::List library_roots;
         for (const std::string& root : impl_->storage.roots(core::Area::Library)) {

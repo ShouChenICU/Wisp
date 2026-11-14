@@ -29,6 +29,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "lvgl.h"
 #include "net_cards.hpp"
@@ -142,6 +143,10 @@ private:
     ui::SystemLayer& system_;
     std::shared_ptr<hal::Display> display_;
     std::shared_ptr<hal::Power> power_;
+    // The id of the key with role power, resolved once: the registry does
+    // not change after boot. Empty: no power key, button events are
+    // ignored.
+    std::string power_key_id_;
 
     PowerKeyController power_key_;
     ProvisioningCard setup_card_;

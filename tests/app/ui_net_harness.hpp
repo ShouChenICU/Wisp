@@ -73,6 +73,8 @@ struct UiNetOptions {
     std::shared_ptr<wisp::hal::Imu> imu;
     // Registered as they are (a mic, a talk key, ...).
     std::vector<std::shared_ptr<wisp::hal::Device>> extra_devices;
+    // The id of the key with role power.
+    std::string power_key_id = "button.power";
     // Platform::http_client, when set.
     std::function<std::unique_ptr<wisp::net::HttpClient>()> http_client;
 };
@@ -86,21 +88,23 @@ public:
                std::shared_ptr<FakeDisplay> display, std::shared_ptr<FakeTouch> touch = nullptr,
                std::shared_ptr<wisp::hal::AudioOut> audio_out = nullptr,
                std::shared_ptr<wisp::hal::Imu> imu = nullptr,
-               std::vector<std::shared_ptr<wisp::hal::Device>> extra = {})
+               std::vector<std::shared_ptr<wisp::hal::Device>> extra = {},
+               std::string power_key_id = "button.power")
         : root_(std::move(root)),
           wifi_(std::move(wifi)),
           display_(std::move(display)),
           touch_(std::move(touch)),
           audio_out_(std::move(audio_out)),
           imu_(std::move(imu)),
-          extra_(std::move(extra)) {}
+          extra_(std::move(extra)),
+          power_key_id_(std::move(power_key_id)) {}
 
     std::string name() const override { return "fake-net-ui"; }
 
     void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport&) override {
         registry.add(std::make_shared<FakeStorage>("storage.int", root_, /*removable=*/false));
         registry.add(std::make_shared<FakeButton>(
-            "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
+            power_key_id_, wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
         if (wifi_) registry.add(wifi_);
         if (display_) registry.add(display_);
         if (touch_) registry.add(touch_);
@@ -117,6 +121,7 @@ private:
     std::shared_ptr<wisp::hal::AudioOut> audio_out_;
     std::shared_ptr<wisp::hal::Imu> imu_;
     std::vector<std::shared_ptr<wisp::hal::Device>> extra_;
+    std::string power_key_id_;
 };
 
 struct UiNetHarness {
@@ -165,8 +170,9 @@ struct UiNetHarness {
         }
 
         wisp::app::Platform platform;
-        platform.board = std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out,
-                                                      opts.imu, opts.extra_devices);
+        platform.board =
+            std::make_unique<UiNetBoard>(root, wifi, display, touch, opts.audio_out, opts.imu,
+                                         opts.extra_devices, opts.power_key_id);
         if (opts.http_client) platform.http_client = opts.http_client();
         platform.settings =
             std::make_unique<wisp::port::sim::JsonFileSettingsBackend>(settings_path());
