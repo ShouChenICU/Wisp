@@ -15,6 +15,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/hal/clock.hpp"
@@ -418,6 +420,32 @@ struct HapticFixture {
     wisp::port::sim::SimHaptic haptic;
 };
 
+// The haptic's log lines ("sim" tag, the only place a clamped strength or
+// effect id shows).
+class HapticLog : public wisp::LogSink {
+public:
+    HapticLog() {
+        wisp::log::init();
+        wisp::log::add_sink(this);
+    }
+    ~HapticLog() override { wisp::log::remove_sink(this); }
+
+    void write(const wisp::LogRecord& record) override {
+        const std::string msg = record.msg;
+        if (std::string(record.tag) != "sim" || msg.rfind("haptic ", 0) != 0) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        lines_.push_back(msg);
+    }
+    std::vector<std::string> lines() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lines_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::string> lines_;
+};
+
 }  // namespace
 
 TEST(SimHaptic, PulseRunsForItsDurationThenStops) {
@@ -440,19 +468,55 @@ TEST(SimHaptic, EffectRunsForAShortFixedTime) {
 }
 
 TEST(SimHaptic, ClampsWhenCalledDirectly) {
+    HapticLog log;
     HapticFixture f;
     ASSERT_TRUE(f.pulse(999999, 500));
     f.now = 1000 + 1999;
     EXPECT_TRUE(f.active());
     f.now = 1000 + 2000;
     EXPECT_FALSE(f.active());
-    // Too short and a missing strength are clamped / defaulted, not refused.
-    ASSERT_TRUE(f.haptic.invoke("pulse", {{"ms", 1}}));
+    // Too short is clamped, not refused.
+    ASSERT_TRUE(f.haptic.invoke("pulse", {{"ms", 1}, {"strength", -5}}));
     f.now += 9;
     EXPECT_TRUE(f.active());
     f.now += 1;
     EXPECT_FALSE(f.active());
+    // A number that is not an integer is a number all the same: clamped.
+    ASSERT_TRUE(f.haptic.invoke("pulse", {{"ms", 20.7}}));
+    f.now += 19;
+    EXPECT_TRUE(f.active());
+    f.now += 1;
+    EXPECT_FALSE(f.active());
     ASSERT_TRUE(f.haptic.invoke("effect", {{"id", 99999}}));
+    ASSERT_TRUE(f.haptic.invoke("effect", {{"id", 0}}));
+    // The clamped strength and id are seen only in the log line.
+    EXPECT_EQ(log.lines(), (std::vector<std::string>{
+                               "haptic pulse 2000 ms 100%", "haptic pulse 10 ms 0%",
+                               "haptic pulse 20 ms 80%", "haptic effect 123", "haptic effect 1"}));
+}
+
+// A required argument that is missing or not a number is refused with
+// its name, not replaced by a guess; a missing optional one is its
+// default.
+TEST(SimHaptic, RefusesAMissingOrMistypedArgument) {
+    HapticFixture f;
+    for (const wisp::Map& args : {wisp::Map{}, wisp::Map{{"ms", std::string("150")}}}) {
+        auto r = f.haptic.invoke("pulse", args);
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, wisp::ErrorCode::InvalidArgument);
+        EXPECT_NE(r.error().message.find("'ms'"), std::string::npos) << r.error().message;
+    }
+    auto strength = f.haptic.invoke("pulse", {{"ms", 50}, {"strength", true}});
+    ASSERT_FALSE(strength);
+    EXPECT_NE(strength.error().message.find("'strength'"), std::string::npos);
+    auto id = f.haptic.invoke("effect", {});
+    ASSERT_FALSE(id);
+    EXPECT_NE(id.error().message.find("'id'"), std::string::npos);
+    EXPECT_FALSE(f.active());  // nothing started
+
+    HapticLog log;
+    ASSERT_TRUE(f.haptic.invoke("pulse", {{"ms", 50}}));
+    EXPECT_EQ(log.lines(), std::vector<std::string>{"haptic pulse 50 ms 80%"});
 }
 
 TEST(SimHaptic, StandbyStopsItAndRefusesCalls) {

@@ -1147,11 +1147,13 @@ TEST(PowerManager, StandbyWalksDevicesByPolicy) {
 // interface None) goes down with the others, ahead of the audio input.
 TEST(PowerManager, GenericDevicesGoDownWithTheOthers) {
     Headless h;
+    // Registered after the input, which also sorts first by id: a walk in
+    // either registration or registry order reaches the input first.
+    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
     auto generic =
         std::make_shared<wisp::test::FakeGeneric>("haptic.main", &wisp::test::kFakeGenericSchema,
                                                   wisp::Properties{}, "main", /*standby_off=*/true);
     ASSERT_TRUE(h.registry.add(generic));
-    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
     int generic_calls_at_audio_in = -1;
     in->on_set_power = [&](PowerLevel level) {
         if (level == PowerLevel::Standby) generic_calls_at_audio_in = generic->set_power_calls();

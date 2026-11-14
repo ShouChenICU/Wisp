@@ -1,6 +1,8 @@
 #include "wisp/port/sim/sim_haptic.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "wisp/core/log.hpp"
@@ -51,20 +53,30 @@ constexpr hal::CmdSpec kCmds[] = {
 };
 constexpr hal::DeviceSchema kSchema{.props = kProps, .cmds = kCmds};
 
-// An argument as an integer clamped to [lo, hi]; `fallback` when it is
-// missing or not a number (the service validates, a direct caller may not).
-int64_t clamped_arg(const wisp::Map& args, const char* name, int64_t lo, int64_t hi,
-                    int64_t fallback) {
+// Argument `name` as an integer clamped to [lo, hi]. The service has
+// validated it already; a direct caller (board code, a test) may not have,
+// so a missing required argument or one that is not a number is refused
+// (InvalidArgument, naming it) rather than guessed, while a number out of
+// range -- or a fractional or non-finite one -- is clamped, as
+// hal::Device::invoke()'s contract asks. A missing optional argument is
+// `fallback`, the schema's default.
+wisp::Result<int64_t> clamped_arg(const wisp::Map& args, const char* name, int64_t lo, int64_t hi,
+                                  std::optional<int64_t> fallback = std::nullopt) {
     auto it = args.find(name);
-    if (it == args.end()) return fallback;
+    if (it == args.end()) {
+        if (fallback) return wisp::Result<int64_t>::ok(*fallback);
+        return wisp::Result<int64_t>::err(wisp::ErrorCode::InvalidArgument,
+                                          std::string("'") + name + "' is required");
+    }
     const wisp::Value& v = it->second;
     if (v.type() != wisp::Value::Type::Int && v.type() != wisp::Value::Type::Double) {
-        return fallback;
+        return wisp::Result<int64_t>::err(wisp::ErrorCode::InvalidArgument,
+                                          std::string("'") + name + "' must be a number");
     }
     const double d = v.as_double();
-    if (!(d >= static_cast<double>(lo))) return lo;  // also NaN
-    if (d >= static_cast<double>(hi)) return hi;
-    return static_cast<int64_t>(d);
+    if (!(d >= static_cast<double>(lo))) return wisp::Result<int64_t>::ok(lo);  // also NaN
+    if (d >= static_cast<double>(hi)) return wisp::Result<int64_t>::ok(hi);
+    return wisp::Result<int64_t>::ok(static_cast<int64_t>(d));
 }
 
 }  // namespace
@@ -84,38 +96,43 @@ wisp::Result<wisp::Value> SimHaptic::get(std::string_view prop) {
     if (prop != "active") {
         return wisp::Result<wisp::Value>::err(wisp::ErrorCode::NotFound, "no such property");
     }
-    const uint64_t now = now_ms_();
     std::lock_guard<std::mutex> lock(mutex_);
     if (!powered_) {
         return wisp::Result<wisp::Value>::err(wisp::ErrorCode::Busy, "haptic is powered off");
     }
-    return wisp::Result<wisp::Value>::ok(wisp::Value(now < until_ms_));
+    return wisp::Result<wisp::Value>::ok(wisp::Value(now_ms_() < until_ms_));
 }
 
 wisp::Result<wisp::Value> SimHaptic::run(uint64_t duration_ms) {
-    const uint64_t now = now_ms_();
     std::lock_guard<std::mutex> lock(mutex_);
     if (!powered_) {
         return wisp::Result<wisp::Value>::err(wisp::ErrorCode::Busy, "haptic is powered off");
     }
-    until_ms_ = now + duration_ms;
+    // Read under the lock: a `now` taken before it could be older than
+    // one another thread used since, and would move a later pulse's end
+    // back.
+    until_ms_ = now_ms_() + duration_ms;
     return wisp::Result<wisp::Value>::ok(wisp::Value());
 }
 
 wisp::Result<wisp::Value> SimHaptic::invoke(std::string_view cmd, const wisp::Map& args) {
     if (cmd == "pulse") {
-        const int64_t ms = clamped_arg(args, "ms", kMinPulseMs, kMaxPulseMs, kMinPulseMs);
-        const int64_t strength = clamped_arg(args, "strength", 0, 100, 80);
-        auto result = run(static_cast<uint64_t>(ms));
+        auto ms = clamped_arg(args, "ms", kMinPulseMs, kMaxPulseMs);
+        if (!ms) return wisp::Result<wisp::Value>::err(ms.error().code, ms.error().message);
+        auto strength = clamped_arg(args, "strength", 0, 100, 80);
+        if (!strength)
+            return wisp::Result<wisp::Value>::err(strength.error().code, strength.error().message);
+        auto result = run(static_cast<uint64_t>(ms.value()));
         if (result)
-            WLOG_I(kTag, "haptic pulse %d ms %d%%", static_cast<int>(ms),
-                   static_cast<int>(strength));
+            WLOG_I(kTag, "haptic pulse %d ms %d%%", static_cast<int>(ms.value()),
+                   static_cast<int>(strength.value()));
         return result;
     }
     if (cmd == "effect") {
-        const int64_t id = clamped_arg(args, "id", 1, kMaxEffectId, 1);
+        auto id = clamped_arg(args, "id", 1, kMaxEffectId);
+        if (!id) return wisp::Result<wisp::Value>::err(id.error().code, id.error().message);
         auto result = run(kEffectMs);
-        if (result) WLOG_I(kTag, "haptic effect %d", static_cast<int>(id));
+        if (result) WLOG_I(kTag, "haptic effect %d", static_cast<int>(id.value()));
         return result;
     }
     return wisp::Result<wisp::Value>::err(wisp::ErrorCode::NotFound, "no such command");
