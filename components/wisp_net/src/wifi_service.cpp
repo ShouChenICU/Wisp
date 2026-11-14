@@ -9,7 +9,6 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
-#include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/topics.hpp"
@@ -100,9 +99,13 @@ WifiService::WifiService(std::shared_ptr<hal::Wifi> wifi, core::StorageManager& 
       bus_(bus),
       random_(std::move(random)),
       config_(config),
-      source_(wifi_->info().id),
       saver_(std::move(submit_io)),
-      backoff_ms_(config.backoff_min_ms) {}
+      backoff_ms_(config.backoff_min_ms),
+      // The cell starts as the service does (enabled_ is declared, and so
+      // initialised, first), so a call made before init() publishes what it
+      // published before the cell.
+      wifi_cell_(bus_, WifiSnapshot{.enabled = enabled_}, &wifi_mirror),
+      ap_cell_(bus_, ApSnapshot{}, &ap_mirror) {}
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -223,6 +226,9 @@ Result<void> WifiService::init(uint64_t now_ms) {
     WLOG_I(kTag, "%zu saved network(s)", networks_.size());
 
     backoff_ms_ = config_.backoff_min_ms;
+    // The saved flag is where the cell starts, not a change: boot announces
+    // only the state below, as it did before the cell.
+    wifi_cell_.seed(wifi_snapshot_locked());
     if (!enabled_) apply_radio_locked(now_ms);
     if (!radio_off_ && !networks_.empty()) {
         schedule_attempt_locked(now_ms);
@@ -249,14 +255,35 @@ void WifiService::set_state_locked(WifiState state, std::string ssid, std::strin
     status_.rssi = rssi;
     status_.reason = reason;
     if (!changed) return;
-    const auto* ssid_bytes = reinterpret_cast<const uint8_t*>(status_.ssid.data());
-    bus_.publish(core::Event{core::topics::kNetWifiState, source_, 0,
-                             Properties{{"state", to_string(state)},
-                                        {"ssid", status_.ssid},
-                                        {"ssid_hex", to_hex({ssid_bytes, status_.ssid.size()})},
-                                        {"ip", status_.ip},
-                                        {"rssi", status_.rssi},
-                                        {"reason", reason}}});
+    publish_wifi_locked();
+}
+
+WifiSnapshot WifiService::wifi_snapshot_locked() const {
+    WifiSnapshot s;
+    s.enabled = enabled_;
+    s.state = status_.state;
+    // Saved SSIDs are at most 32 bytes (validate()) and the driver reports
+    // IPv4 addresses, so nothing is cut in practice; a cut is logged and
+    // kept rather than dropping the change.
+    if (!s.ssid.assign(status_.ssid)) {
+        WLOG_W(kTag, "SSID longer than %zu bytes cut in the state cell", s.ssid.capacity());
+    }
+    if (!s.ip.assign(status_.ip)) {
+        WLOG_W(kTag, "address '%s' cut in the state cell", status_.ip.c_str());
+    }
+    s.rssi = status_.rssi;
+    s.reason.assign(status_.reason);  // one of the fixed codes, all fit
+    return s;
+}
+
+void WifiService::publish_wifi_locked() {
+    // No event is lost to an equal value: the cell's state, ssid, ip and
+    // reason always equal status_'s (status_ changes them only in
+    // set_state_locked(), which calls this on every change), so a call
+    // after set_state_locked() saw a change always differs in one of them;
+    // and enabled_ moves only where this follows it (set_enabled()) or the
+    // cell is seeded with it (init(), forget_all()).
+    wifi_cell_.set(wifi_snapshot_locked());
 }
 
 void WifiService::schedule_attempt_locked(uint64_t at_ms) {
@@ -493,9 +520,12 @@ Result<void> WifiService::set_enabled(bool enabled, uint64_t now_ms) {
         return result;
     }
     manually_disconnected_ = false;
+    // enabled_ is stored before the radio switch, so a state change there
+    // already carries the new flag: the mirror publishes net.wifi.state and
+    // then net.wifi.enabled from that one set(), and this one is a no-op.
+    // Without a state change only net.wifi.enabled goes out.
     apply_radio_locked(now_ms);
-    bus_.publish(
-        core::Event{core::topics::kNetWifiEnabled, source_, 0, Properties{{"enabled", enabled_}}});
+    publish_wifi_locked();
     return Result<void>::ok();
 }
 
@@ -707,6 +737,13 @@ void WifiService::forget_all() {
     ++generation_;
     networks_.clear();
     enabled_ = true;
+    // A factory reset turns Wi-Fi back on without announcing it (the device
+    // reboots right after), so the cell takes the flag with seed(), not
+    // set(): followers still see it, and the wire stays as it was. The
+    // other fields stay; any state change below publishes as usual.
+    WifiSnapshot reenabled = wifi_cell_.get();
+    reenabled.enabled = true;
+    wifi_cell_.seed(reenabled);
     manually_disconnected_ = false;
     apply_radio_locked(os::now_ms());
     // On a failed write the networks come back after a reboot; the write
@@ -727,9 +764,16 @@ void WifiService::forget_all() {
 // Provisioning hotspot
 
 void WifiService::publish_ap_locked(bool active, const std::string& ssid) {
-    bus_.publish(core::Event{
-        core::topics::kNetApState, source_, 0,
-        Properties{{"active", active}, {"ssid", ssid}, {"clients", active ? ap_clients_ : 0}}});
+    ApSnapshot s;
+    s.active = active;
+    s.ssid.assign(ssid);  // "Wisp-XXXX" (start_provisioning()), always fits
+    s.clients = active ? ap_clients_ : 0;
+    // No event is lost to an equal value: every caller changes the hotspot.
+    // An open follows a closed one (start_provisioning() returns early while
+    // ap_ is set), a close follows an open one (every close_ap_locked()
+    // caller checks ap_), and tick_ap_locked() calls this only when the
+    // client count moved.
+    ap_cell_.set(s);
 }
 
 Result<void> WifiService::close_ap_locked(const char* why) {

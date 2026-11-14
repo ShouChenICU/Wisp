@@ -4,7 +4,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_net
-    SRCS src/http.cpp src/asset_pack.cpp src/wifi_service.cpp
+    SRCS src/http.cpp src/asset_pack.cpp src/wifi_service.cpp src/wifi_snapshot.cpp
          src/pairing_service.cpp src/model_probe.cpp src/scene_http.cpp
          src/tls_gate.cpp src/request_watch.cpp src/time_sync.cpp src/network_window.cpp
          src/llm_client.cpp src/sse_parser.cpp

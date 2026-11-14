@@ -10,7 +10,9 @@
 // `mutex_`, so status()/ap_session() stay cheap for the UI even while a
 // scan is in progress. A second mutex (`radio_mutex_`) serializes tick()
 // bodies and public scan() calls against each other, so the driver never
-// sees two overlapping scans. Lock order: radio_mutex_ before mutex_.
+// sees two overlapping scans. Lock order: radio_mutex_ before mutex_,
+// mutex_ before the state cells' locks (wifi_cell(), ap_cell()), which
+// call out only to EventBus::publish() from their mirrors.
 // Quick device calls (link, connect, disconnect, start_ap/stop_ap,
 // ap_clients) are made under `mutex_` from whichever thread called in, so
 // a hal::Wifi implementation must accept calls from several threads.
@@ -39,18 +41,15 @@
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/latest_save.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/hal/device.hpp"
 #include "wisp/hal/wifi.hpp"
 #include "wisp/net/random.hpp"
+#include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::net {
-
-enum class WifiState { Off, Connecting, Backoff, Connected };
-
-// "off" / "connecting" / "backoff" / "connected".
-const char* to_string(WifiState s);
 
 struct WifiStatus {
     WifiState state = WifiState::Off;
@@ -165,6 +164,15 @@ public:
 
     WifiStatus status() const;
     bool enabled() const;
+    // The station as net.wifi.state and net.wifi.enabled announced it: moves
+    // exactly when one of them is published (and when forget_all() turns
+    // Wi-Fi back on unannounced). Its rssi is the one of that moment;
+    // status() has the live one. A subscriber releases its subscription
+    // before WifiService is destroyed (App::stop() order;
+    // wisp/core/state_cell.hpp).
+    const core::StateCell<WifiSnapshot>& wifi_cell() const { return wifi_cell_; }
+    // The hotspot as net.ap.state announced it; same lifetime rule.
+    const core::StateCell<ApSnapshot>& ap_cell() const { return ap_cell_; }
     // A connection is there or on its way (MVP spec 4.1): Wi-Fi is enabled,
     // no user disconnect() holds retries, a saved network is not parked
     // for a rejected password, and the state is Connecting or Connected,
@@ -274,6 +282,12 @@ private:
 
     void apply_radio_locked(uint64_t now_ms);
     void set_state_locked(WifiState state, std::string ssid, std::string ip, int rssi);
+    // The station cell's value now: enabled_ and status_.
+    WifiSnapshot wifi_snapshot_locked() const;
+    // Sets the station cell from wifi_snapshot_locked(); its mirror publishes
+    // what changed. Called by set_state_locked() (on a change) and
+    // set_enabled().
+    void publish_wifi_locked();
     void publish_ap_locked(bool active, const std::string& ssid);
     Result<void> close_ap_locked(const char* why);
     void schedule_attempt_locked(uint64_t at_ms);
@@ -295,7 +309,6 @@ private:
     core::EventBus& bus_;
     RandomFn random_;
     WifiServiceConfig config_;
-    std::string source_;  // event source: the device id
     core::LatestSave saver_;
 
     os::Mutex radio_mutex_;  // see file header
@@ -340,6 +353,12 @@ private:
     // while the hotspot is up; only one
     // of these connecting means provisioning succeeded.
     std::set<std::string> provisioned_ssids_;
+
+    // Set only under mutex_, so they change in the order of the events they
+    // publish. Declared after bus_, which their constructors use;
+    // WifiService itself is destroyed before the bus stops (App::stop()).
+    core::StateCell<WifiSnapshot> wifi_cell_;
+    core::StateCell<ApSnapshot> ap_cell_;
 };
 
 }  // namespace wisp::net

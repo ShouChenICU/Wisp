@@ -324,6 +324,8 @@ target_compile_definitions(asset_pack_test PRIVATE
 )
 wisp_test(NAME wifi_service_test SRCS net/wifi_service_test.cpp
           LIBS wisp_net wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
+wisp_test(NAME wifi_snapshot_test SRCS net/wifi_snapshot_test.cpp
+          LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME pairing_service_test SRCS net/pairing_service_test.cpp
           LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME wifi_forwarded_test SRCS net/wifi_forwarded_test.cpp

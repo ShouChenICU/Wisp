@@ -15,6 +15,7 @@
 #include "support/fake_devices.hpp"
 #include "support/fake_io_queue.hpp"
 #include "support/fake_wifi.hpp"
+#include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
@@ -22,7 +23,10 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/topics.hpp"
+#include "wisp/net/wifi_snapshot.hpp"
 
 using wisp::ErrorCode;
 using wisp::core::DeviceRegistry;
@@ -805,7 +809,7 @@ TEST(WifiService, StateEventsCarryNoPassword) {
         EXPECT_EQ(json.find("password"), std::string::npos) << e.topic << " " << json;
         if (e.topic == "net.wifi.state") {
             ++wifi_events;
-            EXPECT_EQ(e.source, "net.wifi");
+            EXPECT_EQ(e.source, wisp::net::kWifiServiceSource);
             EXPECT_EQ(e.payload.size(), 6u) << json;
             EXPECT_TRUE(e.payload.count("state") && e.payload.count("ssid") &&
                         e.payload.count("ssid_hex") && e.payload.count("ip") &&
@@ -1679,4 +1683,309 @@ TEST(WifiService, ConnectionExpectedOnlyWhileOneIsBeingMade) {
         svc.set_power_level(PowerLevel::DeepStandby, 3000);
         EXPECT_FALSE(svc.connection_expected());
     }
+}
+
+// --- The Wi-Fi and hotspot cells -------------------------------------------
+
+namespace {
+
+// The topics of `events`, in order.
+std::vector<std::string> topics_of(const std::vector<Event>& events) {
+    std::vector<std::string> out;
+    for (const auto& e : events) out.push_back(e.topic);
+    return out;
+}
+
+}  // namespace
+
+// Boot with a saved network publishes the state alone: the cell starts out
+// holding the saved flag, so the mirror sees no change of `enabled`.
+TEST(WifiService, InitPublishesOnlyTheState) {
+    Fixture f;
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    auto events = f.all_events();
+    ASSERT_EQ(topics_of(events), (std::vector<std::string>{wisp::core::topics::kNetWifiState}));
+    EXPECT_EQ(str_of(events[0].payload, "state"), "connecting");
+    const auto cell = svc.wifi_cell().get();
+    EXPECT_TRUE(cell.enabled);
+    EXPECT_EQ(cell.state, WifiState::Connecting);
+    EXPECT_TRUE(svc.ap_cell().get() == wisp::net::ApSnapshot{});
+}
+
+// A boot with Wi-Fi switched off by the user publishes nothing, and the
+// cell holds the flag as saved.
+TEST(WifiService, InitWhileDisabledPublishesNothing) {
+    Fixture f;
+    f.seed({{"Home", "homepass1"}});
+    {
+        auto& first = f.make();
+        ASSERT_TRUE(first.init(0));
+        ASSERT_TRUE(first.set_enabled(false, 1));  // persists enabled=false
+    }
+    auto& svc = f.make();
+    f.clear_events();
+    ASSERT_TRUE(svc.init(0));
+    EXPECT_TRUE(f.all_events().empty());
+    EXPECT_FALSE(svc.wifi_cell().get().enabled);
+    EXPECT_EQ(svc.wifi_cell().get().state, WifiState::Off);
+}
+
+// The cell starts with the service's own default (enabled), so a switch
+// made before init() still announces the flag.
+TEST(WifiService, DisablingBeforeInitPublishesTheFlag) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.set_enabled(false, 0));
+    auto events = f.all_events();
+    ASSERT_EQ(topics_of(events), (std::vector<std::string>{wisp::core::topics::kNetWifiEnabled}));
+    EXPECT_EQ(events[0].payload, (wisp::Properties{{"enabled", false}}));
+}
+
+TEST(WifiService, CellFollowsStateChangesButNotRssiAlone) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    auto cell = svc.wifi_cell().get();
+    EXPECT_EQ(cell.state, WifiState::Connected);
+    EXPECT_EQ(cell.ssid, "Home");
+    EXPECT_EQ(cell.ip, "192.168.1.50");
+    EXPECT_EQ(cell.rssi, -50);
+    EXPECT_EQ(cell.reason, "");
+    f.clear_events();
+
+    const uint32_t revision = svc.wifi_cell().revision();
+    WifiLink moved;
+    moved.state = WifiLinkState::Connected;
+    moved.ssid = "Home";
+    moved.ip = "192.168.1.50";
+    moved.rssi = -72;
+    f.wifi->set_link(moved);
+    svc.tick(500);
+    EXPECT_EQ(svc.status().rssi, -72);  // status() stays live
+    EXPECT_EQ(svc.wifi_cell().revision(), revision);
+    EXPECT_EQ(svc.wifi_cell().get().rssi, -50);
+    EXPECT_TRUE(f.all_events().empty());
+
+    // A new address is a change: published, and the rssi of that moment
+    // goes with it.
+    moved.ip = "192.168.1.51";
+    moved.rssi = -60;
+    f.wifi->set_link(moved);
+    svc.tick(750);
+    cell = svc.wifi_cell().get();
+    EXPECT_NE(svc.wifi_cell().revision(), revision);
+    EXPECT_EQ(cell.ip, "192.168.1.51");
+    EXPECT_EQ(cell.rssi, -60);
+    auto states = f.topic(wisp::core::topics::kNetWifiState);
+    ASSERT_EQ(states.size(), 1u);
+    EXPECT_EQ(states[0].payload, wisp::net::wifi_state_payload(cell));
+}
+
+TEST(WifiService, DisablingWhileConnectedPublishesStateThenEnabled) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    f.clear_events();
+
+    ASSERT_TRUE(svc.set_enabled(false, 1000));
+    auto events = f.all_events();
+    ASSERT_EQ(topics_of(events), (std::vector<std::string>{wisp::core::topics::kNetWifiState,
+                                                           wisp::core::topics::kNetWifiEnabled}));
+    EXPECT_EQ(str_of(events[0].payload, "state"), "off");
+    EXPECT_EQ(events[1].payload, (wisp::Properties{{"enabled", false}}));
+    EXPECT_EQ(events[0].source, wisp::net::kWifiServiceSource);
+    EXPECT_EQ(events[1].source, wisp::net::kWifiServiceSource);
+    const auto cell = svc.wifi_cell().get();
+    EXPECT_FALSE(cell.enabled);
+    EXPECT_EQ(cell.state, WifiState::Off);
+    EXPECT_TRUE(cell.ssid.empty());
+    EXPECT_TRUE(cell.ip.empty());
+    EXPECT_EQ(cell.rssi, 0);
+}
+
+TEST(WifiService, EnablingWithNothingSavedPublishesOnlyEnabled) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.set_enabled(false, 1));
+    f.clear_events();
+    ASSERT_TRUE(svc.set_enabled(true, 2));
+    auto events = f.all_events();
+    ASSERT_EQ(topics_of(events), (std::vector<std::string>{wisp::core::topics::kNetWifiEnabled}));
+    EXPECT_EQ(events[0].payload, (wisp::Properties{{"enabled", true}}));
+    EXPECT_TRUE(svc.wifi_cell().get().enabled);
+    EXPECT_EQ(svc.wifi_cell().get().state, WifiState::Off);
+}
+
+// A refused write leaves the flag, and the cell, as they were.
+TEST(WifiService, AFailedEnableChangesNoCell) {
+    Fixture f;
+    f.seed({{"Home", "homepass1"}});
+    FakeIoQueue io;
+    auto& svc = f.make({}, io.submit_io());
+    ASSERT_TRUE(svc.init(0));
+    io.refuse = true;
+    f.clear_events();
+    const uint32_t revision = svc.wifi_cell().revision();
+    EXPECT_FALSE(svc.set_enabled(false, 1));
+    EXPECT_TRUE(svc.wifi_cell().get().enabled);
+    EXPECT_EQ(svc.wifi_cell().revision(), revision);
+    EXPECT_TRUE(f.all_events().empty());
+}
+
+// Deep standby moves the state, never the user's flag.
+TEST(WifiService, DeepStandbyKeepsTheCellsFlag) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    f.clear_events();
+    svc.set_power_level(PowerLevel::DeepStandby, 1000);
+    EXPECT_TRUE(svc.wifi_cell().get().enabled);
+    EXPECT_EQ(svc.wifi_cell().get().state, WifiState::Off);
+    svc.set_power_level(PowerLevel::Active, 2000);
+    tick2(svc, 2000);
+    EXPECT_TRUE(svc.wifi_cell().get().enabled);
+    EXPECT_EQ(svc.wifi_cell().get().state, WifiState::Connected);
+    for (const auto& e : f.all_events()) {
+        EXPECT_NE(e.topic, wisp::core::topics::kNetWifiEnabled);
+    }
+}
+
+// forget_all() turns Wi-Fi back on without announcing it (factory reset
+// only); the cell follows all the same.
+TEST(WifiService, ForgetAllPublishesNoEnabledEvent) {
+    Fixture f;
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.set_enabled(false, 1));
+    ASSERT_FALSE(svc.wifi_cell().get().enabled);
+    f.clear_events();
+    svc.forget_all();
+    EXPECT_TRUE(f.all_events().empty());
+    const auto cell = svc.wifi_cell().get();
+    EXPECT_TRUE(cell.enabled);
+    EXPECT_EQ(cell.state, WifiState::Off);
+}
+
+TEST(WifiService, ForgetAllWhileConnectedClosesTheHotspotThenGoesOff) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    ASSERT_TRUE(svc.start_provisioning(300));
+    f.clear_events();
+    svc.forget_all();
+    auto events = f.all_events();
+    ASSERT_EQ(topics_of(events), (std::vector<std::string>{wisp::core::topics::kNetApState,
+                                                           wisp::core::topics::kNetWifiState}));
+    EXPECT_FALSE(events[0].payload.at("active").as_bool());
+    EXPECT_EQ(str_of(events[1].payload, "state"), "off");
+    EXPECT_TRUE(svc.wifi_cell().get().enabled);
+    EXPECT_EQ(svc.wifi_cell().get().state, WifiState::Off);
+    EXPECT_FALSE(svc.ap_cell().get().active);
+}
+
+TEST(WifiService, HotspotCellFollowsOpenCloseAndClients) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    f.clear_events();
+
+    ASSERT_TRUE(svc.start_provisioning(0));
+    auto ap = svc.ap_cell().get();
+    EXPECT_TRUE(ap.active);
+    EXPECT_EQ(ap.ssid, "Wisp-3F2A");
+    EXPECT_EQ(ap.clients, 0);
+    // Opening an open hotspot again changes nothing.
+    ASSERT_TRUE(svc.start_provisioning(10));
+    svc.tick(250);  // still no client
+    const uint32_t revision = svc.ap_cell().revision();
+
+    f.wifi->ap_client_count = 1;
+    svc.tick(500);
+    EXPECT_EQ(svc.ap_cell().get().clients, 1);
+    svc.tick(750);  // the same count again
+    f.wifi->ap_client_count = 2;
+    svc.tick(1000);
+    EXPECT_EQ(svc.ap_cell().get().clients, 2);
+    EXPECT_EQ(svc.ap_status().clients, 2);
+
+    ASSERT_TRUE(svc.stop_provisioning());
+    ap = svc.ap_cell().get();
+    EXPECT_FALSE(ap.active);
+    EXPECT_EQ(ap.ssid, "Wisp-3F2A");  // the closed hotspot is still named
+    EXPECT_EQ(ap.clients, 0);
+    EXPECT_FALSE(svc.ap_status().active);
+    EXPECT_TRUE(svc.ap_status().ssid.empty());
+    EXPECT_NE(svc.ap_cell().revision(), revision);
+
+    // Open again with the same name: a change from the closed one.
+    ASSERT_TRUE(svc.start_provisioning(2000));
+    EXPECT_TRUE(svc.ap_cell().get().active);
+    // Deep standby closes it.
+    svc.set_power_level(PowerLevel::DeepStandby, 3000);
+    EXPECT_FALSE(svc.ap_cell().get().active);
+
+    auto events = f.topic(wisp::core::topics::kNetApState);
+    ASSERT_EQ(events.size(), 6u);  // open, 1, 2, closed, open, closed
+    const std::vector<std::pair<bool, int>> expected{{true, 0},  {true, 1}, {true, 2},
+                                                     {false, 0}, {true, 0}, {false, 0}};
+    for (size_t i = 0; i < events.size(); ++i) {
+        EXPECT_EQ(events[i].payload.at("active").as_bool(), expected[i].first) << i;
+        EXPECT_EQ(events[i].payload.at("clients").as_int(), expected[i].second) << i;
+        EXPECT_EQ(str_of(events[i].payload, "ssid"), "Wisp-3F2A") << i;
+        EXPECT_EQ(events[i].source, wisp::net::kWifiServiceSource) << i;
+    }
+    EXPECT_EQ(events.back().payload, wisp::net::ap_state_payload(svc.ap_cell().get()));
+}
+
+// SSIDs are raw bytes: a GBK name and a 32-byte one reach the cell whole.
+TEST(WifiService, CellKeepsRawAndLongestSsids) {
+    for (const std::string& ssid :
+         {std::string("\xc4\xe3\xba\xc3\x00\xff", 6), std::string(32, 'L')}) {
+        Fixture f;
+        f.in_range(ssid, -50);
+        auto& svc = f.make();
+        ASSERT_TRUE(svc.init(0));
+        ASSERT_TRUE(svc.add_network(ssid, "", 0));
+        tick2(svc, 0);
+        ASSERT_EQ(svc.status().state, WifiState::Connected);
+        EXPECT_EQ(svc.wifi_cell().get().ssid.view(), ssid);
+        auto states = f.topic(wisp::core::topics::kNetWifiState);
+        ASSERT_FALSE(states.empty());
+        EXPECT_EQ(str_of(states.back().payload, "ssid"), ssid);
+    }
+}
+
+// Followers get the cell's values on their own dispatcher.
+TEST(WifiService, WifiCellSubscriberSeesTheConnection) {
+    wisp::test::ManualDispatcher dispatcher;
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    std::vector<WifiState> seen;
+    wisp::core::CellSubscription sub = svc.wifi_cell().subscribe(
+        [&](const wisp::net::WifiSnapshot& s) { seen.push_back(s.state); }, &dispatcher);
+    dispatcher.run_all();
+    ASSERT_TRUE(svc.init(0));
+    tick2(svc, 0);
+    dispatcher.run_all();
+    EXPECT_EQ(seen, (std::vector<WifiState>{WifiState::Off, WifiState::Connected}));
+    sub.reset();
 }
