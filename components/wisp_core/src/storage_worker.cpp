@@ -136,6 +136,16 @@ bool StorageWorker::running() const {
     return accepting_;
 }
 
+bool StorageWorker::started() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return started_;
+}
+
+bool StorageWorker::joined() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return stopped_;
+}
+
 bool StorageWorker::submit(std::function<void()> job, IoLane lane) { return try_submit(job, lane); }
 
 bool StorageWorker::try_submit(std::function<void()>& job, IoLane lane) {

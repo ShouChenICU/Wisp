@@ -2,9 +2,10 @@
 
 // StorageRouter: picks the storage worker for a job by the medium it
 // touches. Card-only work (Medium::Sd) goes to the SD I/O worker
-// "wisp.sd.io" while it runs; everything else, and card work whenever
-// there is no SD I/O worker or it has stopped, goes to the flash worker
-// "wisp.fs", which may touch both media (wisp/core/storage_worker.hpp).
+// "wisp.sd.io" from its start until it has been joined; everything else,
+// and card work when there is no SD I/O worker, before it starts or once
+// it has been joined, goes to the flash worker "wisp.fs", which may touch
+// both media (wisp/core/storage_worker.hpp).
 //
 // The medium comes from the caller: StorageManager::medium_of() for the
 // path the job works on. It sends a malformed path to Medium::Internal,
@@ -19,9 +20,11 @@
 //   - Order: per worker, each lane runs in submission order; across lanes
 //     and across workers there is no order. A producer that needs two
 //     jobs in order on different lanes or media waits for the first
-//     (run_sync(), call_on()) before submitting the second. A job that
-//     falls back to wisp.fs because the SD I/O worker is stopping may run
-//     before card jobs still queued there.
+//     (run_sync(), call_on()) before submitting the second. Card work
+//     falls back to wisp.fs only once the SD I/O worker has been joined
+//     (StorageWorker::joined()), so it never overtakes card jobs queued
+//     there: while stop_sd() drains them, new card work is refused
+//     (submit() false, run_sync() Busy, which call_on() retries).
 //   - Waiting: the SD I/O worker never waits for the flash worker --
 //     StorageWorker::run_sync(), drain() and stop() of the flash worker
 //     refuse a caller on the SD I/O thread, so a card job cannot block on
@@ -64,24 +67,26 @@ public:
     // Null without one.
     StorageWorker* sd() const { return sd_; }
 
-    // The SD I/O worker for Medium::Sd while it is running(), else the
-    // flash worker.
+    // The SD I/O worker for Medium::Sd while it is started() and not
+    // joined(), else the flash worker.
     StorageWorker& worker_for(Medium m) const;
 
     // On either worker's thread.
     bool on_worker() const;
 
     // Queues `job` on worker_for(m). A refusal because the SD I/O worker
-    // stopped meanwhile is retried on the flash worker; a full lane is
-    // not. False if `job` is empty or it was not queued.
+    // has been joined meanwhile is retried on the flash worker; a full
+    // lane, or an SD I/O worker still draining, is not. False if `job` is
+    // empty or it was not queued.
     bool submit(Medium m, std::function<void()> job, IoLane lane = IoLane::Normal);
 
     // StorageWorker::run_sync() on worker_for(m), with the same errors and
     // timeout rules, except that Medium::Sd never runs inline on the
-    // caller because the SD I/O worker stopped: it goes to the flash
-    // worker then (which itself runs inline before start() / after its
-    // own stop()). Called from an SD I/O job, Medium::Sd runs inline,
-    // including while stop_sd() drains the jobs queued before it.
+    // caller because the SD I/O worker stopped: Busy while it drains, and
+    // on the flash worker once it has been joined (which itself runs
+    // inline before start() / after its own stop()). Called from an SD
+    // I/O job, Medium::Sd runs inline, including while stop_sd() drains
+    // the jobs queued before it.
     Result<void> run_sync(Medium m, std::function<void()> job, uint32_t timeout_ms,
                           IoLane lane = IoLane::Normal);
 
@@ -96,9 +101,9 @@ public:
     size_t pending() const;
 
     // Drains and joins the SD I/O worker (StorageWorker::stop(): every job
-    // already queued there runs first); from the moment it begins,
-    // Medium::Sd goes to the flash worker. Idempotent; a no-op without
-    // one. Not from a job.
+    // already queued there runs first). While it drains, new Medium::Sd
+    // work is refused (Busy); once it returns, Medium::Sd goes to the
+    // flash worker. Idempotent; a no-op without one. Not from a job.
     void stop_sd();
 
 private:

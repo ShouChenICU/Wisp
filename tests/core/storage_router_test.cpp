@@ -149,16 +149,54 @@ TEST(StorageRouter, StopSdRunsQueuedSdJobsFirst) {
     while (sd.running()) wisp::os::sleep_ms(1);
     EXPECT_FALSE(s1);
     EXPECT_FALSE(stopped);
-    // Meanwhile new SD work goes to the flash worker.
-    std::atomic<bool> later_on_flash{false};
-    EXPECT_TRUE(r.submit(Medium::Sd, [&] { later_on_flash = flash.on_worker(); }));
-    EXPECT_TRUE(flash.drain(5000));
-    EXPECT_TRUE(later_on_flash);
 
     release.give();
     stopper.join();
     EXPECT_TRUE(stopped);
     EXPECT_TRUE(s1_before_return);
+}
+
+// Between the start of stop_sd() and its join, card work is refused rather
+// than sent to wisp.fs, where it could overtake card jobs still queued on
+// the SD I/O worker; once stop_sd() has returned it runs on wisp.fs.
+TEST(StorageRouter, CardJobsAreRefusedUntilTheSdWorkerIsJoined) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker flash;
+    StorageWorker sd(StorageWorker::sd_io_config());
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(flash.start());
+    ASSERT_TRUE(sd.start());
+    StorageRouter r(flash, &sd);
+    ASSERT_NO_FATAL_FAILURE(gate(sd, release));
+    std::atomic<bool> queued_ran{false};
+    ASSERT_TRUE(r.submit(Medium::Sd, [&] { queued_ran = true; }));
+
+    std::thread stopper([&] { r.stop_sd(); });
+    // Released before `stopper` is joined (reverse order of destruction).
+    JoinOnExit join{stopper};
+    ReleaseOnExit release_first{release};
+    while (sd.running()) wisp::os::sleep_ms(1);
+    EXPECT_FALSE(sd.joined());
+    EXPECT_EQ(&r.worker_for(Medium::Sd), &sd);
+
+    std::atomic<int> ran_on_flash{0};
+    EXPECT_FALSE(r.submit(Medium::Sd, [&] { ran_on_flash += flash.on_worker() ? 1 : 0; }));
+    auto busy = r.run_sync(Medium::Sd, [&] { ran_on_flash += flash.on_worker() ? 1 : 0; }, 5000);
+    ASSERT_FALSE(busy);
+    EXPECT_EQ(busy.error().code, wisp::ErrorCode::Busy);
+    EXPECT_TRUE(flash.drain(5000));
+    EXPECT_EQ(ran_on_flash.load(), 0);
+    EXPECT_FALSE(queued_ran);
+
+    release.give();
+    stopper.join();
+    EXPECT_TRUE(queued_ran);
+    EXPECT_TRUE(sd.joined());
+    EXPECT_EQ(&r.worker_for(Medium::Sd), &flash);
+    EXPECT_TRUE(r.submit(Medium::Sd, [&] { ran_on_flash += flash.on_worker() ? 1 : 0; }));
+    EXPECT_TRUE(flash.drain(5000));
+    EXPECT_TRUE(r.run_sync(Medium::Sd, [&] { ran_on_flash += flash.on_worker() ? 1 : 0; }, 5000));
+    EXPECT_EQ(ran_on_flash.load(), 2);
 }
 
 TEST(StorageRouter, DrainWaitsForBothWorkers) {

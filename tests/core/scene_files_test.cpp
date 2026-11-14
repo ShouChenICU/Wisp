@@ -29,6 +29,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/os/os.hpp"
 
@@ -1189,4 +1190,57 @@ TEST(SceneFiles, DownloadFinishedAfterRemovalIsDiscarded) {
     EXPECT_FALSE(on_disk(f.sd_files("d") / "f.bin"));
     EXPECT_FALSE(on_disk(f.sd_files("d") / ".f.bin.dl"));
     EXPECT_EQ(f.files->info("d").value().used, 3u);
+}
+
+// A card scene's write queued on the SD I/O worker when stop_sd() begins
+// runs before anything after it: a second write submitted while the worker
+// drains is refused ("busy"), never sent to wisp.fs ahead of the first.
+TEST(SceneFiles, WritesAroundStopSdKeepTheirOrder) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker flash;
+    StorageWorker sd(StorageWorker::sd_io_config());
+    wisp::core::StorageRouter router(flash, &sd);
+    SceneFilesConfig config;
+    config.submit_io = [&](Medium m, IoLane lane, std::function<void()> job) {
+        return router.submit(m, std::move(job), lane);
+    };
+    Fixture f(true, config);
+    f.declared["a"] = FilesWant::Sd;
+    // Before the workers start, as at boot: the scene's record is loaded on
+    // the card.
+    ASSERT_TRUE(f.files->write("a", "x", as_bytes("0")));
+    ASSERT_TRUE(flash.start());
+    ASSERT_TRUE(sd.start());
+    GiveOnExit unpark{release};
+    wisp::os::Semaphore parked(1, 0);
+    ASSERT_TRUE(sd.submit([&] {
+        parked.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(parked.take(5000));
+    std::atomic<bool> first_ok{false};
+    ASSERT_TRUE(f.files->submit(
+        "a", [&] { first_ok = static_cast<bool>(f.files->write("a", "x", as_bytes("1"))); }));
+
+    std::thread stopper([&] { router.stop_sd(); });
+    while (sd.running()) wisp::os::sleep_ms(1);
+    std::atomic<bool> second_ran{false};
+    const bool second_queued = f.files->submit("a", [&] {
+        second_ran = true;
+        (void)f.files->write("a", "x", as_bytes("2"));
+    });
+    release.give();
+    stopper.join();
+    ASSERT_TRUE(flash.drain(5000));
+    EXPECT_FALSE(second_queued);
+    EXPECT_FALSE(second_ran);
+    EXPECT_TRUE(first_ok);
+    EXPECT_EQ(read_raw(f.sd_files("a") / "x"), "1");
+
+    // Joined: the scene's card work now runs on wisp.fs.
+    auto third = wisp::core::run_files<void>(
+        *f.files, "a", [](SceneFiles& files) { return files.write("a", "x", as_bytes("3")); });
+    EXPECT_TRUE(third) << third.error().message;
+    EXPECT_EQ(read_raw(f.sd_files("a") / "x"), "3");
+    flash.stop();
 }

@@ -150,6 +150,16 @@ public:
     // worker accepts jobs.
     bool running() const;
 
+    // True from a successful start() on (also once stopped).
+    bool started() const;
+
+    // True once stop() has joined the worker: every job it accepted has
+    // run. Between the start of stop() and this, running() is false but
+    // accepted jobs may still be queued; StorageRouter sends card work to
+    // the flash worker only once this is true, so that work never
+    // overtakes them.
+    bool joined() const;
+
     const char* name() const { return config_.name; }
     WorkerRole role() const { return config_.role; }
 
@@ -251,8 +261,8 @@ private:
     mutable os::Mutex mutex_;
     bool accepting_ = false;
     bool started_ = false;
-    // Set once stop() has joined the worker; from then on run_sync() runs
-    // jobs inline.
+    // Set once stop() has joined the worker (joined()); from then on
+    // run_sync() runs jobs inline.
     bool stopped_ = false;
     // Jobs submitted and not yet finished; counted before the push so
     // drain() never sees a queued job as idle.

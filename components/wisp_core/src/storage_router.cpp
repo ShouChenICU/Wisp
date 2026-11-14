@@ -7,7 +7,9 @@ namespace wisp::core {
 StorageRouter::StorageRouter(StorageWorker& flash, StorageWorker* sd) : flash_(flash), sd_(sd) {}
 
 StorageWorker& StorageRouter::worker_for(Medium m) const {
-    if (m == Medium::Sd && sd_ != nullptr && sd_->running()) {
+    // A worker started and not yet joined may still hold card jobs, which
+    // a job sent to wisp.fs could overtake (both flags only turn true).
+    if (m == Medium::Sd && sd_ != nullptr && sd_->started() && !sd_->joined()) {
         return *sd_;
     }
     return flash_;
@@ -25,10 +27,11 @@ bool StorageRouter::submit(Medium m, std::function<void()> job, IoLane lane) {
     if (w.try_submit(job, lane)) {
         return true;
     }
-    // Refused by the SD I/O worker because it began stopping since
-    // worker_for() looked: the job is still here, so the flash worker
-    // takes it. A full lane is not moved, or the lane's order would break.
-    if (&w == &flash_ || w.running()) {
+    // Refused by the SD I/O worker: only once it has been joined since
+    // worker_for() looked does the flash worker take the job (nothing of
+    // the SD lanes is left to overtake). A full lane, or a worker still
+    // draining what it accepted, is reported, or the order would break.
+    if (&w == &flash_ || !w.joined()) {
         return false;
     }
     return flash_.try_submit(job, lane);
@@ -41,8 +44,9 @@ Result<void> StorageRouter::run_sync(Medium m, std::function<void()> job, uint32
     }
     if (m == Medium::Sd && sd_ != nullptr && sd_->on_worker()) {
         // Inline, as for any worker called from its own job -- also while
-        // stop_sd() drains the jobs queued before it, when worker_for()
-        // already answers the flash worker, which would refuse this thread.
+        // stop_sd() drains the jobs queued before it, when the SD I/O
+        // worker refuses new jobs and the flash worker would refuse this
+        // thread.
         return sd_->run_sync(std::move(job), timeout_ms, lane);
     }
     StorageWorker& w = worker_for(m);
@@ -51,9 +55,11 @@ Result<void> StorageRouter::run_sync(Medium m, std::function<void()> job, uint32
     }
     // Not w.run_sync(): once the SD I/O worker has stopped it would run the
     // job inline on this thread, which need not be allowed to touch the
-    // card. run_queued() never runs inline and leaves a refused job here.
+    // card. run_queued() never runs inline and leaves a refused job here;
+    // as in submit(), it moves to the flash worker only once the SD I/O
+    // worker has been joined.
     Result<void> r = w.run_queued(job, timeout_ms, lane);
-    if (r || r.error().code != ErrorCode::Busy || w.running()) {
+    if (r || r.error().code != ErrorCode::Busy || !w.joined()) {
         return r;
     }
     return flash_.run_sync(std::move(job), timeout_ms, lane);
