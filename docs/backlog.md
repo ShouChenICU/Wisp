@@ -291,6 +291,9 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulat
 - Build the firmware first: the ESP-only branch of `dispatch_misuse()`, the bounded wait in the cell's teardown and the `mem` change in `firmware/main/main.cpp` have never been compiled.
 - `mem` at idle on both boards: the line `bus dropped=0 cell_subs=0`; internal free and largest block unchanged within noise against the last values in `docs/hardware/<board>.md` (the plan adds two `os::Mutex` objects, about 200 bytes of internal RAM); the `wisp.bus` and `wisp_ui` stack high-water marks.
 - `WISP_PERF` on Home and in a scene: frame rate not below the baseline (the UI loop now checks an empty ready list once per iteration).
+- Deep standby for 10 minutes or more on both boards: light-sleep residency and wake counts against `docs/hardware/<board>.md` (the bus loop and the paused UI branch changed).
+- Factory reset and firmware confirm on the device: the admin page still shows `system.factory_reset` `done` and `system.firmware` `confirmed` before the reboot, now that `wait_idle()` also covers slots.
+- Parked for the later state-cell plans: an edge payload that carries a device id in a `FixedString<31>` must check `assign()`'s result, since ids are chosen by the board.
 
 ## CI speed
 
