@@ -193,7 +193,7 @@ Source: glyph partition review records.
 
 ## Shell sub-pages (MVP spec 6.4)
 
-- Device checks not run: `bench scroll` with the conversation history open and with the scene list open (with icons), against the "性能基准" section of the board doc; the cost of the first icon decode on the worker, and the wisp.fs stack high-water mark (`mem`) after opening a scene list with icons, since lodepng now runs on that 8 KB internal stack; touch feel of swipe versus scroll on the sub-pages.
+- Device checks not run: `bench scroll` with the conversation history open and with the scene list open (with icons), against the "性能基准" section of the board doc; the cost of the first icon decode (now on `wisp.shell.list`; its stack is measured under "Storage worker lanes: device checks not run"); touch feel of swipe versus scroll on the sub-pages.
 - The settings page reads the settings once when it is built: a change made by voice or from the admin page while it is open shows only after it is reopened, and the screen-off highlight follows the tap even if the write fails. Subscribe to `system.settings` while the page is open.
 - Scene list open on the device (9 scenes, no icons, no SD card): the first open after boot lists in 539 ms (was 770–1283 ms), later opens in 8–40 ms (`cached=1`); the build is 38–66 ms. The first open still re-reads each `scene.json` in the wisp.files lookups with the card out; listing once in the background after boot, or keeping the chosen files location with the cached listing, would remove it. Not yet measured: how long the long-press card takes to show "同时删除数据" (one `removal()` probe, about 16 file calls).
 - Small long-lived containers in internal RAM: `SceneRecents`' map and the scene list's `scenes_`/`cards_` vectors (one entry per scene), and also:
@@ -283,6 +283,31 @@ Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. 
 - A VM whose callbacks keep producing immediate results (a refused call made from each callback) delays its own due timers: within one VM a waiting result runs before a taken timer.
 - In the simulator, a request stuck in its TLS handshake (a server that accepts and never answers) is not stopped by `cancel_scene()` or `SceneHttp::stop()`: libcurl's progress callback did not run during that wait, so `wisp_sim` took 13.6 s to exit on SIGTERM with a scene `wisp.http.get` in that state (its 15 s deadline) and would wait up to the 5-minute deadline for a download. The worker and `SimHttpClient` code path is the same as before the two lanes; check whether the device's client stops at an abort there. With two lanes, two requests can be stuck at once; `stop()` aborts both before joining, so the waits overlap and the worst case is the longer one.
 - `queue_load` still drops a loaded-package message when the scene queue is full (`<id>: loaded, but the scene queue is full`); call results no longer go through the queue, but this receipt does.
+
+## Storage worker lanes: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator and unit tests only so far; the ESP-only branches of `WISP_ASSERT_SD_IO_THREAD`/`WISP_ASSERT_MEDIUM_THREAD` and of `storage_manager.cpp` were not compiled in that environment, so the firmware build itself is the first check.
+
+1. `mem` at idle and in the AGENTS.md section 5 worst case: `wisp.sd.io` and `wisp.shell.list` stacks in PSRAM, `wisp.fs` in internal RAM; the high-water marks of the three (`wisp.shell.list` while it decodes a 256×256 icon); internal free and largest block against `wisp/app/ram_budget.hpp`, compared with the numbers before this branch. Record them in `docs/hardware/<board>.md`.
+2. Card file I/O from `wisp.sd.io`'s PSRAM stack: a scene with `"files": "sd"` writes, appends, reads and downloads several MB; the bytes match; FATFS/sdmmc reads and writes and the unmount in `StorageManager::refresh()` after a card pull run there without an abort and without a `sd access off the sd i/o thread` or `flash access off the flash thread` line. If it aborts, set `kSdOwnWorker` (`components/wisp_app/src/scene_wiring.hpp`) to false and record it in `docs/hardware/<board>.md`.
+3. An OTA upload and a card download at the same time, both on the Bulk lane: both complete, no sdmmc timeout in the log; a setting changed meanwhile applies at once.
+4. `mem` after a normal session (scene list opened, scenes opened, a voice turn, settings changed): each lane's longest wait and job, recorded in `docs/hardware/<board>.md`; the Interactive lane's longest wait should not exceed the longest job of the other lanes. Also a worst-case to-do or memory file rewrite on the Interactive lane (200 to-dos, 64 notes) and its `job_max_ms`.
+5. The scene list opened cold with the example scenes: cards first, icons fill in, no stutter while scrolling; the `scenes ms_list=... ms_icons=...` line compared with before; the warm-open time.
+6. The port-8900 httpd stack high-water mark while listing many scenes and during a scene upload (the manifests now parse on `wisp.fs` for those routes, `ParseOn::Worker`).
+7. Card pulled during a download and put back: the download reports `unavailable`, the scene keeps running, its files are counted again.
+8. Factory reset with a card in: `<sd>/wisp/library/agent` is gone after the restart.
+9. Deep standby entered right after changing a setting and writing a card file: both are on disk after waking (the drain covers both workers).
+
+## Storage worker lanes parked review findings
+
+- `SceneRepository::install()` opens the zip, inflates it, parses `scene.json` and validates the tool schemas on the admin httpd task's internal-RAM stack before any job (as before this branch); that is heavier than the manifest parse moved off that stack.
+- `SceneWiring::list_async` (the hardware diagnostics' scene list) still runs a whole listing in one worker job.
+- `Shell::stop()` is bounded by one storage job plus one file-area probe (`kFilesProbeMs`), not strictly by one job; and probes that timed out pile up behind a wedged worker.
+- A residual check-then-use window in the reminder action guard: a todo action already running when `ReminderScheduler::stop()`'s barrier is refused can still reach the scheduler.
+- On the own-worker abandon path a `FileDownload` stays in its gate until the scene closes.
+- A stale card job that lands on `wisp.fs` creates an empty `SceneFiles` record before answering `Busy`.
+- No test for a partial start of the SD worker in the style of `SceneHttp`'s: a failed start of `wisp.sd.io` shares the no-card-slot path and is not tested on its own.
+- Wall-clock tests that fail occasionally under parallel load: `PowerManager.TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt`, `AppScenes.SelfCheckResyncsAfterAFaultedPanelCloses`.
 
 ## CI speed
 

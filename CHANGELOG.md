@@ -10,6 +10,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - The home screen says why a turn did not finish (stopped, a limit reached, no model, a refused key, no network, a lost connection, a server error, a conversation too long) in one short line, with the admin address where the fix is there. The full explanation stays in the conversation.
 - `docs.read` returns long topics in pages the agent reads on with `next_offset`.
 - The talk key works from a dark screen: held, it wakes the screen and records; a short press only wakes the screen.
+- The serial command `mem` also prints each storage lane's job count, longest wait and longest job (`storage <worker> <lane> jobs=… wait_max_ms=… job_max_ms=…`), for `wisp.fs` and the SD card's worker.
 - The home screen lists what is missing to talk instead of one generic hint: "Connecting to Wi-Fi…" while it reconnects, "No models set up yet" on first boot, or the missing items ("Needed: listening, speech"), with the admin address. A muted device does not ask for a speech model. While talking works (say, only speech is missing) why the last try failed shows first, for its usual time, and then the list returns. A tap on the wisp says "Hold the wisp to talk" once everything is set up and no turn runs.
 
 ### Changes
@@ -24,6 +25,9 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - The agent's `lua.run` CPU slice drops from 1000 ms to 200 ms, the same as a scene's step; a run still lasts its own `timeout_ms`, but a script that computes for more than 200 ms without waiting now ends in `timeout`.
 - A scene, or a `lua.run` script, may have at most 16 `wisp.http`, `wisp.http.download` and `wisp.files` calls waiting for results (`kMaxCallsInFlight`); one more raises the Lua error "too many calls waiting for results (at most 16)", which `pcall` catches, and a place frees once its callback has run. An entry file that starts more than 16 at load fails the install check.
 - Downloads run on their own worker (`wisp.shttp.dl`): a download that streams for minutes no longer holds up a scene's other requests or the agent's `http.fetch`. At most two downloads wait behind the one running; a download and an ordinary request of one scene may now complete in either order.
+- Work on SD card files no longer holds up settings saves and conversation writes: a scene's files on the card are read, written and downloaded on a worker of their own (`wisp.sd.io`), and settings saves, conversation appends, memory notes and to-dos take a new Interactive lane on `wisp.fs` that runs ahead of other file work (a lower lane still gets a turn after 8 jobs, `kLaneTurnAfter`). `kSdOwnWorker` turns the card worker off for a board where card I/O cannot run from a PSRAM stack.
+- The scene list and its icons load on their own task (`wisp.shell.list`) instead of on the storage worker, reading one scene per storage job, so opening the list no longer holds up saves.
+- Internal: `StorageManager` checks threads and locks per medium (internal flash, the card), so card I/O never waits for a flash erase; `StorageRouter` picks the worker by medium; `SceneFiles` routes each scene's calls to the worker for where its files live; the scene repository reads one scene per job and parses manifests off the storage worker (on the worker for the admin routes, whose httpd stack is small); the agent's `scene.list` runs on the agent task.
 - `scene.rollback` returns to the version from before the agent's turn: within one turn only a scene's first install keeps the installed version as the previous one, so two installs and an "undo" no longer land on the turn's own first attempt.
 
 ### Fixes
@@ -31,9 +35,10 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - Recover from an over-long context: summarize harder, then cut the current turn's results, and retry once when the model refuses the request as too long; the token estimate calibrates itself from the model's reported usage.
 - Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key. These retries cover connection and TLS failures only: a Wi-Fi disconnect still ends the running turn ("lost connection" during a request, "no network" between steps).
 - A scene no longer loses an HTTP or files result when its message queue is full: results wait in a box of the scene's own, sized for its 16 calls, and the queue only carries a wake-up.
+- A shell destroyed without being stopped no longer leaves its event subscriptions and conversation listeners behind.
 - Replacing a list's items no longer shows an empty list for a frame: the old rows stay on screen until the new ones arrive, and a tap on an old row in that moment does nothing.
 
-Device checks are pending for the turn reliability, the voice and wake, and the scene scheduling and install safety changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run" and "Scene scheduling: device checks not run"); these changes are verified in the simulator and unit tests only.
+Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, and the storage worker lanes changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run" and "Storage worker lanes: device checks not run"); these changes are verified in the simulator and unit tests only.
 
 ## 0.5.2 — 2026-11-14
 
