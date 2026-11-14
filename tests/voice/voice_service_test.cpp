@@ -1601,7 +1601,7 @@ TEST_F(VoiceServiceTest, CancelDuringTheNetworkWaitEndsTheRound) {
     virtual_ms += 1000;
     wisp::os::sleep_ms(150);
     voice->cancel_capture();
-    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Idle; }, 200));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Idle; }, 1000));
     ASSERT_TRUE(wait_idle());
     EXPECT_TRUE(reasons().empty());
     EXPECT_EQ(count(kAsrPath), 0u);

@@ -9,17 +9,17 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - Add a Stop button right of the wisp on the home screen while a turn runs, with a 48 px touch target on every screen shape.
 - The home screen says why a turn did not finish (stopped, a limit reached, no model, a refused key, no network, a lost connection, a server error, a conversation too long) in one short line, with the admin address where the fix is there. The full explanation stays in the conversation.
 - `docs.read` returns long topics in pages the agent reads on with `next_offset`.
+- The talk key works from a dark screen: held, it wakes the screen and records; a short press only wakes the screen.
+- The home screen lists what is missing to talk instead of one generic hint: "Connecting to Wi-Fi…" while it reconnects, "No models set up yet" on first boot, or the missing items ("Needed: listening, speech"), with the admin address. A muted device does not ask for a speech model. While talking works (say, only speech is missing) why the last try failed shows first, for its usual time, and then the list returns. A tap on the wisp says "Hold the wisp to talk" once everything is set up and no turn runs.
 
 ### Changes
 
 - Holding to talk stops the speech but no longer stops a running turn, such as a scene build started from the web page. The new question replaces the turn only once it has been heard; cancelling the hold or not being heard leaves the turn running.
 - The talk overlay now appears over every screen but Home (scenes, settings and other pages, diagnostics), shows why a turn ended or a voice error, and grows to three lines before cutting the text.
 - The agent sees its current turn's tool results whole (up to 96 KB) instead of cut to 4 KB, and no longer resends large tool-call arguments from earlier turns.
-- A spoken reply no longer pauses after its first sentence while the model writes a long answer: once the spoken part is complete, the rest of it is synthesized while the text still streams (still one speech request at a time).
+- A spoken reply no longer pauses after its first sentence while the model writes a long answer: speech continues as soon as the say block closes, its last sentence included, while the text still streams (still one speech request at a time).
 - Words said right as you press are no longer lost: the microphone opens at the press of the talk key or the wisp and keeps the last 500 ms before the hold starts (`VoiceConfig::preroll_ms`; 0 turns this off for a board). The start tone is now part of such a recording. "Listening" shows only once the microphone is actually recording.
 - Talking right after the device wakes from deep standby works: a hold records while Wi-Fi reconnects to a saved network, and recognition waits up to 8 s for it instead of failing "offline" at once. When no connection is being made (Wi-Fi turned off, no saved network, disconnected in Settings, the only network's password rejected, or a saved network out of range and waiting to retry) a hold is still refused at once and Home says there is no Wi-Fi.
-- The talk key works from a dark screen: held, it wakes the screen and records; a short press only wakes the screen.
-- The home screen lists what is missing to talk instead of one generic hint: "Connecting to Wi-Fi…" while it reconnects, "No models set up yet" on first boot, or the missing items ("Needed: listening, speech"), with the admin address. A muted device does not ask for a speech model. While talking works (say, only speech is missing) why the last try failed shows first, for its usual time, and then the list returns. A tap on the wisp says "Hold the wisp to talk" once everything is set up and no turn runs.
 
 ### Fixes
 

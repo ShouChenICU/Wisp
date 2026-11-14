@@ -57,8 +57,9 @@ void TalkKey::on_event(const core::Event& e) {
 }
 
 void TalkKey::on_down() {
-    // From a dark screen the press counts too (its event already woke the
-    // screen), but the mic is left alone: the wake is still powering it up.
+    // From a dark screen the press counts too, but it does not prime: the
+    // wake its event asked for is still on its way (it is posted to the UI
+    // task), and the mic is powered up only with it.
     const bool lit = !screen_on_ || screen_on_();
     {
         std::lock_guard<os::Mutex> lock(mu_);

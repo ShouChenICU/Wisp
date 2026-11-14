@@ -257,7 +257,7 @@ Source: `docs/superpowers/plans/2026-11-14-voice-wake-responsiveness.md`. Simula
 ## Voice and wake responsiveness parked review findings
 
 - The talk key and the wisp share one `press_held_` in `ConversationController`: a key tap during a pending wisp press ends that press's priming, so the wisp's hold loses its pre-roll.
-- Some negative voice tests rely on short real sleeps (`PrimeIsSkippedWhileSpeechPlays`, `PrerollZeroDisablesPriming`, `UnprimeBeforeTheTaskSawThePrime`; `wait_until(Idle, 200)` on a 100 ms poll): they could pass by luck or flake under heavy load.
+- Some negative voice tests rely on short real sleeps (`PrimeIsSkippedWhileSpeechPlays`, `PrerollZeroDisablesPriming`, `UnprimeBeforeTheTaskSawThePrime`): they could pass by luck or flake under heavy load.
 - No app-level test of a hold while Wi-Fi reconnects: `HoldRecordsWhileConnecting` checks only the controller's gate, and the voice tests the wait.
 - A tap hint can interrupt an error hint's window: a tap during a voice error's or turn reason's `kFadeAfterMs` shows `HomeHoldToTalk` in its place for that time.
 - "." is not a sentence terminator in `SentenceSplitter`, so an English say is synthesized as one piece: its first audio waits for the whole say, up to the say's close.
