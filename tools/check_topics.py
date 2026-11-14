@@ -12,6 +12,14 @@ Two rules:
      Registered names containing '<' are patterns (the button topics are
      built per device) and are not checked. Only an exact match is flagged:
      prefixes such as "net." stay legal for subscriptions.
+Also checked: a name in kAll that is not a defined constant, a name
+registered twice, and a constant of topics.hpp that is absent from kAll.
+A constant counts as a topic name when its value contains a '.' and does
+not end with '.'; that leaves out the button prefix ("button.") and the
+edge names ("down", "up", ...), which are parts of a topic, not topics.
+The doc table is the first table under the "## Event topics" heading; any
+heading or the end of that table closes it, so later tables are not read.
+Each first-column piece must be exactly one backticked name.
 
 Prints "path:line: message" lines and exits 1 when any rule fails; silent
 on success. Standard library only.
@@ -28,71 +36,27 @@ SCAN_DIRS = ("components", "simulator")
 SUFFIXES = {".cpp", ".hpp"}
 
 _CONST_RE = re.compile(r'\b(k\w+)\s*\[\s*\]\s*=\s*"([^"]*)"')
+_KALL_RE = re.compile(r"\bkAll\s*\[\s*\]\s*=\s*\{")
 _ENTRY_RE = re.compile(r'\{\s*(k\w+|"[^"]*")\s*,\s*Kind::')
+_PIECE_RE = re.compile(r"^`([^`\s]+)`$")
 _RAW_PREFIXES = {"", "u8", "u", "U", "L"}
 
 
-def load_registry(root):
-    """Return the registered topics as a list of (name, constant or None)."""
-    text = (root / TOPICS_HPP).read_text()
-    constants = {m.group(1): m.group(2) for m in _CONST_RE.finditer(text)}
-    start = text.find("kAll[]")
-    body = text[start:text.find("};", start)] if start >= 0 else ""
-    topics = []
-    for m in _ENTRY_RE.finditer(body):
-        ref = m.group(1)
-        if ref.startswith('"'):
-            topics.append((ref[1:-1], None))
-        elif ref in constants:
-            topics.append((constants[ref], ref))
-    return topics
+def _word_start(text, i):
+    while i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
+        i -= 1
+    return i
 
 
-def doc_rows(root):
-    """Return the (name, line) of every topic named in the table's first column."""
-    rows = []
-    in_section = False
-    for number, line in enumerate((root / ARCH_DOC).read_text().splitlines(), 1):
-        if line.startswith("## "):
-            in_section = line.strip() == "## Event topics"
-            continue
-        if not in_section or not line.startswith("|"):
-            continue
-        cell = line.split("|")[1].strip()
-        if cell == "Topic" or set(cell) <= {"-", " ", ":"}:
-            continue
-        previous = None
-        for piece in cell.split(" / "):
-            name = piece.strip().strip("`")
-            if name.startswith(".") and previous:
-                name = previous.rsplit(".", 1)[0] + name
-            rows.append((name, number))
-            previous = name
-    return rows
-
-
-def check_docs(root, topics):
-    errors = []
-    registered = {name for name, _ in topics}
-    rows = doc_rows(root)
-    documented = {name for name, _ in rows}
-    for name, _ in topics:
-        if name not in documented:
-            errors.append(f'{ARCH_DOC}: topic "{name}" is registered but has no row')
-    for name, number in rows:
-        if name not in registered:
-            errors.append(f'{ARCH_DOC}:{number}: topic "{name}" has a row but is not registered')
-    return errors
-
-
-def string_literals(text):
-    """Yield (line, value) of every ordinary string literal in C++ source.
+def _tokens(text):
+    """Yield ("comment", start, end, line, None) and ("string", start, end,
+    line, value) for the comments and ordinary string literals of C++ source.
 
     A small state machine rather than a regex: a comment stripper that does
     not know strings lets "http://x" blank the rest of a line and "/*" blank
     later lines. Raw strings and char literals are skipped; a char literal
     ends at the newline at the latest, which also absorbs C++14 digit
-    separators such as 20'000.
+    separators such as 20'000. `line` is the line the token starts on.
     """
     i, n, line = 0, len(text), 1
     while i < n:
@@ -102,29 +66,29 @@ def string_literals(text):
             i += 1
         elif text.startswith("//", i):
             end = text.find("\n", i)
-            i = n if end < 0 else end
+            end = n if end < 0 else end
+            yield "comment", i, end, line, None
+            i = end
         elif text.startswith("/*", i):
             end = text.find("*/", i + 2)
             end = n if end < 0 else end + 2
+            yield "comment", i, end, line, None
             line += text.count("\n", i, end)
             i = end
         elif c == "'":
-            j = i
-            while j > 0 and (text[j - 1].isalnum() or text[j - 1] == "_"):
-                j -= 1
+            j = _word_start(text, i)
             if j < i and text[j].isdigit():
                 i += 1  # digit separator, not a char literal
                 continue
             i += 1
             while i < n and text[i] not in "'\n":
+                if text[i] == "\\" and text[i + 1:i + 2] == "\n":
+                    line += 1
                 i += 2 if text[i] == "\\" else 1
             if i < n and text[i] == "'":
                 i += 1
         elif c == '"':
-            j = i
-            while j > 0 and (text[j - 1].isalnum() or text[j - 1] == "_"):
-                j -= 1
-            token = text[j:i]
+            token = text[_word_start(text, i):i]
             if token.endswith("R") and token[:-1] in _RAW_PREFIXES and "(" in text[i:i + 20]:
                 open_paren = text.index("(", i)
                 closer = ")" + text[i + 1:open_paren] + '"'
@@ -133,30 +97,145 @@ def string_literals(text):
                 line += text.count("\n", i, end)
                 i = end
                 continue
-            start_line = line
+            start, start_line = i, line
             i += 1
             value = []
             while i < n and text[i] not in '"\n':
                 if text[i] == "\\" and i + 1 < n:
+                    if text[i + 1] == "\n":
+                        line += 1
                     value.append(text[i:i + 2])
                     i += 2
                 else:
                     value.append(text[i])
                     i += 1
             if i < n and text[i] == '"':
-                yield start_line, "".join(value)
                 i += 1
+                yield "string", start, i, start_line, "".join(value)
         else:
             i += 1
 
 
-def check_literals(root, topics):
+def string_literals(text):
+    """Yield (line, value) of every ordinary string literal in C++ source."""
+    for kind, _start, _end, line, value in _tokens(text):
+        if kind == "string":
+            yield line, value
+
+
+def blank_comments(text):
+    """Replace every comment by spaces, keeping newlines and offsets."""
+    out = list(text)
+    for kind, start, end, _line, _ in _tokens(text):
+        if kind == "comment":
+            for k in range(start, end):
+                if out[k] != "\n":
+                    out[k] = " "
+    return "".join(out)
+
+
+def load_registry(root):
+    """Return (entries, errors); entries are (name, constant or None, line)."""
+    path = root / TOPICS_HPP
     errors = []
-    constants = {name: const for name, const in topics if "<" not in name and const}
-    names = {name: const for name, const in constants.items()}
-    for name, _ in topics:
-        if "<" not in name and name not in names:
-            names[name] = "?"
+    try:
+        text = blank_comments(path.read_text())
+    except OSError as exc:
+        return [], [f"{TOPICS_HPP}: cannot read: {exc.strerror}"]
+
+    def line_of(offset):
+        return text.count("\n", 0, offset) + 1
+
+    constants = {}
+    for m in _CONST_RE.finditer(text):
+        constants[m.group(1)] = (m.group(2), line_of(m.start()))
+    start = _KALL_RE.search(text)
+    if not start:
+        return [], [f"{TOPICS_HPP}: no kAll array found"]
+    body_end = text.find("};", start.end())
+    body_end = len(text) if body_end < 0 else body_end
+    entries, in_kall = [], set()
+    for m in _ENTRY_RE.finditer(text, start.end(), body_end):
+        ref, line = m.group(1), line_of(m.start())
+        if ref.startswith('"'):
+            entries.append((ref[1:-1], None, line))
+        elif ref in constants:
+            in_kall.add(ref)
+            entries.append((constants[ref][0], ref, line))
+        else:
+            errors.append(f'{TOPICS_HPP}:{line}: kAll names undefined constant "{ref}"')
+    seen = set()
+    for name, _const, line in entries:
+        if name in seen:
+            errors.append(f'{TOPICS_HPP}:{line}: topic "{name}" is registered twice')
+        seen.add(name)
+    registered = {name for name, _c, _l in entries}
+    for const, (value, line) in constants.items():
+        is_topic = "." in value and not value.endswith(".")
+        if is_topic and const not in in_kall and value not in registered:
+            errors.append(f"{TOPICS_HPP}:{line}: constant {const} is not in kAll")
+    return entries, errors
+
+
+def doc_rows(root):
+    """Return (rows, errors); rows are (name, line) of the table's first column."""
+    try:
+        lines = (root / ARCH_DOC).read_text().splitlines()
+    except OSError as exc:
+        return [], [f"{ARCH_DOC}: cannot read: {exc.strerror}"]
+    rows, errors = [], []
+    in_section = started = False
+    for number, line in enumerate(lines, 1):
+        if line.startswith("#"):
+            if started:
+                break
+            in_section = line.strip() == "## Event topics"
+            continue
+        if not in_section:
+            continue
+        if not line.startswith("|"):
+            if started:
+                break  # the table is contiguous; later tables are not topics
+            continue
+        started = True
+        cell = line.split("|")[1].strip()
+        if cell == "Topic" or set(cell) <= {"-", " ", ":"}:
+            continue
+        names = []
+        for piece in cell.split(" / "):
+            m = _PIECE_RE.match(piece.strip())
+            if not m:
+                names = None
+                break
+            name = m.group(1)
+            if name.startswith(".") and names:
+                name = names[-1].rsplit(".", 1)[0] + name
+            names.append(name)
+        if names is None:
+            errors.append(f'{ARCH_DOC}:{number}: malformed topic cell "{cell}"')
+        else:
+            rows.extend((name, number) for name in names)
+    return rows, errors
+
+
+def check_docs(root, entries):
+    rows, errors = doc_rows(root)
+    if errors and not rows and any("cannot read" in e for e in errors):
+        return errors
+    registered = {name for name, _c, _l in entries}
+    documented = {name for name, _ in rows}
+    for name, _c, _l in entries:
+        if name not in documented:
+            errors.append(f'{ARCH_DOC}: topic "{name}" is registered but has no row')
+    for name, number in rows:
+        if name not in registered:
+            errors.append(f'{ARCH_DOC}:{number}: topic "{name}" has a row but is not registered')
+    return errors
+
+
+def check_literals(root, entries):
+    errors = []
+    constant_of = {name: const for name, const, _l in entries if "<" not in name}
     skip = root / TOPICS_HPP
     for top in SCAN_DIRS:
         base = root / top
@@ -167,15 +246,19 @@ def check_literals(root, topics):
                 continue
             rel = path.relative_to(root).as_posix()
             for line, value in string_literals(path.read_text(errors="replace")):
-                if value in names:
-                    errors.append(f'{rel}:{line}: topic literal "{value}"; '
-                                  f'use wisp::core::topics::{names[value]}')
+                if value in constant_of:
+                    const = constant_of[value]
+                    hint = (f"use wisp::core::topics::{const}" if const
+                            else "register a constant for it in topics.hpp")
+                    errors.append(f'{rel}:{line}: topic literal "{value}"; {hint}')
     return errors
 
 
 def check(root):
-    topics = load_registry(root)
-    return check_docs(root, topics) + check_literals(root, topics)
+    entries, errors = load_registry(root)
+    if not entries and errors:
+        return errors
+    return errors + check_docs(root, entries) + check_literals(root, entries)
 
 
 def main(argv=None):

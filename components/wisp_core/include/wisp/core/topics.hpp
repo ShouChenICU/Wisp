@@ -30,6 +30,9 @@
 // literal topic (tools/check_topics.py relies on this marker). "<id>"
 // stands for a device id, which itself begins with "button.", and the
 // edge is one of kButtonDown/kButtonUp/kButtonShort/kButtonLong.
+// A constant whose value contains a '.' and does not end with '.' is a topic
+// name and must appear in kAll (tools/check_topics.py checks); the others are
+// parts of a topic.
 //
 // Only constant data: no static constructors, nothing allocated; the
 // arrays are inline variables, so one copy in read-only data however many

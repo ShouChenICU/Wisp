@@ -164,6 +164,71 @@ class CheckTopicsTest(unittest.TestCase):
         self.assertEqual(self.code('auto s = "a\\"power.state\\"b";\n'), [])
         self.assertEqual(len(self.code('auto s = "a\\\\"; auto t = "power.state";\n')), 1)
 
+    def hpp(self, text):
+        write(self.root, TOPICS_HPP, text)
+        return check_topics.check(self.root)
+
+    def test_undefined_constant_in_kall_is_reported(self):
+        errors = self.hpp(HEADER.replace("{kPowerState,", "{kUndefined, Kind::CellMirror, true},\n    {kPowerState,"))
+        self.assertIn(f'{TOPICS_HPP}:11: kAll names undefined constant "kUndefined"', errors)
+
+    def test_commented_out_entry_is_not_registered(self):
+        errors = self.hpp(HEADER.replace("    {kPowerState,", "    // {kOld, Kind::CellMirror, true},\n    /* {kOld2, Kind::X, true}, */\n    {kPowerState,"))
+        self.assertEqual(errors, [])
+
+    def test_comment_with_closing_brace_does_not_truncate_kall(self):
+        text = HEADER.replace("    {kPowerState,", "    // };\n    {kPowerState,")
+        text = "// kAll[] is the list\n" + text
+        self.assertEqual(self.hpp(text), [])
+
+    def test_malformed_topic_cell_is_reported_and_documents_nothing(self):
+        write(self.root, "docs/architecture.md", DOC.replace("`power.state`", "power.state"))
+        errors = check_topics.check(self.root)
+        self.assertIn('docs/architecture.md:10: malformed topic cell "power.state"', errors)
+        self.assertIn('docs/architecture.md: topic "power.state" is registered but has no row',
+                      errors)
+
+    def test_backslash_newline_in_a_string_keeps_line_numbers(self):
+        errors = self.code('const char* a = "x\\\ny";\nauto s = "power.state";\n')
+        self.assertEqual(len(errors), 1)
+        self.assertIn(":3:", errors[0])
+
+    def test_only_the_first_table_under_the_heading_is_read(self):
+        extra = "\n### Sub\n\n| Topic | P | N |\n|---|---|---|\n| `bogus.one` | x | y |\n"
+        write(self.root, "docs/architecture.md", DOC + extra)
+        self.assertEqual(check_topics.check(self.root), [])
+        both = DOC.replace("\nTrailing", "\n| `bogus.two` | x | y |\n\nTrailing")
+        write(self.root, "docs/architecture.md", both)
+        self.assertEqual(check_topics.check(self.root), [])
+
+    def test_constant_missing_from_kall_is_reported_but_prefixes_are_not(self):
+        errors = self.hpp(HEADER.replace("inline constexpr Topic",
+                          'inline constexpr char kLost[] = "lost.topic";\ninline constexpr Topic'))
+        self.assertTrue(any("constant kLost is not in kAll" in e for e in errors))
+        self.assertFalse(any("kButtonPrefix" in e for e in errors))
+
+    def test_duplicate_names_in_kall_are_reported(self):
+        errors = self.hpp(HEADER.replace("    {kPowerState,", "    {kPowerState, Kind::CellMirror, true},\n    {kPowerState,"))
+        self.assertTrue(any('topic "power.state" is registered twice' in e for e in errors))
+
+    def test_literal_for_a_constantless_entry_says_to_register_one(self):
+        text = HEADER.replace("    {kPowerState,", '    {"raw.topic", Kind::Notification, true},\n    {kPowerState,')
+        write(self.root, TOPICS_HPP, text)
+        write(self.root, "docs/architecture.md", DOC.replace("| `power.state`", "| `raw.topic` | a | b |\n| `power.state`"))
+        errors = self.code('auto s = "raw.topic";\n')
+        self.assertEqual(len(errors), 1)
+        self.assertIn("register a constant for it in topics.hpp", errors[0])
+        self.assertNotIn("?", errors[0])
+
+    def test_missing_files_are_reported_not_raised(self):
+        (self.root / "docs/architecture.md").unlink()
+        errors = check_topics.check(self.root)
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith("docs/architecture.md:"))
+        (self.root / TOPICS_HPP).unlink()
+        errors = check_topics.check(self.root)
+        self.assertTrue(any(e.startswith(TOPICS_HPP + ":") for e in errors))
+
     def test_main_is_silent_on_success_and_exits_1_on_failure(self):
         self.assertEqual(check_topics.main(["--root", str(self.root)]), 0)
         write(self.root, "components/x/src/a.cpp", 'auto s = "power.state";\n')
