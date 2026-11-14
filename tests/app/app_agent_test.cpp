@@ -339,6 +339,37 @@ TEST(AppAgent, HapticIsOffWhileTheScreenIsOff) {
     EXPECT_TRUE(ok_of(on)) << wisp::to_json(on.result);
 }
 
+// device.status lists each medium with whether it is the removable one, so
+// the agent can tell the card from the internal flash without its id.
+TEST(AppAgent, DeviceStatusSaysWhichMediumIsRemovable) {
+    UiNetOptions opts = with_server(true);
+    opts.extra_devices = {std::make_shared<wisp::test::FakeStorage>(
+        "storage.card", wisp::test::temp_dir().string(), /*removable=*/true)};
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    // The readout is refreshed on the storage worker after each call.
+    Value media;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            wisp::agent::ToolOutput out = call_tool(h, "device_status", Value(wisp::Map{}));
+            const Value* storage = out.result.find("storage");
+            if (storage == nullptr || storage->type() != Value::Type::List ||
+                storage->as_list().size() < 2) {
+                return false;
+            }
+            media = *storage;
+            return true;
+        },
+        3000));
+    ASSERT_EQ(media.as_list().size(), 2u) << wisp::to_json(media);
+    for (const Value& m : media.as_list()) {
+        const Value* removable = m.find("removable");
+        ASSERT_NE(removable, nullptr) << wisp::to_json(m);
+        ASSERT_EQ(removable->type(), Value::Type::Bool) << wisp::to_json(m);
+        EXPECT_EQ(removable->as_bool(), str_of(m, "id") == "storage.card") << wisp::to_json(m);
+    }
+}
+
 TEST(AppAgent, HeadlessHasNoAgent) {
     UiNetHarness h(with_server(false));
     ASSERT_TRUE(h.start());

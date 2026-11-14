@@ -637,6 +637,7 @@ void AgentWiring::refresh_storage() {
         for (const core::MediaStatus& m : storage->status().media) {
             media.push_back(Value(Map{{"id", Value(m.id)},
                                       {"online", Value(m.online)},
+                                      {"removable", Value(m.removable)},
                                       {"total_bytes", Value(static_cast<int64_t>(m.total_bytes))},
                                       {"free_bytes", Value(static_cast<int64_t>(m.free_bytes))}}));
         }
