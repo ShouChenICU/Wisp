@@ -157,7 +157,8 @@ struct FirmwareProgress {
     // parse_firmware_head() bounds it to 31 characters (esp_app_desc_t's
     // version[32]), so it is never cut.
     FixedString<31> version;
-    // Failed only: invalid_image, wrong_board, write_failed or aborted.
+    // Failed only: invalid_image, wrong_board, write_failed or aborted
+    // (sized for the longest code to_string() defines).
     FixedString<23> error;
     // Moves with every published outcome, so two equal ones in a row (the
     // same failure on two uploads) are two changes, and two events.
