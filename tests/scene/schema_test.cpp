@@ -952,9 +952,11 @@ TEST(Schema, DocIsUpToDate) {
 // grant they need from the same document.
 TEST(Schema, DocDescribesDeviceCalls) {
     const std::string md = schema_markdown();
-    for (const char* needle : {"`wisp.device.list()`", "`wisp.device.get(id, prop)`",
-                               "`wisp.device.call(id, cmd, args)`", "`permission_denied`",
-                               "`rate_limited`", "- `permissions.device`: the device ids"}) {
+    for (const char* needle :
+         {"`wisp.device.list()` returns the peripherals that describe themselves (at most 32), as "
+          "an array",
+          "`wisp.device.get(id, prop)`", "`wisp.device.call(id, cmd, args)`", "`permission_denied`",
+          "`rate_limited`", "- `permissions.device`: the device ids"}) {
         EXPECT_NE(md.find(needle), std::string::npos) << needle;
     }
 }

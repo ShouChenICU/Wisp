@@ -353,7 +353,7 @@ for your own names. The globals a scene may use are `ui`, `state`, `computed`,
   it, on each `"battery"` change, each `"minute"` of the clock (and at once
   when the time zone or `time_24h` changes) and each `"lang"` change. Any other
   event name is an error.
-- `wisp.device.list()` returns the peripherals that describe themselves, as an array
+- `wisp.device.list()` returns the peripherals that describe themselves (at most 32), as an array
   of `{id, class, model, role, schema}`. `schema.props` are read-only values;
   `schema.cmds` are commands with their `args` (`type`, inclusive `min`/`max`,
   `unit`, `choices`, `optional` with its `default`).

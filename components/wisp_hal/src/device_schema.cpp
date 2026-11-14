@@ -235,6 +235,10 @@ Result<void> check_param(const ParamSpec& p, bool is_arg) {
     if (const char* problem = name_problem(p.name)) return fail(problem);
     if (p.desc == nullptr) return fail("desc is null");
     if (p.unit == nullptr) return fail("unit is null");
+    if (p.type == ParamType::String && p.max_len > kMaxStringParamBytes) {
+        return fail("max_len " + std::to_string(p.max_len) + " (at most " +
+                    std::to_string(kMaxStringParamBytes) + ")");
+    }
     if (has_range(p)) {
         if (p.type != ParamType::Int && p.type != ParamType::Number) {
             return fail("a range is only for int and number");

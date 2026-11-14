@@ -493,6 +493,20 @@ TEST(DeviceSchema, CheckRejectsBadTables) {
     }
 }
 
+// A scene sends arguments as at most a bounded JSON text (bind_device.cpp),
+// so a string parameter is capped where every scene can still send it.
+TEST(DeviceSchema, StringParamsAreAtMost256Bytes) {
+    static_assert(wisp::hal::kMaxStringParamBytes == 256);
+    const ParamSpec longest[] = {{.name = "text", .type = ParamType::String, .max_len = 256}};
+    EXPECT_EQ(check_message({.props = longest, .cmds = {}}), "<ok>");
+    const ParamSpec too_long[] = {{.name = "text", .type = ParamType::String, .max_len = 257}};
+    EXPECT_EQ(check_message({.props = too_long, .cmds = {}}),
+              "prop 'text': max_len 257 (at most 256)");
+    const CmdSpec cmds[] = {{.name = "say", .desc = "", .args = too_long}};
+    EXPECT_EQ(check_message({.props = {}, .cmds = cmds}),
+              "cmd 'say' arg 'text': max_len 257 (at most 256)");
+}
+
 TEST(DeviceSchema, CapsOfAddsTheSchema) {
     wisp::test::FakeGeneric generic("haptic.main", &kFakeGenericSchema,
                                     wisp::Properties{{"standby", "off"}});

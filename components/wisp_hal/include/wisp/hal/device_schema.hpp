@@ -115,6 +115,10 @@ struct DeviceSchema {
 // How long Device::get()/invoke() may take (spec 3.3).
 inline constexpr uint32_t kDeviceCallBudgetMs = 50;
 inline constexpr size_t kMaxSchemaProps = 16, kMaxSchemaCmds = 16, kMaxCmdArgs = 8;
+// The longest a String parameter's max_len may be: a scene sends a call's
+// arguments as one bounded JSON text (wisp.device.call), and every string a
+// schema allows must fit it.
+inline constexpr size_t kMaxStringParamBytes = 256;
 
 // "bool", "int", "number", "string", "enum".
 const char* to_string(ParamType t);
@@ -127,6 +131,7 @@ const char* to_string(ParamType t);
 //     args; a prop and a cmd may share a name);
 //   - a count exceeds its limit;
 //   - a command's desc, or a param's desc or unit, is null;
+//   - a String param's max_len exceeds kMaxStringParamBytes;
 //   - min > max (NaN included), a range is set on a type other than
 //     Int/Number, or an Int range has non-integral bounds;
 //   - an Enum has no choices, or a null, empty or repeated one, or choices

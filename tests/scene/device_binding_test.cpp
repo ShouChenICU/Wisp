@@ -150,19 +150,84 @@ print(wisp.device.call("haptic.main", "pulse", {ms = 150, [1] = 2}))
     EXPECT_EQ(haptic->invocations().size(), 1u);
 }
 
-TEST_F(DeviceBinding, CyclicOrHugeArgsAreInvalid) {
+TEST_F(DeviceBinding, CyclicNonFiniteOrHugeArgsAreInvalid) {
     start();
     open_scene(R"(
 local t = {}
 t.self = t
 print(wisp.device.call("haptic.main", "pulse", t))
+print(wisp.device.call("haptic.main", "pulse", {ms = 0/0}))
+print(wisp.device.call("haptic.main", "pulse", {ms = math.huge}))
+print(wisp.device.call("haptic.main", "pulse", {ms = -math.huge}))
 print(wisp.device.call("haptic.main", "pulse", {ms = 150, pad = string.rep("x", 100000)}))
 )");
     auto log = scene_log("demo");
-    ASSERT_GE(log.size(), 2u);
-    EXPECT_EQ(log[0], "nil\tinvalid_argument");
-    EXPECT_EQ(log[1], "nil\tinvalid_argument");
+    ASSERT_GE(log.size(), 5u);
+    for (size_t i = 0; i < 5; ++i) EXPECT_EQ(log[i], "nil\tinvalid_argument") << i;
     EXPECT_TRUE(haptic->invocations().empty());
+}
+
+// Eight string arguments at hal::kMaxStringParamBytes, with 32-byte names
+// and bytes that JSON writes as six characters each: the worst a schema
+// allows still fits the binding's argument cap.
+TEST_F(DeviceBinding, LargestArgumentsTheSchemaAllowsGetThrough) {
+    static const std::string kNames[8] = {std::string(31, 'a') + "1", std::string(31, 'a') + "2",
+                                          std::string(31, 'a') + "3", std::string(31, 'a') + "4",
+                                          std::string(31, 'a') + "5", std::string(31, 'a') + "6",
+                                          std::string(31, 'a') + "7", std::string(31, 'a') + "8"};
+    static const wisp::hal::ParamSpec kArgs[8] = {
+        {.name = kNames[0].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[1].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[2].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[3].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[4].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[5].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[6].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256},
+        {.name = kNames[7].c_str(), .type = wisp::hal::ParamType::String, .max_len = 256}};
+    static const wisp::hal::CmdSpec kCmds[] = {{.name = "say", .desc = "", .args = kArgs}};
+    static const wisp::hal::DeviceSchema kSchema{.props = {}, .cmds = kCmds};
+    static_assert(wisp::hal::kMaxStringParamBytes == 256);
+    auto text = std::make_shared<FakeGeneric>("text.main", &kSchema);
+    ASSERT_TRUE(registry.add(text));
+    start();
+    std::string lua = "local s = string.rep('\\1', 256)\nlocal a = {}\n";
+    for (const std::string& n : kNames) lua += "a." + n + " = s\n";
+    lua +=
+        "print(wisp.device.call('text.main', 'say', a))\n"
+        "a." +
+        kNames[0] +
+        " = s .. 'x'\n"
+        "print(wisp.device.call('text.main', 'say', a))\n";
+    open_scene(lua, R"(["text.main"])");
+    auto log = scene_log("demo");
+    ASSERT_GE(log.size(), 2u);
+    EXPECT_EQ(log[0], "true");
+    EXPECT_EQ(log[1], "nil\tinvalid_argument");  // 257 bytes: the schema refuses it
+    auto calls = text->invocations();
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls[0].second.size(), 8u);
+    EXPECT_EQ(calls[0].second.at(kNames[7]), Value(std::string(256, '\1')));
+}
+
+TEST_F(DeviceBinding, DriverErrorsAndBusyPassThrough) {
+    haptic->on_invoke = [](std::string_view, const Map&) {
+        return wisp::Result<Value>::err(wisp::ErrorCode::DeviceFailure, "bus error");
+    };
+    auto light = std::make_shared<FakeGeneric>("light.main", &kFakeGenericSchema,
+                                               wisp::Properties{}, std::string{}, true);
+    ASSERT_TRUE(registry.add(light));
+    service.set_power_level(wisp::hal::PowerLevel::Standby);
+    start();
+    open_scene(R"(
+print(wisp.device.call("haptic.main", "pulse", {ms = 150}))
+print(wisp.device.call("light.main", "pulse", {ms = 150}))
+)",
+               R"(["haptic.main","light.main"])");
+    auto log = scene_log("demo");
+    ASSERT_GE(log.size(), 2u);
+    EXPECT_EQ(log[0], "nil\tdevice_failure");
+    EXPECT_EQ(log[1], "nil\tbusy");  // "standby: off" while the screen is off
+    EXPECT_TRUE(light->invocations().empty());
 }
 
 TEST_F(DeviceBinding, GetNeedsThePermissionToo) {
@@ -259,6 +324,49 @@ TEST_F(DeviceBinding, BackgroundSceneCallsTheDevice) {
     ASSERT_TRUE(rt->open_background("demo"));
     ASSERT_TRUE(wait_until([&] { return !scene_log("demo").empty(); }, 3000));
     EXPECT_EQ(scene_log("demo")[0], "background\t1");
+}
+
+// A scene the agent calls a tool of while it is not running loads headless
+// and may still call the devices it declares.
+TEST_F(DeviceBinding, HeadlessSceneCallsTheDevice) {
+    start();
+    install("demo", R"(
+wisp.tools.register("buzz", function()
+  return wisp.scene.state(), wisp.device.call("haptic.main", "pulse", {ms = 150})
+end)
+return ui.screen {}
+)",
+            {{"scene.json", R"({"id":"demo","name":"Demo","version":"1.0.0","schema_version":1,)"
+                            R"("permissions":{"device":["haptic.main"]},)"
+                            R"("tools":[{"name":"buzz","description":"Buzz once."}]})"}});
+    auto r = rt->call_tool("demo", "buzz", "{}", 5000, {});
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_TRUE(r.value().ok) << r.value().error << " " << r.value().message;
+    EXPECT_EQ(std::string(r.value().json.data(), r.value().json.size()), R"(["headless",true])");
+    EXPECT_EQ(haptic->invocations().size(), 1u);
+}
+
+// list() under a VM memory limit it cannot fit in ends in the VM's memory
+// fault, like any allocation in a binding; the next run is unaffected.
+TEST_F(DeviceBinding, ListOutOfMemoryIsTheVmsMemoryFault) {
+    for (int i = 0; i < 31; ++i) {
+        char id[16];
+        std::snprintf(id, sizeof(id), "other.g%02d", i);
+        ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>(id, &kFakeGenericSchema)));
+    }
+    start();
+    wisp::scene::LuaRunOptions opts;
+    opts.memory_bytes = wisp::scene::kLuaRunMinMemory;
+    auto r =
+        rt->run_lua("local keep = {} for i = 1, 1e6 do keep[i] = wisp.device.list() end", opts);
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_FALSE(r.value().ok);
+    EXPECT_EQ(r.value().error, "memory") << r.value().message;
+
+    auto again = rt->run_lua("return #wisp.device.list()", opts);
+    ASSERT_TRUE(again) << again.error().message;
+    EXPECT_TRUE(again.value().ok) << again.value().error << " " << again.value().message;
+    EXPECT_EQ(std::string(again.value().json.data(), again.value().json.size()), "32");
 }
 
 TEST_F(DeviceBinding, AgentLuaRunIsGrantedAsAgent) {

@@ -19,6 +19,7 @@
 
 #include "scene_api.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/hal/device_schema.hpp"
 #include "wisp/scene/lua_json.hpp"
 
 namespace wisp::scene {
@@ -107,11 +108,19 @@ int on(lua_State* L) {
 
 // --- list / get / call ------------------------------------------------------
 
-// A command's arguments are a few scalars (hal::kMaxCmdArgs of them), so
-// their JSON is small; the cap bounds the text (PSRAM) and the Value tree
-// parsed from it (default heap, internal RAM on the device). Past it, or
-// nested at all, the arguments cannot match a schema: "invalid_argument".
-constexpr size_t kMaxArgsBytes = 4096;
+// The JSON text of a call's arguments, in Mem::Large (os::LargeString).
+// The cap covers the most a schema allows: hal::kMaxCmdArgs strings of
+// hal::kMaxStringParamBytes, each byte written as up to six characters
+// (\u0001), with names of up to 32 bytes, quotes, colons and commas; so
+// any argument set the schema accepts gets through, and anything past the
+// cap is one the schema would refuse ("invalid_argument"). The Value tree
+// parsed from the text (default heap, internal RAM on the device) is
+// bounded by what the schema then lets through, not by this cap. Nested
+// tables never match a schema either; the depth bounds the parse.
+constexpr size_t kMaxArgNameBytes = 32;
+constexpr size_t kMaxArgsBytes = 16 * 1024;
+static_assert(kMaxArgsBytes >= 2 + hal::kMaxCmdArgs * (2 + kMaxArgNameBytes + 1 + 2 +
+                                                       6 * hal::kMaxStringParamBytes + 1));
 constexpr uint8_t kMaxArgsDepth = 2;
 
 int fail(lua_State* L, const char* code) {
