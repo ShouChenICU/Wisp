@@ -261,6 +261,16 @@ TEST_F(RunLua, SliceLimit) {
     EXPECT_LT(ms, 5000);
 }
 
+// The agent's run has the same cap on calls waiting for results.
+TEST_F(RunLua, CallsPastTheCapRaise) {
+    start();
+    LuaRunResult r =
+        run("for i = 1, 16 do wisp.http.request({url = 'bad'}, function() end) end "
+            "return select(2, pcall(wisp.http.request, {url = 'bad'}, function() end))");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.json.find("too many calls waiting"), std::string::npos) << r.json;
+}
+
 TEST_F(RunLua, MemoryLimit) {
     start();
     LuaRunOptions opts;

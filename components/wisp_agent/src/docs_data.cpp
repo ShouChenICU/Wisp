@@ -446,6 +446,8 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
 - Other codes: `not_found` (no such file), `unavailable`, `busy` (the storage worker
   has too much queued: try again later), `no_memory`, or the name of a storage
   error.
+- At most 16 calls of `wisp.http` and `wisp.files` together may wait for their results;
+  one more raises an error.
 )wispdoc"},
     {"lua/http", R"wispdoc(## wisp.http
 
@@ -476,7 +478,9 @@ wisp.http.post(url, { a = 1 }, { headers = { authorization = "Bearer x" } }, cb)
 - Other errors: `dns`, `connect`, `tls`, `other`, `deferred_queue_full`,
   `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table
   that cannot be sent as JSON). Errors always arrive through `cb`; only arguments
-  of the wrong type are a Lua error at the call.
+  of the wrong type, and a call past the limit below, are a Lua error at the call.
+- At most 16 calls of `wisp.http` and `wisp.files` together may wait for their results;
+  one more raises an error.
 
 ### wisp.http.request
 

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "icons.hpp"
+#include "scene_api.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/sensor_service.hpp"
@@ -492,7 +493,11 @@ void append_lua_api(std::string& out) {
            "- Other errors: `dns`, `connect`, `tls`, `other`, `deferred_queue_full`,\n"
            "  `deferred_timeout` (see below), `not_serializable` and `too_deep` (a body table\n"
            "  that cannot be sent as JSON). Errors always arrive through `cb`; only arguments\n"
-           "  of the wrong type are a Lua error at the call.\n";
+           "  of the wrong type, and a call past the limit below, are a Lua error at the call.\n"
+           "- At most " +
+           num(kMaxCallsInFlight) +
+           " calls of `wisp.http` and `wisp.files` together may wait for their results;\n"
+           "  one more raises an error.\n";
 }
 
 // The manifest, the hooks and the device-side APIs (scene-device spec 3,
@@ -746,7 +751,11 @@ void append_device_api(std::string& out) {
         "  reinstalled with the same id finds its old files where it left them.\n"
         "- Other codes: `not_found` (no such file), `unavailable`, `busy` (the storage worker\n"
         "  has too much queued: try again later), `no_memory`, or the name of a storage\n"
-        "  error.\n"
+        "  error.\n";
+    out += "- At most " + num(kMaxCallsInFlight) +
+           " calls of `wisp.http` and `wisp.files` together may wait for their results;\n"
+           "  one more raises an error.\n";
+    out +=
         "\n"
         "## wisp.http.download and deep standby\n"
         "\n"

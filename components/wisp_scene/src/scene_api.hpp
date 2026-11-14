@@ -72,7 +72,13 @@
 //   wisp.http (bind_http.cpp): the scene's requests go to the SceneHttp
 //       proxy through SceneApi::http_submit; each result comes back to the
 //       scene task as a message, and run_http_callback() calls the
-//       scene's callback with it.
+//       scene's callback with it. At most kMaxCallsInFlight calls of
+//       wisp.http and wisp.files together wait for results
+//       (SceneApi::calls_in_flight); one more raises "too many calls
+//       waiting for results". Each result counts its call down whether or
+//       not its callback is still there (dropped by cancel_task() or a
+//       fault), since every counted call gets exactly one result; a closed
+//       scene's results never arrive, but its SceneApi goes with the VM.
 //   wisp.files (bind_files.cpp; scene-device spec 7.1), over
 //       core::SceneFiles, every call asynchronous:
 //       write(name, data, cb), append(name, data, cb) -> cb(err, true);
@@ -90,7 +96,8 @@
 //       unavailable, not_found or another snake_case storage code, and
 //       for a download also a wisp.http transport or proxy error. Data,
 //       names and arguments that are not strings or integers raise
-//       argument errors.
+//       argument errors. The calls share wisp.http's kMaxCallsInFlight
+//       (register_files_callback() checks and counts it).
 //   wisp.json (bind_json.cpp; agent-tools spec 4.2): encode(v) -> string,
 //       or nil and not_serializable | too_deep | too_large; decode(s) ->
 //       value, or nil and bad_json | too_deep. The rules are lua_json.hpp's
@@ -192,6 +199,10 @@ struct FilesResult {
 // Runs on the wisp.fs worker with the scene's id.
 using FilesJob = std::function<FilesResult(core::SceneFiles& files, const std::string& scene)>;
 
+// How many wisp.http and wisp.files calls together may wait for their
+// results in one VM; one more raises at the call.
+inline constexpr uint32_t kMaxCallsInFlight = 16;
+
 // One scene's binding state. Must outlive the VM it is installed in.
 struct SceneApi {
     TimerSet timers;
@@ -225,6 +236,9 @@ struct SceneApi {
     // result comes back like files_run's. Empty: download raises.
     std::function<void(uint32_t id, net::SceneHttpRequest req, std::string name)> files_download;
     uint32_t next_files_id = 1;
+    // wisp.http, wisp.http.download and wisp.files calls whose callback (or
+    // waiting task) is registered and has not run; at most kMaxCallsInFlight.
+    uint32_t calls_in_flight = 0;
     bool close_requested = false;
     bool exit_requested = false;
     // In the background: no view, and the APIs of spec 3.4 refuse with

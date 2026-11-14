@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -172,6 +173,26 @@ print(pcall(wisp.files.list, 5))
     EXPECT_EQ(answers,
               (std::vector<std::string>{"write\tbad_name\tnil", "read\tbad_name\tnil",
                                         "remove\tbad_name\tnil", "download\tbad_name\tnil"}));
+    EXPECT_EQ(client.calls(), 0u);
+}
+
+// wisp.http and wisp.files share one cap on the calls waiting for results.
+TEST_F(FilesBinding, HttpAndFilesShareTheCap) {
+    start();
+    install_scene("h", R"(
+local function show(tag) return function(err) print(tag, err) end end
+for i = 1, 10 do wisp.http.get("https://other.example.com/", show("http")) end
+for i = 1, 6 do wisp.files.read("../bad", 0, 1, show("read")) end
+print(pcall(wisp.files.list, show("list")))
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 17);
+    ASSERT_EQ(lines.size(), 17u);
+    EXPECT_EQ(lines[0].rfind("false\t", 0), 0u) << lines[0];
+    EXPECT_NE(lines[0].find("too many calls waiting"), std::string::npos) << lines[0];
+    std::vector<std::string> answers(lines.begin() + 1, lines.end());
+    EXPECT_EQ(std::count(answers.begin(), answers.end(), "http\tpermission_denied"), 10);
+    EXPECT_EQ(std::count(answers.begin(), answers.end(), "read\tbad_name"), 6);
     EXPECT_EQ(client.calls(), 0u);
 }
 
