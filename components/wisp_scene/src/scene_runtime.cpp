@@ -684,7 +684,9 @@ void SceneRuntime::run() {
     auto handle_message = [this](SceneMessage* raw) {
         os::LargeUnique<SceneMessage> m(raw);
         const uint64_t t0 = os::now_ms();
-        // Spec 3.5: before each message while a scene is in front.
+        // Spec 3.5: before each message while a scene is in front. Again
+        // after housekeeping()'s check: its minute polls run background
+        // handlers that may have grown since.
         if (front_ != nullptr) enforce_limits(false);
         handle(*m);
         close_if_asked();
@@ -767,6 +769,9 @@ bool SceneRuntime::back_has_work(uint64_t now) {
 }
 
 void SceneRuntime::run_front_item() {
+    if (front_ == nullptr) return;
+    // Spec 3.5, as before a message (handle_message in run()).
+    enforce_limits(false);
     if (front_ != nullptr) run_item(*front_, os::now_ms());
 }
 

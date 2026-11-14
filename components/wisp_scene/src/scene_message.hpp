@@ -242,7 +242,11 @@ struct SceneRuntime::Slot {
     // the deliver lambdas, closed when the VM goes.
     std::shared_ptr<CompletionBox> box;
     // Timer ids TimerSet::due() returned and the lanes have not run yet,
-    // oldest first (scene_runtime.hpp, "Scheduling").
+    // oldest first (scene_runtime.hpp, "Scheduling"). Ids taken before the
+    // timers paused (screen off) still run: each was already due, and
+    // dropping them would lose after timers due() already removed from
+    // the set. run_timers_of() skips ids already waiting here, so a
+    // resume does not fire one twice.
     std::vector<uint32_t> due_timers;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;

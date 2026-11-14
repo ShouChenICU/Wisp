@@ -47,10 +47,14 @@
 //      headless (as 2), or the agent's run.
 // Strict order would let a front that never runs dry stop the other
 // lanes, so after kQueueBurst messages in a row while a lane item waits,
-// one item runs, and after kFrontBurst front items in a row while a back
-// item waits, one back item runs. Due timers are taken all at once
-// (TimerSet::due()) and run one per item; one cancelled meanwhile runs
-// nothing. Before every item the task does its housekeeping: the
+// one lane item runs, and once kFrontBurst front items have run while a
+// back item waited (queue messages in between do not reset that count),
+// the next lane item is a back one. With the queue and the front both
+// saturated, a waiting back item so runs after at most
+// (kQueueBurst + 1) * kFrontBurst + kQueueBurst other items. Within one
+// VM a waiting result is taken before a due timer. Due timers are taken
+// all at once (TimerSet::due()) and run one per item; one cancelled
+// meanwhile runs nothing. Before every item the task does its housekeeping: the
 // screen's visibility, the stores' delayed calls, the eviction check
 // (scene-device spec 3.5) with a scene in front, the agent run's
 // deadline, the minute polls, the tool calls' timeouts and ends, the
