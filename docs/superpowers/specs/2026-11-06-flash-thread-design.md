@@ -280,7 +280,7 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 
 `wisp.sd` 只做挂载探测：挂载 FAT 会访问 SD 卡，但不触及内部 flash 和 cache。如果实测挂载代码会 abort，就把挂载移到 flash 线程，并在硬件文档里记录。
 
-`wisp.sd.io` 的栈在 PSRAM，在上面执行 FATFS/sdmmc 的读写（以及拔卡后 `refresh()` 里的卸载）需要真机验证。如果实测从 PSRAM 栈写卡会 abort，把 `scene_wiring.cpp` 里的 `kSdOwnWorker` 改为 false：卡上的工作全部回到 `wisp.fs`，其余不变。
+`wisp.sd.io` 的栈在 PSRAM，在上面执行 FATFS/sdmmc 的读写（以及拔卡后 `refresh()` 里的卸载）需要真机验证。如果实测从 PSRAM 栈写卡会 abort，把 `scene_wiring.hpp` 里的 `kSdOwnWorker`（`SceneWiringDeps::sd_own_worker` 的默认值）改为 false：卡上的工作全部回到 `wisp.fs`，其余不变。
 
 ---
 

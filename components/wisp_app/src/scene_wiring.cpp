@@ -20,11 +20,6 @@ constexpr const char* kTag = "scenes";
 constexpr uint32_t kDrainMs = 5000;
 // How often dev mode looks at the working directory (spec 6.4).
 constexpr uint32_t kWatchMs = 500;
-// Whether card-only work gets its own worker, wisp.sd.io, whose stack is
-// in PSRAM. False runs it all on wisp.fs, as before that worker existed:
-// the fallback if the device shows that FATFS/sdmmc writes cannot run
-// from a PSRAM stack (flash-thread spec 3.9).
-constexpr bool kSdOwnWorker = true;
 
 // The system notice for each SceneNoticeKind; its argument is the scene's
 // name.
@@ -55,7 +50,7 @@ void SceneWiring::start_storage() {
     }
     // After wisp.fs, so card work always has it to fall back to; without
     // the SD I/O worker it simply stays there (StorageRouter).
-    if (kSdOwnWorker && deps_.storage.has_sd()) {
+    if (deps_.sd_own_worker && deps_.storage.has_sd()) {
         if (auto r = sd_worker_.start(); !r) {
             WLOG_W(kTag, "SD I/O worker not started (%s); card work runs on %s",
                    r.error().message.c_str(), worker_.name());

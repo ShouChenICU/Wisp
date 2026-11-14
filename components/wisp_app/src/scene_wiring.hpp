@@ -14,8 +14,8 @@
 //     wisp.files calls, their recount after a card change, the hot-plug
 //     probe) runs there, so card transfers never hold up internal flash
 //     work. Without a slot, or if it cannot start, the router sends card
-//     work to wisp.fs, as it does with kSdOwnWorker (scene_wiring.cpp)
-//     set false;
+//     work to wisp.fs, as it does with SceneWiringDeps::sd_own_worker
+//     (kSdOwnWorker) set false;
 //   - the SceneRepository over <int>/scenes (or, in dev mode,
 //     Platform::scenes_dir for the code and Platform::scenes_data_dir for
 //     the data), whose recover() runs on the worker before anything lists
@@ -91,10 +91,18 @@
 
 namespace wisp::app {
 
+// Whether card-only work gets its own worker, wisp.sd.io, whose stack is
+// in PSRAM. False runs it all on wisp.fs, as before that worker existed:
+// the fallback if the device shows that FATFS/sdmmc writes cannot run
+// from a PSRAM stack (flash-thread spec 3.9).
+inline constexpr bool kSdOwnWorker = true;
+
 struct SceneWiringDeps {
     Platform& platform;
     core::EventBus& bus;
     core::StorageManager& storage;
+    // kSdOwnWorker; a field so that tests can run the fallback.
+    bool sd_own_worker = kSdOwnWorker;
 };
 
 // One installed scene as the self-check card lists it.

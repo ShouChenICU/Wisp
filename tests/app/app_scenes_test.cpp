@@ -40,6 +40,7 @@
 #include "wisp/core/zip.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -1068,7 +1069,7 @@ struct ListingRig {
 
     void start() {
         wiring = std::make_unique<wisp::app::SceneWiring>(
-            wisp::app::SceneWiringDeps{platform, bus, *storage});
+            wisp::app::SceneWiringDeps{platform, bus, *storage, sd_own_worker});
         wiring->start_storage();
         ASSERT_NE(wiring->repository(), nullptr);
     }
@@ -1135,8 +1136,51 @@ struct ListingRig {
     std::shared_ptr<FakeStorage> int_dev, sd_dev;
     std::unique_ptr<wisp::core::StorageManager> storage;
     wisp::app::Platform platform;
+    // SceneWiringDeps::sd_own_worker, for start().
+    bool sd_own_worker = wisp::app::kSdOwnWorker;
     std::unique_ptr<wisp::app::SceneWiring> wiring;
 };
+
+// The fallback switch (SceneWiringDeps::sd_own_worker false, for a board
+// whose card writes cannot run from a PSRAM stack): with a card in, no SD
+// I/O worker starts, and card work -- the hot-plug probe and a card
+// write -- runs on wisp.fs instead.
+TEST(SceneWiringSd, WithoutItsOwnWorkerCardWorkRunsOnTheFlashThread) {
+    ListingRig r;
+    r.sd_own_worker = false;
+    r.start();
+    wisp::core::StorageRouter& router = r.wiring->router();
+    EXPECT_EQ(router.sd(), nullptr);
+    EXPECT_EQ(&router.worker_for(wisp::core::Medium::Sd), &r.wiring->worker());
+
+    std::atomic<int> probes_off_flash{0};
+    std::atomic<int> probes{0};
+    r.sd_dev->on_online = [&] {
+        probes.fetch_add(1);
+        if (!wisp::os::on_flash_thread()) probes_off_flash.fetch_add(1);
+    };
+    EXPECT_TRUE(router.run_sync(wisp::core::Medium::Sd, [&] { r.storage->refresh(); }, 5000));
+    r.sd_dev->on_online = nullptr;
+    EXPECT_GT(probes.load(), 0);
+    EXPECT_EQ(probes_off_flash.load(), 0);
+
+    bool wrote_on_flash = false;
+    wisp::Result<void> wrote = wisp::Result<void>::err(wisp::ErrorCode::Busy, "not run");
+    const std::string text = "x";
+    EXPECT_TRUE(router.run_sync(
+        wisp::core::Medium::Sd,
+        [&] {
+            wrote_on_flash = wisp::os::on_flash_thread();
+            wrote = r.storage->write_atomic(
+                r.sd + "/wisp/library/probe.txt",
+                std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(text.data()),
+                                         text.size()));
+        },
+        5000));
+    EXPECT_TRUE(wrote);
+    EXPECT_TRUE(wrote_on_flash);
+    EXPECT_TRUE(fs::exists(fs::path(r.sd) / "wisp" / "library" / "probe.txt"));
+}
 
 }  // namespace
 
