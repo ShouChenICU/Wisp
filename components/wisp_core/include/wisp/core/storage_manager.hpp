@@ -338,13 +338,13 @@ public:
     // ErrorCode::StorageUnavailable before init() has succeeded.
     Result<std::string> internal_root() const;
 
-    // Re-probes storage.sd's online() state and, on a change since the
+    // Re-probes the removable medium's online() state and, on a change since the
     // last init()/refresh(), (re)creates its area roots (on an
     // offline->online transition; a creation failure only logs a warning,
     // same as init() -- see its doc comment) and publishes
     // "storage.sd.inserted" or "storage.sd.removed" (source: the card's
     // own id; the topics keep their names whatever the id) accordingly.
-    // A no-op if "storage.sd" isn't registered, or if its
+    // A no-op without a removable medium, or if its
     // online() state hasn't changed since the last call -- see the file
     // header's note on what that means for a card inserted and removed
     // between two polls. Intended to be called periodically (e.g. by a 2s

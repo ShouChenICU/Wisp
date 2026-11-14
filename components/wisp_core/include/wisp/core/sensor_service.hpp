@@ -151,7 +151,7 @@ private:
 
     std::shared_ptr<hal::Imu> imu_;
     // imu_'s own id, the device taken in the OccupancyRegistry; empty when
-    // imu_ is null, and then no subscription can succeed to take it.
+    // imu_ is null, and then no subscription succeeds, so it is never taken.
     std::string device_id_;
     OccupancyRegistry& occupancy_;
     SensorServiceConfig config_;

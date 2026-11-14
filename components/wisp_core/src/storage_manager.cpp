@@ -502,6 +502,13 @@ Result<void> StorageManager::init() {
     WISP_TRY(mkdir_p(int_mount_ + "/library"));
 
     sd_dev_ = registry_.by_role<hal::Storage>(hal::role::kRemovable);
+    if (sd_dev_ == int_dev_) {
+        // One medium cannot be both: as a card it would be listed twice,
+        // get card events and take the Library root off internal flash.
+        WLOG_W(kTag, "'%s' has both roles internal and removable; treating it as internal only",
+               int_dev_->info().id.c_str());
+        sd_dev_.reset();
+    }
     if (sd_dev_) {
         Result<std::string> sd_norm = normalize_path(sd_dev_->mount_point());
         if (!sd_norm) {
