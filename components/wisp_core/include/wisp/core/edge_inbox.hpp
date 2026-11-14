@@ -22,9 +22,11 @@
 //
 // Threads and locks. push() may be called from any thread, including hot
 // paths and code holding its own locks: it never allocates and blocks only
-// on the inbox's own lock and the dispatcher's ready-list lock (the order
-// is inbox -> dispatcher ready list; a dispatcher runs the slot with its
-// ready-list lock released, so nothing takes them the other way). The
+// on the inbox's own lock and inside the dispatcher's schedule(). The
+// order is inbox -> the dispatcher's schedule() (its ready list and its
+// wake: the bus's ready semaphore, the UI runtime's no-op post); both are
+// leaf and non-blocking, and a dispatcher runs the slot with its
+// ready-list lock released, so nothing takes them the other way. The
 // warning is logged after the inbox's lock is released. The handler runs
 // with no inbox lock held, so it may push into any inbox, its own
 // included.
@@ -44,9 +46,9 @@
 //
 // Memory. The ring of N edges and the handler's callable live in
 // Mem::Large, allocated once in the constructor. The inbox object itself
-// lives inside its owner: on a 32-bit target it is 68 bytes (60 for the
-// part below, 8 for the handler). Its lock also allocates, in internal
-// RAM: os::Mutex's 4-byte Impl and the RTOS mutex that holds.
+// lives inside its owner and is a few tens of bytes whatever E and N are;
+// its lock also allocates, in internal RAM: os::Mutex's small Impl and the
+// RTOS mutex that holds.
 
 #include <atomic>
 #include <cstddef>

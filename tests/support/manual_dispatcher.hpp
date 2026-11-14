@@ -41,14 +41,17 @@ public:
         const ManualDispatcher* outer = running_;
         running_ = this;
         core::DispatchSlot* slot = slots_.take();
-        if (slot != nullptr) {
+        // Noted before the run: done() may hand the slot to finish(), which
+        // frees it.
+        const bool ran = slot != nullptr;
+        if (ran) {
             slot->run(*slot);
             // done() may hand the slot to its owner's finish(), which frees
             // it: nothing touches `slot` after this line.
             slots_.done(*slot);
         }
         running_ = outer;
-        return slot != nullptr;
+        return ran;
     }
 
     // Slots waiting to run (plus the one running, when asked from inside
@@ -57,7 +60,7 @@ public:
 
 private:
     // Per thread, so on_dispatch_thread() is true only on the thread
-    // inside run_all(), as it is only on wisp.bus for the bus.
+    // inside run_all() or run_one(), as it is only on wisp.bus for the bus.
     static inline thread_local const ManualDispatcher* running_ = nullptr;
     core::SlotQueue slots_;
 };

@@ -230,6 +230,82 @@ TEST(EdgeInbox, AHandlerThatAlwaysPushesDoesNotHoldItsDispatcher) {
     EXPECT_EQ(md.queued(), 1u);  // still pending; the inbox's destructor unqueues it
 }
 
+// The case the "no lost edge" argument rests on: the handler pushes while
+// an edge is still waiting, so push() does not schedule, and only the run's
+// own re-schedule at its end gets the new edge delivered.
+TEST(EdgeInbox, AnEdgePushedWhileOthersWaitIsDeliveredByTheNextRun) {
+    ManualDispatcher md;
+    std::vector<int> seen;
+    Inbox8* self = nullptr;
+    Inbox8 inbox("test", md, [&](const Edge& e) {
+        seen.push_back(e.v);
+        if (e.v == 1) {
+            self->push({e.v + 10});  // 2 is still waiting: push() does not schedule
+        }
+    });
+    self = &inbox;
+    inbox.push({1});
+    inbox.push({2});
+    ASSERT_TRUE(md.run_one());
+    EXPECT_EQ(seen, (std::vector<int>{1, 2}));  // the two waiting at the start
+    EXPECT_EQ(md.queued(), 1u);                 // queued by the run itself
+    EXPECT_EQ(md.run_all(), 1u);
+    EXPECT_EQ(seen, (std::vector<int>{1, 2, 11}));
+}
+
+// The handler overflows its own ring mid-run. Pushes 1..4 fill it; the run
+// starts with 4 waiting and pops 1, leaving 2, 3, 4; the handler's 101
+// fills the ring and 102, 103, 104 drop 2, 3, 4. The run still delivers
+// exactly 4 edges (1, 101, 102, 103), the oldest survivors in order, and
+// the next run delivers 104.
+TEST(EdgeInbox, OverflowDuringARunDeliversTheSnapshotCountOfSurvivorsInOrder) {
+    ManualDispatcher md;
+    std::vector<int> seen;
+    EdgeInbox<Edge, 4>* self = nullptr;
+    EdgeInbox<Edge, 4> inbox("test", md, [&](const Edge& e) {
+        seen.push_back(e.v);
+        if (e.v == 1) {
+            for (int v = 101; v <= 104; ++v) {
+                self->push({v});
+            }
+        }
+    });
+    self = &inbox;
+    for (int v = 1; v <= 4; ++v) {
+        inbox.push({v});
+    }
+    ASSERT_TRUE(md.run_one());
+    EXPECT_EQ(seen, (std::vector<int>{1, 101, 102, 103}));
+    EXPECT_EQ(inbox.overflows(), 3u);
+    EXPECT_EQ(md.queued(), 1u);
+    EXPECT_EQ(md.run_all(), 1u);
+    EXPECT_EQ(seen, (std::vector<int>{1, 101, 102, 103, 104}));
+}
+
+// Legal: on the dispatcher's thread but outside the inbox's own run, no run
+// of its slot is in progress, so the destructor unqueues it and returns.
+TEST(EdgeInbox, DestroyedFromAnotherSlotsRunOnItsDispatcher) {
+    ManualDispatcher md;
+    int calls = 0;
+    std::unique_ptr<Inbox8> inbox =
+        std::make_unique<Inbox8>("test", md, [&](const Edge&) { ++calls; });
+
+    struct Killer : DispatchSlot {
+        std::unique_ptr<Inbox8>* target = nullptr;
+    } killer;
+    killer.target = &inbox;
+    killer.run = [](DispatchSlot& s) { static_cast<Killer&>(s).target->reset(); };
+
+    md.schedule(killer);
+    inbox->push({1});
+    inbox->push({2});
+    ASSERT_TRUE(md.run_one());  // the killer, queued ahead of the inbox
+    EXPECT_EQ(inbox, nullptr);
+    EXPECT_EQ(md.run_all(), 0u);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(md.attached(), 0u);
+}
+
 TEST(EdgeInbox, DestroyedWithQueuedEdgesRunsNothingAfterwards) {
     ManualDispatcher md;
     int calls = 0;
@@ -244,35 +320,58 @@ TEST(EdgeInbox, DestroyedWithQueuedEdgesRunsNothingAfterwards) {
     EXPECT_EQ(md.attached(), 0u);
 }
 
+// Forwards everything to a real dispatcher; cancel() first gives `gate`,
+// so a handler parked on it can return only once the inbox's destructor
+// has reached cancel().
+class CancelSpy : public wisp::core::Dispatcher {
+public:
+    CancelSpy(Dispatcher& real, wisp::os::Semaphore& gate) : real_(real), gate_(gate) {}
+    ~CancelSpy() override { check_detached("CancelSpy"); }
+    void schedule(DispatchSlot& slot) override { real_.schedule(slot); }
+    bool cancel(DispatchSlot& slot) override {
+        gate_.give();
+        return real_.cancel(slot);
+    }
+    bool on_dispatch_thread() const override { return real_.on_dispatch_thread(); }
+
+private:
+    Dispatcher& real_;
+    wisp::os::Semaphore& gate_;
+};
+
 TEST(EdgeInbox, DestroyedOffItsDispatcherWaitsForTheHandlerInProgress) {
     EventBus bus;
     ASSERT_TRUE(bus.start().is_ok());
     wisp::os::Semaphore entered(1, 0);
     wisp::os::Semaphore gate(1, 0);
+    CancelSpy spy(bus, gate);
     std::atomic<bool> returned{false};
-    auto inbox = std::make_unique<EdgeInbox<Edge, 8>>("test", bus, [&](const Edge&) {
+    std::atomic<bool> timed_out{false};
+    auto inbox = std::make_unique<Inbox8>("test", spy, [&](const Edge&) {
         entered.give();
-        (void)gate.take(kGateMs);
+        // Opened only by the destructor's cancel() (or the guard on a
+        // failure): a destructor that never cancels leaves this to time out.
+        if (!gate.take(kGateMs)) {
+            timed_out = true;
+        }
         returned = true;
     });
     inbox->push({1});
     ASSERT_TRUE(entered.take(kGateMs));
-    std::atomic<bool> destroying{false};
     std::atomic<bool> handler_had_returned{false};
     std::vector<std::thread> threads;
     {
         GateAndJoin guard(gate, threads);
         threads.emplace_back([&] {
-            destroying = true;
             inbox.reset();
             handler_had_returned = returned.load();
         });
-        while (!destroying.load()) {
-            std::this_thread::yield();
-        }
     }
+    // The handler could return only after cancel() began, so seeing it
+    // returned once reset() is back proves the destructor waited for it.
     EXPECT_TRUE(handler_had_returned.load());
-    EXPECT_EQ(bus.attached(), 0u);
+    EXPECT_FALSE(timed_out.load());
+    EXPECT_EQ(spy.attached(), 0u);
     bus.stop();
 }
 
