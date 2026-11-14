@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -11,6 +12,8 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -37,6 +40,7 @@ using wisp::Value;
 using wisp::agent::ToolCtx;
 using wisp::agent::ToolOutput;
 using wisp::core::SceneState;
+using wisp::core::StorageWorker;
 using wisp::test::manifest;
 using wisp::test::wait_until;
 
@@ -64,15 +68,23 @@ protected:
         ctx.lang = "zh";
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
-        fc.submit_io = [this](wisp::core::Medium, wisp::core::IoLane lane,
+        // As StorageRouter does: card work to the SD I/O worker while it
+        // runs.
+        fc.submit_io = [this](wisp::core::Medium m, wisp::core::IoLane lane,
                               std::function<void()> job) {
-            return worker.submit(std::move(job), lane);
+            StorageWorker& w =
+                m == wisp::core::Medium::Sd && sd_worker.running() ? sd_worker : worker;
+            return w.submit(std::move(job), lane);
+        };
+        fc.on_io = [this](std::string_view scene) {
+            if (on_io) on_io(scene);
         };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) { d.files = files.get(); };
     }
     void TearDown() override {
         tools.reset();
+        sd_worker.stop();
         SceneRuntimeFixture::TearDown();
     }
 
@@ -160,6 +172,10 @@ protected:
     }
 
     std::unique_ptr<wisp::core::SceneFiles> files;
+    // Started only by tests with a card (SceneOpsCard).
+    StorageWorker sd_worker{StorageWorker::sd_io_config()};
+    // SceneFilesConfig::on_io; set while no file work runs.
+    std::function<void(std::string_view)> on_io;
     std::unique_ptr<wisp::agent::ToolRegistry> tools;
     ToolCtx ctx;
     std::vector<std::string> confirms;
@@ -184,8 +200,8 @@ TEST_F(SceneOps, ThreadsRisksAndTimeouts) {
                           Want{"scene.delete", ToolRisk::Confirm, ToolThread::Agent, 30000},
                           Want{"scene.data_read", ToolRisk::Normal, ToolThread::Agent, 5000},
                           Want{"scene.data_write", ToolRisk::Note, ToolThread::Agent, 5000},
-                          Want{"scene.files_list", ToolRisk::Normal, ToolThread::Fs, 10000},
-                          Want{"scene.files_read", ToolRisk::Normal, ToolThread::Fs, 10000},
+                          Want{"scene.files_list", ToolRisk::Normal, ToolThread::Agent, 10000},
+                          Want{"scene.files_read", ToolRisk::Normal, ToolThread::Agent, 10000},
                           Want{"scene.files_remove", ToolRisk::Confirm, ToolThread::Agent, 10000},
                           Want{"scene.logs", ToolRisk::Normal, ToolThread::Agent, 5000},
                           Want{"scene.eval", ToolRisk::Note, ToolThread::Agent, 5000}}) {
@@ -353,6 +369,79 @@ TEST_F(SceneOps, FilesRemoveAsksOnDevice) {
     ASSERT_TRUE(removed.ok) << wisp::to_json(removed.result);
     EXPECT_EQ(removed.note, "删除了「计数器」的文件 a.txt");
     EXPECT_FALSE(file_exists("a.txt"));
+}
+
+// A scene whose files are on the card.
+class SceneOpsCard : public SceneOps {
+protected:
+    void SetUp() override {
+        with_sd_card = true;
+        SceneOps::SetUp();
+        ASSERT_TRUE(sd_worker.start());
+    }
+};
+
+// A card scene's files are read on wisp.sd.io, so a long read never holds
+// up an Interactive job (a settings save, a conversation append) on
+// wisp.fs.
+TEST_F(SceneOpsCard, CardFileWorkRunsOnTheSdWorker) {
+    begin();
+    write_file("a.txt", "hello");
+    ASSERT_TRUE(fs::exists(fs::path(sd) / "wisp/library/scenes/counter/files/a.txt"));
+
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    std::atomic<int> parked_on_sd{0};
+    std::atomic<int> calls{0};
+    on_io = [&](std::string_view) {
+        ++calls;
+        if (!sd_worker.on_worker()) return;
+        if (parked_on_sd.fetch_add(1) == 0) {
+            entered.give();
+            release.take(wisp::os::kForever);
+        }
+    };
+    std::promise<ToolOutput> read;
+    std::thread agent(
+        [&] { read.set_value(call("scene_files_read", R"({"id":"counter","name":"a.txt"})")); });
+    const bool reached_sd = entered.take(5000);
+    // The read is parked on wisp.sd.io; wisp.fs answers at once.
+    auto quick = worker.run_sync([] {}, 1000, wisp::core::IoLane::Interactive);
+    release.give();
+    agent.join();
+    EXPECT_TRUE(reached_sd);
+    EXPECT_TRUE(quick);
+    ToolOutput out = read.get_future().get();
+    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+    EXPECT_EQ(str(out.result, "content"), kWrapped + "hello</data>");
+
+    // The listing and both halves of a removal go there too.
+    on_io = nullptr;
+    calls = 0;
+    std::atomic<int> on_sd{0};
+    on_io = [&](std::string_view) {
+        ++calls;
+        on_sd += sd_worker.on_worker() ? 1 : 0;
+    };
+    ASSERT_TRUE(call("scene_files_list", R"({"id":"counter"})").ok);
+    ToolOutput removed = call("scene_files_remove", R"({"id":"counter","name":"a.txt"})");
+    ASSERT_TRUE(removed.ok) << wisp::to_json(removed.result);
+    on_io = nullptr;
+    EXPECT_EQ(calls.load(), 3);
+    EXPECT_EQ(on_sd.load(), 3);
+
+    // The agent's own files stay on wisp.fs, even once they are on the card.
+    auto wrote = wisp::core::call_on_worker<void>(&worker, [&] {
+        return files->write(wisp::core::kAgentFilesId, "n.txt",
+                            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>("n"), 1));
+    });
+    ASSERT_TRUE(wrote) << wrote.error().message;
+    ASSERT_TRUE(fs::exists(fs::path(sd) / "wisp/library/agent/files/n.txt"));
+    std::atomic<int> on_flash{0};
+    on_io = [&](std::string_view) { on_flash += worker.on_worker() ? 1 : 0; };
+    ASSERT_TRUE(call("scene_files_list", R"({"id":"@agent"})").ok);
+    on_io = nullptr;
+    EXPECT_EQ(on_flash.load(), 1);
 }
 
 TEST_F(SceneOps, LogsReturnsNewestN) {
