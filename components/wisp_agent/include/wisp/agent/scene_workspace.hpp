@@ -34,12 +34,15 @@
 //
 // rollback() installs the previous version (SceneRepository::prev_zip())
 // the same way from step 6, which makes the current one the previous one.
-// It returns to the version from before the turn's first install.
+// It returns to the version from before the turn's first install; a
+// second rollback swaps again and brings back the version rolled back
+// from (a redo), so it loses none. The turn's earlier installs between
+// the first and the last are not kept.
 //
 // The previous version is the one from before the turn (plan deviation 4
 // of docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md):
-// the first successful install of a scene in an agent turn (ToolCtx::turn)
-// starts a session, and later installs of that scene in the same turn
+// the first successful install of a scene in an agent turn (ToolCtx::turn,
+// unique per boot) starts a session, and later installs of that scene in the same turn
 // leave .prev alone (InstallOptions::keep_prev false: the replaced package
 // is removed instead). The session ends with the turn, at discard() or
 // rollback(), and when anything else replaces or removes the scene

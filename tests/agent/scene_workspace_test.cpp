@@ -543,7 +543,11 @@ TEST_F(SceneWorkspaceTest, AnotherInstallerEndsTheSession) {
 
 // A delete removes .prev with the package, so a scene reinstalled in the
 // same turn starts from nothing: its second install keeps no previous
-// version either, and rollback has none.
+// version either, and rollback has none. The files on disk are the same
+// whether or not the delete ended the session (the reinstall keeps no
+// .prev either way), so this pins the behaviour, not the session's end;
+// AnotherInstallerEndsTheSession covers the changed_since() check that
+// ends it.
 TEST_F(SceneWorkspaceTest, ADeleteEndsTheSession) {
     begin();
     ctx.turn = 5;
@@ -556,6 +560,29 @@ TEST_F(SceneWorkspaceTest, ADeleteEndsTheSession) {
     ASSERT_NO_FATAL_FAILURE(install_counter("4.0.0"));
     EXPECT_EQ(prev_version(in), "");
     EXPECT_EQ(str(ws->rollback("counter", ctx).result, "error"), "not_found");
+}
+
+// ToolCtx::turn is unique per boot: the first turn of a new conversation
+// carries the next serial, not the conversation's turn number 1 again,
+// so it never continues the old conversation's session.
+TEST_F(SceneWorkspaceTest, ANewConversationsTurnStartsANewBaseline) {
+    begin();
+    ctx.turn = 1;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ctx.turn = 2;
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "2.0.0");
+}
+
+// Sessions live in RAM: after a restart (a new workspace) the same turn
+// value keeps the installed version again.
+TEST_F(SceneWorkspaceTest, SessionsDoNotSurviveARestart) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    make_ws();
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "2.0.0");
 }
 
 TEST_F(SceneWorkspaceTest, CallsOutsideATurnAlwaysKeepPrev) {
