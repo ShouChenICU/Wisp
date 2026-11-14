@@ -241,6 +241,94 @@ TEST(StorageManager, HotPlugEvents) {
     EXPECT_TRUE(exists(f.sd + "/wisp/library"));
 }
 
+TEST(StorageManager, SdCellSeededAtInitWithoutAnEvent) {
+    Fixture f(true);
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{false, 0}));
+    ASSERT_TRUE(f.mgr->init());
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{true, 0}));
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    EXPECT_TRUE(f.collected_topics().empty());
+}
+
+TEST(StorageManager, SdCellCountsEveryChange) {
+    Fixture f(true);
+    ASSERT_TRUE(f.mgr->init());
+
+    f.mgr->refresh();  // nothing changed: no count, no event
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{true, 0}));
+
+    f.sd_dev->online_flag = false;
+    f.mgr->refresh();
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{false, 1}));
+    f.sd_dev->online_flag = true;
+    f.mgr->refresh();
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{true, 2}));
+
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    EXPECT_EQ(f.collected_topics(),
+              (std::vector<std::string>{"storage.sd.removed", "storage.sd.inserted"}));
+}
+
+TEST(StorageManager, SdEventsCarryTheManagerSourceAndNoPayload) {
+    Fixture f(false);
+    std::vector<Event> seen;
+    std::mutex seen_mutex;
+    f.bus.subscribe("storage.sd.", [&](const Event& e) {
+        std::lock_guard<std::mutex> lock(seen_mutex);
+        seen.push_back(e);
+    });
+    ASSERT_TRUE(f.mgr->init());
+    f.sd_dev->online_flag = true;
+    f.mgr->refresh();
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].topic, "storage.sd.inserted");
+    EXPECT_EQ(seen[0].source, wisp::core::kStorageManagerSource);
+    EXPECT_TRUE(seen[0].payload.empty());
+}
+
+// A card that is present but whose directories cannot be made stays
+// online: refresh() still reports it inserted, once.
+TEST(StorageManager, SdCellCountsACardThatFailsToMount) {
+    if (getuid() == 0) {
+        GTEST_SKIP() << "running as root: chmod-based read-only test would not be meaningful";
+    }
+    Fixture f(false);
+    ASSERT_TRUE(f.mgr->init());
+    ChmodGuard guard(f.sd, 0500);
+    f.sd_dev->online_flag = true;
+    f.mgr->refresh();
+    f.mgr->refresh();
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{true, 1}));
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    EXPECT_EQ(f.collected_topics(), (std::vector<std::string>{"storage.sd.inserted"}));
+}
+
+TEST(StorageManager, StandbyAloneMovesNeitherTheCellNorTheBus) {
+    Fixture f(true);
+    ASSERT_TRUE(f.mgr->init());
+    f.mgr->set_standby(true);
+    f.mgr->refresh();
+    f.mgr->set_standby(false);
+    f.mgr->refresh();
+    EXPECT_EQ(f.mgr->sd_cell().get(), (wisp::core::SdStatus{true, 0}));
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    EXPECT_TRUE(f.collected_topics().empty());
+}
+
+TEST(StorageManager, WithoutACardDeviceTheCellStaysOffline) {
+    wisp::core::DeviceRegistry reg;
+    wisp::core::EventBus bus;
+    bus.start();
+    reg.add(std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(), false));
+    wisp::core::StorageManager m(reg, bus);
+    ASSERT_TRUE(m.init());
+    m.refresh();
+    EXPECT_EQ(m.sd_cell().get(), (wisp::core::SdStatus{false, 0}));
+    bus.stop();
+}
+
 TEST(StorageManager, MissingInternalFailsInit) {
     wisp::core::DeviceRegistry reg;
     wisp::core::EventBus bus;

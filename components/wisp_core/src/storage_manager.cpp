@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/core/log.hpp"
@@ -223,6 +224,17 @@ Result<void> mkdir_p(const std::string& dir) {
             return Result<void>::ok();
         }
     }
+}
+
+static_assert(std::is_trivially_copyable_v<SdStatus>, "a set() of the status must not allocate");
+
+// Reproduces the storage.sd.inserted / storage.sd.removed event refresh()
+// published. The topic comes from `after`, not from a flip of `before`.
+void sd_mirror(EventBus& bus, const SdStatus&, const SdStatus& after) {
+    Event e;
+    e.source = kStorageManagerSource;
+    e.topic = after.online ? topics::kStorageSdInserted : topics::kStorageSdRemoved;
+    bus.publish(std::move(e));
 }
 
 // Creates <sd_mount>/wisp/library and <sd_mount>/wisp/backup, logging a
@@ -475,7 +487,7 @@ uint64_t path_size(const std::string& path) {
 }  // namespace
 
 StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageConfig config)
-    : registry_(registry), bus_(bus), config_(config) {}
+    : registry_(registry), bus_(bus), config_(config), sd_cell_(bus, SdStatus{}, &sd_mirror) {}
 
 Result<void> StorageManager::init() {
     WISP_ASSERT_FLASH_THREAD("StorageManager::init");
@@ -521,6 +533,9 @@ Result<void> StorageManager::init() {
         sd_mount_.clear();
         sd_online_ = false;
     }
+
+    // Silent: nothing is published at boot, as before.
+    sd_cell_.seed({sd_online_, sd_cell_.get().changes});
 
     ready_ = true;
     return Result<void>::ok();
@@ -1065,18 +1080,18 @@ void StorageManager::refresh() {
     }
     sd_online_ = now_online;
 
-    Event e;
-    e.source = kSdId;
     if (sd_online_) {
         // Best-effort, same as init(): a write-protected/corrupt card
         // stays marked online rather than flipping refresh() back to
         // "removed" just because its directories couldn't be (re)made.
         ensure_sd_dirs_best_effort(sd_mount_);
-        e.topic = topics::kStorageSdInserted;
-    } else {
-        e.topic = topics::kStorageSdRemoved;
     }
-    bus_.publish(std::move(e));
+    // Always a new value: `changes` moves, so no event is lost to equal-value
+    // skipping, and the mirror runs after the mount above, as the publish did.
+    sd_cell_.update([&](SdStatus& s) {
+        s.online = sd_online_;
+        ++s.changes;
+    });
 }
 
 StorageStatus StorageManager::status() const {

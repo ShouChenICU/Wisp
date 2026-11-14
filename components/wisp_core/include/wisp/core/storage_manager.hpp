@@ -147,6 +147,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/hal/storage.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -181,6 +182,20 @@ struct DirEntry {
     // file was written: before a time sync the device's clock starts at 0.
     int64_t mtime = 0;
 };
+
+// Whether the SD card is usable, and how many times that has changed since
+// init(). The counter is what keeps two changes apart for a follower that
+// is slower than the card (a remove and a re-insert between two deliveries
+// leave `online` equal).
+struct SdStatus {
+    bool online = false;
+    uint32_t changes = 0;
+    bool operator==(const SdStatus&) const = default;
+};
+
+// Source of the storage.sd.inserted / storage.sd.removed events the cell's
+// mirror publishes. A component name, not a device id: boards choose ids.
+inline constexpr char kStorageManagerSource[] = "storage_manager";
 
 class StorageManager {
 public:
@@ -344,6 +359,12 @@ public:
     // timer) by a caller outside this class; see file header.
     void refresh();
 
+    // The card's presence. init() seeds it; refresh() moves it where it
+    // used to publish, and the cell's mirror publishes storage.sd.inserted
+    // or storage.sd.removed. A subscriber releases its subscription before
+    // this manager is destroyed.
+    const StateCell<SdStatus>& sd_cell() const { return sd_cell_; }
+
     // A snapshot of every registered storage device's current id/online/
     // capacity, for diagnostics (e.g. a self-check screen). Slow, and not
     // for the UI thread: it takes mutex_, the same lock write_atomic()
@@ -416,6 +437,9 @@ private:
     std::string int_mount_;  // never has a trailing '/'; see init()
     std::string sd_mount_;   // ditto; empty if storage.sd isn't registered
     bool sd_online_ = false;
+    // Declared after bus_, whose reference its constructor uses; the
+    // manager is destroyed before the bus stops.
+    StateCell<SdStatus> sd_cell_;
     // calls(); bumped by checked_path().
     mutable std::atomic<uint64_t> calls_{0};
 
