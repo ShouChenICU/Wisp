@@ -270,7 +270,9 @@ std::optional<ScriptError> collect_tree(Vm& vm, int index, NodeId& next_id, Buil
 // pass it is not built, nor any after it in this call, and the scene's
 // log gets a warning ("ui.list: widget limit 2000 reached, rows from 31
 // on are not built"); a single row of more than kMaxNodes is still an
-// error. Runs under
+// error. A call that builds no row still pushes one empty ListRows for
+// the list: the view keeps a reset list's old rows until a ListRows
+// comes (scene_view.hpp). Runs under
 // Vm::call() as a message of its own (Budget::Fresh); the caller flushes
 // afterwards as after any message. Errors as collect_tree(), positioned at
 // the row's constructor (or at the list for a row() that returns no

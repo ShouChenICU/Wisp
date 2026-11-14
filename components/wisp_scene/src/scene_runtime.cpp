@@ -2368,8 +2368,9 @@ void SceneRuntime::ui_show_view(uint32_t instance, uint64_t token, std::string i
             WLOG_W(kTag, "%s: event dropped: scene queue full", id.c_str());
     };
     cb.on_list_range = [this, instance, id](NodeId list, uint32_t first, uint32_t count) {
-        if (!push(make_message(id, instance, msg::ListRange{list, first, count}), 0) && running_)
-            WLOG_W(kTag, "%s: list rows not asked for: scene queue full", id.c_str());
+        if (push(make_message(id, instance, msg::ListRange{list, first, count}), 0)) return true;
+        if (running_) WLOG_W(kTag, "%s: list rows not asked for: scene queue full", id.c_str());
+        return false;
     };
     cb.on_warning = [tag = scene_tag(id)](NodeId, std::string_view message) {
         WLOG_W(tag.c_str(), "%.*s", static_cast<int>(message.size()), message.data());

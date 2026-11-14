@@ -41,7 +41,10 @@ void SceneView::apply_list_reset(const ListReset& r) {
     // Scroll events from the clamping below would ask for a window of the
     // old rows; the one request at the end covers them.
     n->resetting = true;
-    drop_rows(*n);
+    // Rows past the new end go now: they would hold the content taller
+    // than the new items and keep the scroll position past their end.
+    for (size_t i = n->built.size(); i-- > 0;)
+        if (n->built[i].index >= r.count) drop_row(*n, i);
     n->rows = r.count;
     apply_list_height(*n);
     lv_obj_update_layout(n->obj);
@@ -53,23 +56,31 @@ void SceneView::apply_list_reset(const ListReset& r) {
         lv_obj_scroll_to_y(n->obj, y, LV_ANIM_OFF);
     }
     n->resetting = false;
-    update_window(*n, true);
+    n->rows_stale = !n->built.empty();
+    // Drops the old rows outside the new window too. No ListRows follows
+    // an empty window or a request that was not passed on, so the rest
+    // would stay on screen for good.
+    if (!update_window(*n, true) || n->window.count == 0) {
+        drop_rows(*n);
+        n->rows_stale = false;
+    }
 }
 
-void SceneView::update_window(Node& list, bool force) {
+bool SceneView::update_window(Node& list, bool force) {
     // Rows start below the list's top padding, and the padding scrolls
     // with them: the viewport over the rows is the whole list, offset by
     // that padding (a list padded to clear a rounded screen's corners).
     const ListWindow w = visible_rows(
         lv_obj_get_scroll_y(list.obj) - lv_obj_get_style_pad_top(list.obj, LV_PART_MAIN),
         lv_obj_get_height(list.obj), list.row_h, list.rows);
-    if (!force && w == list.window) return;
+    if (!force && w == list.window) return true;
     list.window = w;
     for (size_t i = list.built.size(); i-- > 0;) {
         const uint32_t index = list.built[i].index;
         if (index < w.first || index - w.first >= w.count) drop_row(list, i);
     }
-    if (cb_.on_list_range) cb_.on_list_range(list.id, w.first, w.count);
+    if (!cb_.on_list_range) return true;
+    return cb_.on_list_range(list.id, w.first, w.count);
 }
 
 void SceneView::list_event_cb(lv_event_t* e) {
@@ -77,6 +88,8 @@ void SceneView::list_event_cb(lv_event_t* e) {
     // Not skipped while an op is applied: a scroll the scene asked for
     // (ScrollTo) needs its rows like one the user made.
     if (n->resetting) return;
+    // A request not passed on here leaves stale rows to the reset's own
+    // request, which was, and whose ListRows drops them.
     n->view->update_window(*n, false);
 }
 
@@ -112,6 +125,14 @@ void SceneView::apply_list_rows(const ListRows& r) {
     if (list == nullptr || list->widget != Widget::List) {
         WLOG_D(kTag, "rows for node %" PRIu32 " that is not a list", r.list);
         return;
+    }
+    // Every ListRows after a ListReset holds the new items' rows (the
+    // scene drops its rows at the reset and builds only from the current
+    // items): the old ones go before any new row is checked against the
+    // node limit.
+    if (list->rows_stale) {
+        drop_rows(*list);
+        list->rows_stale = false;
     }
     for (size_t k = 0; k < r.rows.size(); ++k) {
         if (r.first > UINT32_MAX - k) break;

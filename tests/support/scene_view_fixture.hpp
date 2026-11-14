@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -88,8 +89,10 @@ protected:
             events.push_back({n, ev, std::move(v)});
         };
         cb.on_list_range = [this](scene::NodeId list, uint32_t first, uint32_t count) {
+            if (refuse_ranges) return false;
             std::lock_guard<std::mutex> lock(mutex);
             ranges.push_back({list, first, count});
+            return true;
         };
         cb.on_warning = [this](scene::NodeId, std::string_view message) {
             std::lock_guard<std::mutex> lock(mutex);
@@ -140,6 +143,9 @@ protected:
     }
 
     bool with_touch = false;
+    // on_list_range reports the request as not passed on (a full scene
+    // queue).
+    std::atomic<bool> refuse_ranges{false};
     std::shared_ptr<FakeDisplay> display;
     std::shared_ptr<FakeTouch> touch;
     lv_indev_t* indev = nullptr;
