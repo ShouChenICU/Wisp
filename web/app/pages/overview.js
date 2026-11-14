@@ -345,7 +345,10 @@ function WifiCard({ wifi }) {
   </${Card}>`;
 }
 
-const STORAGE_NAME = { 'storage.int': 'storage.int', 'storage.sd': 'storage.sd' };
+// Media are told apart by caps role, not id: a board names them freely.
+// The card events (storage.sd.*) are fixed topic names for the removable one.
+const STORAGE_NAME = { internal: 'storage.int', removable: 'storage.sd' };
+const rolesOf = (c) => (Array.isArray(c.role) ? c.role : c.role ? [c.role] : []);
 const STATE_TONE = { ok: 'ok', degraded: 'warn', missing: 'muted', failed: 'err' };
 
 function StorageCard({ device, sd }) {
@@ -357,14 +360,16 @@ function StorageCard({ device, sd }) {
       ? html`<p class="stat-empty">${t('storage.none')}</p>`
       : html`<ul class="rows">
           ${list.map((d) => {
-            const state = d.id === 'storage.sd' && sd ? sd : d.state;
             const c = caps.get(d.id) || {};
+            const roles = rolesOf(c);
+            const state = roles.includes('removable') && sd ? sd : d.state;
+            const name = roles.map((r) => STORAGE_NAME[r]).find(Boolean);
             const detail = [c.fs ? String(c.fs).toUpperCase() : null, c.removable ? t('storage.removable') : null]
               .filter(Boolean)
               .join(' · ');
             return html`<li key=${d.id} class="row">
               <div class="row-main">
-                <span class="row-title">${STORAGE_NAME[d.id] ? t(STORAGE_NAME[d.id]) : d.id}</span>
+                <span class="row-title">${name ? t(name) : d.id}</span>
                 ${detail ? html`<span class="row-sub">${detail}</span>` : null}
               </div>
               <${Badge} tone=${STATE_TONE[state] || 'muted'}>${STATE_TONE[state] ? t('state.' + state) : state}</${Badge}>
