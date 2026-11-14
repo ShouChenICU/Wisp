@@ -20,8 +20,12 @@ inline constexpr size_t kMaxUserChars = 4000;
 // Messages waiting behind the running turn; more are refused as busy.
 inline constexpr size_t kMaxQueued = 1;
 
-// Context: every tool result in the history is cut to this many bytes.
+// Context: every tool result of an earlier turn is cut to this many bytes.
 inline constexpr size_t kToolResultKeepBytes = 4096;
+// The turn in progress keeps its tool results up to this size: the largest
+// tool payload (kReadMaxBytes / kHttpMaxMaxBytes, 64 KB) plus JSON escaping
+// and metadata.
+inline constexpr size_t kLiveToolResultBytes = 96 * 1024;
 inline constexpr uint32_t kDefaultContextWindow = 65536;
 // Compress past this share of the window, down to the target share,
 // never touching the most recent turns.

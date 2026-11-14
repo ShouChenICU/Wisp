@@ -7,8 +7,9 @@
 //   1. system_prompt(): the fixed part, byte for byte the same for the same
 //      language and screen shape (no time, battery, memory or source);
 //   2. the history: user and assistant messages, tool calls and results,
-//      with summaries in place of the turns they cover and tool results cut
-//      to kToolResultKeepBytes;
+//      with summaries in place of the turns they cover; tool results of
+//      earlier turns are cut to kToolResultKeepBytes, those of the turn in
+//      progress to kLiveToolResultBytes;
 //   3. dynamic_info(): one last system message, rebuilt for every request
 //      and never stored -- memory notes first (they change least), then the
 //      local time and weekday, the message's source, scenes, battery and

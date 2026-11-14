@@ -63,7 +63,7 @@ bool in_sorted(const os::LargeVector<std::string_view>& v, std::string_view id) 
 
 class Layout {
 public:
-    explicit Layout(std::span<const Message> h) {
+    explicit Layout(std::span<const Message> h) : live_turn_(h.empty() ? 0 : h.back().turn) {
         find_live(h);
         os::LargeVector<bool> emitted(live_.size(), false);
         for (const Message& m : h) {
@@ -165,15 +165,15 @@ public:
             case Role::Tool: {
                 if (!in_sorted(asked_, sv(m.call_id))) break;
                 size_t idx;
-                if (m.text.size() <= kToolResultKeepBytes) {
+                const size_t cap = tool_cap(m);
+                if (m.text.size() <= cap) {
                     net::LlmMessage& out = r.messages.emplace_back();
                     out.role = net::LlmRole::Tool;
                     out.text = sv(m.text);
                     idx = r.messages.size() - 1;
                 } else {
                     const std::string_view t = sv(m.text);
-                    idx = arena_text(net::LlmRole::Tool,
-                                     t.substr(0, prefix_bytes(t, kToolResultKeepBytes)),
+                    idx = arena_text(net::LlmRole::Tool, t.substr(0, prefix_bytes(t, cap)),
                                      cut_note(t.size()));
                 }
                 r.messages[idx].tool_call_id = sv(m.call_id);
@@ -189,9 +189,16 @@ public:
 private:
     static constexpr size_t kNone = static_cast<size_t>(-1);
 
-    static size_t tool_text_bytes(const Message& m) {
-        if (m.text.size() <= kToolResultKeepBytes) return m.text.size();
-        return prefix_bytes(sv(m.text), kToolResultKeepBytes) + cut_note(m.text.size()).size();
+    // The turn in progress gets its results whole: the model has not seen
+    // them yet, or is still working from them. Earlier turns keep a short cut.
+    size_t tool_cap(const Message& m) const {
+        return m.turn == live_turn_ ? kLiveToolResultBytes : kToolResultKeepBytes;
+    }
+
+    size_t tool_text_bytes(const Message& m) const {
+        const size_t cap = tool_cap(m);
+        if (m.text.size() <= cap) return m.text.size();
+        return prefix_bytes(sv(m.text), cap) + cut_note(m.text.size()).size();
     }
 
     void find_live(std::span<const Message> h) {
@@ -228,6 +235,7 @@ private:
         return seq <= (*it)->covers_last ? static_cast<size_t>(it - live_.begin()) : kNone;
     }
 
+    uint32_t live_turn_;                    // turn of the last message
     os::LargeVector<const Message*> live_;  // by covers_first
     os::LargeVector<Unit> units_;
     os::LargeVector<std::string_view> answered_, asked_;

@@ -296,7 +296,7 @@ TEST(Context, VoiceSourceAsksForShortBody) {
     EXPECT_FALSE(has(web, "short"));
 }
 
-TEST(Context, ToolResultsCutTo4KiBInHistory) {
+TEST(Context, EarlierTurnsToolResultsCutTo4KiB) {
     Conv c;
     c.next_turn();
     c.begin();
@@ -305,9 +305,12 @@ TEST(Context, ToolResultsCutTo4KiBInHistory) {
     c.call("c1", "scene.read_file", R"({"id":"a"})", big);
     c.call("c2", "scene.list", "{}", "short");
     c.end();
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "next");
 
     const BuiltRequest r = build_history(c.h());
-    ASSERT_EQ(r.messages.size(), 5u);
+    ASSERT_GE(r.messages.size(), 5u);
     const std::string cut = text(r.messages[2]);
     EXPECT_EQ(r.messages[2].role, LlmRole::Tool);
     EXPECT_EQ(r.messages[2].tool_call_id, "c1");
@@ -320,6 +323,42 @@ TEST(Context, ToolResultsCutTo4KiBInHistory) {
     EXPECT_EQ(r.messages[1].tool_calls[0].name, "scene_read_file");
 }
 
+TEST(Context, RunningTurnToolResultIsSentWhole) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "read it");
+    const std::string big(10000, 'x');
+    c.call("c1", "scene.read_file", R"({"id":"a"})", big);  // no c.end(): the turn runs
+
+    const BuiltRequest r = build_history(c.h());
+    ASSERT_EQ(r.messages.size(), 3u);
+    EXPECT_EQ(text(r.messages[2]), big);
+}
+
+TEST(Context, RunningTurnToolResultCutAtTheLiveCap) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "read it");
+    const std::string huge(wisp::agent::kLiveToolResultBytes + 5000, 'y');
+    c.call("c1", "http.fetch", "{}", huge);
+
+    const BuiltRequest r = build_history(c.h());
+    const std::string cut = text(r.messages[2]);
+    EXPECT_TRUE(cut.ends_with("bytes total]"));
+    EXPECT_LT(cut.size(), wisp::agent::kLiveToolResultBytes + 64);
+}
+
+TEST(Context, EstimateCountsTheLiveResultWhole) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "u");
+    c.call("c1", "scene.read_file", "{}", std::string(30000, 'x'));
+    EXPECT_GE(build_history(c.h()).est_tokens, 10000u);
+}
+
 TEST(Context, ToolResultCutKeepsWholeCharacters) {
     Conv c;
     c.next_turn();
@@ -328,6 +367,8 @@ TEST(Context, ToolResultCutKeepsWholeCharacters) {
     std::string big = "xx";
     for (int i = 0; i < 2000; ++i) big += "汉";
     c.call("c1", "scene.read_file", "{}", big);
+    c.next_turn();
+    c.add(Role::User, "again");
     const BuiltRequest r = build_history(c.h());
     const std::string cut = text(r.messages[2]);
     const size_t kept = cut.find("\n[truncated");
