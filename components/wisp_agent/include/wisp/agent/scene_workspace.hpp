@@ -36,7 +36,9 @@
 //
 // Threads: every draft method does its file work on the flash thread
 // (core::call_on_worker(), inline when already there), so the tools that
-// call them may run there (ToolThread::Fs). install() and rollback() touch
+// call them may run there (ToolThread::Fs); list() is better called off
+// the worker, where its per-scene reads let other jobs in between (the
+// scene.list tool runs on the agent's thread). install() and rollback() touch
 // flash only through SceneRepository and the worker, and the UI only
 // through UiInspector, which posts to it.
 //

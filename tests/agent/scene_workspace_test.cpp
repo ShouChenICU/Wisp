@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -532,7 +533,7 @@ TEST_F(ToolsTest, ThreadsRisksAndTimeouts) {
         ToolThread thread;
         uint32_t timeout;
     };
-    for (const Want& w : {Want{"scene.list", ToolRisk::Normal, ToolThread::Fs, 5000},
+    for (const Want& w : {Want{"scene.list", ToolRisk::Normal, ToolThread::Agent, 5000},
                           Want{"scene.list_files", ToolRisk::Normal, ToolThread::Fs, 5000},
                           Want{"scene.read_file", ToolRisk::Normal, ToolThread::Fs, 5000},
                           Want{"scene.write_file", ToolRisk::Normal, ToolThread::Fs, 5000},
@@ -548,6 +549,58 @@ TEST_F(ToolsTest, ThreadsRisksAndTimeouts) {
         EXPECT_EQ(d->thread, w.thread) << w.name;
         EXPECT_EQ(d->timeout_ms, w.timeout) << w.name;
     }
+}
+
+// scene.list runs on the agent's thread and reads through the repository's
+// one-scene jobs, so an Interactive job queued while the first scene is
+// read runs before the next one: the listing never holds the worker.
+TEST_F(ToolsTest, ListLetsInteractiveJobsRunBetweenScenes) {
+    install("zeta", kCounter,
+            {{"scene.json", R"({"id":"zeta","name":"Z","version":"1.0.0","schema_version":1})"}});
+    begin();
+    std::atomic<bool> ran{false};
+    std::atomic<bool> ran_before_zeta{false};
+    wisp::core::SceneRepoConfig rc;
+    rc.code_root = in + "/scenes";
+    rc.data_root = in + "/scenes";
+    rc.worker = &worker;
+    rc.on_read = [&](std::string_view id) {
+        if (id == "counter") {
+            EXPECT_TRUE(worker.submit([&] { ran = true; }, wisp::core::IoLane::Interactive));
+        } else if (id == "zeta") {
+            ran_before_zeta = ran.load();
+        }
+    };
+    wisp::core::SceneRepository gated(*storage, rc);
+    make_ws(&gated);
+    make_tools();
+    ToolOutput out = call("scene_list", "{}");
+    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+    EXPECT_EQ(field(out.result, "scenes")->as_list().size(), 2u);
+    EXPECT_TRUE(ran_before_zeta.load());
+    tools.reset();
+    ws.reset();
+}
+
+// A turn stopped while scene.list reads ends the call as cancelled, not
+// with a listing nobody waits for.
+TEST_F(ToolsTest, ListStoppedMidwayIsCancelled) {
+    begin();
+    std::atomic<bool> stopped{false};
+    ctx.cancelled = [&] { return stopped.load(); };
+    wisp::core::SceneRepoConfig rc;
+    rc.code_root = in + "/scenes";
+    rc.data_root = in + "/scenes";
+    rc.worker = &worker;
+    rc.on_read = [&](std::string_view) { stopped = true; };
+    wisp::core::SceneRepository gated(*storage, rc);
+    make_ws(&gated);
+    make_tools();
+    ToolOutput out = call("scene_list", "{}");
+    ASSERT_FALSE(out.ok);
+    EXPECT_EQ(str(out.result, "error"), "cancelled");
+    tools.reset();
+    ws.reset();
 }
 
 TEST_F(ToolsTest, EditInstallAndDiscardThroughTheTools) {
