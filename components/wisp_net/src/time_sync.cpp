@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/core/log.hpp"
@@ -12,6 +13,48 @@ namespace wisp::net {
 namespace {
 
 constexpr const char* kTag = "time";
+
+static_assert(std::is_trivially_copyable_v<core::TimeSyncResult>,
+              "a set() of the result must not allocate");
+
+// Reproduces the system.time event the service published at the end of
+// every attempt. Built from the cell's value: its server cannot have been
+// cut, as ntp_servers entries fit (see TimeSyncResult::server).
+void result_mirror(core::EventBus& bus, const core::TimeSyncResult&,
+                   const core::TimeSyncResult& after) {
+    if (after.outcome == core::TimeSyncResult::Outcome::None) return;
+    const bool ok = after.outcome == core::TimeSyncResult::Outcome::Synced;
+    Properties payload{{"state", Value(ok ? "synced" : "failed")},
+                       {"server", Value(after.server.str())}};
+    if (ok) payload.emplace("time", Value(after.time));
+    bus.publish(
+        core::Event{core::topics::kSystemTime, core::kTimeSyncSource, 0, std::move(payload)});
+}
+
+// The server as the cell holds it; cut (and logged) here, before the
+// cell's lock is taken, so that the lock covers memory work only.
+decltype(core::TimeSyncResult::server) server_field(std::string_view server) {
+    decltype(core::TimeSyncResult::server) out;
+    if (!out.assign(server)) {
+        WLOG_W(kTag, "server name cut to %u bytes", static_cast<unsigned>(out.capacity()));
+    }
+    return out;
+}
+
+// Sets the cell to one more finished attempt with this outcome.
+void record(core::StateCell<core::TimeSyncResult>& cell, bool ok, std::string_view server,
+            int64_t time) {
+    const auto name = server_field(server);
+    // Never an equal value, so never a lost system.time: every attempt
+    // moves `attempts`, even one that repeats the last outcome.
+    cell.update([&](core::TimeSyncResult& r) {
+        ++r.attempts;
+        r.outcome =
+            ok ? core::TimeSyncResult::Outcome::Synced : core::TimeSyncResult::Outcome::Failed;
+        r.server = name;
+        r.time = ok ? time : 0;
+    });
+}
 
 }  // namespace
 
@@ -28,7 +71,10 @@ std::vector<std::string> split_servers(std::string_view list) {
 }
 
 TimeSyncService::TimeSyncService(TimeSyncDeps deps, TimeSyncConfig config)
-    : deps_(std::move(deps)), config_(config), backoff_ms_(config.backoff_min_ms) {}
+    : deps_(std::move(deps)),
+      config_(config),
+      backoff_ms_(config.backoff_min_ms),
+      result_cell_(deps_.bus, core::TimeSyncResult{}, &result_mirror) {}
 
 bool TimeSyncService::tick(bool online) {
     const uint64_t now = deps_.now_ms();
@@ -136,12 +182,12 @@ void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& serv
         WLOG_I(kTag, "next attempt in %u s", static_cast<unsigned>(retry_ms / 1000));
     }
 
-    Properties payload{{"state", Value(ok ? "synced" : "failed")}, {"server", Value(server)}};
-    if (ok) payload.emplace("time", Value(unix_time));
-    core::Event event;
-    event.topic = core::topics::kSystemTime;
-    event.payload = std::move(payload);
-    deps_.bus.publish(std::move(event));
+    // Where the event was published, after status_ and outside mutex_.
+    record(result_cell_, ok, server, unix_time);
+}
+
+void TimeSyncService::note_external_sync(std::string_view server, int64_t time) {
+    record(result_cell_, true, server, time);
 }
 
 std::optional<uint64_t> TimeSyncService::sync_now() {

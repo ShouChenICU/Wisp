@@ -57,8 +57,11 @@
 // shows now as a PNG, as --screenshot does at exit, and answers
 // "screenshot=ok" or "screenshot=<error>". "debug clock-advance <seconds>"
 // moves the simulated clock (clock.main and Platform::wall_s) forward,
-// publishes system.time {"state":"synced","server":"debug","time"} as a
-// sync would, and answers "clock-advance=ok" or "clock-advance=<error>".
+// announces it through TimeSyncService::note_external_sync("debug", now),
+// whose cell publishes system.time {"state":"synced","server":"debug",
+// "time"} as a sync would (the service's own status, and so "Sync now",
+// is left alone), and answers "clock-advance=ok" or
+// "clock-advance=<error>" ("no time sync" without the service).
 // "debug voice-text <text>" hands the text to the conversation as a
 // transcript (ConversationController::voice_text(): source voice, spoken
 // unless muted) and answers "voice-text=ok" or "voice-text=<error>".
@@ -113,7 +116,6 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -212,19 +214,15 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         char* end = nullptr;
         const long long seconds = std::strtoll(args[2].c_str(), &end, 10);
         if (args[2].empty() || *end != '\0') return "clock-advance=the seconds are not a number";
+        // Checked first, so a jump nobody would hear of is not made at all.
+        wisp::net::TimeSyncService* sync = app.time_sync();
+        if (sync == nullptr) return "clock-advance=no time sync";
         g_clock_offset_s.fetch_add(seconds);
         if (auto clock = app.registry().get<wisp::hal::Clock>("clock.main")) {
             if (auto now = clock->get_unix()) (void)clock->set_unix(now.value() + seconds);
         }
         const int64_t now = static_cast<int64_t>(std::time(nullptr)) + g_clock_offset_s.load();
-        app.bus().publish(wisp::core::Event{
-            wisp::core::topics::kSystemTime,
-            "debug",
-            0,
-            {{"state", wisp::Value("synced")},
-             {"server", wisp::Value("debug")},
-             {"time", wisp::Value(now)}},
-        });
+        sync->note_external_sync("debug", now);
         return std::string("clock-advance=ok");
     }
     if (args.size() == 3 && args[1] == "screenshot") {

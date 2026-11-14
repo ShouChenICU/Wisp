@@ -12,12 +12,14 @@
 #include "support/fake_sntp.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/time_sync_result.hpp"
 
 using wisp::ErrorCode;
 using wisp::Result;
 using wisp::Value;
 using wisp::core::Event;
 using wisp::core::EventBus;
+using wisp::core::TimeSyncResult;
 using wisp::net::TimeSyncConfig;
 using wisp::net::TimeSyncService;
 using wisp::test::FakeClock;
@@ -80,7 +82,8 @@ struct Fixture {
     }
 
     std::vector<Event> take_events() {
-        bus.wait_idle(2000);
+        // Asserted, so that an empty list cannot come from a timeout.
+        EXPECT_TRUE(bus.wait_idle(2000));
         std::lock_guard<std::mutex> lock(mutex);
         std::vector<Event> out;
         out.swap(events);
@@ -429,6 +432,98 @@ TEST(TimeSync, CountsFinishedAttempts) {
     EXPECT_EQ(*after, 2u);
     f.svc->run_attempt();
     EXPECT_EQ(f.svc->status().attempts, 3u);
+}
+
+// The cell holds the last attempt's result. Every finished attempt moves
+// its counter, so two equal outcomes in a row (the same server failing
+// twice) still change the cell, and its mirror publishes one system.time
+// per attempt, as the service always has; the counter is not on the wire.
+TEST(TimeSync, CellCountsEveryAttempt) {
+    Fixture f;
+    EXPECT_EQ(f.svc->result_cell().get(), TimeSyncResult{});
+    EXPECT_TRUE(f.take_events().empty());
+
+    ASSERT_TRUE(f.step(true));
+    TimeSyncResult r = f.svc->result_cell().get();
+    EXPECT_EQ(r.outcome, TimeSyncResult::Outcome::Synced);
+    EXPECT_EQ(r.server, "pool.ntp.org");
+    EXPECT_EQ(r.time, kServerTime + 5);
+    EXPECT_EQ(r.attempts, 1u);
+
+    f.sntp.set_down("pool.ntp.org", true);
+    f.sntp.set_down("ntp.aliyun.com", true);
+    ASSERT_TRUE(f.svc->sync_now());
+    ASSERT_TRUE(f.step(true));
+    r = f.svc->result_cell().get();
+    EXPECT_EQ(r.outcome, TimeSyncResult::Outcome::Failed);
+    EXPECT_EQ(r.server, "ntp.aliyun.com");
+    EXPECT_EQ(r.time, 0);
+    EXPECT_EQ(r.attempts, 2u);
+
+    ASSERT_TRUE(f.svc->sync_now());
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.svc->result_cell().get().attempts, 3u);
+    EXPECT_EQ(f.svc->status().attempts, 3u);
+
+    const auto events = f.take_events();
+    ASSERT_EQ(events.size(), 3u);
+    EXPECT_EQ(events[0].source, "");
+    EXPECT_EQ(events[0].payload, (wisp::Properties{{"state", Value("synced")},
+                                                   {"server", Value("pool.ntp.org")},
+                                                   {"time", Value(kServerTime + 5)}}));
+    const wisp::Properties failed{{"state", Value("failed")}, {"server", Value("ntp.aliyun.com")}};
+    EXPECT_EQ(events[1].payload, failed);
+    EXPECT_EQ(events[2].payload, failed);
+}
+
+// A clock set by other means (the simulator's clock-advance) is announced
+// as a sync from that server would be.
+TEST(TimeSync, ExternalSyncCountsAsASyncedAttempt) {
+    Fixture f;
+    f.svc->note_external_sync("debug", kServerTime + 61);
+    const TimeSyncResult r = f.svc->result_cell().get();
+    EXPECT_EQ(r.outcome, TimeSyncResult::Outcome::Synced);
+    EXPECT_EQ(r.server, "debug");
+    EXPECT_EQ(r.time, kServerTime + 61);
+    EXPECT_EQ(r.attempts, 1u);
+
+    // The same jump twice is still two announcements.
+    f.svc->note_external_sync("debug", kServerTime + 61);
+    EXPECT_EQ(f.svc->result_cell().get().attempts, 2u);
+
+    const auto events = f.take_events();
+    ASSERT_EQ(events.size(), 2u);
+    const wisp::Properties synced{
+        {"state", Value("synced")}, {"server", Value("debug")}, {"time", Value(kServerTime + 61)}};
+    EXPECT_EQ(events[0].payload, synced);
+    EXPECT_EQ(events[1].payload, synced);
+}
+
+// The service's own status is left alone, so the count sync_now() hands
+// out is answered only by a real attempt, never by the debug clock.
+TEST(TimeSync, ExternalSyncDoesNotAnswerSyncNow) {
+    Fixture f;
+    f.sntp.set_down("pool.ntp.org", true);
+    f.sntp.set_down("ntp.aliyun.com", true);
+    ASSERT_TRUE(f.step(true));
+    const std::optional<uint64_t> after = f.svc->sync_now();
+    ASSERT_EQ(after, 1u);
+
+    f.svc->note_external_sync("debug", kServerTime);
+    const wisp::net::TimeSyncStatus st = f.svc->status();
+    EXPECT_EQ(st.attempts, 1u);
+    EXPECT_EQ(st.last_result, "failed");
+    EXPECT_FALSE(st.synced);
+    EXPECT_EQ(st.server, "");
+    EXPECT_FALSE(f.svc->now_unix().has_value());
+    EXPECT_EQ(f.svc->sync_now(), 1u);
+
+    f.sntp.all_up();
+    ASSERT_TRUE(f.step(true));
+    EXPECT_EQ(f.svc->status().attempts, 2u);
+    EXPECT_EQ(f.svc->status().server, "pool.ntp.org");
+    EXPECT_EQ(f.svc->result_cell().get().attempts, 3u);
+    EXPECT_EQ(f.take_events().size(), 3u);
 }
 
 TEST(TimeSync, SplitsTheServerList) {

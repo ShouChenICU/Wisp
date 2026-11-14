@@ -11,10 +11,11 @@
 // of the ntp_servers setting in turn and stops at the first answer.
 //
 // On an answer the wall clock is set (TimeSyncDeps::set_system_time; if
-// it refuses, the attempt fails), the RTC written (a failure there is only a warning) and
-// system.time published: {"state":"synced","server":s,"time":unix}; a failed attempt publishes
-// {"state":"failed","server":<last one asked>}. Everything is UTC; displays apply utc_offset_min
-// themselves.
+// it refuses, the attempt fails) and the RTC written (a failure there is
+// only a warning). Every finished attempt then sets result_cell(), whose
+// mirror publishes system.time: {"state":"synced","server":s,"time":unix},
+// or for a failure {"state":"failed","server":<last one asked>}.
+// Everything is UTC; displays apply utc_offset_min themselves.
 //
 // Threading: tick() runs on the "wisp.net" task and never blocks on the
 // network: when an attempt is due it reads the server list there (Settings
@@ -22,7 +23,8 @@
 // queries -- several seconds per unreachable server -- on a worker that
 // does not touch flash. sync_now(), status() and now_unix() may be called
 // from any thread. One mutex guards the state; it is never held across a
-// query, a callback or a publish.
+// query, a callback or a publish, and the result cell is set after it is
+// released (lock order: cell -> bus; mutex_ is never held with the cell's).
 
 #include <atomic>
 #include <cstdint>
@@ -35,6 +37,8 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/core/time_sync_result.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/os/os.hpp"
 
@@ -118,6 +122,19 @@ public:
     void cancel() { cancelled_.store(true); }
 
     TimeSyncStatus status() const;
+
+    // The last attempt's result, as system.time announces it: it moves
+    // exactly when that event is published. Followers must release their
+    // subscription before the service is destroyed (NetWiring::stop(),
+    // before the bus stops; wisp/core/state_cell.hpp).
+    const core::StateCell<core::TimeSyncResult>& result_cell() const { return result_cell_; }
+
+    // A clock set by other means (the simulator's debug command): counted
+    // in the cell as a successful attempt from `server` at `time`, as a
+    // sync would be, so followers catch up on the jump. status() is left
+    // alone: the count sync_now() hands out is answered only by a real
+    // attempt. Any thread.
+    void note_external_sync(std::string_view server, int64_t time);
     // The current UTC time as the last sync implies it; nullopt before
     // any.
     std::optional<int64_t> now_unix() const;
@@ -143,6 +160,10 @@ private:
     uint32_t backoff_ms_;
     TimeSyncStatus status_;
     uint64_t synced_at_ms_ = 0;
+    // Set outside mutex_, once per finished attempt (finish()) or external
+    // sync. Declared after deps_ (the bus its constructor uses); the
+    // service is destroyed before the bus stops (NetWiring::stop()).
+    core::StateCell<core::TimeSyncResult> result_cell_;
 };
 
 }  // namespace wisp::net
