@@ -113,6 +113,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -217,7 +218,7 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         }
         const int64_t now = static_cast<int64_t>(std::time(nullptr)) + g_clock_offset_s.load();
         app.bus().publish(wisp::core::Event{
-            "system.time",
+            wisp::core::topics::kSystemTime,
             "debug",
             0,
             {{"state", wisp::Value("synced")},

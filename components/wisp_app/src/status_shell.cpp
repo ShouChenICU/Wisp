@@ -12,6 +12,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/minute_ticker.hpp"
@@ -271,10 +272,10 @@ void StatusShell::start() {
     st.stopped.store(false);
     StatePtr s = state_;
     auto refresh = [s](const core::Event&) { request_refresh(s); };
-    subs_[0] = st.deps.bus.subscribe("scene.state", refresh);
+    subs_[0] = st.deps.bus.subscribe(core::topics::kSceneState, refresh);
     subs_[1] = st.deps.bus.subscribe("notification.", refresh);
     subs_[3] = st.deps.bus.subscribe("net.wifi.", refresh);
-    subs_[2] = st.deps.bus.subscribe("power.state", [s](const core::Event& e) {
+    subs_[2] = st.deps.bus.subscribe(core::topics::kPowerState, [s](const core::Event& e) {
         auto it = e.payload.find("state");
         const bool off =
             it != e.payload.end() && it->second.type() == Value::Type::String &&

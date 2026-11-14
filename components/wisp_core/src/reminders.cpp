@@ -11,6 +11,7 @@
 
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
@@ -169,7 +170,7 @@ void ReminderScheduler::start() {
     std::shared_ptr<std::atomic<bool>> alive = alive_;
     // A set clock, or one that jumped: whatever came due meanwhile is
     // reported, and the timer follows the new time.
-    time_sub_ = deps_.bus.subscribe("system.time", [this, alive](const Event& e) {
+    time_sub_ = deps_.bus.subscribe(topics::kSystemTime, [this, alive](const Event& e) {
         if (!alive->load()) return;
         auto it = e.payload.find("state");
         if (it != e.payload.end() && it->second.type() == Value::Type::String &&

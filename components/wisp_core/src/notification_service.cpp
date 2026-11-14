@@ -8,6 +8,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::core {
 
@@ -133,7 +134,7 @@ struct NotificationService::State {
 
     void publish_posted(const Notification& n) {
         Event e;
-        e.topic = "notification.posted";
+        e.topic = topics::kNotificationPosted;
         e.source = "notifications";
         e.payload = Properties{
             {"id", Value(n.id)},
@@ -147,7 +148,7 @@ struct NotificationService::State {
 
     void publish_dismissed(const Entry& entry, DismissReason reason) {
         Event e;
-        e.topic = "notification.dismissed";
+        e.topic = topics::kNotificationDismissed;
         e.source = "notifications";
         e.payload = Properties{
             {"id", Value(plain(entry.id))},

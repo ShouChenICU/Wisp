@@ -12,6 +12,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/large.hpp"
 
@@ -958,7 +959,7 @@ void ModelProfileService::publish(const State& state) {
     ProfilesState view;
     view.active = state.active;
     view.profiles.resize(state.profiles.size());
-    bus_.publish({"model.profiles", "models", 0, profiles_event_payload(view)});
+    bus_.publish({topics::kModelProfiles, "models", 0, profiles_event_payload(view)});
 }
 
 }  // namespace wisp::core

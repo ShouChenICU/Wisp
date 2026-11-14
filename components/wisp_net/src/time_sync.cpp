@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::net {
 
@@ -138,7 +139,7 @@ void TimeSyncService::finish(bool ok, int64_t unix_time, const std::string& serv
     Properties payload{{"state", Value(ok ? "synced" : "failed")}, {"server", Value(server)}};
     if (ok) payload.emplace("time", Value(unix_time));
     core::Event event;
-    event.topic = "system.time";
+    event.topic = core::topics::kSystemTime;
     event.payload = std::move(payload);
     deps_.bus.publish(std::move(event));
 }

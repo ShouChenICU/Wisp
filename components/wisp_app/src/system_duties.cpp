@@ -17,6 +17,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/ui/strings.hpp"
@@ -85,12 +86,12 @@ void SystemDuties::start() {
     if (PowerManager* pm = app_.power_manager()) {
         pm->set_power_key_owned(true);
     }
-    settings_sub_ = app_.bus().subscribe("system.settings",
+    settings_sub_ = app_.bus().subscribe(core::topics::kSystemSettings,
                                          [this](const core::Event& e) { on_settings_event(e); });
     net_sub_ = app_.bus().subscribe("net.", [this](const core::Event& e) { on_net_event(e); });
-    reset_sub_ = app_.bus().subscribe("system.factory_reset",
+    reset_sub_ = app_.bus().subscribe(core::topics::kSystemFactoryReset,
                                       [this](const core::Event& e) { on_reset_event(e); });
-    fw_sub_ = app_.bus().subscribe("system.firmware",
+    fw_sub_ = app_.bus().subscribe(core::topics::kSystemFirmware,
                                    [this](const core::Event& e) { on_firmware_event(e); });
 
     // Anything announced before the subscriptions above (networking starts
@@ -231,9 +232,9 @@ void SystemDuties::on_settings_event(const core::Event& e) {
 
 void SystemDuties::on_net_event(const core::Event& e) {
     bool posted = true;
-    if (e.topic == "net.wifi.state" || e.topic == "net.ap.state") {
+    if (e.topic == core::topics::kNetWifiState || e.topic == core::topics::kNetApState) {
         posted = post([this] { sync_wifi(); });
-    } else if (e.topic == "net.pairing.code") {
+    } else if (e.topic == core::topics::kNetPairingCode) {
         posted = post([this] { sync_pairing(); });
     }
     if (!posted) {

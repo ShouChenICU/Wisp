@@ -11,6 +11,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::core {
 
@@ -177,7 +178,7 @@ Result<void> MemoryStore::persist_and_publish_locked() {
     Result<void> written = storage_.write_atomic(path_, bytes_of(body));
     if (!written) return written;
     if (bus_ != nullptr) {
-        bus_->publish(Event{"memory.changed", "memory", 0,
+        bus_->publish(Event{topics::kMemoryChanged, "memory", 0,
                             Properties{{"count", Value(static_cast<int64_t>(notes_.size()))}}});
     }
     return Result<void>::ok();

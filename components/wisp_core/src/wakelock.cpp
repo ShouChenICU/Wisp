@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "wisp/base/value.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::core {
 
@@ -158,7 +159,7 @@ std::vector<WakeLockInfo> WakeLockRegistry::due_reminders(uint64_t now_ms) {
 
 void WakeLockRegistry::publish(const char* op, const WakeLockInfo& info) {
     Event e;
-    e.topic = "power.wakelock";
+    e.topic = topics::kPowerWakelock;
     e.source = "power";
     e.payload = Properties{
         {"op", Value(op)},

@@ -20,6 +20,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -134,7 +135,7 @@ void SelfCheck::build() {
     subscribe_net();
     // Every scene.state (installed, opened, closed, failed, deleted) lists
     // the scenes again, and says whether a scene now covers this screen.
-    scene_sub_ = app_.bus().subscribe("scene.state", [this](const core::Event&) {
+    scene_sub_ = app_.bus().subscribe(core::topics::kSceneState, [this](const core::Event&) {
         request_scene_list();
         follow_foreground();
     });
@@ -289,8 +290,8 @@ void SelfCheck::subscribe_power() {
     // Lets the sampler (running on its own thread, not the UI task) stop
     // polling the IMU while in standby without reaching into PowerManager
     // itself.
-    power_sub_ =
-        app_.bus().subscribe("power.state", [this](const core::Event& e) { on_power_event(e); });
+    power_sub_ = app_.bus().subscribe(core::topics::kPowerState,
+                                      [this](const core::Event& e) { on_power_event(e); });
 }
 
 void SelfCheck::on_power_event(const core::Event& e) {
@@ -306,7 +307,7 @@ void SelfCheck::subscribe_net() {
 }
 
 void SelfCheck::on_net_event(const core::Event& e) {
-    if (e.topic != "net.wifi.state" && e.topic != "net.ap.state") return;
+    if (e.topic != core::topics::kNetWifiState && e.topic != core::topics::kNetApState) return;
     if (!post([this] { sync_net(); })) {
         WLOG_W("self_check", "post(%s) dropped (post queue full)", e.topic.c_str());
     }

@@ -15,6 +15,7 @@
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::app {
 
@@ -340,8 +341,8 @@ SceneToolIndexObserver::SceneToolIndexObserver(core::EventBus& bus, core::Storag
       refresh_state_(std::make_shared<RefreshState>()) {
     refresh_state_->repo = &repo_;
     refresh_state_->index = &index_;
-    subscription_ =
-        bus_.subscribe("scene.state", [this](const core::Event& event) { on_event(event); });
+    subscription_ = bus_.subscribe(core::topics::kSceneState,
+                                   [this](const core::Event& event) { on_event(event); });
 }
 
 SceneToolIndexObserver::~SceneToolIndexObserver() {
@@ -481,17 +482,19 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     // stores (each change applies from the next turn on). Subscribed
     // before the seed is read, so a change stored in between is not lost.
     agent::AgentService* service = service_.get();
-    settings_sub_ = deps_.bus.subscribe("system.settings", [service](const core::Event& e) {
-        auto steps = e.payload.find("agent_max_steps");
-        auto minutes = e.payload.find("agent_turn_min");
-        apply_turn_limits(*service,
-                          steps != e.payload.end() && steps->second.type() == Value::Type::Int
-                              ? steps->second.as_int()
-                              : 0,
-                          minutes != e.payload.end() && minutes->second.type() == Value::Type::Int
-                              ? minutes->second.as_int()
-                              : 0);
-    });
+    settings_sub_ =
+        deps_.bus.subscribe(core::topics::kSystemSettings, [service](const core::Event& e) {
+            auto steps = e.payload.find("agent_max_steps");
+            auto minutes = e.payload.find("agent_turn_min");
+            apply_turn_limits(
+                *service,
+                steps != e.payload.end() && steps->second.type() == Value::Type::Int
+                    ? steps->second.as_int()
+                    : 0,
+                minutes != e.payload.end() && minutes->second.type() == Value::Type::Int
+                    ? minutes->second.as_int()
+                    : 0);
+        });
     const core::SystemSettingsValues now = deps_.settings.get();
     apply_turn_limits(*service_, now.agent_max_steps, now.agent_turn_min);
     service_->set_confirm(confirm_.get());

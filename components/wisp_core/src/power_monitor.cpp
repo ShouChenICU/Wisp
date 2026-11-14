@@ -5,6 +5,7 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::core {
 
@@ -140,7 +141,7 @@ void PowerMonitor::sample() {
         WLOG_I(kTag, "power.charging.changed: charging=%d usb_present=%d battery_percent=%d",
                status.charging, status.usb_present, status.battery_percent);
         Event e;
-        e.topic = "power.charging.changed";
+        e.topic = topics::kPowerChargingChanged;
         e.source = source_;
         e.payload = Properties{
             {"charging", Value(status.charging)},
@@ -160,7 +161,7 @@ void PowerMonitor::sample() {
             WLOG_I(kTag, "power.battery.low: battery_percent=%d (threshold=%lld)",
                    status.battery_percent, static_cast<long long>(threshold));
             Event e;
-            e.topic = "power.battery.low";
+            e.topic = topics::kPowerBatteryLow;
             e.source = source_;
             e.payload = Properties{
                 {"battery_percent", Value(static_cast<int64_t>(status.battery_percent))},

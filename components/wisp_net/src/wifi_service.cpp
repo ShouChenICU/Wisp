@@ -12,6 +12,7 @@
 #include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::net {
@@ -249,7 +250,7 @@ void WifiService::set_state_locked(WifiState state, std::string ssid, std::strin
     status_.reason = reason;
     if (!changed) return;
     const auto* ssid_bytes = reinterpret_cast<const uint8_t*>(status_.ssid.data());
-    bus_.publish(core::Event{"net.wifi.state", source_, 0,
+    bus_.publish(core::Event{core::topics::kNetWifiState, source_, 0,
                              Properties{{"state", to_string(state)},
                                         {"ssid", status_.ssid},
                                         {"ssid_hex", to_hex({ssid_bytes, status_.ssid.size()})},
@@ -493,7 +494,8 @@ Result<void> WifiService::set_enabled(bool enabled, uint64_t now_ms) {
     }
     manually_disconnected_ = false;
     apply_radio_locked(now_ms);
-    bus_.publish(core::Event{"net.wifi.enabled", source_, 0, Properties{{"enabled", enabled_}}});
+    bus_.publish(
+        core::Event{core::topics::kNetWifiEnabled, source_, 0, Properties{{"enabled", enabled_}}});
     return Result<void>::ok();
 }
 
@@ -726,7 +728,7 @@ void WifiService::forget_all() {
 
 void WifiService::publish_ap_locked(bool active, const std::string& ssid) {
     bus_.publish(core::Event{
-        "net.ap.state", source_, 0,
+        core::topics::kNetApState, source_, 0,
         Properties{{"active", active}, {"ssid", ssid}, {"clients", active ? ap_clients_ : 0}}});
 }
 

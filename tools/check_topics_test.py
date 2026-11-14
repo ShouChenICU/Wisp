@@ -245,6 +245,10 @@ class CheckTopicsTest(unittest.TestCase):
             self.assertEqual(check_topics.main(["--root", str(self.root)]), 1)
         self.assertIn("components/x/src/a.cpp:1:", out.getvalue())
 
+    def test_repository_is_clean(self):
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        self.assertEqual(check_topics.check(repo), [])
+
 
 if __name__ == "__main__":
     unittest.main()

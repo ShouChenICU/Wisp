@@ -9,6 +9,7 @@
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/voice/vad.hpp"
 
 namespace wisp::voice {
@@ -431,8 +432,10 @@ void VoiceService::publish(VoiceState s, uint8_t level, const char* reason, cons
     }
     if (reason != nullptr) payload.emplace("reason", Value(reason));
     if (result != nullptr) payload.emplace("result", Value(result));
-    deps_.bus.publish(core::Event{
-        .topic = "voice.state", .source = "voice", .ts_ms = 0, .payload = std::move(payload)});
+    deps_.bus.publish(core::Event{.topic = core::topics::kVoiceState,
+                                  .source = "voice",
+                                  .ts_ms = 0,
+                                  .payload = std::move(payload)});
     if (before == s && reason == nullptr && result == nullptr) return;
     if (reason != nullptr) {
         WLOG_I(kTag, "state %s reason=%s", to_string(s), reason);

@@ -13,6 +13,7 @@
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -158,7 +159,7 @@ struct AgentService::Impl {
     }
 
     void on_wifi(const core::Event& e) {
-        if (e.topic != "net.wifi.state") return;
+        if (e.topic != core::topics::kNetWifiState) return;
         auto it = e.payload.find("state");
         if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
         const bool up = it->second.as_string() == "connected";
@@ -252,7 +253,7 @@ struct AgentService::Impl {
         WLOG_I(kTag, "state %s", to_string(s));
         Properties payload{{"state", to_string(s)}};
         if (s == AgentState::Tool) payload["tool"] = std::string(tool_name);
-        deps.bus.publish(core::Event{"agent.state", "agent", 0, std::move(payload)});
+        deps.bus.publish(core::Event{core::topics::kAgentState, "agent", 0, std::move(payload)});
         AgentEvent e;
         e.kind = AgentEvent::Kind::State;
         e.state = s;
@@ -1009,7 +1010,8 @@ Result<void> AgentService::start() {
     if (std::optional<uint32_t> cut = s.deps.store.interrupted_turn())
         s.note(ui::StrId::AgentInterrupted, *cut);
 
-    s.sub = s.deps.bus.subscribe("net.wifi.state", [&s](const core::Event& e) { s.on_wifi(e); });
+    s.sub = s.deps.bus.subscribe(core::topics::kNetWifiState,
+                                 [&s](const core::Event& e) { s.on_wifi(e); });
     s.task = os::Task::spawn(task_config(s.cfg), [&s] { s.run(); });
     if (!s.task) {
         s.deps.bus.unsubscribe(s.sub);

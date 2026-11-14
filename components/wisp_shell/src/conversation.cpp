@@ -5,6 +5,7 @@
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/shell/activity.hpp"
 
@@ -61,8 +62,8 @@ void ConversationController::start() {
     started_ = true;
     deps_.voice.set_on_transcript([this](std::string text) { on_transcript(std::move(text)); });
     agent_listener_ = deps_.agent.add_listener([this](const agent::AgentEvent& e) { on_agent(e); });
-    voice_sub_ =
-        deps_.bus.subscribe("voice.state", [this](const core::Event& e) { on_voice_state(e); });
+    voice_sub_ = deps_.bus.subscribe(core::topics::kVoiceState,
+                                     [this](const core::Event& e) { on_voice_state(e); });
 }
 
 void ConversationController::stop() {

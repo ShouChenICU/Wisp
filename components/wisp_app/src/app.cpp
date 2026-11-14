@@ -26,6 +26,7 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/reminders.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -265,19 +266,20 @@ Result<void> App::start() {
             }
             if (!r) WLOG_W("app", "scene order not loaded: %s", r.error().message.c_str());
         }
-        impl->battery_sub = impl->bus.subscribe("power.battery.low", [notes](const core::Event& e) {
-            const Value* pct = nullptr;
-            if (auto it = e.payload.find("battery_percent"); it != e.payload.end())
-                pct = &it->second;
-            const std::string arg = pct != nullptr && pct->type() == Value::Type::Int
-                                        ? std::to_string(pct->as_int())
-                                        : std::string();
-            // One low-battery notice, with the latest level.
-            notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
-            notes->post_system(core::notice::kBatteryLow, arg);
-        });
+        impl->battery_sub =
+            impl->bus.subscribe(core::topics::kPowerBatteryLow, [notes](const core::Event& e) {
+                const Value* pct = nullptr;
+                if (auto it = e.payload.find("battery_percent"); it != e.payload.end())
+                    pct = &it->second;
+                const std::string arg = pct != nullptr && pct->type() == Value::Type::Int
+                                            ? std::to_string(pct->as_int())
+                                            : std::string();
+                // One low-battery notice, with the latest level.
+                notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
+                notes->post_system(core::notice::kBatteryLow, arg);
+            });
         impl->charging_sub =
-            impl->bus.subscribe("power.charging.changed", [notes](const core::Event& e) {
+            impl->bus.subscribe(core::topics::kPowerChargingChanged, [notes](const core::Event& e) {
                 auto it = e.payload.find("charging");
                 if (it != e.payload.end() && it->second.type() == Value::Type::Bool &&
                     it->second.as_bool()) {
@@ -285,7 +287,8 @@ Result<void> App::start() {
                 }
             });
         impl->scene_state_sub = impl->bus.subscribe(
-            "scene.state", [notes, recents = impl->recents.get()](const core::Event& e) {
+            core::topics::kSceneState,
+            [notes, recents = impl->recents.get()](const core::Event& e) {
                 auto id = e.payload.find("id");
                 auto state = e.payload.find("state");
                 if (id == e.payload.end() || state == e.payload.end() ||
@@ -411,27 +414,28 @@ Result<void> App::start() {
         // Subscribed before the seed is read, so a change stored in
         // between is not lost.
         App::Impl* impl = impl_.get();
-        impl_->settings_sub = impl_->bus.subscribe("system.settings", [impl](const core::Event& e) {
-            auto it = e.payload.find("notify_vol");
-            if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-                impl->notify_vol.store(
-                    static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100)));
-            }
-            it = e.payload.find("utc_offset_min");
-            if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-                impl->utc_offset_min.store(static_cast<int>(it->second.as_int()));
-            }
-            it = e.payload.find("language");
-            if (it != e.payload.end() && it->second.type() == Value::Type::String) {
-                if (auto lang = ui::parse_lang(it->second.as_string())) impl->lang.store(*lang);
-            }
-            it = e.payload.find("time_24h");
-            if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
-                impl->time_24h.store(it->second.as_bool());
-            }
-            std::lock_guard<os::Mutex> lock(impl->settings_mu);
-            merge_settings(impl->settings_now, e.payload);
-        });
+        impl_->settings_sub =
+            impl_->bus.subscribe(core::topics::kSystemSettings, [impl](const core::Event& e) {
+                auto it = e.payload.find("notify_vol");
+                if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
+                    impl->notify_vol.store(
+                        static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100)));
+                }
+                it = e.payload.find("utc_offset_min");
+                if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
+                    impl->utc_offset_min.store(static_cast<int>(it->second.as_int()));
+                }
+                it = e.payload.find("language");
+                if (it != e.payload.end() && it->second.type() == Value::Type::String) {
+                    if (auto lang = ui::parse_lang(it->second.as_string())) impl->lang.store(*lang);
+                }
+                it = e.payload.find("time_24h");
+                if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
+                    impl->time_24h.store(it->second.as_bool());
+                }
+                std::lock_guard<os::Mutex> lock(impl->settings_mu);
+                merge_settings(impl->settings_now, e.payload);
+            });
         const core::SystemSettingsValues now = impl_->system_settings.get();
         {
             std::lock_guard<os::Mutex> lock(impl_->settings_mu);
@@ -452,8 +456,8 @@ Result<void> App::start() {
     if (auto r = impl_->sensors->start(); !r) {
         WLOG_W("app", "sensors off: %s", r.error().message.c_str());
     }
-    impl_->sensor_sub =
-        impl_->bus.subscribe("power.state", [sensors = impl_->sensors.get()](const core::Event& e) {
+    impl_->sensor_sub = impl_->bus.subscribe(
+        core::topics::kPowerState, [sensors = impl_->sensors.get()](const core::Event& e) {
             auto it = e.payload.find("state");
             if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
             const std::string& state = it->second.as_string();
@@ -500,7 +504,7 @@ Result<void> App::start() {
     firmware_deps.updater = impl_->platform.firmware.get();
     firmware_deps.running_version = impl_->platform.firmware_version;
     firmware_deps.publish = [this](Properties p) {
-        impl_->bus.publish({"system.firmware", "app", 0, std::move(p)});
+        impl_->bus.publish({core::topics::kSystemFirmware, "app", 0, std::move(p)});
     };
     if (impl_->ui) firmware_deps.request_confirm = [this] { request_firmware_confirm(*this); };
     firmware_deps.restart = [this] { restart_for_firmware(*this); };
@@ -873,7 +877,7 @@ Result<void> App::start() {
         to_json(impl_->report.to_value(board_name, impl_->platform.firmware_version)));
     impl_->platform.emit_line("WISP_MANIFEST " + to_json(impl_->registry.manifest(board_name)));
 
-    impl_->bus.publish({"system.boot.completed", "app", 0, {}});
+    impl_->bus.publish({core::topics::kSystemBootCompleted, "app", 0, {}});
     // Spec 3.6: the scenes that were in the background come back once boot
     // has completed (in the background, read and started off this task).
     if (impl_->scenes) impl_->scenes->restore_background();

@@ -13,6 +13,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -22,7 +23,7 @@ namespace wisp::app {
 namespace {
 
 constexpr const char* kTag = "reset";
-constexpr const char* kTopic = "system.factory_reset";
+constexpr const char* kTopic = core::topics::kSystemFactoryReset;
 // How long the "done" event gets to reach the browser before the
 // revocation closes its socket. Bounded: a stalled socket must not keep
 // the device from resetting.

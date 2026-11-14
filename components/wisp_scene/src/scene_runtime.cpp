@@ -12,6 +12,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/minute_ticker.hpp"
@@ -187,41 +188,44 @@ Result<void> SceneRuntime::start() {
     }
     // The bus's dispatcher only queues a message: the scene task reads
     // the state itself, so a dropped or late event cannot leave stale data.
-    power_sub_ = deps_.bus.subscribe("power.charging.changed", [this](const core::Event&) {
-        push(make_message("", 0, msg::Device{DeviceEvent::Battery}), 0);
-    });
-    settings_sub_ = deps_.bus.subscribe("system.settings", [this](const core::Event& e) {
-        auto tz = e.payload.find("utc_offset_min");
-        if (tz != e.payload.end() && tz->second.type() == Value::Type::Int &&
-            tz->second.as_int() >= -720 && tz->second.as_int() <= 840) {
-            const int now = static_cast<int>(tz->second.as_int());
-            int before = utc_offset_min_.exchange(now);
-            if (before == kUnsetOffset) before = deps_.utc_offset_min;
-            if (before != now && !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) &&
-                running_)
-                WLOG_W(kTag, "time zone change not passed on now (scene queue full): next minute");
-        }
-        auto h24 = e.payload.find("time_24h");
-        if (h24 != e.payload.end() && h24->second.type() == Value::Type::Bool) {
-            const int now = h24->second.as_bool() ? 1 : 0;
-            int before = time_24h_.exchange(now);
-            if (before < 0) before = 1;
-            if (before != now && !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) &&
-                running_)
-                WLOG_W(kTag,
-                       "time format change not passed on now (scene queue full): next minute");
-        }
-        auto it = e.payload.find("language");
-        if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
-        auto lang = ui::parse_lang(it->second.as_string());
-        if (!lang) return;
-        lang_.store(static_cast<int>(*lang));
-        if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang}), 0) && running_)
-            WLOG_W(kTag, "language change not passed on now (scene queue full): next minute");
-    });
+    power_sub_ =
+        deps_.bus.subscribe(core::topics::kPowerChargingChanged, [this](const core::Event&) {
+            push(make_message("", 0, msg::Device{DeviceEvent::Battery}), 0);
+        });
+    settings_sub_ =
+        deps_.bus.subscribe(core::topics::kSystemSettings, [this](const core::Event& e) {
+            auto tz = e.payload.find("utc_offset_min");
+            if (tz != e.payload.end() && tz->second.type() == Value::Type::Int &&
+                tz->second.as_int() >= -720 && tz->second.as_int() <= 840) {
+                const int now = static_cast<int>(tz->second.as_int());
+                int before = utc_offset_min_.exchange(now);
+                if (before == kUnsetOffset) before = deps_.utc_offset_min;
+                if (before != now &&
+                    !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
+                    WLOG_W(kTag,
+                           "time zone change not passed on now (scene queue full): next minute");
+            }
+            auto h24 = e.payload.find("time_24h");
+            if (h24 != e.payload.end() && h24->second.type() == Value::Type::Bool) {
+                const int now = h24->second.as_bool() ? 1 : 0;
+                int before = time_24h_.exchange(now);
+                if (before < 0) before = 1;
+                if (before != now &&
+                    !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
+                    WLOG_W(kTag,
+                           "time format change not passed on now (scene queue full): next minute");
+            }
+            auto it = e.payload.find("language");
+            if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
+            auto lang = ui::parse_lang(it->second.as_string());
+            if (!lang) return;
+            lang_.store(static_cast<int>(*lang));
+            if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang}), 0) && running_)
+                WLOG_W(kTag, "language change not passed on now (scene queue full): next minute");
+        });
     // A sync may have moved the wall clock: a clock should redraw now, not
     // at the next minute boundary of the new time (clock_set()).
-    time_sub_ = deps_.bus.subscribe("system.time", [this](const core::Event& e) {
+    time_sub_ = deps_.bus.subscribe(core::topics::kSystemTime, [this](const core::Event& e) {
         auto state = e.payload.find("state");
         if (state == e.payload.end() || state->second.type() != Value::Type::String ||
             state->second.as_string() != "synced")
@@ -661,7 +665,7 @@ void SceneRuntime::publish(const std::string& id, const char* state) {
     // the simulator's smoke tests) can follow a scene too.
     WLOG_I(kTag, "%s: %s", id.c_str(), state);
     core::Event e;
-    e.topic = "scene.state";
+    e.topic = core::topics::kSceneState;
     e.source = "scene";
     e.payload = {{"id", Value(id)}, {"state", Value(state)}};
     deps_.bus.publish(std::move(e));

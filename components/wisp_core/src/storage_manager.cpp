@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
@@ -1071,9 +1072,9 @@ void StorageManager::refresh() {
         // stays marked online rather than flipping refresh() back to
         // "removed" just because its directories couldn't be (re)made.
         ensure_sd_dirs_best_effort(sd_mount_);
-        e.topic = "storage.sd.inserted";
+        e.topic = topics::kStorageSdInserted;
     } else {
-        e.topic = "storage.sd.removed";
+        e.topic = topics::kStorageSdRemoved;
     }
     bus_.publish(std::move(e));
 }

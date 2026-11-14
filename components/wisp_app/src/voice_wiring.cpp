@@ -5,6 +5,7 @@
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/os/os.hpp"
 
@@ -31,16 +32,17 @@ uint8_t clamp_volume(int64_t v) { return static_cast<uint8_t>(std::clamp<int64_t
 VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
     // Subscribed before the seed is read, so a change stored in between
     // is not lost.
-    settings_sub_ = deps_.bus.subscribe("system.settings", [this](const core::Event& e) {
-        auto it = e.payload.find("tts_mute");
-        if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
-            tts_mute_.store(it->second.as_bool());
-        }
-        it = e.payload.find("volume");
-        if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-            volume_.store(clamp_volume(it->second.as_int()));
-        }
-    });
+    settings_sub_ =
+        deps_.bus.subscribe(core::topics::kSystemSettings, [this](const core::Event& e) {
+            auto it = e.payload.find("tts_mute");
+            if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
+                tts_mute_.store(it->second.as_bool());
+            }
+            it = e.payload.find("volume");
+            if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
+                volume_.store(clamp_volume(it->second.as_int()));
+            }
+        });
     const core::SystemSettingsValues now = deps_.settings.get();
     tts_mute_.store(now.tts_mute);
     volume_.store(clamp_volume(now.volume));

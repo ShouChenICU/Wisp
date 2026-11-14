@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -101,7 +102,8 @@ void SceneWiring::start_storage() {
     core::SceneFiles* files = files_.get();
     if (files != nullptr) {
         // The card's scenes are counted again on the worker (spec 7.2).
-        for (const char* topic : {"storage.sd.inserted", "storage.sd.removed"}) {
+        for (const char* topic :
+             {core::topics::kStorageSdInserted, core::topics::kStorageSdRemoved}) {
             sd_subs_.push_back(deps_.bus.subscribe(topic, [this, files](const core::Event&) {
                 sd_changes_.fetch_add(1);
                 if (!worker_.submit([files] { files->on_sd_changed(); }))
@@ -199,8 +201,9 @@ void SceneWiring::start_runtime(std::function<bool()> standby) {
     // The state is read rather than taken from the payload, so a late
     // event cannot leave the scene hidden on a lit screen.
     scene::SceneRuntime* rt = runtime_.get();
-    power_sub_ = deps_.bus.subscribe(
-        "power.state", [rt, standby](const core::Event&) { rt->set_visible(!standby()); });
+    power_sub_ = deps_.bus.subscribe(core::topics::kPowerState, [rt, standby](const core::Event&) {
+        rt->set_visible(!standby());
+    });
     if (standby()) rt->set_visible(false);
     if (repo_->dev()) start_watching();
 }
@@ -431,7 +434,7 @@ Result<void> SceneWiring::remove(const std::string& id, const std::string& name,
 
 void SceneWiring::publish(const std::string& id, const char* state) {
     core::Event e;
-    e.topic = "scene.state";
+    e.topic = core::topics::kSceneState;
     e.source = "scene";
     e.payload = {{"id", Value(id)}, {"state", Value(state)}};
     deps_.bus.publish(std::move(e));

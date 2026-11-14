@@ -8,6 +8,7 @@
 #include "wisp/app/ram_budget.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/wifi.hpp"
@@ -84,15 +85,17 @@ void NetWiring::start() {
 
         // Only for a prompt reaction: run() reads the state itself, the
         // level from PowerManager, so a late event cannot flip it.
-        for (const char* topic : {"power.state", "net.wifi.state", "net.ap.state"}) {
+        for (const char* topic :
+             {core::topics::kPowerState, core::topics::kNetWifiState, core::topics::kNetApState}) {
             subscriptions_.push_back(
                 deps_.bus.subscribe(topic, [this](const core::Event&) { wake_.give(); }));
         }
         if (window_) {
-            subscriptions_.push_back(deps_.bus.subscribe("system.time", [this](const core::Event&) {
-                window_->note_time_result();
-                wake_.give();
-            }));
+            subscriptions_.push_back(
+                deps_.bus.subscribe(core::topics::kSystemTime, [this](const core::Event&) {
+                    window_->note_time_result();
+                    wake_.give();
+                }));
         }
     } else {
         deps_.report.set_note("net", "missing");

@@ -46,6 +46,7 @@
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/tone_player.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/shell/scene_recents.hpp"
@@ -92,7 +93,7 @@ struct App::Impl {
             if (power_manager) power_manager->set_brightness(level);
         },
         [this](const core::SystemSettingsValues& now) {
-            bus.publish({"system.settings", "app", 0, core::to_map(now)});
+            bus.publish({core::topics::kSystemSettings, "app", 0, core::to_map(now)});
         }};
 
     // Only constructed by start() -- see App::start()/App::stop().

@@ -133,6 +133,11 @@ run_tool_test check_layering_test
 echo "==> tools/check_layering.py"
 python3 tools/check_layering.py
 
+run_tool_test check_topics_test
+
+echo "==> tools/check_topics.py"
+python3 tools/check_topics.py
+
 run_tool_test pack_assets_test
 
 # The scene push tool (scene-runtime-core spec 7.3), against a fake device

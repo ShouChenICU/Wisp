@@ -83,6 +83,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
@@ -171,7 +172,7 @@ struct ReminderDeps {
     std::function<ReminderTimer(std::function<void()> fire)> make_timer;
 };
 
-inline constexpr const char* kTodoChangedTopic = "todo.changed";
+inline constexpr const char* kTodoChangedTopic = topics::kTodoChanged;
 
 class ReminderScheduler {
 public:

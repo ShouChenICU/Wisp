@@ -7,6 +7,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
@@ -46,7 +47,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
 
     // Settings are cached; a stored change (published as system.settings,
     // spec 8.3) makes the next tick() read them again.
-    settings_sub_ = bus_.subscribe("system.settings",
+    settings_sub_ = bus_.subscribe(core::topics::kSystemSettings,
                                    [this](const core::Event&) { settings_dirty_.store(true); });
 
     if (ui_ != nullptr) {
@@ -589,7 +590,7 @@ void PowerManager::set_power_key_owned(bool owned) {
 
 void PowerManager::publish_state(hal::PowerLevel level) {
     core::Event e;
-    e.topic = "power.state";
+    e.topic = core::topics::kPowerState;
     e.source = "app.power";
     e.payload = wisp::Properties{{"state", wisp::Value(std::string(hal::to_string(level)))}};
     bus_.publish(std::move(e));

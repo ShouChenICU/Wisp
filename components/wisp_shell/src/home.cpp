@@ -7,6 +7,7 @@
 #include "outcome_text.hpp"
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/shell/activity.hpp"
 #include "wisp/shell/body_text.hpp"
@@ -367,9 +368,12 @@ bool Home::start() {
     }
 
     alive_ = std::make_shared<bool>(true);
-    subs_[0] = deps_.bus.subscribe("agent.state", [this](const core::Event& e) { on_bus(e); });
-    subs_[1] = deps_.bus.subscribe("voice.state", [this](const core::Event& e) { on_bus(e); });
-    subs_[2] = deps_.bus.subscribe("power.state", [this](const core::Event& e) { on_bus(e); });
+    subs_[0] =
+        deps_.bus.subscribe(core::topics::kAgentState, [this](const core::Event& e) { on_bus(e); });
+    subs_[1] =
+        deps_.bus.subscribe(core::topics::kVoiceState, [this](const core::Event& e) { on_bus(e); });
+    subs_[2] =
+        deps_.bus.subscribe(core::topics::kPowerState, [this](const core::Event& e) { on_bus(e); });
     timer_ = lv_timer_create(&Home::timer_cb, kTickMs, this);
 
     laid_out_ = false;
@@ -470,13 +474,13 @@ void Home::timer_cb(lv_timer_t* t) {
 void Home::on_bus(const core::Event& e) {
     // The bus's dispatch thread: note it and ask for a refresh.
     const std::string state = payload_str(e, "state");
-    if (e.topic == "agent.state") {
+    if (e.topic == core::topics::kAgentState) {
         if (auto a = parse_agent(state)) {
             agent_state_.store(*a);
             if (*a == agent::AgentState::Error)
                 error_at_.store(std::max<uint64_t>(deps_.now_ms(), 1));
         }
-    } else if (e.topic == "voice.state") {
+    } else if (e.topic == core::topics::kVoiceState) {
         if (auto v = parse_voice(state)) {
             voice_state_.store(*v);
             if (*v == voice::VoiceState::Error)
@@ -487,7 +491,7 @@ void Home::on_bus(const core::Event& e) {
                     ? static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100))
                     : 0);
         }
-    } else if (e.topic == "power.state") {
+    } else if (e.topic == core::topics::kPowerState) {
         standby_.store(state == "standby" || state == "deep_standby");
     } else {
         return;

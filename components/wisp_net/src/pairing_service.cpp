@@ -15,6 +15,7 @@
 #include "wisp/base/sha256.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/large.hpp"
 
@@ -257,7 +258,7 @@ void PairingService::clear_code_locked() {
     if (!code_) return;
     code_.reset();
     code_expires_ms_ = 0;
-    bus_.publish(core::Event{"net.pairing.code", kSource, 0,
+    bus_.publish(core::Event{core::topics::kNetPairingCode, kSource, 0,
                              Properties{{"active", false}, {"expires_ms", int64_t{0}}}});
 }
 
@@ -292,7 +293,7 @@ Result<void> PairingService::request_code(uint64_t now_ms) {
     WLOG_I(kTag, "pairing code shown on screen (valid %u s)",
            static_cast<unsigned>(config_.code_ttl_ms / 1000));
     bus_.publish(core::Event{
-        "net.pairing.code", kSource, 0,
+        core::topics::kNetPairingCode, kSource, 0,
         Properties{{"active", true}, {"expires_ms", static_cast<int64_t>(code_expires_ms_)}}});
     return Result<void>::ok();
 }
@@ -372,7 +373,7 @@ Result<std::string> PairingService::confirm_unnotified(std::string_view code,
             WLOG_W(kTag, "pairing locked for %u s", static_cast<unsigned>(config_.lock_ms / 1000));
             clear_code_locked();
         }
-        bus_.publish(core::Event{"net.pairing.failed", kSource, 0,
+        bus_.publish(core::Event{core::topics::kNetPairingFailed, kSource, 0,
                                  Properties{{"attempts", failures_}, {"locked", now_locked}}});
         return Result<std::string>::err(ErrorCode::PermissionDenied,
                                         "wrong or expired pairing code");

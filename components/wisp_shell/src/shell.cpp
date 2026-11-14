@@ -8,6 +8,7 @@
 #include "lvgl_private.h"  // lv_indev_t's long-press stamps
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/shell/gestures.hpp"
 #include "wisp/shell/history.hpp"
@@ -119,23 +120,24 @@ void Shell::start() {
     // the scene list is also listening for it. Not a hide: the overlay
     // records a say or note as seen when it takes one, so a hide here would
     // lose it for good; Home coming in front hides it on its own.
-    scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
-        // On the bus's thread: the list is read again from the UI
-        // thread, which knows whether it is open.
-        deps_.ui.post([this, alive] {
-            if (!*alive) return;
-            // Posted again: the screen that replaces a closing scene may
-            // still be loading.
-            request_talk();
-            if (scenes_) list_scenes();
+    scene_sub_ =
+        deps_.bus.subscribe(core::topics::kSceneState, [this, alive = alive_](const core::Event&) {
+            // On the bus's thread: the list is read again from the UI
+            // thread, which knows whether it is open.
+            deps_.ui.post([this, alive] {
+                if (!*alive) return;
+                // Posted again: the screen that replaces a closing scene may
+                // still be loading.
+                request_talk();
+                if (scenes_) list_scenes();
+            });
         });
-    });
     talk_ =
         std::make_unique<TalkOverlay>(deps_.layer, deps_.shape, [this] { post_show(Page::Home); });
     // on_voice_bus() only touches atomics directly; request_talk() (which
     // it calls) does its own posting with its own alive_ check.
-    talk_voice_sub_ =
-        deps_.bus.subscribe("voice.state", [this](const core::Event& e) { on_voice_bus(e); });
+    talk_voice_sub_ = deps_.bus.subscribe(core::topics::kVoiceState,
+                                          [this](const core::Event& e) { on_voice_bus(e); });
     talk_timer_ = lv_timer_create(&Shell::talk_timer_cb, kTalkTickMs, this);
     if (deps_.conversation != nullptr) {
         talk_listener_ =
