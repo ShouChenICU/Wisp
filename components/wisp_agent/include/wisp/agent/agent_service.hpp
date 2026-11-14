@@ -27,6 +27,12 @@
 // request without tools. If the model fails to summarize, they are left out
 // of the context (an empty summary) with a note; with no model, a refused
 // key or no connection nothing is stored and the request goes out whole.
+// Still too long, the turns before the running one are summarized too, and
+// past the whole window the running turn's tool results are cut to
+// kToolResultKeepBytes. The estimate (bytes / 3) is scaled by the prompt
+// tokens the model reported for the last request. A request the model
+// refuses as too long ("context_length") is retried once per turn, treated
+// as over the window; a second refusal ends the turn with a note.
 //
 // A model request is aborted (its RequestWatch, and its cancelled() check,
 // which also covers the waits between retries) when the user stops the
@@ -162,6 +168,9 @@ struct AgentDeps {
     std::function<uint64_t()> now_ms = os::now_ms;
     std::function<int64_t()> wall_s;  // message timestamps; empty: 0
     ContextSource context;            // empty: the history only
+    // Stands in for llm.complete(), so a test can script results the
+    // client does not produce from a fake server. Empty: llm.complete().
+    std::function<net::LlmResult(const net::LlmCall&)> complete;
 };
 
 struct AgentConfig {

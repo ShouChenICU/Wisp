@@ -108,6 +108,14 @@ protected:
         harness();
         wisp::agent::AgentDeps deps = h->deps();
         deps.context = context;
+        // The fake server speaks HTTP, and the client reports a 400 as
+        // "http"; a provider's context-length refusal is scripted as a 400
+        // and reported the way the loop sees it.
+        deps.complete = [this](const wisp::net::LlmCall& c) {
+            wisp::net::LlmResult r = h->llm->complete(c);
+            if (r.error == "http" && r.status == 400) r.error = "context_length";
+            return r;
+        };
         svc = std::make_unique<AgentService>(std::move(deps), cfg);
         if (ch) svc->set_confirm(ch->confirm.get());
         listener = svc->add_listener([this](const AgentEvent& e) {
@@ -1233,6 +1241,111 @@ TEST_F(AgentLoop, SummaryWithoutConnectionKeepsTheTurns) {
     const Value body_msgs = h->server.body_json(4);
     const List& msgs = body_msgs.find("messages")->as_list();
     EXPECT_EQ(msgs[0].find("content")->as_string(), "q1");
+}
+
+namespace {
+
+FakeReply context_length_reply() {
+    return {.status = 400,
+            .chunks = {R"({"error":{"code":"context_length_exceeded","message":"too long"}})"}};
+}
+
+FakeReply usage_reply(const std::string& text, int prompt) {
+    return {.status = 200,
+            .chunks = {FakeLlmServer::sse_text(text), FakeLlmServer::sse_finish("stop"),
+                       FakeLlmServer::sse_usage(prompt, 1), FakeLlmServer::sse_done()}};
+}
+
+}  // namespace
+
+TEST_F(AgentLoop, ContextLengthErrorCompressesAndRetriesOnce) {
+    // 4096 tokens: turns 1-2 (about 2700 tokens) fit under 75% by the
+    // estimate, so turn 3 is sent whole and refused.
+    set_window(4096);
+    add_tool("scene.list");
+    start();
+    const std::string big(4000, 'a');
+    run_turn("q1", big);
+    run_turn("q2", big);
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    h->server.push(context_length_reply());
+    h->server.push(text_reply("they asked q1"));
+    run_turn("q3", "done");
+
+    EXPECT_EQ(last_status(), "done");
+    EXPECT_TRUE(last_of(history(), Role::Summary));
+    // The refused request, the summary request (no tools), one retry.
+    ASSERT_EQ(h->server.requests().size(), 5u);
+    EXPECT_EQ(h->server.body_json(3).find("tools"), nullptr);
+    const Value retry = h->server.body_json(4);
+    EXPECT_NE(retry.find("tools"), nullptr);
+    const List& msgs = retry.find("messages")->as_list();
+    EXPECT_NE(msgs[0].find("content")->as_string().find("they asked q1"), std::string::npos);
+    EXPECT_EQ(msgs.back().find("content")->as_string(), "q3");
+    EXPECT_TRUE(notes().empty());
+}
+
+TEST_F(AgentLoop, SecondContextLengthErrorEndsTheTurnWithANote) {
+    start();
+    h->server.push(context_length_reply());
+    h->server.push(context_length_reply());
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(h->server.requests().size(), 2u);
+    EXPECT_EQ(last_status(), "error");
+    auto n = notes();
+    ASSERT_EQ(n.size(), 1u);
+    EXPECT_EQ(n[0], wisp::ui::tr(wisp::ui::StrId::AgentErrContext, wisp::ui::Lang::Zh));
+}
+
+TEST_F(AgentLoop, OversizedLiveResultIsCutInsteadOfOverflowing) {
+    // 8192 tokens; one 60 KB result is about 20000 tokens on its own.
+    set_window(8192);
+    add_tool("scene.read_file", [](const Value&, ToolCtx&) {
+        return ToolOutput{.ok = true, .result = Map{{"content", std::string(60000, 'x')}}};
+    });
+    start();
+    h->server.push(tool_reply("c1", "scene_read_file", "{}"));
+    h->server.push(text_reply("read it"));
+    ASSERT_TRUE(svc->submit("read the file", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 2u);
+    const Value next = h->server.body_json(1);
+    const List& msgs = next.find("messages")->as_list();
+    ASSERT_EQ(msgs.size(), 3u);
+    EXPECT_EQ(msgs[2].find("role")->as_string(), "tool");
+    EXPECT_LT(msgs[2].find("content")->as_string().size(), wisp::agent::kToolResultKeepBytes + 64);
+    // The stored result stays whole.
+    std::optional<Message> stored = last_of(history(), Role::Tool);
+    ASSERT_TRUE(stored);
+    EXPECT_GT(stored->text.size(), 60000u);
+}
+
+TEST_F(AgentLoop, UsageCalibratesTheEstimate) {
+    // Turn 2's request is estimated at (2 + 3000 + 2) / 3 = 1001 tokens and
+    // the model counts twice that. Turn 3's history, 6006 bytes = 2002
+    // tokens, fits under 75% of 4096 (3072) as estimated, not when doubled.
+    set_window(4096);
+    start();
+    run_turn("q1", std::string(3000, 'a'));
+    h->server.push(usage_reply("ok", 2002));
+    ASSERT_TRUE(svc->submit("q2", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    h->server.push(text_reply("they said q1"));
+    run_turn(std::string(3000, 'q'), "done");
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 4u);
+    // The summary request: a fixed prompt and the transcript.
+    const Value sum = h->server.body_json(2);
+    ASSERT_EQ(sum.find("messages")->as_list().size(), 2u);
+    EXPECT_NE(sum.find("messages")->as_list()[1].find("content")->as_string().find("User: q1"),
+              std::string::npos);
+    EXPECT_TRUE(last_of(history(), Role::Summary));
 }
 
 namespace {

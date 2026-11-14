@@ -23,9 +23,10 @@
 // Tokens are estimated as bytes / 3. Past kCompressPercent of the model's
 // context window the oldest whole turns are summarized (by one extra model
 // request without tools) until the rest fits in kCompressTargetPercent;
-// the last kKeepRecentTurns turns are never touched. The summary is stored
-// as a summary message covering [first_seq, last_seq]; the originals stay
-// in the conversation file.
+// the last kKeepRecentTurns turns are never touched (the caller may go
+// down to the running turn alone when that is not enough). The summary is
+// stored as a summary message covering [first_seq, last_seq]; the
+// originals stay in the conversation file.
 
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +38,7 @@
 #include <vector>
 
 #include "wisp/agent/conversation.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/llm_client.hpp"
 #include "wisp/os/large.hpp"
@@ -92,11 +94,19 @@ struct BuiltRequest {
     size_t fixed_tokens = 0;  // the system prompt and the dynamic info alone
 };
 
+struct BuildOptions {
+    // The running turn's tool results are cut to this. A request that
+    // would not fit the window otherwise lowers it to kToolResultKeepBytes,
+    // and the cut note asks the model to read in smaller pieces.
+    size_t live_tool_bytes = kLiveToolResultBytes;
+};
+
 // system_prompt, the history, then dynamic_info last. The history must
 // outlive the result.
-BuiltRequest build_request(std::span<const Message> history, const DeviceSnapshot& d);
+BuiltRequest build_request(std::span<const Message> history, const DeviceSnapshot& d,
+                           BuildOptions opts = {});
 // The history part alone, for a service without a context source.
-BuiltRequest build_history(std::span<const Message> history);
+BuiltRequest build_history(std::span<const Message> history, BuildOptions opts = {});
 
 // est_tokens * 100 > window * kCompressPercent.
 bool needs_compression(size_t est_tokens, uint32_t window);
@@ -104,12 +114,12 @@ bool needs_compression(size_t est_tokens, uint32_t window);
 // The oldest whole turns to summarize, as (first_seq, last_seq): picked
 // from the oldest on until what is left (plus `fixed_tokens`, the part of
 // the request that is not history) is at most kCompressTargetPercent of
-// the window. Never the last kKeepRecentTurns turns. An earlier summary
-// counts as one turn and may be folded into the new one. nullopt when
-// nothing can be picked.
-std::optional<std::pair<uint64_t, uint64_t>> pick_compression(std::span<const Message> history,
-                                                              uint32_t window,
-                                                              size_t fixed_tokens = 0);
+// the window. Never the last `keep_recent` turns (at least the running
+// one is always kept). An earlier summary counts as one turn and may be
+// folded into the new one. nullopt when nothing can be picked.
+std::optional<std::pair<uint64_t, uint64_t>> pick_compression(
+    std::span<const Message> history, uint32_t window, size_t fixed_tokens = 0,
+    uint32_t keep_recent = kKeepRecentTurns);
 
 // The summary request for history[first_seq..last_seq]: a fixed system
 // prompt and the covered part as one plain-text transcript (no tool

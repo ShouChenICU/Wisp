@@ -417,6 +417,40 @@ TEST(Context, EstimateCountsTheLiveResultWhole) {
     EXPECT_GE(build_history(c.h()).est_tokens, 10000u);
 }
 
+TEST(Context, LiveCapOptionCutsTheRunningTurn) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "u");
+    c.call("c1", "scene.read_file", "{}", std::string(30000, 'x'));
+    const BuiltRequest r =
+        build_history(c.h(), {.live_tool_bytes = wisp::agent::kToolResultKeepBytes});
+    const std::string cut = text(r.messages[2]);
+    EXPECT_LT(cut.size(), wisp::agent::kToolResultKeepBytes + 64);
+    // The model is still working from it: the note says how to get the rest.
+    EXPECT_TRUE(has(cut, "smaller pieces")) << cut;
+    // The estimate follows the cut.
+    EXPECT_LT(r.est_tokens, 2000u);
+}
+
+TEST(Context, CompressionCanReachThePreviousTurn) {
+    // Three ended turns, each a user message and a 30 KB assistant reply.
+    Conv c;
+    uint64_t end_of_turn_2 = 0;
+    for (int t = 1; t <= 3; ++t) {
+        c.next_turn();
+        c.begin();
+        c.add(Role::User, "u");
+        c.add(Role::Assistant, std::string(30000, 'a'));
+        c.end();
+        if (t == 2) end_of_turn_2 = c.last_seq();
+    }
+    EXPECT_FALSE(pick_compression(c.h(), 20000, 0, 3).has_value());
+    const auto r = pick_compression(c.h(), 20000, 0, 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->second, end_of_turn_2);
+}
+
 TEST(Context, ToolResultCutKeepsWholeCharacters) {
     Conv c;
     c.next_turn();

@@ -265,6 +265,9 @@ const char* strings_ja(StrId id) {
                    "を拒否しました。管理画面の「モデル」ページで設定を確認してください";
         case StrId::AgentErrServer:
             return "モデルサービスでエラーが発生しました。しばらくしてからお試しください";
+        case StrId::AgentErrContext:
+            return "会話が長すぎて、モデルに収まらなくなりました。新しい会話を始めるか、コンテキス"
+                   "トの大きいモデルに切り替えてください";
         case StrId::AgentRolledOver:
             return "会話が長くなったため、保存して新しい会話を始めました";
         case StrId::AgentContextDropped:
