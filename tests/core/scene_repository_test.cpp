@@ -1380,6 +1380,27 @@ TEST(SceneRepository, ReadPathsCanParseOnTheWorker) {
     EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
 }
 
+// A cancelled listing stops between scenes: the scene being read is the
+// last one read, and the listing fails rather than look complete.
+TEST(SceneRepository, ManifestsStopBetweenScenesWhenCancelled) {
+    WorkerFixture w;
+    std::mutex mu;
+    std::vector<std::string> reads;
+    std::atomic<bool> cancel{false};
+    w.f.reconfigure([&](SceneRepoConfig& c) {
+        c.on_read = [&](std::string_view id) {
+            std::lock_guard<std::mutex> lock(mu);
+            reads.emplace_back(id);
+            if (id == "b") cancel = true;
+        };
+    });
+    auto listed = w.f.repo->manifests(wisp::core::ParseOn::Caller, [&] { return cancel.load(); });
+    ASSERT_FALSE(listed);
+    EXPECT_EQ(listed.error().code, ErrorCode::Busy);
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(reads, (std::vector<std::string>{"a", "b"}));
+}
+
 // A listing is one job per scene, so an Interactive job queued while the
 // first scene is read runs before the second.
 TEST(SceneRepository, ListReadsOneSceneAtATime) {

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -68,12 +69,14 @@ protected:
         d.submit_io = [this](std::function<void()> job) {
             return agent.worker.submit(std::move(job));
         };
-        d.list_scenes = [this] {
+        d.list_scenes = [this](const std::function<bool()>& cancelled) {
             on_worker_listing = agent.worker.on_worker();
             {
                 std::lock_guard<std::mutex> lock(mu);
                 listing_thread = std::this_thread::get_id();
+                last_cancel = cancelled;
             }
+            if (lister) return lister(cancelled);
             // As the app's lister does: it waits for the storage worker.
             (void)agent.worker.run_sync([] {}, wisp::os::kForever);
             if (on_list) on_list();
@@ -156,6 +159,18 @@ protected:
                                                                 int32_t)>
         decode;
     std::function<bool()> current;
+    // Replaces the fixture's lister when set.
+    std::function<wisp::shell::ShellListing(const std::function<bool()>&)> lister;
+    // The cancel predicate the last listing was handed (any thread).
+    std::function<bool()> last_cancel;
+    bool cancel_asked() {
+        std::function<bool()> c;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            c = last_cancel;
+        }
+        return c && c();
+    }
     std::atomic<bool> on_worker_has_data{false};
 };
 
@@ -801,25 +816,128 @@ TEST_F(SceneListTest, StopJoinsTheListingTask) {
     scenes = {scene("a", "A")};
     Gate release;
     std::atomic<bool> in_list{false};
+    std::atomic<bool> returned{false};
     on_list = [&] {
         in_list = true;
         release.wait();
+        returned = true;
     };
     boot();
     harness->show(Page::Scenes);
     ASSERT_TRUE(wisp::test::wait_until([&] { return in_list.load(); }, 5000));
-    std::atomic<bool> stopping{false};
+    // Released only once stop() has told the listing to stop, which it
+    // does right before it joins.
     std::thread helper([&] {
-        EXPECT_TRUE(wisp::test::wait_until([&] { return stopping.load(); }, 5000));
+        EXPECT_TRUE(wisp::test::wait_until([&] { return cancel_asked(); }, 5000));
         release.release();
     });
-    stopping = true;
     harness->on_ui([&] { harness->shell().stop(); });
+    // stop() returned only after the listing did.
+    EXPECT_TRUE(returned.load());
     helper.join();
     harness->on_ui([&] {
         EXPECT_FALSE(harness->shell().listing());
         EXPECT_EQ(harness->shell().scene_list(), nullptr);
     });
+}
+
+// A stop while the listing waits on scene k of N ends it after that one
+// job: no further scene is read, no icon is read or decoded, nothing is
+// shown, and stop() returns.
+TEST_F(SceneListTest, StopEndsTheListingAfterTheJobInProgress) {
+    constexpr int kScenes = 5;
+    constexpr int kGated = 2;
+    Gate release;
+    std::atomic<int> jobs{0};
+    std::atomic<bool> at_gate{false};
+    std::atomic<int> decodes{0};
+    decode = [&](const wisp::os::LargeBuffer& png, int32_t side) {
+        decodes.fetch_add(1);
+        return wisp::shell::decode_scene_icon(png, side);
+    };
+    lister = [&](const std::function<bool()>& cancelled) {
+        wisp::shell::ShellListing out;
+        for (int i = 0; i < kScenes; ++i) {
+            if (cancelled()) {
+                out.cancelled = true;
+                break;
+            }
+            // One worker job per scene, as the repository reads them.
+            (void)agent.worker.run_sync(
+                [&, i] {
+                    jobs.fetch_add(1);
+                    if (i == kGated) {
+                        at_gate = true;
+                        release.wait();
+                    }
+                },
+                wisp::os::kForever);
+            // Named by its hash alone: showing it would read the file.
+            ShellScene sc = scene("s" + std::to_string(i), "S");
+            sc.icon_hash = 1000 + i;
+            out.scenes.push_back(std::move(sc));
+        }
+        return out;
+    };
+    boot();
+    harness->show(Page::Scenes);
+    ASSERT_TRUE(wisp::test::wait_until([&] { return at_gate.load(); }, 5000));
+    std::thread helper([&] {
+        EXPECT_TRUE(wisp::test::wait_until([&] { return cancel_asked(); }, 5000));
+        release.release();
+    });
+    harness->on_ui([&] { harness->shell().stop(); });
+    helper.join();
+    EXPECT_EQ(jobs.load(), kGated + 1);
+    EXPECT_EQ(decodes.load(), 0);
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_TRUE(icon_reads.empty());
+}
+
+// A listing's cards still queued for the UI thread when the page is closed
+// and opened again (a warm open showing the older listing) fill the page
+// that is open by the time they arrive.
+TEST_F(SceneListTest, QueuedListingFillsAPageReopenedMeanwhile) {
+    scenes = {scene("a", "A")};
+    std::atomic<bool> unchanged{true};
+    current = [&] { return unchanged.load(); };
+    Gate release;
+    std::atomic<int> calls{0};
+    std::atomic<bool> at_gate{false};
+    on_list = [&] {
+        if (calls.fetch_add(1) == 1) {
+            at_gate = true;
+            release.wait();
+        }
+    };
+    boot();
+    open_page(1);
+    settle();
+    harness->show(Page::Home);
+    // The lister has news: the next open lists, and that listing waits.
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("a", "A"), scene("b", "B")};
+    }
+    unchanged = false;
+    harness->show(Page::Scenes);
+    ASSERT_TRUE(wisp::test::wait_until([&] { return at_gate.load(); }, 5000));
+    harness->on_ui([&] {
+        // While the UI thread is held here, the listing ends and posts its
+        // cards; they stay queued until this returns.
+        release.release();
+        const uint64_t until = wisp::os::now_ms() + 5000;
+        while (harness->shell().listing() && wisp::os::now_ms() < until) std::this_thread::yield();
+        ASSERT_FALSE(harness->shell().listing());
+        unchanged = true;
+        harness->shell().show(Page::Home);
+        harness->shell().show(Page::Scenes);
+        // A warm open: the older listing, nothing started.
+        EXPECT_EQ(page()->cards(), 1u);
+        EXPECT_FALSE(harness->shell().listing());
+    });
+    EXPECT_TRUE(harness->ui_until([&] { return page() != nullptr && page()->cards() == 2; }));
+    EXPECT_EQ(calls.load(), 2);
 }
 
 // With a lister that can tell nothing changed (ShellDeps::listing_current),

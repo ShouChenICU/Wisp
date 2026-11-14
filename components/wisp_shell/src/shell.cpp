@@ -88,12 +88,10 @@ struct Shell::ListRun {
     // The task, until it is joined (by the next spawn or stop()). Moved
     // and joined on the UI thread only.
     std::unique_ptr<os::Task> task;
-    // What the next round posts to (the page that asked last) and the
-    // timing line it fills, if any.
-    std::shared_ptr<bool> page;
+    // The timing line the next round fills, if any.
     std::shared_ptr<ListTiming> timing;
-    // Set by stop(): no round starts after the one under way, which
-    // decodes nothing more.
+    // Set by stop(): the lister gives up after the read in progress, and
+    // the round reads no icon, decodes nothing and posts nothing.
     std::atomic<bool> stopping{false};
 };
 
@@ -116,7 +114,11 @@ Shell::Shell(ShellDeps deps)
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
-Shell::~Shell() { join_listing(); }
+Shell::~Shell() {
+    join_listing();
+    // Without stop(): a post still queued must not reach this shell.
+    if (alive_) *alive_ = false;
+}
 
 lv_obj_t* Shell::home_screen() const { return home_screen_; }
 
@@ -192,8 +194,9 @@ void Shell::stop() {
         deps_.bus.unsubscribe(talk_voice_sub_);
         talk_voice_sub_ = 0;
     }
-    // The listing task ends with the listing it is in; nothing it posts
-    // reaches the page.
+    // The listing task stops after the read in progress and posts nothing
+    // more; what it posted before runs after this returns and finds alive_
+    // false.
     if (page_alive_) *page_alive_ = false;
     join_listing();
     if (talk_timer_ != nullptr) {
@@ -532,7 +535,7 @@ struct Shell::ListJob {
     Shell* shell;
     std::shared_ptr<bool> alive;  // the shell's alive_
     std::shared_ptr<ListRun> run;
-    std::function<ShellListing()> list;
+    std::function<ShellListing(const std::function<bool()>&)> list;
     std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)> read_icon;
     IconCache::Decode decode;
     SceneRecents* recents;
@@ -543,14 +546,12 @@ struct Shell::ListJob {
     // Rounds until none is asked for; Idle is the last thing it sets.
     void operator()() const {
         for (;;) {
-            std::shared_ptr<bool> page;
             std::shared_ptr<ListTiming> timing;
             {
                 std::lock_guard<os::Mutex> lock(run->mu);
-                page = run->page;
                 timing = std::move(run->timing);
             }
-            if (!run->stopping.load()) once(page, timing);
+            if (!run->stopping.load()) once(timing);
             std::lock_guard<os::Mutex> lock(run->mu);
             if (run->state == ListRun::State::Again && !run->stopping.load()) {
                 run->state = ListRun::State::Running;
@@ -562,10 +563,16 @@ struct Shell::ListJob {
     }
 
     // One listing: the cards first, with the icons decoded before; the new
-    // ones follow one by one as they decode.
-    void once(const std::shared_ptr<bool>& page, const std::shared_ptr<ListTiming>& timing) const {
+    // ones follow one by one as they decode. They go to the scene list
+    // page open when they arrive (a page closed and opened again meanwhile
+    // may show an older listing from the cache), unless they are older
+    // than what the cache holds.
+    void once(const std::shared_ptr<ListTiming>& timing) const {
+        const auto stopping = [r = run] { return r->stopping.load(); };
         const uint64_t events = shell->scene_events_.load();
-        ShellListing listing = list();
+        ShellListing listing = list(stopping);
+        // A stopped round shows nothing: its listing may be cut short.
+        if (listing.cancelled || stopping()) return;
         const uint64_t gen = listing.generation;
         std::vector<ShellScene> got = std::move(listing.scenes);
         if (timing) {
@@ -590,20 +597,26 @@ struct Shell::ListJob {
             }
             got = std::move(sorted);
         }
-        const std::vector<IconCache::Pending> pending = icons->lookup(got, read_icon);
-        // The last listing is updated whether or not its page is still
-        // open, so a warm open can show it as it is.
-        if (!ui->post([sh = shell, alive = alive, page, timing, gen, events,
-                       got = std::move(got)]() mutable {
-                if (!*alive || gen < sh->cache_gen_) return;
-                sh->cache_gen_ = gen;
-                sh->cache_events_ = events;
-                sh->scene_cache_ = got;
-                if (!page || !*page || !sh->scenes_) return;
-                const uint64_t t0 = os::now_us();
-                sh->scenes_->set_scenes(std::move(got));
-                if (timing) timing->build_us += os::now_us() - t0;
-            })) {
+        // No icon read once the shell is stopping: each is a worker job.
+        const std::vector<IconCache::Pending> pending = icons->lookup(
+            got, [&](const std::string& id) -> std::shared_ptr<const os::LargeBuffer> {
+                if (!read_icon || stopping()) return nullptr;
+                return read_icon(id);
+            });
+        if (stopping()) return;
+        // The last listing is updated whether or not a page is open, so a
+        // warm open can show it as it is.
+        if (!ui->post(
+                [sh = shell, alive = alive, timing, gen, events, got = std::move(got)]() mutable {
+                    if (!*alive || gen < sh->cache_gen_) return;
+                    sh->cache_gen_ = gen;
+                    sh->cache_events_ = events;
+                    sh->scene_cache_ = got;
+                    if (!sh->scenes_) return;
+                    const uint64_t t0 = os::now_us();
+                    sh->scenes_->set_scenes(std::move(got));
+                    if (timing) timing->build_us += os::now_us() - t0;
+                })) {
             // The last listing no longer says what storage does.
             shell->scene_events_.fetch_add(1);
             WLOG_W(kTag, "scene list not shown (UI queue full)");
@@ -612,17 +625,17 @@ struct Shell::ListJob {
         const uint64_t d0 = os::now_us();
         size_t decoded = 0;
         for (const IconCache::Pending& p : pending) {
-            if (run->stopping.load()) break;
+            if (stopping()) return;
             std::shared_ptr<const SceneIcon> icon = icons->decode(p, side, decode);
             ++decoded;
-            if (!icon) continue;
-            if (!ui->post([sh = shell, alive = alive, page, timing, gen, id = p.id, icon] {
+            if (!icon || stopping()) continue;
+            if (!ui->post([sh = shell, alive = alive, timing, gen, id = p.id, icon] {
                     if (!*alive || gen < sh->cache_gen_) return;
                     const uint64_t t0 = os::now_us();
                     if (sh->scene_cache_)
                         for (ShellScene& sc : *sh->scene_cache_)
                             if (sc.id == id) sc.icon = icon;
-                    if (!page || !*page || !sh->scenes_) return;
+                    if (!sh->scenes_) return;
                     sh->scenes_->set_icon(id, icon);
                     if (timing) timing->build_us += os::now_us() - t0;
                 })) {
@@ -680,7 +693,6 @@ void Shell::list_scenes(bool opening) {
     std::unique_ptr<os::Task> finished;
     {
         std::lock_guard<os::Mutex> lock(list_run_->mu);
-        list_run_->page = page_alive_;
         if (timing) list_run_->timing = std::move(timing);
         // One more round answers every request made while one runs.
         if (list_run_->state != ListRun::State::Idle) {

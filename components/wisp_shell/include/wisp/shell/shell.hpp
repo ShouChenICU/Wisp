@@ -67,10 +67,12 @@
 // generation and an older one than shown is dropped. The decoded icons are
 // shared: the icon cache (on the task), the last listing and the cards (on
 // the UI thread) each hold a reference, and whichever lets go last frees
-// the pixels (Mem::Large, no LVGL state). stop() joins the task: what is
-// left of the listing it is in (one short worker job per scene, while the
-// workers still run -- App::stop() stops the shell first) then ends
-// without decoding, and its posts find the shell stopped.
+// the pixels (Mem::Large, no LVGL state). A listing's cards and icons go
+// to whichever scene list page is open when they arrive, if they are not
+// older than what it shows. stop() joins the task, after telling it to
+// stop: the lister gives up after the read in progress (one worker job,
+// while the workers still run -- App::stop() stops the shell first), and
+// the task then reads no icon, decodes nothing and posts nothing.
 //
 // The hardware diagnostics (the self-check screen, "System -> Hardware
 // diagnostics" in spec 6.4) is not built at boot: open_diagnostics() has
@@ -189,8 +191,10 @@ struct ShellDeps {
     // icon_hash), available false while the scene's files are on an SD
     // card that is out. Asked when the scene list opens and something may
     // have changed, or a scene changes while it is open, so it should keep
-    // what it read rather than read it all again.
-    std::function<ShellListing()> list_scenes;
+    // what it read rather than read it all again. `cancelled` turns true
+    // once the shell stops: the lister then gives up between two of its
+    // reads and answers `cancelled`, so stop() waits for one read at most.
+    std::function<ShellListing(const std::function<bool()>& cancelled)> list_scenes;
     // Scene `id`'s icon file (at most kIconMaxBytes), or null, on the
     // listing task like list_scenes: for an icon list_scenes named by its
     // hash alone that the shell has not decoded. Empty: such an icon is not

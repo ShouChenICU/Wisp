@@ -97,12 +97,20 @@ namespace wisp::app {
 // from a PSRAM stack (flash-thread spec 3.9).
 inline constexpr bool kSdOwnWorker = true;
 
+// How long the scene listing waits for one scene's files to say where they
+// are (SceneWiring::shell_scenes()), the order of a worker drain at stop:
+// past it the scene shows as not runnable, so a wedged card worker holds
+// neither the listing nor a stop waiting for it.
+inline constexpr uint32_t kFilesProbeMs = 5000;
+
 struct SceneWiringDeps {
     Platform& platform;
     core::EventBus& bus;
     core::StorageManager& storage;
     // kSdOwnWorker; a field so that tests can run the fallback.
     bool sd_own_worker = kSdOwnWorker;
+    // kFilesProbeMs; a field so that tests need not wait it out.
+    uint32_t files_probe_ms = kFilesProbeMs;
 };
 
 // One installed scene as the self-check card lists it.
@@ -179,7 +187,9 @@ public:
     // UI thread): every read is a job of the repository's, of SceneFiles'
     // or of the worker's, waited for here. Empty without a repository or
     // when listing fails (logged); its generation is the repository's
-    // (SceneRepository::changed_since()) it is up to date with.
+    // (SceneRepository::changed_since()) it is up to date with. Asks
+    // `cancelled` between scenes and, once it is true, stops there and
+    // answers `cancelled` (the next call reads everything again).
     //
     // Kept between calls (outside dev mode, whose working directory
     // changes behind the repository's back): only what changed since the
@@ -195,7 +205,7 @@ public:
     // Running in the background comes from the runtime each time, never
     // from storage. An icon comes as its bytes when read for this call and
     // as its icon_hash alone after that (shell_icon() reads it again).
-    shell::ShellListing shell_scenes();
+    shell::ShellListing shell_scenes(const std::function<bool()>& cancelled = {});
     // ShellDeps::listing_current: whether shell_scenes() would read nothing
     // (its listing is cached, nothing changed in the repository and the
     // card is as it saw it). No file work: any thread.
@@ -275,10 +285,11 @@ private:
     };
     // shell_scenes() helpers, on its task: the entry for manifest `m` (its
     // icon read into `bytes`), and whether `id` can run with the card as
-    // `online` says.
+    // `online` says (false, and `unsure` set, when its files did not answer
+    // within files_probe_ms).
     ListedScene listed_scene(const core::SceneManifest& m,
                              std::shared_ptr<const os::LargeBuffer>& bytes);
-    bool can_run(const os::LargeString& id, bool online);
+    bool can_run(const os::LargeString& id, bool online, bool& unsure);
 
     SceneWiringDeps deps_;
     core::StorageWorker worker_;

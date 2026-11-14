@@ -744,9 +744,12 @@ Result<void> App::start() {
             },
             .now_ms = {},
             .agent = impl_->agent ? impl_->agent->service() : nullptr,
-            .list_scenes = scenes != nullptr ? std::function<shell::ShellListing()>(
-                                                   [scenes] { return scenes->shell_scenes(); })
-                                             : nullptr,
+            .list_scenes = scenes != nullptr
+                               ? std::function<shell::ShellListing(const std::function<bool()>&)>(
+                                     [scenes](const std::function<bool()>& cancelled) {
+                                         return scenes->shell_scenes(cancelled);
+                                     })
+                               : nullptr,
             .read_scene_icon =
                 scenes != nullptr
                     ? std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>(

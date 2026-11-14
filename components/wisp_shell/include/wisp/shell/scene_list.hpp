@@ -72,11 +72,14 @@ struct ShellScene {
 // storage for it (the shell's timing line says so). `generation`: the
 // repository generation (SceneRepository::changed_since()) the listing is
 // up to date with, 0 from a lister that keeps none or a failed read; the
-// shell drops a listing older than the one it shows.
+// shell drops a listing older than the one it shows. `cancelled`: the
+// lister stopped early when asked to (ShellDeps::list_scenes), and the
+// rest means nothing.
 struct ShellListing {
     std::vector<ShellScene> scenes;
     bool cached = false;
     uint64_t generation = 0;
+    bool cancelled = false;
 };
 
 // An icon file's content hash (64-bit FNV-1a), never 0.

@@ -182,8 +182,11 @@ public:
 
     // list() without sizing the packages or their data: only each
     // scene.json is read. Skips what list() skips; per-scene snapshots as
-    // list().
-    Result<std::vector<SceneManifest>> manifests(ParseOn where = ParseOn::Caller);
+    // list(). `cancelled`, asked before each scene, ends it early with
+    // Busy "cancelled" (a caller that is stopping waits for one scene's
+    // job at most).
+    Result<std::vector<SceneManifest>> manifests(ParseOn where = ParseOn::Caller,
+                                                 const std::function<bool()>& cancelled = {});
 
     // The scenes a replace (an install, an update, an interrupted one that
     // recover() or the next install finished) or a remove touched after

@@ -1070,7 +1070,7 @@ struct ListingRig {
 
     void start() {
         wiring = std::make_unique<wisp::app::SceneWiring>(
-            wisp::app::SceneWiringDeps{platform, bus, *storage, sd_own_worker});
+            wisp::app::SceneWiringDeps{platform, bus, *storage, sd_own_worker, files_probe_ms});
         wiring->start_storage();
         ASSERT_NE(wiring->repository(), nullptr);
     }
@@ -1136,6 +1136,8 @@ struct ListingRig {
     wisp::app::Platform platform;
     // SceneWiringDeps::sd_own_worker, for start().
     bool sd_own_worker = wisp::app::kSdOwnWorker;
+    // SceneWiringDeps::files_probe_ms, for start().
+    uint32_t files_probe_ms = wisp::app::kFilesProbeMs;
     std::unique_ptr<wisp::app::SceneWiring> wiring;
 };
 
@@ -1228,6 +1230,49 @@ TEST(AppScenes, ShellListingCurrentUntilSomethingChanges) {
     EXPECT_TRUE(r.wiring->shell_listing_current());
     r.sd_dev->online_flag = false;
     r.refresh();
+    EXPECT_FALSE(r.wiring->shell_listing_current());
+}
+
+// A listing told to stop (the shell stopping) gives up between scenes,
+// says so and leaves the next listing to read everything.
+TEST(AppScenes, ShellScenesStopsWhenCancelled) {
+    ListingRig r;
+    r.put("a", "A");
+    r.put("b", "B");
+    r.put("c", "C");
+    r.start();
+    int checks = 0;
+    // Lets the first scene through.
+    const wisp::shell::ShellListing got = r.wiring->shell_scenes([&] { return ++checks > 1; });
+    EXPECT_TRUE(got.cancelled);
+    EXPECT_TRUE(got.scenes.empty());
+    EXPECT_FALSE(r.wiring->shell_listing_current());
+    const wisp::shell::ShellListing again = r.list();
+    EXPECT_FALSE(again.cancelled);
+    EXPECT_EQ(again.scenes.size(), 3u);
+}
+
+// A probe of a scene's files that does not answer in time (a wedged
+// worker) shows the scene as not runnable and does not hold the listing;
+// the next listing asks again.
+TEST(AppScenes, SlowFilesProbeDoesNotHoldTheListing) {
+    ListingRig r(/*card_in=*/true);
+    r.files_probe_ms = 100;
+    r.put("clock", "时钟");
+    r.start();
+    ASSERT_TRUE(ListingRig::find(r.list(), "clock")->available);
+    r.sd_dev->online_flag = false;
+    r.refresh();
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    struct ReleaseOnExit {
+        std::promise<void>& p;
+        ~ReleaseOnExit() { p.set_value(); }
+    } guard{gate};
+    ASSERT_TRUE(r.wiring->worker().submit([held] { held.wait(); }));
+    const wisp::shell::ShellListing got = r.list();
+    ASSERT_NE(ListingRig::find(got, "clock"), nullptr);
+    EXPECT_FALSE(ListingRig::find(got, "clock")->available);
     EXPECT_FALSE(r.wiring->shell_listing_current());
 }
 

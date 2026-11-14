@@ -524,7 +524,7 @@ SceneWiring::ListedScene SceneWiring::listed_scene(const core::SceneManifest& m,
     return e;
 }
 
-bool SceneWiring::can_run(const os::LargeString& id, bool online) {
+bool SceneWiring::can_run(const os::LargeString& id, bool online, bool& unsure) {
     core::SceneFiles* sf = files_.get();
     if (sf == nullptr || online) return true;
     // A job of the scene's (SceneFiles::submit()): the record may need
@@ -532,7 +532,12 @@ bool SceneWiring::can_run(const os::LargeString& id, bool online) {
     // worker may hold while it waits for nothing of this task's.
     const std::string sid(id.data(), id.size());
     auto fi = core::run_files<core::SceneFilesInfo>(
-        *sf, sid, [sid](core::SceneFiles& f) { return f.info(sid); });
+        *sf, sid, [sid](core::SceneFiles& f) { return f.info(sid); }, deps_.files_probe_ms);
+    if (!fi && fi.error().code == ErrorCode::Timeout) {
+        WLOG_W(kTag, "%s: its files did not answer; shown as not runnable", sid.c_str());
+        unsure = true;
+        return false;
+    }
     if (!fi) {
         // A scene that wants the card and has no files yet is refused
         // outright while the card is out.
@@ -544,8 +549,17 @@ bool SceneWiring::can_run(const os::LargeString& id, bool online) {
     return !on_card;
 }
 
-shell::ShellListing SceneWiring::shell_scenes() {
+shell::ShellListing SceneWiring::shell_scenes(const std::function<bool()>& cancelled) {
     shell::ShellListing out;
+    // Between two reads: what was read so far stays consistent, and what
+    // was not is read next time (listed_ or the marks below are left as
+    // they were).
+    const auto stopped = [&] {
+        if (!cancelled || !cancelled()) return false;
+        out.cancelled = true;
+        return true;
+    };
+    bool unsure = false;
     core::SceneRepository* repo = repository();
     if (repo == nullptr) return out;
     const uint64_t t0 = os::now_us();
@@ -569,19 +583,22 @@ shell::ShellListing SceneWiring::shell_scenes() {
     if (full) {
         listed_ = false;
         listing_.clear();
-        auto listed = repo->manifests();
+        auto listed = repo->manifests(core::ParseOn::Caller, cancelled);
+        if (stopped()) return out;
         if (!listed) {
             WLOG_W(kTag, "listing scenes failed: %s", listed.error().message.c_str());
             return out;
         }
         listing_.reserve(listed.value().size());
         for (const core::SceneManifest& m : listed.value()) {
+            if (stopped()) return out;
             listing_.push_back(listed_scene(m, bytes));
-            listing_.back().available = can_run(listing_.back().id, online);
+            listing_.back().available = can_run(listing_.back().id, online, unsure);
             keep_bytes(listing_.back().id);
         }
     } else {
         for (const std::string& id : changed) {
+            if (stopped()) return out;
             auto it = std::lower_bound(listing_.begin(), listing_.end(), id, by_id);
             const bool there =
                 it != listing_.end() && std::string_view(it->id.data(), it->id.size()) == id;
@@ -600,7 +617,7 @@ shell::ShellListing SceneWiring::shell_scenes() {
                 continue;
             }
             ListedScene e = listed_scene(m.value(), bytes);
-            e.available = can_run(e.id, online);
+            e.available = can_run(e.id, online, unsure);
             keep_bytes(e.id);
             if (there) {
                 *it = std::move(e);
@@ -609,7 +626,10 @@ shell::ShellListing SceneWiring::shell_scenes() {
             }
         }
         if (card) {
-            for (ListedScene& e : listing_) e.available = can_run(e.id, online);
+            for (ListedScene& e : listing_) {
+                if (stopped()) return out;
+                e.available = can_run(e.id, online, unsure);
+            }
         }
     }
     if (full || !changed.empty() || card) {
@@ -619,6 +639,8 @@ shell::ShellListing SceneWiring::shell_scenes() {
         listed_sd_ = sd;
         listed_online_ = online;
     }
+    // A scene whose files did not answer is asked again next time.
+    if (unsure) listed_ = false;
     out.cached = !full && changed.empty() && !card;
     out.generation = listed_gen_.load();
     const uint64_t t1 = os::now_us();

@@ -479,7 +479,8 @@ Result<std::vector<SceneInfo>> SceneRepository::list(ParseOn where) {
     return R::ok(std::move(out));
 }
 
-Result<std::vector<SceneManifest>> SceneRepository::manifests(ParseOn where) {
+Result<std::vector<SceneManifest>> SceneRepository::manifests(
+    ParseOn where, const std::function<bool()>& cancelled) {
     using R = Result<std::vector<SceneManifest>>;
     Result<std::vector<std::string>> ids =
         call_on_worker<std::vector<std::string>>(config_.worker, [&] { return ids_here(); });
@@ -487,6 +488,7 @@ Result<std::vector<SceneManifest>> SceneRepository::manifests(ParseOn where) {
     std::vector<SceneManifest> out;
     // As list(): one job per scene, one at a time.
     for (const std::string& id : ids.value()) {
+        if (cancelled && cancelled()) return R::err(ErrorCode::Busy, "cancelled");
         bool refused = false;
         Result<SceneManifest> m = read_one<SceneManifest>(
             id, false, where, [this](const SceneScan& scan) { return parse_scan(scan); }, &refused);
