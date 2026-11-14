@@ -1432,6 +1432,10 @@ TEST_F(HomeTest, RunningTurnShowsAStopControlThatStopsIt) {
     const lv_point_t c = centre(a);
     drag(c, {static_cast<int32_t>(c.x - 200), c.y});
     EXPECT_EQ(shell_->page(), Page::Home);
+    // Nor does it stop anything: the turn runs on.
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(count(Kind::TurnEnd), 0u);
+    EXPECT_TRUE(conv->current().running);
 
     // A tap: held past the hold time, still no hold.
     const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};

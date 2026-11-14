@@ -324,12 +324,15 @@ bool Home::start() {
 
     // Stop, while a turn runs. It does not bubble its presses: the screen's
     // handlers (the wisp's press, the page drags, the swipe up) never see
-    // them, so a press here is neither a hold nor a drag.
+    // them, so a press here is neither a hold nor a drag. Nor is it locked
+    // to the finger (LVGL's default): a press that slides off it is lost,
+    // not a click, so a drag that only starts here stops nothing.
     stop_ = lv_button_create(root_);
     ui::set_button_role(stop_, ui::ButtonRole::Secondary);
     lv_obj_set_style_pad_hor(stop_, kPad, 0);
     lv_obj_set_style_pad_ver(stop_, 0, 0);
     lv_obj_remove_flag(stop_, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_remove_flag(stop_, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_add_event_cb(stop_, &Home::stop_cb, LV_EVENT_CLICKED, this);
     {
         lv_obj_t* l = lv_label_create(stop_);
