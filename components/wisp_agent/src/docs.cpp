@@ -5,6 +5,7 @@
 #include <string>
 
 #include "docs_data.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/scene/schema.hpp"
 
@@ -55,9 +56,11 @@ Result<void> add_docs_tools(ToolRegistry& reg) {
         .description = "The scene API reference by topic: widgets, widget/<name>, lua, "
                        "lua/<module> (store, http, timer, device, scene, log, notify, power, "
                        "sensor, files), screen, examples, example/<id>. An unknown topic "
-                       "lists them all.",
-        .schema_json = R"({"type":"object","properties":{"topic":{"type":"string",)"
-                       R"("maxLength":64}},"required":["topic"]})",
+                       "lists them all. Long topics come in pages: pass the result's next_offset "
+                       "to read on.",
+        .schema_json =
+            R"({"type":"object","properties":{"topic":{"type":"string",)"
+            R"("maxLength":64},"offset":{"type":"integer","minimum":0}},"required":["topic"]})",
         .thread = ToolThread::Agent,
         .run =
             [](const Value& a, ToolCtx&) {
@@ -71,10 +74,41 @@ Result<void> add_docs_tools(ToolRegistry& reg) {
                     return tool_error("not_found", "no topic " + topic,
                                       {{"topics", Value(std::move(topics))}});
                 }
+                const Value* o = a.find("offset");
+                const int64_t want =
+                    o != nullptr && o->type() == Value::Type::Int ? o->as_int() : 0;
+                const size_t total = text->size();
+                // A byte offset in the middle of a UTF-8 sequence would split a
+                // character between two pages.
+                const bool on_boundary = want >= 0 && static_cast<size_t>(want) <= total &&
+                                         (static_cast<size_t>(want) == total ||
+                                          (static_cast<uint8_t>((*text)[want]) & 0xC0) != 0x80);
+                if (!on_boundary) {
+                    return tool_error("bad_offset", "offset is past the end or inside a character",
+                                      {{"total_bytes", Value(static_cast<int64_t>(total))}});
+                }
+                const size_t begin = static_cast<size_t>(want);
+                size_t end = total;
+                bool more = false;
+                if (total - begin > kDocsPageBytes) {
+                    more = true;
+                    end = begin + kDocsPageBytes;
+                    const size_t nl = text->rfind('\n', end - 1);
+                    if (nl != std::string::npos && nl >= begin) {
+                        end = nl + 1;
+                    } else {
+                        while (end > begin && (static_cast<uint8_t>((*text)[end]) & 0xC0) == 0x80) {
+                            --end;
+                        }
+                    }
+                }
+                Map result{{"ok", Value(true)},
+                           {"topic", Value(topic)},
+                           {"text", Value(text->substr(begin, end - begin))},
+                           {"total_bytes", Value(static_cast<int64_t>(total))}};
+                if (more) result.emplace("next_offset", Value(static_cast<int64_t>(end)));
                 ToolOutput out;
-                out.result = Value(Map{{"ok", Value(true)},
-                                       {"topic", Value(topic)},
-                                       {"text", Value(std::move(*text))}});
+                out.result = Value(std::move(result));
                 return out;
             },
     });

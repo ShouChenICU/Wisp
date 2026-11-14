@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
@@ -21,6 +22,17 @@ using wisp::Value;
 
 bool has(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+Value run_docs(const std::string& topic, int64_t offset) {
+    wisp::agent::ToolRegistry reg(wisp::agent::ToolExecutors{});
+    EXPECT_TRUE(wisp::agent::add_docs_tools(reg));
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    return reg
+        .call("docs_read",
+              R"({"topic":")" + topic + R"(","offset":)" + std::to_string(offset) + "}", ctx)
+        .result;
 }
 
 }  // namespace
@@ -82,4 +94,35 @@ TEST(Docs, UnknownTopicListsTopics) {
     wisp::agent::ToolOutput ok = reg.call("docs_read", R"({"topic":"widget/button"})", ctx);
     ASSERT_TRUE(ok.ok) << wisp::to_json(ok.result);
     EXPECT_NE(ok.result.find("text")->as_string().find("on_click"), std::string::npos);
+}
+
+TEST(Docs, LongTopicComesInPagesThatJoinToTheWhole) {
+    const std::string whole = *wisp::agent::read_doc("lua");
+    ASSERT_GT(whole.size(), wisp::agent::kDocsPageBytes);
+    std::string joined;
+    int64_t offset = 0;
+    for (int page = 0; page < 8; ++page) {
+        const Value r = run_docs("lua", offset);
+        const std::string text = r.find("text")->as_string();
+        EXPECT_LE(text.size(), wisp::agent::kDocsPageBytes);
+        EXPECT_EQ(r.find("total_bytes")->as_int(), static_cast<int64_t>(whole.size()));
+        joined += text;
+        const Value* next = r.find("next_offset");
+        if (next == nullptr) break;
+        EXPECT_EQ(text.back(), '\n');
+        EXPECT_EQ(next->as_int(), static_cast<int64_t>(joined.size()));
+        offset = next->as_int();
+    }
+    EXPECT_EQ(joined, whole);
+}
+
+TEST(Docs, ShortTopicHasNoNextOffset) {
+    const Value r = run_docs("widget/label", 0);
+    EXPECT_EQ(r.find("next_offset"), nullptr);
+}
+
+TEST(Docs, OffsetPastTheEndIsAnError) {
+    const Value r = run_docs("widget/label", 1 << 20);
+    EXPECT_EQ(r.find("ok")->as_bool(), false);
+    EXPECT_EQ(r.find("error")->as_string(), "bad_offset");
 }

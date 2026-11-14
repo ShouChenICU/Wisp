@@ -51,6 +51,9 @@ inline constexpr uint64_t kRolloverBytes = 1024 * 1024;
 // Tool limits.
 inline constexpr size_t kReadMaxBytes = 65536;
 inline constexpr size_t kDataReadMaxBytes = 16384;
+// docs.read: one page of a topic. Pages end on a line break so a model
+// reading on never starts mid-line.
+inline constexpr size_t kDocsPageBytes = 16384;
 inline constexpr size_t kLogsMax = 100;
 inline constexpr uint32_t kEvalMs = 200;
 // The install check reports at most this many W and E log lines each.
