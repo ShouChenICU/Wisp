@@ -308,6 +308,8 @@ Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator a
 - No test for a partial start of the SD worker in the style of `SceneHttp`'s: a failed start of `wisp.sd.io` shares the no-card-slot path and is not tested on its own.
 - The first download of a scene with no files location yet runs entirely on `wisp.fs`'s Bulk lane (it stays on the worker it began on), even once the location is the card.
 - A scene that always has an Internal-routed job in flight never moves to `wisp.sd.io` (its calls stay on `wisp.fs` to keep their order).
+- `ReminderScheduler::stop()` waits at most 5 s for queued and running actions; an action still running after that bound can reach the scheduler while it is destroyed. The fallback wait (`drain_io`) also waits for the whole worker to go idle, so a busy `wisp.fs` at shutdown can cost the full 5 s.
+- `StorageWorker::stop()` called a second time while the first call drains returns before the join. No current path does this (`App::stop` joins `wisp.reset` before it stops the scenes).
 - `StorageManager::status()`'s `online()` call may deinitialise the card without updating the cached state (from before this branch).
 - Wall-clock tests that fail occasionally under parallel load: `PowerManager.TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt`, `AppScenes.SelfCheckResyncsAfterAFaultedPanelCloses`.
 
