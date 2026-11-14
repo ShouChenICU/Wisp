@@ -153,9 +153,11 @@ public:
 
     // The generic path (spec 3): a device no core service knows describes
     // its properties and commands with a static table (device_schema.hpp),
-    // and core::DeviceService reaches them through get()/invoke(). The
-    // pointer must stay valid for the device's lifetime; it is normally a
-    // driver's static table, so describing costs no RAM per device. The
+    // and core::DeviceService reaches them through get()/invoke(). It must
+    // return the same table for the device's whole lifetime: only
+    // DeviceRegistry::add() validates it (hal::check_schema()), and every
+    // later caller trusts it. It is normally a driver's constexpr table in
+    // read-only data, so describing costs no RAM per device. The
     // defaults (no schema, Unsupported) cost nothing beyond the vtable
     // slots. A typed device may describe properties only; commands are for
     // devices whose interface is None, and a Display never has a schema

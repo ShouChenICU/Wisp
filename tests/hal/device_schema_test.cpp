@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <limits>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -79,6 +81,25 @@ TEST(DeviceSchema, MissingAndUnknownArgumentsAreNamed) {
     ASSERT_FALSE(unknown);
     EXPECT_EQ(unknown.error().code, ErrorCode::InvalidArgument);
     EXPECT_EQ(unknown.error().message, "unknown argument 'speed'");
+}
+
+TEST(DeviceSchema, LongUnknownKeysAreTruncatedInTheMessage) {
+    auto r = pulse({{"ms", 150}, {std::string(100, 'k'), 1}});
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().message, "unknown argument '" + std::string(32, 'k') + "...'");
+
+    // Cut at a character boundary: "a" and 10 three-byte characters are
+    // 31 bytes; the 11th would straddle the 32-byte limit, so it goes.
+    std::string cjk = "a";
+    for (int i = 0; i < 11; ++i) cjk += "日";
+    auto wide = pulse({{"ms", 150}, {cjk, 1}});
+    ASSERT_FALSE(wide);
+    EXPECT_EQ(wide.error().message, "unknown argument '" + cjk.substr(0, 31) + "...'");
+
+    // Exactly 32 bytes is shown whole.
+    auto exact = pulse({{"ms", 150}, {std::string(32, 'k'), 1}});
+    ASSERT_FALSE(exact);
+    EXPECT_EQ(exact.error().message, "unknown argument '" + std::string(32, 'k') + "'");
 }
 
 TEST(DeviceSchema, TypesAreChecked) {
@@ -174,6 +195,70 @@ TEST(DeviceSchema, RenderShowsNumberRangesStringLengthsAndNoEmptyFields) {
     EXPECT_EQ(rendered.find("props")->as_list()[0].find("max")->type(), Value::Type::Double);
 }
 
+// A full table is a constant expression, so a driver's table is
+// read-only data with no static constructor.
+namespace {
+using wisp::hal::ParamDefault;
+constexpr const char* kLevels[] = {"low", "high"};
+constexpr ParamSpec kConstArgs[] = {
+    {.name = "on", .type = ParamType::Bool, .optional = true, .def = true},
+    {.name = "count", .type = ParamType::Int, .min = 0, .max = 9, .optional = true, .def = 5},
+    {.name = "gain", .type = ParamType::Number, .optional = true, .def = 1.5},
+    {.name = "label", .type = ParamType::String, .optional = true, .def = "hi"},
+    {.name = "level", .type = ParamType::Enum, .choices = kLevels, .optional = true, .def = "low"},
+    {.name = "plain", .type = ParamType::Int, .optional = true},
+};
+constexpr CmdSpec kConstCmds[] = {{.name = "set", .desc = "Set all", .args = kConstArgs}};
+constinit const DeviceSchema kConstSchema{.props = {}, .cmds = kConstCmds};
+
+static_assert(ParamDefault(80).kind() == ParamDefault::Kind::Int);
+static_assert(ParamDefault(80u).kind() == ParamDefault::Kind::Int);
+static_assert(ParamDefault(int64_t{-3}).as_int() == -3);
+static_assert(ParamDefault(80.0).kind() == ParamDefault::Kind::Number);
+static_assert(ParamDefault(80.0f).kind() == ParamDefault::Kind::Number);
+static_assert(ParamDefault(true).kind() == ParamDefault::Kind::Bool);
+static_assert(ParamDefault(false).as_bool() == false);
+static_assert(ParamDefault("soft").kind() == ParamDefault::Kind::String);
+static_assert(ParamDefault().kind() == ParamDefault::Kind::None);
+static_assert(ParamDefault().is_none());
+static_assert(!std::is_constructible_v<ParamDefault, std::nullptr_t>);
+static_assert(std::is_trivially_destructible_v<ParamSpec>);
+static_assert(std::is_trivially_destructible_v<CmdSpec>);
+static_assert(std::is_trivially_destructible_v<DeviceSchema>);
+static_assert(kConstArgs[1].def.as_int() == 5);
+static_assert(sizeof(ParamDefault) <= 16);
+}  // namespace
+
+TEST(DeviceSchema, DefaultsOfEveryKindRoundTrip) {
+    ASSERT_TRUE(wisp::hal::check_schema(kConstSchema));
+    EXPECT_EQ(wisp::to_json(wisp::hal::render_schema(kConstSchema)),
+              R"({"cmds":[{"args":[)"
+              R"({"default":true,"name":"on","optional":true,"type":"bool"},)"
+              R"({"default":5,"max":9,"min":0,"name":"count","optional":true,"type":"int"},)"
+              R"({"default":1.5,"name":"gain","optional":true,"type":"number"},)"
+              R"({"default":"hi","max_len":64,"name":"label","optional":true,"type":"string"},)"
+              R"({"choices":["low","high"],"default":"low","name":"level","optional":true,)"
+              R"("type":"enum"},)"
+              R"({"name":"plain","optional":true,"type":"int"}],)"
+              R"("changes_state":true,"desc":"Set all","min_interval_ms":0,"name":"set"}],)"
+              R"("props":[]})");
+
+    auto filled = wisp::hal::validate_args(kConstCmds[0], Value());
+    ASSERT_TRUE(filled) << message_of(filled);
+    EXPECT_EQ(filled.value(),
+              (Map{{"on", true}, {"count", 5}, {"gain", 1.5}, {"label", "hi"}, {"level", "low"}}));
+    EXPECT_EQ(filled.value().at("count").type(), Value::Type::Int);
+    EXPECT_EQ(filled.value().at("count").as_int(), 5);
+    EXPECT_EQ(filled.value().at("gain").type(), Value::Type::Double);
+    EXPECT_EQ(filled.value().count("plain"), 0u);  // no default: left out
+
+    // The fake's Int default reaches the driver as an Int.
+    auto pulse_args = pulse({{"ms", 150}});
+    ASSERT_TRUE(pulse_args);
+    EXPECT_EQ(pulse_args.value().at("strength").type(), Value::Type::Int);
+    EXPECT_EQ(pulse_args.value().at("strength").as_int(), 80);
+}
+
 TEST(DeviceSchema, FakeSchemaPassesTheChecks) {
     auto r = wisp::hal::check_schema(kFakeGenericSchema);
     EXPECT_TRUE(r) << (r ? "" : r.error().message);
@@ -257,6 +342,13 @@ TEST(DeviceSchema, CheckRejectsBadTables) {
         const ParamSpec on_bool[] = {{.name = "x", .type = ParamType::Bool, .min = 0, .max = 1}};
         EXPECT_EQ(check_message({.props = on_bool, .cmds = {}}),
                   "prop 'x': a range is only for int and number");
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const ParamSpec nan_min[] = {
+            {.name = "x", .type = ParamType::Number, .min = nan, .max = 1}};
+        EXPECT_EQ(check_message({.props = nan_min, .cmds = {}}), "prop 'x': min > max");
+        const ParamSpec nan_max[] = {
+            {.name = "x", .type = ParamType::Number, .min = 0, .max = nan}};
+        EXPECT_EQ(check_message({.props = nan_max, .cmds = {}}), "prop 'x': min > max");
     }
     {  // Enums.
         const ParamSpec empty[] = {{.name = "mode", .type = ParamType::Enum}};
@@ -269,6 +361,13 @@ TEST(DeviceSchema, CheckRejectsBadTables) {
         const ParamSpec on_int[] = {{.name = "x", .type = ParamType::Int, .choices = kSoft}};
         EXPECT_EQ(check_message({.props = on_int, .cmds = {}}),
                   "prop 'x': choices are only for enum");
+        static constexpr const char* kTwice[] = {"soft", "hard", "soft"};
+        const ParamSpec twice[] = {{.name = "mode", .type = ParamType::Enum, .choices = kTwice}};
+        EXPECT_EQ(check_message({.props = twice, .cmds = {}}),
+                  "prop 'mode': duplicate choice 'soft'");
+        static constexpr const char* kBlank[] = {"soft", ""};
+        const ParamSpec blank[] = {{.name = "mode", .type = ParamType::Enum, .choices = kBlank}};
+        EXPECT_EQ(check_message({.props = blank, .cmds = {}}), "prop 'mode': empty choice");
     }
     {  // optional is for args only, and a default must pass its own arg's rules.
         const ParamSpec props[] = {{.name = "x", .type = ParamType::Int, .optional = true}};
@@ -279,18 +378,92 @@ TEST(DeviceSchema, CheckRejectsBadTables) {
                                    .min = 0,
                                    .max = 100,
                                    .optional = true,
-                                   .def = Value(101)}};
+                                   .def = 101}};
         const CmdSpec cmds[] = {{.name = "pulse", .desc = "", .args = args}};
         EXPECT_EQ(check_message({.props = {}, .cmds = cmds}),
                   "cmd 'pulse' arg 'strength': bad default: 'strength' must be between 0 and 100");
-        const ParamSpec typed[] = {
-            {.name = "mode", .type = ParamType::String, .optional = true, .def = Value(1)}};
-        const CmdSpec typed_cmds[] = {{.name = "set", .desc = "", .args = typed}};
-        EXPECT_EQ(check_message({.props = {}, .cmds = typed_cmds}),
-                  "cmd 'set' arg 'mode': bad default: 'mode' must be string");
         const ParamSpec no_default[] = {{.name = "x", .type = ParamType::Int, .optional = true}};
         const CmdSpec fine[] = {{.name = "set", .desc = "", .args = no_default}};
         EXPECT_EQ(check_message({.props = {}, .cmds = fine}), "<ok>");
+    }
+    {  // A default's kind must match the declared type.
+        auto arg_message = [](ParamSpec arg) {
+            const ParamSpec args[] = {arg};
+            const CmdSpec cmds[] = {{.name = "set", .desc = "", .args = args}};
+            return check_message({.props = {}, .cmds = cmds});
+        };
+        EXPECT_EQ(
+            arg_message({.name = "ms", .type = ParamType::Int, .optional = true, .def = 80.0}),
+            "cmd 'set' arg 'ms': default must be int");
+        EXPECT_EQ(
+            arg_message({.name = "ms", .type = ParamType::Int, .optional = true, .def = true}),
+            "cmd 'set' arg 'ms': default must be int");
+        EXPECT_EQ(
+            arg_message({.name = "gain", .type = ParamType::Number, .optional = true, .def = 1}),
+            "<ok>");
+        EXPECT_EQ(
+            arg_message({.name = "gain", .type = ParamType::Number, .optional = true, .def = 0.5}),
+            "<ok>");
+        EXPECT_EQ(
+            arg_message({.name = "gain", .type = ParamType::Number, .optional = true, .def = "1"}),
+            "cmd 'set' arg 'gain': default must be number");
+        EXPECT_EQ(arg_message({.name = "on", .type = ParamType::Bool, .optional = true, .def = 1}),
+                  "cmd 'set' arg 'on': default must be bool");
+        EXPECT_EQ(
+            arg_message({.name = "mode", .type = ParamType::String, .optional = true, .def = 1}),
+            "cmd 'set' arg 'mode': default must be string");
+        EXPECT_EQ(arg_message({.name = "text",
+                               .type = ParamType::String,
+                               .max_len = 2,
+                               .optional = true,
+                               .def = "abc"}),
+                  "cmd 'set' arg 'text': bad default: 'text' must be at most 2 bytes");
+        static constexpr const char* kModes[] = {"soft", "hard"};
+        EXPECT_EQ(arg_message({.name = "mode",
+                               .type = ParamType::Enum,
+                               .choices = kModes,
+                               .optional = true,
+                               .def = "medium"}),
+                  "cmd 'set' arg 'mode': bad default: 'mode' must be one of: soft, hard");
+        EXPECT_EQ(arg_message({.name = "mode",
+                               .type = ParamType::Enum,
+                               .choices = kModes,
+                               .optional = true,
+                               .def = 1}),
+                  "cmd 'set' arg 'mode': default must be string");
+        const char* null_text = nullptr;
+        EXPECT_EQ(
+            arg_message(
+                {.name = "text", .type = ParamType::String, .optional = true, .def = null_text}),
+            "cmd 'set' arg 'text': default is null");
+    }
+    {  // A default only for an optional arg.
+        const ParamSpec props[] = {{.name = "x", .type = ParamType::Int, .def = 1}};
+        EXPECT_EQ(check_message({.props = props, .cmds = {}}), "prop 'x': props take no default");
+        const ParamSpec args[] = {{.name = "ms", .type = ParamType::Int, .def = 1}};
+        const CmdSpec cmds[] = {{.name = "pulse", .desc = "", .args = args}};
+        EXPECT_EQ(check_message({.props = {}, .cmds = cmds}),
+                  "cmd 'pulse' arg 'ms': default without optional");
+    }
+    {  // Names are not Lua keywords: scenes write {ms = 150}.
+        const ParamSpec props[] = {{.name = "end", .type = ParamType::Int}};
+        EXPECT_EQ(check_message({.props = props, .cmds = {}}), "prop 'end': name is a Lua keyword");
+        const CmdSpec cmds[] = {{.name = "repeat", .desc = "", .args = {}}};
+        EXPECT_EQ(check_message({.props = {}, .cmds = cmds}),
+                  "cmd 'repeat': name is a Lua keyword");
+        const ParamSpec args[] = {{.name = "function", .type = ParamType::Int}};
+        const CmdSpec with_arg[] = {{.name = "go", .desc = "", .args = args}};
+        EXPECT_EQ(check_message({.props = {}, .cmds = with_arg}),
+                  "cmd 'go' arg 'function': name is a Lua keyword");
+        for (const char* keyword : {"and", "goto", "nil", "until", "while", "true"}) {
+            const ParamSpec one[] = {{.name = keyword, .type = ParamType::Int}};
+            EXPECT_NE(check_message({.props = one, .cmds = {}}), "<ok>") << keyword;
+        }
+        // Prefixes and longer names that merely contain a keyword are fine.
+        const ParamSpec near[] = {{.name = "ends", .type = ParamType::Int},
+                                  {.name = "do_it", .type = ParamType::Int},
+                                  {.name = "i", .type = ParamType::Int}};
+        EXPECT_EQ(check_message({.props = near, .cmds = {}}), "<ok>");
     }
     {  // Null strings that would be read.
         const ParamSpec props[] = {{.name = "x", .type = ParamType::Int, .desc = nullptr}};

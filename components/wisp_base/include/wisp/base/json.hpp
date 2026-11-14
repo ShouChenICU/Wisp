@@ -35,6 +35,10 @@ Result<Value> from_json(std::string_view s);
 // parser itself enforces it, so no string can hide a level from it.
 Result<Value> from_json(std::string_view s, uint8_t max_depth);
 
+// Whether `s` is well-formed UTF-8: exactly the strings to_json() keeps
+// without replacing anything.
+bool valid_utf8(std::string_view s);
+
 namespace json_detail {
 // Length of the well-formed UTF-8 sequence starting at s[i], or 0 when
 // there is none; then *bad is how many bytes form the maximal ill-formed

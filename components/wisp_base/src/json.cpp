@@ -147,6 +147,21 @@ std::string serialize(const Value& v) {
 
 }  // namespace
 
+bool valid_utf8(std::string_view s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        if (static_cast<uint8_t>(s[i]) < 0x80) {
+            ++i;
+            continue;
+        }
+        size_t bad = 0;
+        const size_t len = json_detail::utf8_sequence(s, i, &bad);
+        if (len == 0) return false;
+        i += len;
+    }
+    return true;
+}
+
 size_t json_detail::utf8_sequence(std::string_view s, size_t i, size_t* bad) {
     const auto b = static_cast<uint8_t>(s[i]);
     size_t len = 0;

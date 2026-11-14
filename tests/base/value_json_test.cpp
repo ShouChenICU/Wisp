@@ -161,6 +161,17 @@ TEST(Json, ReplacesInvalidUtf8) {
     EXPECT_EQ(wisp::to_json(wisp::Value(good)), "\"" + good + "\"");
 }
 
+// The same well-formedness rule as to_json()'s replacement, as a check.
+TEST(Json, ValidUtf8MatchesTheReplacementRule) {
+    EXPECT_TRUE(wisp::valid_utf8(""));
+    EXPECT_TRUE(wisp::valid_utf8("plain ascii \x01\x7f"));
+    EXPECT_TRUE(wisp::valid_utf8("中文 \xF0\x9F\x94\xA5 \xC3\xA9"));
+    for (const char* bad : {"a\xe4\xb8", "\x80", "\xc0\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80",
+                            "\xf5", "\xff", "ok\xC3"}) {
+        EXPECT_FALSE(wisp::valid_utf8(bad)) << bad;
+    }
+}
+
 // Persistence needs the stored bytes back exactly (an SSID in GBK, say),
 // so it uses the raw form, which keeps non-UTF-8 bytes as they are.
 TEST(Json, RawFormPreservesBytes) {

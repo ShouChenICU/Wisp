@@ -14,9 +14,20 @@ namespace {
 
 constexpr size_t kMaxNameBytes = 32;
 
+// How much of an untrusted key an error message echoes.
+constexpr size_t kMaxEchoBytes = 32;
+
 // int64 range as doubles: 2^63 is exact, and every double below it in
 // magnitude converts without overflow.
 constexpr double kInt64Limit = 9223372036854775808.0;
+
+// Lua 5.4's reserved words. A scene passes arguments as a table
+// constructor ({ms = 150}), where a keyword is not a valid field name.
+constexpr const char* kLuaKeywords[] = {
+    "and",      "break",  "do",   "else", "elseif", "end",   "false", "for",
+    "function", "goto",   "if",   "in",   "local",  "nil",   "not",   "or",
+    "repeat",   "return", "then", "true", "until",  "while",
+};
 
 bool valid_name(const char* name) {
     if (name == nullptr) return false;
@@ -30,13 +41,46 @@ bool valid_name(const char* name) {
     return true;
 }
 
-std::string quoted(const char* name) { return std::string("'") + (name ? name : "") + "'"; }
+bool lua_keyword(const char* name) {
+    for (const char* keyword : kLuaKeywords) {
+        if (std::strcmp(name, keyword) == 0) return true;
+    }
+    return false;
+}
+
+// Null when the name is acceptable, else why not.
+const char* name_problem(const char* name) {
+    if (!valid_name(name)) return "name must match [a-z][a-z0-9_]{0,31}";
+    if (lua_keyword(name)) return "name is a Lua keyword";
+    return nullptr;
+}
+
+std::string quoted(std::string_view name) { return "'" + std::string(name) + "'"; }
+std::string quoted(const char* name) { return quoted(std::string_view(name ? name : "")); }
+
+// An untrusted key for a message, at most kMaxEchoBytes and never cut
+// inside a UTF-8 sequence.
+std::string echoed(std::string_view key) {
+    if (key.size() <= kMaxEchoBytes) return quoted(key);
+    size_t cut = kMaxEchoBytes;
+    while (cut > 0 && (static_cast<unsigned char>(key[cut]) & 0xC0) == 0x80) --cut;
+    return "'" + std::string(key.substr(0, cut)) + "...'";
+}
 
 bool has_range(const ParamSpec& p) { return !(p.min == 0 && p.max == 0); }
 
 bool integral(double d) { return std::isfinite(d) && std::trunc(d) == d; }
 
 bool fits_int64(double d) { return d >= -kInt64Limit && d < kInt64Limit; }
+
+bool in_range(const ParamSpec& p, double x) { return !has_range(p) || (x >= p.min && x <= p.max); }
+
+bool is_choice(const ParamSpec& p, std::string_view s) {
+    for (const char* choice : p.choices) {
+        if (s == choice) return true;
+    }
+    return false;
+}
 
 // A bound for a message: "10", "-1.5".
 std::string format_number(double d) {
@@ -49,32 +93,34 @@ std::string format_number(double d) {
     return buf;
 }
 
-bool valid_utf8(std::string_view s) {
-    size_t i = 0;
-    while (i < s.size()) {
-        if (static_cast<unsigned char>(s[i]) < 0x80) {
-            ++i;
-            continue;
-        }
-        size_t bad = 0;
-        const size_t len = json_detail::utf8_sequence(s, i, &bad);
-        if (len == 0) return false;
-        i += len;
+// The messages shared by argument and default validation; built only on
+// the failure path.
+std::string type_message(const ParamSpec& p) {
+    return quoted(p.name) + " must be " + to_string(p.type);
+}
+std::string range_message(const ParamSpec& p) {
+    return quoted(p.name) + " must be between " + format_number(p.min) + " and " +
+           format_number(p.max);
+}
+std::string utf8_message(const ParamSpec& p) { return quoted(p.name) + " must be valid UTF-8"; }
+std::string length_message(const ParamSpec& p) {
+    return quoted(p.name) + " must be at most " + std::to_string(p.max_len) + " bytes";
+}
+std::string choices_message(const ParamSpec& p) {
+    std::string message = quoted(p.name) + " must be one of: ";
+    for (size_t i = 0; i < p.choices.size(); ++i) {
+        if (i > 0) message += ", ";
+        message += p.choices[i];
     }
-    return true;
+    return message;
 }
 
-Result<Value> type_error(const ParamSpec& p) {
-    return Result<Value>::err(ErrorCode::InvalidArgument,
-                              quoted(p.name) + " must be " + to_string(p.type));
+Result<Value> invalid(std::string message) {
+    return Result<Value>::err(ErrorCode::InvalidArgument, std::move(message));
 }
 
-Result<Value> range_check(const ParamSpec& p, double x, Value v) {
-    if (has_range(p) && (x < p.min || x > p.max)) {
-        return Result<Value>::err(ErrorCode::InvalidArgument, quoted(p.name) + " must be between " +
-                                                                  format_number(p.min) + " and " +
-                                                                  format_number(p.max));
-    }
+Result<Value> in_range_or_fail(const ParamSpec& p, double x, Value v) {
+    if (!in_range(p, x)) return invalid(range_message(p));
     return Result<Value>::ok(std::move(v));
 }
 
@@ -82,7 +128,7 @@ Result<Value> range_check(const ParamSpec& p, double x, Value v) {
 Result<Value> check_value(const ParamSpec& p, const Value& v) {
     switch (p.type) {
         case ParamType::Bool:
-            if (v.type() != Value::Type::Bool) return type_error(p);
+            if (v.type() != Value::Type::Bool) return invalid(type_message(p));
             return Result<Value>::ok(v);
         case ParamType::Int: {
             int64_t x = 0;
@@ -92,84 +138,136 @@ Result<Value> check_value(const ParamSpec& p, const Value& v) {
                        fits_int64(v.as_double())) {
                 x = static_cast<int64_t>(v.as_double());
             } else {
-                return type_error(p);
+                return invalid(type_message(p));
             }
-            return range_check(p, static_cast<double>(x), Value(x));
+            return in_range_or_fail(p, static_cast<double>(x), Value(x));
         }
         case ParamType::Number:
             if (v.type() == Value::Type::Int) {
-                return range_check(p, static_cast<double>(v.as_int()), v);
+                return in_range_or_fail(p, static_cast<double>(v.as_int()), v);
             }
             if (v.type() == Value::Type::Double && std::isfinite(v.as_double())) {
-                return range_check(p, v.as_double(), v);
+                return in_range_or_fail(p, v.as_double(), v);
             }
-            return type_error(p);
+            return invalid(type_message(p));
         case ParamType::String: {
-            if (v.type() != Value::Type::String) return type_error(p);
+            if (v.type() != Value::Type::String) return invalid(type_message(p));
             const std::string& s = v.as_string();
-            if (!valid_utf8(s)) {
-                return Result<Value>::err(ErrorCode::InvalidArgument,
-                                          quoted(p.name) + " must be valid UTF-8");
-            }
-            if (s.size() > p.max_len) {
-                return Result<Value>::err(
-                    ErrorCode::InvalidArgument,
-                    quoted(p.name) + " must be at most " + std::to_string(p.max_len) + " bytes");
-            }
+            if (!valid_utf8(s)) return invalid(utf8_message(p));
+            if (s.size() > p.max_len) return invalid(length_message(p));
             return Result<Value>::ok(v);
         }
+        case ParamType::Enum:
+            if (v.type() == Value::Type::String && is_choice(p, v.as_string())) {
+                return Result<Value>::ok(v);
+            }
+            return invalid(choices_message(p));
+    }
+    return invalid(type_message(p));
+}
+
+Value to_value(const ParamDefault& def) {
+    switch (def.kind()) {
+        case ParamDefault::Kind::None:
+            return Value();
+        case ParamDefault::Kind::Bool:
+            return Value(def.as_bool());
+        case ParamDefault::Kind::Int:
+            return Value(def.as_int());
+        case ParamDefault::Kind::Number:
+            return Value(def.as_double());
+        case ParamDefault::Kind::String:
+            return def.as_string() ? Value(def.as_string()) : Value();
+    }
+    return Value();
+}
+
+Result<void> fail(std::string message) {
+    return Result<void>::err(ErrorCode::InvalidArgument, std::move(message));
+}
+
+// The default of an optional arg, checked without building a Value.
+Result<void> check_default(const ParamSpec& p) {
+    using Kind = ParamDefault::Kind;
+    const ParamDefault& def = p.def;
+    switch (p.type) {
+        case ParamType::Bool:
+            if (def.kind() != Kind::Bool) return fail("default must be bool");
+            return Result<void>::ok();
+        case ParamType::Int:
+            if (def.kind() != Kind::Int) return fail("default must be int");
+            if (!in_range(p, static_cast<double>(def.as_int()))) {
+                return fail("bad default: " + range_message(p));
+            }
+            return Result<void>::ok();
+        case ParamType::Number: {
+            double x = 0;
+            if (def.kind() == Kind::Int) {
+                x = static_cast<double>(def.as_int());
+            } else if (def.kind() == Kind::Number && std::isfinite(def.as_double())) {
+                x = def.as_double();
+            } else {
+                return fail("default must be number");
+            }
+            if (!in_range(p, x)) return fail("bad default: " + range_message(p));
+            return Result<void>::ok();
+        }
+        case ParamType::String:
         case ParamType::Enum: {
-            if (v.type() == Value::Type::String) {
-                for (const char* choice : p.choices) {
-                    if (v.as_string() == choice) return Result<Value>::ok(v);
-                }
+            if (def.kind() != Kind::String) return fail("default must be string");
+            if (def.as_string() == nullptr) return fail("default is null");
+            const std::string_view s = def.as_string();
+            if (p.type == ParamType::Enum) {
+                if (!is_choice(p, s)) return fail("bad default: " + choices_message(p));
+                return Result<void>::ok();
             }
-            std::string message = quoted(p.name) + " must be one of: ";
-            for (size_t i = 0; i < p.choices.size(); ++i) {
-                if (i > 0) message += ", ";
-                message += p.choices[i];
-            }
-            return Result<Value>::err(ErrorCode::InvalidArgument, std::move(message));
+            if (!valid_utf8(s)) return fail("bad default: " + utf8_message(p));
+            if (s.size() > p.max_len) return fail("bad default: " + length_message(p));
+            return Result<void>::ok();
         }
     }
-    return type_error(p);
+    return fail("default must be " + std::string(to_string(p.type)));
 }
 
-Result<void> fail(const std::string& message) {
-    return Result<void>::err(ErrorCode::InvalidArgument, message);
-}
-
-// `where` names the entry for the message: "prop 'x'", "cmd 'c' arg 'a'".
-Result<void> check_param(const ParamSpec& p, const std::string& where, bool is_arg) {
-    if (!valid_name(p.name)) {
-        return fail(where + ": name must match [a-z][a-z0-9_]{0,31}");
-    }
-    if (p.desc == nullptr) return fail(where + ": desc is null");
-    if (p.unit == nullptr) return fail(where + ": unit is null");
+// The rules for one prop or arg; the message leaves out which entry, so
+// the caller builds that prefix only when something is wrong.
+Result<void> check_param(const ParamSpec& p, bool is_arg) {
+    if (const char* problem = name_problem(p.name)) return fail(problem);
+    if (p.desc == nullptr) return fail("desc is null");
+    if (p.unit == nullptr) return fail("unit is null");
     if (has_range(p)) {
         if (p.type != ParamType::Int && p.type != ParamType::Number) {
-            return fail(where + ": a range is only for int and number");
+            return fail("a range is only for int and number");
         }
-        if (!(p.min <= p.max)) return fail(where + ": min > max");
+        if (!(p.min <= p.max)) return fail("min > max");
         if (p.type == ParamType::Int &&
             !(integral(p.min) && integral(p.max) && fits_int64(p.min) && fits_int64(p.max))) {
-            return fail(where + ": an int range needs integral bounds");
+            return fail("an int range needs integral bounds");
         }
     }
     if (p.type == ParamType::Enum) {
-        if (p.choices.empty()) return fail(where + ": enum without choices");
-        for (const char* choice : p.choices) {
-            if (choice == nullptr) return fail(where + ": null choice");
+        if (p.choices.empty()) return fail("enum without choices");
+        for (size_t i = 0; i < p.choices.size(); ++i) {
+            const char* choice = p.choices[i];
+            if (choice == nullptr) return fail("null choice");
+            if (choice[0] == '\0') return fail("empty choice");
+            for (size_t j = 0; j < i; ++j) {
+                if (std::strcmp(p.choices[j], choice) == 0) {
+                    return fail("duplicate choice " + quoted(choice));
+                }
+            }
         }
     } else if (!p.choices.empty()) {
-        return fail(where + ": choices are only for enum");
+        return fail("choices are only for enum");
     }
-    if (p.optional && !is_arg) return fail(where + ": props are never optional");
-    if (p.optional && !p.def.is_null()) {
-        auto def = check_value(p, p.def);
-        if (!def) return fail(where + ": bad default: " + def.error().message);
+    if (!is_arg) {
+        if (p.optional) return fail("props are never optional");
+        if (!p.def.is_none()) return fail("props take no default");
+        return Result<void>::ok();
     }
-    return Result<void>::ok();
+    if (p.def.is_none()) return Result<void>::ok();
+    if (!p.optional) return fail("default without optional");
+    return check_default(p);
 }
 
 // The first name in `params` that repeats, or nullptr.
@@ -203,7 +301,7 @@ Value render_param(const ParamSpec& p) {
     if (p.type == ParamType::String) out["max_len"] = static_cast<int64_t>(p.max_len);
     if (p.optional) {
         out["optional"] = true;
-        if (!p.def.is_null()) out["default"] = p.def;
+        if (!p.def.is_none()) out["default"] = to_value(p.def);
     }
     return Value(std::move(out));
 }
@@ -236,24 +334,28 @@ Result<void> check_schema(const DeviceSchema& schema) {
                     std::to_string(kMaxSchemaCmds) + ")");
     }
     for (const ParamSpec& p : schema.props) {
-        auto r = check_param(p, "prop " + quoted(p.name), false);
-        if (!r) return r;
+        if (auto r = check_param(p, false); !r) {
+            return fail("prop " + quoted(p.name) + ": " + r.error().message);
+        }
     }
     if (const char* name = duplicate(schema.props)) return fail("duplicate prop " + quoted(name));
     for (const CmdSpec& c : schema.cmds) {
-        const std::string where = "cmd " + quoted(c.name);
-        if (!valid_name(c.name)) return fail(where + ": name must match [a-z][a-z0-9_]{0,31}");
-        if (c.desc == nullptr) return fail(where + ": desc is null");
+        if (const char* problem = name_problem(c.name)) {
+            return fail("cmd " + quoted(c.name) + ": " + problem);
+        }
+        if (c.desc == nullptr) return fail("cmd " + quoted(c.name) + ": desc is null");
         if (c.args.size() > kMaxCmdArgs) {
-            return fail(where + ": " + std::to_string(c.args.size()) + " args (at most " +
-                        std::to_string(kMaxCmdArgs) + ")");
+            return fail("cmd " + quoted(c.name) + ": " + std::to_string(c.args.size()) +
+                        " args (at most " + std::to_string(kMaxCmdArgs) + ")");
         }
         for (const ParamSpec& a : c.args) {
-            auto r = check_param(a, where + " arg " + quoted(a.name), true);
-            if (!r) return r;
+            if (auto r = check_param(a, true); !r) {
+                return fail("cmd " + quoted(c.name) + " arg " + quoted(a.name) + ": " +
+                            r.error().message);
+            }
         }
         if (const char* name = duplicate(c.args)) {
-            return fail(where + ": duplicate arg " + quoted(name));
+            return fail("cmd " + quoted(c.name) + ": duplicate arg " + quoted(name));
         }
     }
     for (size_t i = 0; i < schema.cmds.size(); ++i) {
@@ -292,14 +394,14 @@ Result<Map> validate_args(const CmdSpec& cmd, const Value& args) {
     } else if (!args.is_null()) {
         return Result<Map>::err(ErrorCode::InvalidArgument, "args must be an object");
     }
-    for (const auto& [key, value] : *given) {
+    for (const auto& entry : *given) {
         bool known = false;
         for (const ParamSpec& a : cmd.args) {
-            if (key == a.name) known = true;
+            if (entry.first == a.name) known = true;
         }
         if (!known) {
             return Result<Map>::err(ErrorCode::InvalidArgument,
-                                    "unknown argument " + quoted(key.c_str()));
+                                    "unknown argument " + echoed(entry.first));
         }
     }
     Map out;
@@ -310,7 +412,7 @@ Result<Map> validate_args(const CmdSpec& cmd, const Value& args) {
                 return Result<Map>::err(ErrorCode::InvalidArgument,
                                         "missing argument " + quoted(a.name));
             }
-            if (!a.def.is_null()) out[a.name] = a.def;
+            if (!a.def.is_none()) out[a.name] = to_value(a.def);
             continue;
         }
         auto checked = check_value(a, it->second);

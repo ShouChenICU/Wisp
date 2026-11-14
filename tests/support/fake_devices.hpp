@@ -562,7 +562,7 @@ private:
 // 0..100); cmds pulse (ms 10..2000, strength 0..100 optional default 80,
 // at most every 100 ms), set_mode (mode soft|hard), read_raw (reg 0..255,
 // a query that changes nothing).
-inline const wisp::hal::ParamSpec kFakeGenericProps[] = {
+inline constexpr wisp::hal::ParamSpec kFakeGenericProps[] = {
     {.name = "level",
      .type = wisp::hal::ParamType::Int,
      .desc = "Drive level",
@@ -570,23 +570,23 @@ inline const wisp::hal::ParamSpec kFakeGenericProps[] = {
      .max = 100,
      .unit = "%"},
 };
-inline const wisp::hal::ParamSpec kFakePulseArgs[] = {
+inline constexpr wisp::hal::ParamSpec kFakePulseArgs[] = {
     {.name = "ms", .type = wisp::hal::ParamType::Int, .min = 10, .max = 2000, .unit = "ms"},
     {.name = "strength",
      .type = wisp::hal::ParamType::Int,
      .min = 0,
      .max = 100,
      .optional = true,
-     .def = wisp::Value(80)},
+     .def = 80},
 };
 inline constexpr const char* kFakeModes[] = {"soft", "hard"};
-inline const wisp::hal::ParamSpec kFakeSetModeArgs[] = {
+inline constexpr wisp::hal::ParamSpec kFakeSetModeArgs[] = {
     {.name = "mode", .type = wisp::hal::ParamType::Enum, .choices = kFakeModes},
 };
-inline const wisp::hal::ParamSpec kFakeReadRawArgs[] = {
+inline constexpr wisp::hal::ParamSpec kFakeReadRawArgs[] = {
     {.name = "reg", .type = wisp::hal::ParamType::Int, .min = 0, .max = 255},
 };
-inline const wisp::hal::CmdSpec kFakeGenericCmds[] = {
+inline constexpr wisp::hal::CmdSpec kFakeGenericCmds[] = {
     {.name = "pulse", .desc = "Vibrate once", .args = kFakePulseArgs, .min_interval_ms = 100},
     {.name = "set_mode", .desc = "Pick the drive mode", .args = kFakeSetModeArgs},
     {.name = "read_raw",
@@ -594,8 +594,8 @@ inline const wisp::hal::CmdSpec kFakeGenericCmds[] = {
      .args = kFakeReadRawArgs,
      .changes_state = false},
 };
-inline const wisp::hal::DeviceSchema kFakeGenericSchema{.props = kFakeGenericProps,
-                                                        .cmds = kFakeGenericCmds};
+inline constexpr wisp::hal::DeviceSchema kFakeGenericSchema{.props = kFakeGenericProps,
+                                                            .cmds = kFakeGenericCmds};
 
 // A device no typed interface covers (interface None). The first
 // constructor makes one without a schema (only info() and the default
