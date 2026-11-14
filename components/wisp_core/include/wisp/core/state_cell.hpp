@@ -16,6 +16,11 @@
 // overlap and come in revision order; the last change is always followed
 // by one call that sees it, however late its dispatcher runs.
 //
+// Equality. An equal set() is a no-op, decided by T's operator==. With a
+// defaulted ==, a NaN field never equals itself, so every set() of such a
+// value counts as a change; and -0.0 equals 0.0, so a move between them is
+// not one.
+//
 // Locks. Each cell has one lock, held only for memory work: copying the
 // value, the intrusive list of subscriptions, read()'s body. While it is
 // held a cell calls out only to (a) its mirror, which may only call
@@ -24,7 +29,13 @@
 // order is therefore cell -> bus publish_mutex_ and cell -> ready list,
 // and no path takes them the other way: a dispatcher runs a slot, and
 // calls finish(), with its ready-list lock released. No callback runs
-// while any cell's lock is held. set() allocates nothing.
+// while any cell's lock is held. set() itself allocates nothing; it
+// copies T, so it allocates only when copying T does (a snapshot holding
+// std::string). Releasing a subscription off its dispatcher's thread
+// waits for its run in progress: a callback that releases a subscription
+// running on another dispatcher blocks its own dispatcher until that run
+// returns, so two callbacks (say one on wisp.bus, one on the UI) that each
+// release the other's subscription deadlock.
 //
 // Re-entry. From a callback a subscriber may get()/read() any cell, set()
 // any cell (its own included: the subscription runs again, so a callback
@@ -43,6 +54,7 @@
 // Mem::Large.
 
 #include <atomic>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <type_traits>
@@ -201,7 +213,9 @@ private:
 
 template <class T>
 class StateCell : private cell_detail::CellCore {
-    static_assert(std::is_copy_constructible_v<T>);
+    static_assert(std::is_copy_constructible_v<T>, "a run copies the value out of the lock");
+    static_assert(std::is_copy_assignable_v<T>, "set() assigns the new value");
+    static_assert(std::equality_comparable<T>, "an equal set() is a no-op: T needs operator==");
     static_assert(sizeof(T) <= 256, "a callback copies T onto the dispatcher's stack");
 
 public:
@@ -293,6 +307,9 @@ private:
         Callback callback;
     };
 
+    // The revision moves and the subscriptions are scheduled before the
+    // mirror runs. Both happen under the cell's lock, so nothing can see
+    // the difference: do not rely on either preceding the other.
     void store_locked(const T& next, Mirror mirror) {
         if (mirror != nullptr) {
             T before(value_);
