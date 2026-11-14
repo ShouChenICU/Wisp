@@ -2,6 +2,27 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## Unreleased
+
+### Features
+
+- Add a Stop button right of the wisp on the home screen while a turn runs, with a 48 px touch target on every screen shape.
+- The home screen says why a turn did not finish (stopped, a limit reached, no model, a refused key, no network, a lost connection, a server error, a conversation too long) in one short line, with the admin address where the fix is there. The full explanation stays in the conversation.
+- `docs.read` returns long topics in pages the agent reads on with `next_offset`.
+
+### Changes
+
+- Holding to talk stops the speech but no longer stops a running turn, such as a scene build started from the web page. The new question replaces the turn only once it has been heard; cancelling the hold or not being heard leaves the turn running.
+- The talk overlay now appears over every screen but Home (scenes, settings and other pages, diagnostics), shows why a turn ended or a voice error, and grows to three lines before cutting the text.
+- The agent sees its current turn's tool results whole (up to 96 KB) instead of cut to 4 KB, and no longer resends large tool-call arguments from earlier turns.
+
+### Fixes
+
+- Recover from an over-long context: summarize harder, then cut the current turn's results, and retry once when the model refuses the request as too long; the token estimate calibrates itself from the model's reported usage.
+- Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key.
+
+Device checks are pending (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run"); these changes are verified in the simulator and unit tests only.
+
 ## 0.5.2 — 2026-11-14
 
 ### Fixes
