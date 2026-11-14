@@ -323,7 +323,11 @@ TEST(Shell, SubPagesComeAndGo) {
 // does not reach it. The shell lives in a buffer the test owns, so the
 // check is that its bytes are untouched (scene.state counts into the
 // shell before anything else) rather than a crash the allocator may or
-// may not show.
+// may not show. Not covered: the conversation listeners ~Shell and ~Home
+// also remove. ConversationController exposes no listener count, and a
+// stale callback would only read freed memory (Home's) or a pointer the
+// destructor already cleared (Shell's talk overlay), so a kept listener
+// leaves nothing this test could see.
 TEST(Shell, DestroyedWithoutStopHearsNoMoreEvents) {
     auto display = std::make_shared<wisp::test::FakeDisplay>("display.main", 480, 480, 1, "rect");
     const wisp::hal::ScreenShape shape =

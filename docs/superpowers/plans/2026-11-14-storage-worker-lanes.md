@@ -60,7 +60,7 @@ Each roadmap decision was checked against the tree at `22c4629`. Where it does n
 3. **Manifest parsing leaves `wisp.fs` only on the read paths a waiting caller uses** (`manifest()`, `manifests()`, `info()`, `list()`). `load()`, `install()`'s swap, `export_zip()`, `removal()`/`remove()`, `recover()`, SceneFiles' `declared` and the tool-index refresh keep parsing inside their job: their file work depends on the parsed manifest, or their caller cannot wait (the scene task, the bus). The `wisp.fs` stack is therefore not shrunk in this phase.
 4. **PNG decoding does not run "on the caller's task"**: the caller of the scene list is the UI thread, which must neither wait for the worker nor decode (up to 256×256 per icon, a visible stall). The listing and the decoding move together to a one-shot task `wisp.shell.list` (PSRAM stack); each read is its own worker job.
 5. **"Normal jobs longer than one file operation are split"** is applied where splitting keeps atomicity cheaply; other multi-operation jobs stay one job, each with its reason (table in "Contracts").
-6. **`wisp.sd.io` stack in PSRAM, with a fallback.** If owner check 2 shows card writes abort from a PSRAM stack, `kSdOwnWorker` in `scene_wiring.cpp` is set to false: the router then sends card work to `wisp.fs` (today's behaviour) and nothing else changes.
+6. **`wisp.sd.io` stack in PSRAM, with a fallback.** If owner check 2 shows card writes abort from a PSRAM stack, `kSdOwnWorker` in `scene_wiring.hpp` is set to false: the router then sends card work to `wisp.fs` (today's behaviour) and nothing else changes.
 
 ---
 
@@ -97,7 +97,7 @@ Started only when the board registers `storage.sd` (`StorageManager::has_sd()`);
 | install swap, export chunks, OTA chunks | already split (flash-thread spec 3.1) |
 | `StorageManager::status()` | one call; slow on LittleFS but a single operation |
 
-**Behaviour at the edges.** Lane full: `submit()` false / `run_sync()` Busy, as today; a full SD lane is not retried on `wisp.fs` (that would break per-scene order). No SD worker (no slot, spawn failure, `kSdOwnWorker` false) or SD worker stopped: `StorageRouter` sends `Medium::Sd` to `wisp.fs`. Stop: `SceneWiring::stop()` drains the router, stops `wisp.sd.io`, then `wisp.fs`. SD card removed: a running card job fails with the filesystem's error; `refresh()` on `wisp.sd.io` then marks the card offline under `sd_io_mu_` and `deinit`s it there; later card jobs fail `StorageUnavailable` ("unavailable" to scripts) without card I/O. A card job whose scene record was removed meanwhile fails Busy (SceneFiles never loads a record on `wisp.sd.io`).
+**Behaviour at the edges.** Lane full: `submit()` false / `run_sync()` Busy, as today; a full SD lane is not retried on `wisp.fs` (that would break per-scene order). No SD worker (no slot, spawn failure, `kSdOwnWorker` false) or SD worker joined: `StorageRouter` sends `Medium::Sd` to `wisp.fs`; while `stop_sd()` lets it finish its queue, new card work is refused (Busy) so it cannot overtake the jobs still queued there. Stop: `SceneWiring::stop()` drains the router, stops `wisp.sd.io`, then `wisp.fs`. SD card removed: a running card job fails with the filesystem's error; `refresh()` on `wisp.sd.io` then marks the card offline under `sd_io_mu_` and `deinit`s it there; later card jobs fail `StorageUnavailable` ("unavailable" to scripts) without card I/O. A card job whose scene record was removed meanwhile fails Busy (SceneFiles never loads a record on `wisp.sd.io`).
 
 **Memory.** New per-job bookkeeping (enqueue time, 8 bytes) lives in the queue items; lane statistics are atomics inside `StorageWorker` (which sits in `Mem::Large` with `SceneWiring`). Listing results, manifest bytes and package scans are `os::LargeBuffer` / `os::LargeVector`. New internal RAM: two TCBs (`wisp.sd.io` permanent, `wisp.shell.list` while it runs), the SD worker's queues and semaphore, and 16 more queue slots on `wisp.fs` (owner check 1).
 
@@ -300,7 +300,7 @@ Result<T> call_on(StorageRouter* router, Medium m, Fn&& fn, IoLane lane = IoLane
 **Interfaces:**
 - Consumes: Tasks 2-5.
 - Produces:
-  - `SceneWiring` owns `core::StorageWorker sd_worker_{core::StorageWorker::sd_io_config()};` and `core::StorageRouter router_;` (`router_` built with `&sd_worker_` only when it started). `core::StorageRouter& router();` `constexpr bool kSdOwnWorker = true;` in `scene_wiring.cpp` (the fallback switch, Deviation 6).
+  - `SceneWiring` owns `core::StorageWorker sd_worker_{core::StorageWorker::sd_io_config()};` and `core::StorageRouter router_;` (`router_` built with `&sd_worker_` only when it started). `core::StorageRouter& router();` `constexpr bool kSdOwnWorker = true;` in `scene_wiring.hpp` (the fallback switch, Deviation 6).
   - `start_storage()`: start `wisp.fs`; then, when `kSdOwnWorker && deps_.storage.has_sd()`, start `wisp.sd.io` (failure: `WLOG_W`, card work stays on `wisp.fs`); then the boot `recover()` + `scan()` job as now.
   - `files_config.submit_io = [this](Medium m, IoLane l, auto job) { return router_.submit(m, std::move(job), l); };`
   - SD events: `sd_changed_begin()` on `wisp.fs` (submit), whose job submits one `recount(id)` per id to `Medium::Sd` and then `sd_changed_end()` to `wisp.fs`.

@@ -846,7 +846,8 @@ TEST_F(SceneListTest, StopJoinsTheListingTask) {
 // shown, and stop() returns. Nothing is posted either: the page is gone
 // with stop(), so the shell started again shows whether the stopped
 // listing's cards reached its last-listing cache (a warm open would show
-// them at once).
+// them at once). A post that was queued but then discarded by the
+// liveness check cannot be seen this way.
 TEST_F(SceneListTest, StopEndsTheListingAfterTheJobInProgress) {
     constexpr int kScenes = 5;
     constexpr int kGated = 2;

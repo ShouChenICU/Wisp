@@ -63,21 +63,21 @@
 
 ### 2.1 唯一的 flash 线程
 
-- 线程 `wisp.fs` 称为 **flash 线程**。在它启动之后、停止之前（即"运行期"），以下操作只能在它上面执行：
+- 线程 `wisp.fs` 称为 **flash 线程**。在它启动之后、停止之前（即"运行期"），以下碰内部 flash 的操作只能在它上面执行：
   - NVS 的任何调用（`nvs_*`）；
-  - `StorageManager` 的所有读写、列目录、删除、改名、`refresh()`；
   - 分区读写与映射（`esp_partition_*`）、OTA（`esp_ota_*`）；
-  - 其他直接读写存储介质上文件的调用（`fopen`/`opendir` 等访问 `/int`、`/sd` 的路径）。
+  - 内部存储上的文件操作：`StorageManager` 对 `/int` 路径的读写、列目录、删除、改名，以及其他访问 `/int` 路径的调用（`fopen`/`opendir` 等）。
+- `/sd` 路径上的文件操作和 `StorageManager::refresh()` 按下面的 SD I/O 规则执行：在 `wisp.sd.io` 或 `wisp.fs` 上，其他线程都不行。
 - 运行期以外有两个例外，都在单线程阶段：
   - **开机阶段**：`wisp.fs` 启动之前，`app_main` 映射字体分区、初始化 NVS、挂载文件系统；
   - **关机阶段**：`wisp.fs` 停止之后（只在测试和模拟器退出时出现）。
 - SD 卡的挂载与探测（`wisp.sd`）不访问内部 flash，也不读写文件，保持现状。
-- **SD I/O 线程** `wisp.sd.io`（`core::StorageWorker`，`WorkerRole::SdIo`，由 `SceneWiring` 持有，板子注册了 `storage.sd` 才启动）：只读写 SD 卡的文件工作在它上面执行，由 `core::StorageRouter` 按 `Medium::Sd` 分派（某个场景在卡上的 `wisp.files` 调用、换卡后的重新统计、`StorageManager::refresh()`）。规则：
+- **SD I/O 线程** `wisp.sd.io`（`core::StorageWorker`，`WorkerRole::SdIo`，由 `SceneWiring` 持有，板子注册了 `storage.sd` 才启动）：只读写 SD 卡的文件工作（`/sd` 路径、`refresh()`）在它上面执行，由 `core::StorageRouter` 按 `Medium::Sd` 分派（某个场景在卡上的 `wisp.files` 调用、换卡后的重新统计、`StorageManager::refresh()`）。规则：
   - `wisp.sd.io` 不碰内部 flash，也从不等待 `wisp.fs`（`run_sync`、`drain`、`stop`、`call_on_worker` 对 flash worker 在这个线程上一律拒绝）；
   - `wisp.fs` 也可以读写 SD 卡；同时碰两种介质的工作（场景的位置记录在内部、文件在卡上，`scan()`、恢复出厂设置、`status()` 等）留在 `wisp.fs`；
   - `wisp.fs` 只有在不持有任何卡锁时才能等待 `wisp.sd.io`；
   - 锁的顺序（外层在前，持有后面的锁时不再取前面的）：`SceneFiles::io_int_mu_` → `SceneFiles::io_sd_mu_` → `SceneRepository::mutex_` → `StorageManager::int_io_mu_` → `StorageManager::sd_io_mu_` → `StorageManager::state_mu_`。`wisp.sd.io` 上只会取 `io_sd_mu_`、`sd_io_mu_`（和 `state_mu_`）。
-  - 没有 SD I/O 线程（没有卡槽、启动失败、`kSdOwnWorker` 为 false）或它已停止时，卡上的工作回到 `wisp.fs` 执行。
+  - 没有 SD I/O 线程（没有卡槽、启动失败、`kSdOwnWorker` 为 false）、它还没启动或已经 join 之后，卡上的工作回到 `wisp.fs` 执行。从 `stop_sd()` 开始到 join 完成之间（它还在跑停止前已接受的任务），新的卡上工作一律拒绝（`submit()` 返回 false，`run_sync()` 返回 `Busy`），不转给 `wisp.fs`，否则会越过还在队列里的卡上任务（同一场景的两次写、一次下载的各块会乱序）。
 
 ### 2.2 任务声明
 
@@ -135,8 +135,8 @@ Result<void> run_sync(std::function<void()> job, uint32_t timeout_ms,
   - **Bulk**（`wisp.fs` 4 项）：固件块、下载块（每块至多 `kIoChunk`）。
   - `wisp.sd.io` 的容量是 Interactive 1、Normal 16、Bulk 4。
 - 用一个计数信号量唤醒线程。挑选规则：`passed[L]` 记录车道 L 有任务等待期间、自它上次执行以来跑过的更高车道任务数。上一次不是强制轮次，且某个非空车道 `passed >= kLaneTurnAfter`（8）时，取其中最低的那条（强制轮次）；否则取最高的非空车道。执行车道 L 的一个任务后 `passed[L] = 0`，比它低的每条非空车道 `passed` 加一。
-- 等待上限（除了入队时正在执行的那一个任务）：队首的 Interactive 任务至多再等一个低车道的强制轮次（所以 Bulk 至多让它多等一块）；Bulk 至多 9 个任务；Normal 至多 10 个任务。所以连续的 Interactive 负载也饿不死 Normal 和 Bulk。
-- 顺序约定：每个 worker 的每条车道内先进先出；跨车道、跨 worker 没有顺序。需要两个任务有先后的生产者，等第一个完成（`run_sync`、`call_on_worker`）再提交第二个。改到 Interactive 的调用方都满足这一点：对话的每次读写 `wisp.agent` 都同步等待，所以追加（Interactive）与归档/清空/加载（Normal）仍按调用顺序；工具调用一个一个同步执行；设置保存写的是执行那一刻的全部脏键，与谁先谁后无关；`ReminderScheduler::stop()` 靠在同一条 Interactive 车道上排在后面等待已排队的检查和按钮操作。
+- 等待上限（除了入队时正在执行的那一个任务）：队首的 Interactive 任务至多再等一个低车道的强制轮次（所以 Bulk 至多让它多等一块）；Bulk 至多 9 个任务；Normal 至多 10 个任务。所以连续的 Interactive 负载也饿不死 Normal 和 Bulk。`wisp.fs` 上正在执行的任务和强制轮次的任务各自还可能在卡锁上等一次卡操作（`SceneFiles` 对每个没有以 Internal 载入的场景都取它的 SD I/O 锁，新场景的第一次调用也算），所以 Interactive 任务最坏要等两个任务加两次卡操作。
+- 顺序约定：每个 worker 的每条车道内先进先出；跨车道、跨 worker 没有顺序。需要两个任务有先后的生产者，等第一个完成（`run_sync`、`call_on_worker`）再提交第二个。改到 Interactive 的调用方都满足这一点：对话的每次读写 `wisp.agent` 都同步等待，所以追加（Interactive）与归档/清空/加载（Normal）仍按调用顺序；工具调用一个一个同步执行；设置保存写的是执行那一刻的全部脏键，与谁先谁后无关；`ReminderScheduler::stop()` 靠在同一条 Interactive 车道上排在后面等待已排队的检查和按钮操作；车道满、排不进去时改为等 worker 排空（`ReminderDeps::drain_io`，同样有上限），不改投别的车道（跨车道没有顺序）。
 - 车道满时：设置保存（以及 `flush()` 的任务）改投 Normal，因为它与顺序无关，不能让修改一直留在内存里；同步等待的调用方照旧（`call_on_worker` 与 `App::Impl::run_io()` 重试至多 2 s 后返回 `Busy`，工具返回 `busy`，管理后台返回忙）；提醒检查由重试定时器再提交，按钮操作记警告。
 - Interactive 任务必须短：一次 NVS 批量写、一行对话追加、一次笔记或待办文件重写（笔记至多 64 条 × 200 字、待办至多 200 条 × 100 字，最坏几十 KB，通常几 KB）。长的工作（场景安装、导出、文件工具、对话归档与损坏尾部修复）留在 Normal。
 - `drain()`、`stop()` 等所有车道排空，`App::flush_storage()` 因此也等 Interactive 任务（3.8）。
@@ -267,7 +267,7 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
 | `loopback.cpp` 读音量 | 走缓存，无需改动 |
 | `app.cpp` 每 2 s `refresh()` | 定时器回调经 `StorageRouter` 以 `Medium::Sd` 提交一个 Normal 任务（有 `wisp.sd.io` 时在它上面，否则在 `wisp.fs` 上）；上一个还没执行完就跳过这一次。拔卡时 `refresh()` 持卡的 I/O 锁把卡标记为离线并释放它，排在后面的卡任务以 `StorageUnavailable` 失败 |
 | `firmware_confirm.cpp` 标记固件有效 | `run_sync` 交给 flash 线程 |
-| `factory_reset.cpp` | 先 `StorageRouter::stop_sd()`（`wisp.sd.io` 做完已排队的任务后停止，之后的卡任务排在 `wisp.fs` 上），再把整个擦除过程（也会删卡上的文件）作为一个 Normal 任务交给 flash 线程（`run_sync`，超时 30 s），完成后在 `wisp.reset` 上重启 |
+| `factory_reset.cpp` | 先 `StorageRouter::stop_sd()`（`wisp.sd.io` 做完已排队的任务后停止，其间新的卡任务被拒绝；返回之后的卡任务排在 `wisp.fs` 上），再把整个擦除过程（也会删卡上的文件）作为一个 Normal 任务交给 flash 线程（`run_sync`，超时 30 s），完成后在 `wisp.reset` 上重启 |
 | `wisp.bus` 的订阅回调 | 规则同样适用；守卫会抓出违规的订阅者 |
 
 ### 3.8 关机、重启、深度待机
@@ -305,7 +305,7 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
   - `LaneStats {jobs, max_wait_us, max_job_us}` 与 `stats(lane)`：每条车道自启动以来的任务数、最长排队时间和最长执行时间；`run_sync` 就地执行的不计。
   - `try_submit(job&)`：被拒绝时任务留在调用方手里（不被移走），调用方可以改投另一个 worker。`run_queued(job&, timeout)`：`run_sync` 的等待部分，但从不就地执行。
   - `WorkerRole {Flash, SdIo}`；`StorageWorker::sd_io_config()` 给出 `wisp.sd.io` 的配置（Interactive 1、Normal 16、Bulk 4，栈 8192，优先级 3）。SD I/O 线程从不等 flash worker：flash worker 的 `run_sync`、`drain`、`stop` 以及 `call_on_worker` 在这个线程上一律拒绝。
-- **`StorageRouter`**（`App::storage_router()`）：按介质选 worker，`Medium::Sd` 在 `wisp.sd.io` 运行期间交给它，其余交给 `wisp.fs`。因 `wisp.sd.io` 已停止而被拒绝的卡任务改投 `wisp.fs` 一次；车道满则报告给调用方，不改投（会打乱那条车道的顺序）。在 `wisp.sd.io` 的任务里调用时，`Medium::Sd` 就地执行（包括 `stop_sd()` 排空期间）。`wisp.fs` 只有在不持任何卡锁时才能等 `wisp.sd.io`。
+- **`StorageRouter`**（`App::storage_router()`）：按介质选 worker，`Medium::Sd` 从 `wisp.sd.io` 启动到它被 join（`StorageWorker::joined()`）为止交给它，其余交给 `wisp.fs`。`stop_sd()` 排空期间新的卡任务被拒绝（`submit()` false、`run_sync()` `Busy`），不改投 `wisp.fs`，以免越过还在排队的卡任务；因 `wisp.sd.io` 已 join 而被拒绝的卡任务改投 `wisp.fs` 一次；车道满则报告给调用方，不改投（会打乱那条车道的顺序）。在 `wisp.sd.io` 的任务里调用时，`Medium::Sd` 就地执行（包括 `stop_sd()` 排空期间）。`wisp.fs` 只有在不持任何卡锁时才能等 `wisp.sd.io`。
 - **`SceneFiles`**：
   - 按场景分派（`submit()`）：场景还有经 `Internal` 分派、尚未结束的任务时（每个场景一个计数），它的调用继续留在 `wisp.fs`；位置记录已加载且为 `Sd` 后才转到 `wisp.sd.io`。所以同一场景的任务在两个 worker 之间仍保持顺序。
   - 换卡：`sd_changed_begin()`（`wisp.fs`）标记卡上的场景，`recount()` 在 `wisp.sd.io` 上逐个重新统计，`sd_changed_end()`（`wisp.fs`）记录没有场景的卡上文件。
@@ -348,7 +348,7 @@ virtual Result<void> write_batch(std::span<const SettingsChange> changes) = 0;
   - `FlashGuard`：SD I/O 线程与 flash 线程一样登记与接管，但从不算作 flash 线程；在它上面访问内部 flash、在两个线程之外访问卡都会 abort（death test）；设备上的报告钩子分得清是哪条规则。
   - `StorageManager`：`medium_of`、`has_sd`；卡上的操作不挡内部操作、同一介质的操作串行、`refresh()` 等正在进行的卡操作；跨介质改名被拒绝；SD I/O 线程上不合法的路径在每个入口（写、读、追加、删除、改名、`visit_dir`、`list_dir`、`tree_size`）都返回 `InvalidArgument`。
   - `StorageWorker`：Interactive 越过排队的 Normal 和 Bulk、紧跟在正在执行的 Bulk 之后；持续到来的高车道任务饿不死低车道（8 个之后的强制轮次）；`LaneStats` 记下最长等待与执行，就地执行的不计；`try_submit` 被拒绝时保留任务；`run_queued` 从不就地执行；从 SD I/O 线程对 flash worker 的 `run_sync`、`stop` 被拒绝。
-  - `StorageRouter`：按介质分派；没有或停止了 SD worker 时卡任务在 flash worker 上执行；`stop_sd()` 先执行已排队的卡任务；`drain` 等两个 worker。
+  - `StorageRouter`：按介质分派；没有或已 join 的 SD worker 时卡任务在 flash worker 上执行；`stop_sd()` 先执行已排队的卡任务，其间新的卡任务被拒绝；`drain` 等两个 worker。
   - `SceneFiles`：有未结束的内部任务时场景留在内部；位置记录加载为卡后转到卡；下载的块留在同一个 worker；场景文件被删除后执行的卡任务失败、完成的下载被丢弃；被放弃的下载使场景重新统计；`run_files` 在场景的 worker 上等待。
   - 应用：有卡槽才启动 `wisp.sd.io`；`refresh()` 在它上面执行；`flush_storage()` 排空它；恢复出厂在擦除前停止它；`kSdOwnWorker` 关掉时卡任务回到 `wisp.fs`；设置保存、对话追加、记忆与待办走 Interactive，车道满时设置改投 Normal。
   - 场景列表：列出与解码不在 `wisp.fs` 上、也不在 UI 线程上；`Shell::stop()` 在正在执行的任务之后结束列表，被停止的列表不投递任何结果；`mem` 的车道行格式（`Console.StorageReport*`）。
