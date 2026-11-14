@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
 #include <string>
 
 #include "support/utf8.hpp"
@@ -236,6 +237,7 @@ TEST(Json, AppendStringMatchesToJson) {
 TEST(Json, SizeMatchesToJson) {
     const std::string controls("a\x01\"\\\n\t\x7f", 7);
     const std::string bad_utf8("x\xC3\x28\xE2\x82y\xF0\x9F\x98\x80", 10);
+    const std::string embedded_nul("a\0b", 3);
     const wisp::Value values[] = {
         wisp::Value(),
         wisp::Value(true),
@@ -244,10 +246,16 @@ TEST(Json, SizeMatchesToJson) {
         wisp::Value(int64_t{-9223372036854775807 - 1}),
         wisp::Value(int64_t{1234567890123}),
         wisp::Value(1.5),
+        wisp::Value(80.0),
+        wisp::Value(-0.0),
+        wisp::Value(std::numeric_limits<double>::quiet_NaN()),
+        wisp::Value(std::numeric_limits<double>::infinity()),
+        wisp::Value(-std::numeric_limits<double>::infinity()),
         wisp::Value(-0.1),
         wisp::Value(1e300),
         wisp::Value(3.141592653589793),
         wisp::Value(controls),
+        wisp::Value(embedded_nul),
         wisp::Value(bad_utf8),
         wisp::Value("温度 °C"),
         wisp::Value(wisp::List{}),

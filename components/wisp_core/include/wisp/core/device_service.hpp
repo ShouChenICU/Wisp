@@ -98,7 +98,10 @@ public:
     //      driver then returns. If the command is not in the table yet and
     //      the table is full of running intervals, the call is refused too
     //      ("cannot be rate-tracked now", N = the soonest any of them ends):
-    //      a running interval is never evicted.
+    //      a running interval is never evicted. While 32 pairs keep being
+    //      re-stamped by their callers a 33rd may be refused repeatedly:
+    //      retry_after_ms says when the earliest slot frees, not that the
+    //      retry will succeed.
     // Then the driver's invoke(); its error passes through unchanged. A
     // result whose JSON exceeds kMaxResultBytes is DeviceFailure. A call
     // over hal::kDeviceCallBudgetMs logs one warning per (id, cmd); a

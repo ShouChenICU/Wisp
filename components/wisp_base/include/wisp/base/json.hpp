@@ -28,7 +28,8 @@ std::string to_json_raw(const Value& v);
 // The size of to_json(v) in bytes, or limit + 1 as soon as it is known
 // to exceed `limit`. Walks `v` without building the text, so a caller
 // can refuse an oversized value without an allocation proportional to it
-// (it allocates nothing beyond a fixed-size scratch for each double).
+// (no allocation proportional to the value; measuring each double builds
+// a small fixed-size temporary document).
 size_t json_size(const Value& v, size_t limit);
 
 // Parses `s` as JSON into a Value. On a parse error, returns
