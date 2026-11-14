@@ -358,8 +358,20 @@ const char* strings_en(StrId id) {
             return "{} missed reminders";
         case StrId::HomeNoWifi:
             return "No Wi-Fi yet. Swipe right for Settings → Wi-Fi";
-        case StrId::HomeNoLlm:
-            return "No model set up yet. Set one on the admin page's Models tab";
+        case StrId::HomeConnecting:
+            return "Connecting to Wi-Fi…";
+        case StrId::HomeNoModels:
+            return "No models set up yet";
+        case StrId::HomeMissing:
+            return "Needed: {}";
+        case StrId::HomeNeedLlm:
+            return "chat";
+        case StrId::HomeNeedAsr:
+            return "listening";
+        case StrId::HomeNeedTts:
+            return "speech";
+        case StrId::HomeHoldToTalk:
+            return "Hold the wisp to talk";
         case StrId::HomeNotHeard:
             return "Didn't catch that";
         case StrId::HomeTurnStopped:

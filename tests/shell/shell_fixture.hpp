@@ -259,7 +259,7 @@ protected:
     std::unique_ptr<voice::VoiceService> voice;
     std::unique_ptr<shell::ConversationController> conv;
     std::atomic<bool> mute{false};
-    std::atomic<shell::Readiness> ready{shell::Readiness::Ready};
+    std::atomic<shell::Readiness> ready{shell::Readiness{}};
 
     std::mutex mu;
     std::vector<agent::AgentEvent> agent_events;

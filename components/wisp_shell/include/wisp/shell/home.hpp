@@ -49,17 +49,21 @@
 // leaves the screen idle. Turns from the web page show the same way; the
 // controller only leaves them unspoken.
 //
-// The hint: readiness first (NoWifi: HomeNoWifi; NoLlm: HomeNoLlm and the
-// admin address, on a line of its own, without its scheme where the whole
-// address would not fit on one line), else the later of the controller's last voice error
-// (VoiceErr*, with the address for a missing profile) or "not heard"
-// (HomeNotHeard), first seen, and why the last turn did not end "done"
-// (TurnView::end_reason as a short HomeTurn* string, with the address for
-// "no_model" and "unauthorized"; the full note stays in the
+// The hint: the controller's readiness first, for as long as it lasts
+// (Net::Down: HomeNoWifi; Net::Connecting: HomeConnecting; online with
+// nothing set up: HomeNoModels, with some missing: HomeMissing listing
+// the HomeNeed* items; either with the admin address, on a line of its
+// own, without its scheme where the whole address would not fit on one
+// line). Else, newest first: a tap on the wisp (HomeHoldToTalk) until a
+// capture, a turn or another hint; the later of the controller's last
+// voice error (VoiceErr*, with the address for a missing profile) or
+// "not heard" (HomeNotHeard), first seen, and why the last turn did not
+// end "done" (TurnView::end_reason as a short HomeTurn* string, with the
+// address for "no_model" and "unauthorized"; the full note stays in the
 // conversation), from its ended_ms, until the next turn or capture; each
-// for kFadeAfterMs. While the
-// turn's text shows the wait does not run, so the full hint still gets its
-// time after the fade.
+// for kFadeAfterMs. While the turn's text shows the wait of the error and
+// turn hints does not run, so the full hint still gets its time after the
+// fade.
 //
 // The wisp's mood follows "agent.state" and "voice.state" (mood_for());
 // listening and speaking pass on their level, a running tool sets
@@ -74,7 +78,8 @@
 //     when it has: a drag is no tap and no hold on the wisp;
 //   - a press on the wisp goes through WispPress: HoldBegin / HoldEnd /
 //     HoldCancel -> the controller's hold_begin() / hold_end() /
-//     hold_cancel(); a tap -> tap(), which has no voice effect. Its
+//     hold_cancel(); a tap -> tap(), which has no voice effect (the
+//     hint says how to talk, see above). Its
 //     touch-down calls press_begin() (the mic primes), and the moment it
 //     stops being WispPress::pending() -- held, released, moved beyond the
 //     hold slop, taken by a page drag or PRESS_LOST, or dropped because
@@ -96,6 +101,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -241,6 +247,9 @@ public:
     // Shows `v` as if the controller had reported it, until it reports
     // again (tests). UI thread.
     void show_view(const TurnView& v);
+    // Shows `r` in place of the controller's readiness; nullopt: the
+    // controller's again (tests). UI thread.
+    void show_readiness(std::optional<Readiness> r);
 
     lv_obj_t* screen() const { return screen_; }
     // Everything the screen shows, in one container as large as the
@@ -288,6 +297,7 @@ private:
     void hide_row(size_t i);
     struct Row;
     void set_pulse(Row& r, bool on);
+    Readiness readiness() const;
     std::string hint_text(uint64_t now, bool in_turn);
     // `url` as the idle hint shows it: whole when it fits on one line of
     // the hint band, else without its scheme ("192.168.1.5:8900").
@@ -376,6 +386,9 @@ private:
     uint32_t hint_turn_end_turn_ = 0;
     uint64_t hint_turn_end_ms_ = 0;
     uint64_t hint_since_ = 0;
+    // The last tap on the wisp, until a capture, a turn or another hint.
+    std::optional<uint64_t> tap_at_;
+    std::optional<Readiness> shown_readiness_;  // show_readiness()
 
     // The press being tracked.
     bool tracking_ = false;

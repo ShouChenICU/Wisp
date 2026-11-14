@@ -355,8 +355,20 @@ const char* strings_zh(StrId id) {
             return "错过 {} 个提醒";
         case StrId::HomeNoWifi:
             return "还没连接 Wi-Fi，右划进入设置 → Wi-Fi";
-        case StrId::HomeNoLlm:
-            return "还没配置模型，请在管理后台的模型页设置";
+        case StrId::HomeConnecting:
+            return "正在连接 Wi-Fi…";
+        case StrId::HomeNoModels:
+            return "还没配置模型";
+        case StrId::HomeMissing:
+            return "还差：{}";
+        case StrId::HomeNeedLlm:
+            return "对话模型";
+        case StrId::HomeNeedAsr:
+            return "语音识别";
+        case StrId::HomeNeedTts:
+            return "语音合成";
+        case StrId::HomeHoldToTalk:
+            return "按住鬼火说话";
         case StrId::HomeNotHeard:
             return "没听清";
         case StrId::HomeTurnStopped:

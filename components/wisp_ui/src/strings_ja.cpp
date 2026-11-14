@@ -361,8 +361,20 @@ const char* strings_ja(StrId id) {
             return "{} 件のリマインダーを見逃しました";
         case StrId::HomeNoWifi:
             return "Wi-Fi 未接続です。右にスワイプして 設定 → Wi-Fi";
-        case StrId::HomeNoLlm:
-            return "モデルが未設定です。管理画面のモデルページで設定してください";
+        case StrId::HomeConnecting:
+            return "Wi-Fi に接続中…";
+        case StrId::HomeNoModels:
+            return "モデルが未設定です";
+        case StrId::HomeMissing:
+            return "未設定：{}";
+        case StrId::HomeNeedLlm:
+            return "対話";
+        case StrId::HomeNeedAsr:
+            return "音声認識";
+        case StrId::HomeNeedTts:
+            return "音声合成";
+        case StrId::HomeHoldToTalk:
+            return "鬼火を長押しして話しかけてください";
         case StrId::HomeNotHeard:
             return "聞き取れませんでした";
         case StrId::HomeTurnStopped:

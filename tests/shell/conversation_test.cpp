@@ -484,8 +484,8 @@ TEST_F(ConversationTest, HoldCancelDropsTheRecording) {
 
 TEST_F(ConversationTest, NotReadyMakesNoRequest) {
     start(/*with_llm=*/false);
-    ready = Readiness::NoLlm;
-    EXPECT_EQ(conv->readiness(), Readiness::NoLlm);
+    ready = Readiness{.llm = false};
+    EXPECT_EQ(conv->readiness(), Readiness{.llm = false});
     say_into_mic();
     conv->tap();
     conv->hold_begin();
@@ -495,7 +495,10 @@ TEST_F(ConversationTest, NotReadyMakesNoRequest) {
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::Unsupported);
     EXPECT_EQ(r.error().message, "no_llm");
-    ready = Readiness::NoWifi;
+    ready = Readiness{.net = Readiness::Net::Down};
+    EXPECT_EQ(conv->voice_text("你好").error().message, "no_wifi");
+    // A voice text has no recording to keep while the network comes.
+    ready = Readiness{.net = Readiness::Net::Connecting};
     EXPECT_EQ(conv->voice_text("你好").error().message, "no_wifi");
     wisp::os::sleep_ms(200);
     EXPECT_TRUE(server.requests().empty());
@@ -1066,10 +1069,72 @@ TEST_F(ConversationTest, RefusedHoldCaptureStillUnprimes) {
 
 TEST_F(ConversationTest, PressWhenNotReadyDoesNotPrime) {
     start();
-    ready = Readiness::NoWifi;
+    ready = Readiness{.net = Readiness::Net::Down};
     conv->press_begin();
     wisp::os::sleep_ms(100);
     EXPECT_EQ(mic->opens(), 0);
     conv->press_end();
     EXPECT_EQ(mic->opens(), 0);
+}
+
+// Wi-Fi reconnecting (after deep standby): the hold records at once and
+// the voice waits for the network before recognition.
+TEST_F(ConversationTest, HoldRecordsWhileConnecting) {
+    start();
+    ready = Readiness{.net = Readiness::Net::Connecting};
+    EXPECT_TRUE(conv->readiness().can_talk());
+    server.llm().push(llm_text("<say>好。</say>"));
+    server.push_tts(tts_pcm());
+    hold_and_say("你好");
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(requests(kAsrPath), 1u);
+    EXPECT_EQ(begins().at(0).text, "你好");
+}
+
+// Wi-Fi off or no network saved: nothing is recorded.
+TEST_F(ConversationTest, HoldIsRefusedWhenDown) {
+    start();
+    ready = Readiness{.net = Readiness::Net::Down};
+    say_into_mic();
+    conv->press_begin();
+    conv->hold_begin();
+    conv->press_end();
+    EXPECT_FALSE(conv->holding());
+    conv->hold_end();
+    wisp::os::sleep_ms(200);
+    EXPECT_EQ(mic->opens(), 0);
+    EXPECT_FALSE(saw_state("listening"));
+    EXPECT_TRUE(server.requests().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+// No speech recognition profile: the hold is refused before it records,
+// not after it, with an error.
+TEST_F(ConversationTest, HoldIsRefusedWithoutAsr) {
+    start();
+    ready = Readiness{.asr = false};
+    say_into_mic();
+    conv->press_begin();
+    conv->hold_begin();
+    conv->press_end();
+    EXPECT_FALSE(conv->holding());
+    conv->hold_end();
+    wisp::os::sleep_ms(200);
+    EXPECT_EQ(mic->opens(), 0);
+    EXPECT_FALSE(saw_state("listening"));
+    EXPECT_FALSE(conv->current().error.has_value());
+    EXPECT_TRUE(server.requests().empty());
+}
+
+// Speech missing alone does not stop a hold.
+TEST_F(ConversationTest, HoldWorksWithoutTts) {
+    start();
+    ready = Readiness{.tts = false};
+    server.llm().push(llm_text("<say>好。</say>"));
+    server.push_tts(tts_pcm());
+    hold_and_say("你好");
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(begins().at(0).text, "你好");
 }

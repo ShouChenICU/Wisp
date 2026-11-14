@@ -646,6 +646,73 @@ TEST_P(HomeShapes, TurnOutcomeHintsFit) {
     ui.stop();
 }
 
+// The readiness checklist, idle under the wisp, in every language and for
+// every combination of what is missing (with the admin address), and the
+// network states: it fits (expect_hint_fits()).
+TEST_P(HomeShapes, HintFitsTheSafeAreaOnAllShapes) {
+    wisp::ui::UiRuntime ui(display_, nullptr);
+    ASSERT_TRUE(ui.start());
+    wisp::core::EventBus bus;
+    ASSERT_TRUE(bus.start());
+    auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
+    Home home(
+        wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = [] {
+                                  return std::string(kLongUrl);
+                              }});
+    lv_obj_t* before = nullptr;
+    on_ui([&] {
+        before = lv_screen_active();
+        ASSERT_TRUE(home.start());
+        lv_screen_load(home.screen());
+    });
+    using wisp::shell::Readiness;
+    using wisp::ui::Lang;
+    using wisp::ui::StrId;
+    for (const Lang lang : {Lang::Zh, Lang::Ja, Lang::En}) {
+        const std::string sep = lang == Lang::En ? ", " : "、";
+        struct Case {
+            Readiness r;
+            std::string text;
+            bool with_url;
+        };
+        std::vector<Case> cases = {
+            {Readiness{.net = Readiness::Net::Down}, wisp::ui::tr(StrId::HomeNoWifi, lang), false},
+            {Readiness{.net = Readiness::Net::Connecting},
+             wisp::ui::tr(StrId::HomeConnecting, lang), false},
+        };
+        for (int missing = 1; missing < 8; ++missing) {
+            Readiness r{.llm = !(missing & 1), .asr = !(missing & 2), .tts = !(missing & 4)};
+            std::string items;
+            for (const auto& [lacks, id] :
+                 {std::pair{!r.llm, StrId::HomeNeedLlm}, std::pair{!r.asr, StrId::HomeNeedAsr},
+                  std::pair{!r.tts, StrId::HomeNeedTts}}) {
+                if (!lacks) continue;
+                if (!items.empty()) items += sep;
+                items += wisp::ui::tr(id, lang);
+            }
+            cases.push_back({r,
+                             missing == 7 ? std::string(wisp::ui::tr(StrId::HomeNoModels, lang))
+                                          : wisp::ui::tr_fill(StrId::HomeMissing, lang, items),
+                             true});
+        }
+        for (const Case& c : cases) {
+            SCOPED_TRACE(c.text);
+            on_ui([&] {
+                wisp::ui::set_lang(lang);
+                home.show_readiness(c.r);
+                expect_hint_fits(home, shape_, GetParam(), TurnView{}, c.text, c.with_url);
+            });
+        }
+    }
+    on_ui([&] {
+        wisp::ui::set_lang(Lang::Zh);
+        lv_screen_load(before);
+        home.stop();
+    });
+    bus.stop();
+    ui.stop();
+}
+
 // The Stop control's room (home_layout()): right of the wisp, on rows the
 // screen shows, clear of the wisp and every other band, and the same with
 // or without a hint or the step list, so nothing moves when it comes.
@@ -1026,11 +1093,11 @@ TEST_F(HomeTest, ReadinessAndErrorHints) {
     };
     EXPECT_EQ(hint(), "");
 
-    ready.store(wisp::shell::Readiness::NoLlm);
-    EXPECT_EQ(hint(), std::string("还没配置模型，请在管理后台的模型页设置\n") + url);
-    ready.store(wisp::shell::Readiness::NoWifi);
+    ready.store(wisp::shell::Readiness{.llm = false});
+    EXPECT_EQ(hint(), std::string("还差：对话模型\n") + url);
+    ready.store(wisp::shell::Readiness{.net = wisp::shell::Readiness::Net::Down});
     EXPECT_EQ(hint(), "还没连接 Wi-Fi，右划进入设置 → Wi-Fi");
-    ready.store(wisp::shell::Readiness::Ready);
+    ready.store(wisp::shell::Readiness{});
     EXPECT_EQ(hint(), "");
 
     // "Not heard" from the voice chain.
@@ -1440,6 +1507,112 @@ TEST_F(HomeTest, NextTurnClearsTheOutcomeHint) {
     home_ms.store(kFadeAfterMs + 1000);
     ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
     EXPECT_EQ(hint_shown(), "");
+}
+
+// Wi-Fi reconnecting says so instead of "no Wi-Fi"; Wi-Fi off still says
+// "no Wi-Fi". Neither lists the profiles: the network comes first.
+TEST_F(HomeTest, ConnectingHintReplacesNoWifi) {
+    boot();
+    using Net = wisp::shell::Readiness::Net;
+    ready.store(wisp::shell::Readiness{.net = Net::Connecting, .tts = false});
+    EXPECT_EQ(hint_shown(), "正在连接 Wi-Fi…");
+    ready.store(wisp::shell::Readiness{.net = Net::Down, .tts = false});
+    EXPECT_EQ(hint_shown(), "还没连接 Wi-Fi，右划进入设置 → Wi-Fi");
+    ready.store(wisp::shell::Readiness{.net = Net::Connecting});
+    EXPECT_EQ(hint_shown(), "正在连接 Wi-Fi…");
+    ready.store(wisp::shell::Readiness{});
+    EXPECT_EQ(hint_shown(), "");
+}
+
+// Online, the hint lists the profiles still missing (or says none is set
+// up), then the admin address where they are set up; one line during a
+// turn.
+TEST_F(HomeTest, MissingProfilesAreListedWithTheAdminUrl) {
+    boot();
+    ready.store(wisp::shell::Readiness{.asr = false, .tts = false});
+    EXPECT_EQ(hint_shown(), "还差：语音识别、语音合成\nhttp://10.0.0.7:8900");
+    ready.store(wisp::shell::Readiness{.llm = false, .asr = true, .tts = false});
+    EXPECT_EQ(hint_shown(), "还差：对话模型、语音合成\nhttp://10.0.0.7:8900");
+    // Nothing set up yet says so in one short line.
+    ready.store(wisp::shell::Readiness{.llm = false, .asr = false, .tts = false});
+    EXPECT_EQ(hint_shown(), "还没配置模型\nhttp://10.0.0.7:8900");
+    on_ui([&] { wisp::ui::set_lang(wisp::ui::Lang::En); });
+    ready.store(wisp::shell::Readiness{.llm = false, .tts = false});
+    EXPECT_EQ(hint_shown(), "Needed: chat, speech\nhttp://10.0.0.7:8900");
+    on_ui([&] { wisp::ui::set_lang(wisp::ui::Lang::Zh); });
+
+    // A turn (from the web page: no voice needed) shows the list without
+    // the address.
+    server.llm().push(wisp::test::llm_text("<say>好。</say>"));
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn() && !conv->current().running; }));
+    EXPECT_EQ(hint_shown(), "还差：对话模型、语音合成");
+}
+
+// A muted device needs no speech profile (the wiring reports tts while
+// muted, AppVoice.MutedDeviceDoesNotAskForTts): with everything else there
+// the hint is empty.
+TEST_F(HomeTest, MutedDeviceDoesNotAskForTts) {
+    boot();
+    ready.store(wisp::shell::Readiness{.tts = false});
+    EXPECT_EQ(hint_shown(), "还差：语音合成\nhttp://10.0.0.7:8900");
+    ready.store(wisp::shell::Readiness{.tts = true});
+    EXPECT_EQ(hint_shown(), "");
+}
+
+// A tap on the wisp says how to talk when everything is set up, for
+// kFadeAfterMs; when something is missing the checklist stays up instead.
+// A turn takes the tap's hint away.
+TEST_F(HomeTest, TapShowsTheHintThenFades) {
+    boot();
+    const lv_point_t c = wisp_centre();
+    const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
+    auto tap = [&] {
+        feed({at});
+        feed({at});
+        feed({});
+    };
+    EXPECT_EQ(hint_shown(), "");
+    tap();
+    EXPECT_EQ(hint_shown(), "按住鬼火说话");
+    EXPECT_FALSE(conv->holding());
+    EXPECT_FALSE(voice->capturing());
+    home_ms.store(kFadeAfterMs - 1000);
+    EXPECT_EQ(hint_shown(), "按住鬼火说话");
+    home_ms.store(kFadeAfterMs + 1000);
+    EXPECT_EQ(hint_shown(), "");
+
+    // Not complete: the tap shows the readiness hint, which stays.
+    ready.store(wisp::shell::Readiness{.tts = false});
+    tap();
+    EXPECT_EQ(hint_shown(), "还差：语音合成\nhttp://10.0.0.7:8900");
+    home_ms.fetch_add(kFadeAfterMs + 1000);
+    EXPECT_EQ(hint_shown(), "还差：语音合成\nhttp://10.0.0.7:8900");
+
+    // A turn after a tap: the tap's hint goes.
+    ready.store(wisp::shell::Readiness{});
+    tap();
+    ASSERT_EQ(hint_shown(), "按住鬼火说话");
+    server.llm().push(wisp::test::llm_text("<say>好。</say>"));
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn(); }));
+    EXPECT_EQ(hint_shown(), "");
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(hint_shown(), "");
+
+    // A capture after a tap: the tap's hint goes.
+    home_ms.fetch_add(2 * kFadeAfterMs);
+    ASSERT_TRUE(ui_until([&] { return !home().in_turn(); }));
+    tap();
+    ASSERT_EQ(hint_shown(), "按住鬼火说话");
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(conv->holding());
+    EXPECT_TRUE(wait_until([&] { return hint_shown().empty(); }, 3000));
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
 }
 
 // Pressing to talk after a failed turn takes its outcome off the hint.

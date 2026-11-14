@@ -417,6 +417,11 @@ void Home::show_view(const TurnView& v) {
     refresh();
 }
 
+void Home::show_readiness(std::optional<Readiness> r) {
+    shown_readiness_ = r;
+    refresh();
+}
+
 // --- refresh requests ------------------------------------------------------
 
 void Home::request(bool conv_changed) {
@@ -520,8 +525,10 @@ void Home::refresh() {
             fade_.turn_started();
             was_running_ = true;
             new_turn = true;
-            // The last turn's outcome is not this one's.
+            // The last turn's outcome is not this one's, nor is a tap's
+            // hint.
             hint_turn_.reset();
+            tap_at_.reset();
         }
         if (was_running_ && !view_.running) {
             fade_.turn_ended(now);
@@ -534,6 +541,7 @@ void Home::refresh() {
             hint_not_heard_ = view_.not_heard;
             hint_since_ = now;
             hint_turn_.reset();
+            tap_at_.reset();
         }
         // Both in one refresh: the turn's end came last, so its hint wins.
         if (!view_.running && !view_.end_reason.empty() &&
@@ -541,12 +549,17 @@ void Home::refresh() {
             hint_turn_end_turn_ = view_.turn;
             hint_turn_end_ms_ = view_.ended_ms;
             hint_turn_ = detail::turn_end_text(view_.end_reason);
+            tap_at_.reset();
             hint_since_ = view_.ended_ms != 0 && view_.ended_ms <= now ? view_.ended_ms : now;
         }
     }
 
-    // A capture is the user's next try: the last turn's outcome goes.
-    if (voice_state_.load() == voice::VoiceState::Listening) hint_turn_.reset();
+    // A capture is the user's next try: the last turn's outcome goes, and
+    // a tap's hint has done its job.
+    if (voice_state_.load() == voice::VoiceState::Listening) {
+        hint_turn_.reset();
+        tap_at_.reset();
+    }
 
     // The wisp.
     if (wisp_ != nullptr) {
@@ -644,6 +657,11 @@ std::string Home::fitted_url(const std::string& url) const {
     return scheme == std::string::npos ? url : url.substr(scheme + 3);
 }
 
+Readiness Home::readiness() const {
+    if (shown_readiness_) return *shown_readiness_;
+    return conv_ != nullptr ? conv_->readiness() : Readiness{};
+}
+
 std::string Home::hint_text(uint64_t now, bool in_turn) {
     // One line during a turn: the address waits for the idle layout.
     auto with_url = [&](std::string s) {
@@ -652,14 +670,25 @@ std::string Home::hint_text(uint64_t now, bool in_turn) {
         if (!url.empty()) s += "\n" + fitted_url(url);
         return s;
     };
-    switch (conv_ != nullptr ? conv_->readiness() : Readiness::Ready) {
-        case Readiness::NoWifi:
-            return ui::tr(ui::StrId::HomeNoWifi);
-        case Readiness::NoLlm:
-            return with_url(ui::tr(ui::StrId::HomeNoLlm));
-        case Readiness::Ready:
-            break;
+    const Readiness r = readiness();
+    if (r.net == Readiness::Net::Down) return ui::tr(ui::StrId::HomeNoWifi);
+    if (r.net == Readiness::Net::Connecting) return ui::tr(ui::StrId::HomeConnecting);
+    // Nothing set up (the first boot) in one short line: the list of all
+    // three would not fit the smallest screen's line.
+    if (!r.llm && !r.asr && !r.tts) return with_url(ui::tr(ui::StrId::HomeNoModels));
+    if (!r.complete()) {
+        const char* sep = ui::lang() == ui::Lang::En ? ", " : "、";
+        std::string items;
+        for (const auto& [missing, id] :
+             {std::pair{!r.llm, ui::StrId::HomeNeedLlm}, std::pair{!r.asr, ui::StrId::HomeNeedAsr},
+              std::pair{!r.tts, ui::StrId::HomeNeedTts}}) {
+            if (!missing) continue;
+            if (!items.empty()) items += sep;
+            items += ui::tr(id);
+        }
+        return with_url(ui::tr_fill(ui::StrId::HomeMissing, items));
     }
+    if (tap_at_ && now - *tap_at_ < kFadeAfterMs) return ui::tr(ui::StrId::HomeHoldToTalk);
     if (now - hint_since_ >= kFadeAfterMs) return {};
     if (hint_turn_) {
         const ui::StrId id = *hint_turn_;
@@ -1021,9 +1050,12 @@ void Home::act(WispPress::Action a) {
     if (conv_ == nullptr) return;
     switch (a) {
         case WispPress::Action::Tap:
-            // No voice effect; before setup the hint below the wisp is
-            // already up and says what is missing.
+            // No voice effect. Set up, the hint says how to talk; before
+            // that the hint below the wisp is already up and says what is
+            // missing (hint_text()).
             conv_->tap();
+            tap_at_ = deps_.now_ms();
+            on_request();
             break;
         case WispPress::Action::HoldBegin:
             conv_->hold_begin();

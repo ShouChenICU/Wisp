@@ -32,18 +32,6 @@ std::string str(const Properties& p, const char* key) {
 
 }  // namespace
 
-const char* to_string(Readiness r) {
-    switch (r) {
-        case Readiness::Ready:
-            return "ready";
-        case Readiness::NoWifi:
-            return "no_wifi";
-        case Readiness::NoLlm:
-            return "no_llm";
-    }
-    return "ready";
-}
-
 ConversationController::ConversationController(ConversationDeps deps)
     : deps_(std::move(deps)),
       // The parser runs under mu_ (on_agent()), so its outputs may touch
@@ -92,12 +80,10 @@ void ConversationController::stop() {
 
 // --- triggers -----------------------------------------------------------
 
-bool ConversationController::ready() const {
-    return !deps_.readiness || deps_.readiness() == Readiness::Ready;
-}
+bool ConversationController::ready() const { return readiness().can_talk(); }
 
 Readiness ConversationController::readiness() const {
-    return deps_.readiness ? deps_.readiness() : Readiness::Ready;
+    return deps_.readiness ? deps_.readiness() : Readiness{};
 }
 
 bool ConversationController::agent_busy() const {
@@ -244,8 +230,12 @@ bool ConversationController::holding() const {
 Result<void> ConversationController::voice_text(std::string text) {
     {
         std::lock_guard<os::Mutex> lock(mu_);
+        // No recording to keep while a connection is made: the text goes
+        // only once the network is up.
         const Readiness r = readiness();
-        if (r != Readiness::Ready) return Result<void>::err(ErrorCode::Unsupported, to_string(r));
+        if (r.net != Readiness::Net::Up)
+            return Result<void>::err(ErrorCode::Unsupported, "no_wifi");
+        if (!r.llm) return Result<void>::err(ErrorCode::Unsupported, "no_llm");
         if (phase() != Phase::Idle) return Result<void>::err(ErrorCode::Busy, "busy");
         if (auto sent = deps_.agent.submit(text, agent::Source::Voice); !sent) return sent;
         submitted_ = true;

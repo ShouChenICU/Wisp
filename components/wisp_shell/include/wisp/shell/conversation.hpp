@@ -53,8 +53,9 @@
 // running sees nothing to stop, and waits behind that turn instead. A
 // cancelled hold, or one that heard nothing, stops nothing. stop_turn()
 // (the screen's Stop) stops the speech, the running turn and a waiting
-// voice text. While readiness() is not Ready neither
-// hold_begin()/hold_end()/hold_cancel() nor voice_text() sends anything.
+// voice text. Unless readiness().can_talk() neither press_begin() nor
+// hold_begin()/hold_end()/hold_cancel() records or sends anything, and
+// voice_text() also needs the network up.
 //
 // Threads. The triggers, voice_text(), readiness(), current() and the
 // listener calls may come from any thread; the triggers and the
@@ -103,9 +104,20 @@
 
 namespace wisp::shell {
 
-enum class Readiness : uint8_t { Ready, NoWifi, NoLlm };
-// "ready" "no_wifi" "no_llm"
-const char* to_string(Readiness r);
+// What talking needs (mvp spec 6.6). Net: Up online; Connecting offline
+// while a connection is being made or will be (Wi-Fi enabled, a network
+// saved: a hold records and its recognition waits, see
+// wisp/voice/voice_service.hpp); Down offline otherwise. llm / asr / tts:
+// a profile of that kind is active (tts also when the speech is muted).
+// A hold needs can_talk(); the home screen lists what complete() lacks.
+struct Readiness {
+    enum class Net : uint8_t { Up, Connecting, Down };
+    Net net = Net::Up;
+    bool llm = true, asr = true, tts = true;
+    bool can_talk() const { return net != Net::Down && llm && asr; }
+    bool complete() const { return net == Net::Up && llm && asr && tts; }
+    bool operator==(const Readiness&) const = default;
+};
 
 // One step of the agent's turn as the screen shows it (activity.hpp).
 struct TurnStep {
@@ -153,9 +165,8 @@ struct ConversationDeps {
     core::EventBus& bus;
     agent::AgentService& agent;
     voice::VoiceService& voice;
-    std::function<bool()> tts_mute;  // cached voice/tts_mute; empty: false
-    std::function<Readiness()>
-        readiness;  // Wi-Fi connected and an llm profile active; empty: Ready
+    std::function<bool()> tts_mute;        // cached voice/tts_mute; empty: false
+    std::function<Readiness()> readiness;  // empty: complete
     // TurnView's started_ms/ended_ms; empty: os::now_ms (the screens'
     // clock).
     std::function<uint64_t()> now_ms;
@@ -194,7 +205,8 @@ public:
     bool holding() const;
 
     // A transcript without recording, as Source::Voice (spoken unless
-    // muted). Unsupported "no_wifi"/"no_llm" when not ready; Busy "busy"
+    // muted). Unsupported "no_wifi" unless the network is up, "no_llm"
+    // without an llm profile; Busy "busy"
     // while capturing, speaking or a turn runs; submit()'s own errors.
     Result<void> voice_text(std::string text);
 
