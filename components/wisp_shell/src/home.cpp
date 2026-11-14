@@ -146,9 +146,7 @@ HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visibl
             l.hint = band(s, y1, std::min(y1 + kHintIdleLines * kBodyLinePx - 1, bottom - kGap));
         return l;
     }
-    // Below the status capsule, which may show over the home screen.
-    const hal::Area capsule = ui::SystemLayer::status_area(s);
-    top = std::max(top + kGap, capsule.y2 + 1 + kGap);
+    top = std::max(top + kGap, safe.y1);
     bottom -= kGap;
     // The turn's one-line hint, cut with "...", may use narrower rows than
     // the text: below the column where the screen has them.

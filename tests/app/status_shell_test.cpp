@@ -1,6 +1,6 @@
-// StatusShell (scene-device spec 5.3, 5.5, 5.6): the status capsule counts
-// the background scenes and the unread notifications, the pull-down panel
-// lists them and acts on them, and a posted notification shows a banner.
+// StatusShell (scene-device spec 5.3, 5.6): the pull-down panel lists
+// background scenes and unread notifications and acts on them. Posted
+// notifications also show banners.
 
 #include "status_shell.hpp"
 
@@ -161,21 +161,17 @@ protected:
         return r ? r.value() : std::string();
     }
 
-    // The capsule's text, "" while it is hidden.
-    std::string capsule() {
-        std::string text;
-        on_ui([&] {
-            lv_obj_t* cap = layer->capsule();
-            if (cap == nullptr) return;
-            lv_obj_t* l = wisp::test::find_obj_of_class(cap, &lv_label_class);
-            if (l != nullptr) text = lv_label_get_text(l);
-        });
-        return text;
-    }
-
-    bool wait_capsule(const std::string& want) {
-        const bool ok = wait_until([&] { return capsule() == want; }, 2000);
-        EXPECT_EQ(capsule(), want);
+    bool wait_counts(size_t background, size_t unread) {
+        auto matches = [&] {
+            bool ok = false;
+            on_ui([&] {
+                const auto m = shell->panel_model();
+                ok = m.scenes.size() == background && m.notes.size() == unread;
+            });
+            return ok;
+        };
+        const bool ok = wait_until(matches, 2000);
+        EXPECT_TRUE(ok) << "background=" << background << " unread=" << unread;
         return ok;
     }
 
@@ -247,26 +243,26 @@ protected:
     std::atomic<bool> wifi_disconnected{false};
 };
 
-TEST_F(StatusShellTest, CapsuleCountsFollowScenesAndNotifications) {
+TEST_F(StatusShellTest, PanelCountsFollowScenesAndNotifications) {
     start_shell();
-    on_ui([&] { EXPECT_EQ(layer->capsule(), nullptr); });
     to_background("a", "Alpha");
-    wait_capsule(LV_SYMBOL_PLAY "1");
+    wait_counts(1, 0);
+    on_ui([&] { EXPECT_TRUE(layer->visible_pieces().empty()); });
     EXPECT_TRUE(
         wait_until([&] { return log_has("status", "status: background=1 unread=0"); }, 2000));
 
     post("a", "n1", "First");
     post("a", "n2", "Second");
-    wait_capsule(LV_SYMBOL_PLAY "1 " LV_SYMBOL_BELL "2");
+    wait_counts(1, 2);
     ASSERT_TRUE(notes->dismiss("a", "n1", DismissReason::Dismiss));
-    wait_capsule(LV_SYMBOL_PLAY "1 " LV_SYMBOL_BELL "1");
+    wait_counts(1, 1);
     EXPECT_TRUE(
         wait_until([&] { return log_has("status", "status: background=1 unread=1"); }, 2000));
 
     ASSERT_TRUE(rt->exit("a"));
-    wait_capsule(LV_SYMBOL_BELL "1");
+    wait_counts(0, 1);
     notes->clear_all();
-    EXPECT_TRUE(wait_until([&] { return capsule().empty(); }, 2000));
+    wait_counts(0, 0);
 }
 
 // Notifications that are already unread when it starts are counted at once.
@@ -279,7 +275,7 @@ TEST_F(StatusShellTest, CountsWhatIsThereAtStart) {
     shell = std::make_unique<StatusShell>(StatusShellDeps{
         .ui = *ui, .layer = *layer, .bus = bus, .notes = *notes, .router = *router});
     shell->start();
-    wait_capsule(LV_SYMBOL_BELL "1");
+    wait_counts(0, 1);
 }
 
 // The header's time follows the Settings time format (ui::format_clock()).
@@ -300,7 +296,7 @@ TEST_F(StatusShellTest, PanelListsBackgroundScenesAndNotes) {
     to_background("a", "Alpha");
     post("a", "n1", "First");
     post("a", "n2", "Second");
-    wait_capsule(LV_SYMBOL_PLAY "1 " LV_SYMBOL_BELL "2");
+    wait_counts(1, 2);
 
     // The clock is unset.
     on_ui([&] {
@@ -340,19 +336,16 @@ TEST_F(StatusShellTest, PanelListsBackgroundScenesAndNotes) {
     EXPECT_TRUE(log_has("status", "panel: closed"));
 }
 
-// The flow of spec 5.5/5.6 end to end: a scene goes to the background, the
-// capsule shows, a tap on it opens the panel, and a tap on the scene's row
-// brings it to the foreground.
-TEST_F(StatusShellTest, CapsuleTapThenSceneRowBringsSceneForward) {
+// Background scenes remain accessible from the pull-down panel.
+TEST_F(StatusShellTest, TopSwipeThenSceneRowBringsSceneForward) {
     start_shell();
     to_background("a", "Alpha");
-    wait_capsule(LV_SYMBOL_PLAY "1");
-    lv_point_t at{};
-    on_ui([&] {
-        lv_obj_update_layout(lv_layer_top());
-        at = center_of(layer->capsule());
-    });
-    tap(at);
+    wait_counts(1, 0);
+    feed({{240, 4, 0}});
+    feed({{240, 4, 0}});
+    feed({{240, 400, 0}});
+    feed({});
+    wisp::os::sleep_ms(300);
     on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
     tap(locate(row_of("Alpha")));
     EXPECT_TRUE(
@@ -360,14 +353,14 @@ TEST_F(StatusShellTest, CapsuleTapThenSceneRowBringsSceneForward) {
     EXPECT_TRUE(wait_until([&] { return rt->status("a").state == SceneState::Running; }, 2000));
     EXPECT_TRUE(wait_label("scene body"));
     on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
-    EXPECT_TRUE(wait_until([&] { return capsule().empty(); }, 2000));
+    wait_counts(0, 0);
 }
 
 TEST_F(StatusShellTest, PanelActions) {
     start_shell();
     to_background("a", "Alpha");
     to_background("b", "Beta");
-    wait_capsule(LV_SYMBOL_PLAY "2");
+    wait_counts(2, 0);
 
     // The close button exits the scene; the panel stays open.
     open_panel();
@@ -379,7 +372,7 @@ TEST_F(StatusShellTest, PanelActions) {
 
     // A tap on a notification opens its scene, which hears about it.
     post("a", "n1", "First");
-    wait_capsule(LV_SYMBOL_PLAY "1 " LV_SYMBOL_BELL "1");
+    wait_counts(1, 1);
     open_panel();
     tap(locate(row_of("First")));
     EXPECT_TRUE(scene_printed("a", "notified\tn1"));
@@ -392,7 +385,7 @@ TEST_F(StatusShellTest, PanelActions) {
     post("a", "n2", "Second");
     post("a", "n3", "Third");
     post("a", "n4", "Fourth");
-    wait_capsule(LV_SYMBOL_PLAY "1 " LV_SYMBOL_BELL "3");
+    wait_counts(1, 3);
     open_panel();
     tap(locate(close_in("Second")));
     EXPECT_FALSE(notes->find("a", "n2").has_value());
@@ -401,13 +394,13 @@ TEST_F(StatusShellTest, PanelActions) {
         return find_button_with_label(panel, wisp::ui::tr(StrId::PanelClearAll));
     }));
     EXPECT_EQ(notes->unread_count(), 0u);
-    wait_capsule(LV_SYMBOL_PLAY "1");
+    wait_counts(1, 0);
 }
 
 TEST_F(StatusShellTest, PanelUpdatesWhileOpen) {
     start_shell();
     post("a", "n1", "First");
-    wait_capsule(LV_SYMBOL_BELL "1");
+    wait_counts(0, 1);
     open_panel();
     EXPECT_TRUE(panel_has("First"));
     EXPECT_FALSE(panel_has("Second"));
@@ -432,7 +425,7 @@ TEST_F(StatusShellTest, SystemNoticeRenderedInUiLanguage) {
     notes->post_system(wisp::core::notice::kWakeLockLong, "scene.a",
                        wisp::core::notice::kActionReleaseLock, "7");
     notes->post_system(wisp::core::notice::kWakeLockLong, "system.ota");
-    wait_capsule(LV_SYMBOL_PLAY "1 " LV_SYMBOL_BELL "3");
+    wait_counts(1, 3);
     open_panel();
     EXPECT_TRUE(panel_has("天气已因内存不足关闭"));
     EXPECT_TRUE(panel_has("Alpha已让设备保持唤醒 30 分钟"));
@@ -526,7 +519,7 @@ TEST_F(StatusShellTest, BannerOnPostAndTapOpensScene) {
 TEST_F(StatusShellTest, StopUninstalls) {
     start_shell();
     post("a", "n1", "First");
-    wait_capsule(LV_SYMBOL_BELL "1");
+    wait_counts(0, 1);
     shell->stop();
     on_ui([&] {
         layer->open_panel();

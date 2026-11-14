@@ -62,16 +62,10 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_PRESS_LOCK);
 
-    // The list covers the screen and the title is its first item, so the
-    // title scrolls away with the rows instead of keeping a band at the top
-    // (on a round screen the capsule's room and the circle's top above it
-    // took almost a third of the height). The top padding puts the title,
-    // scrolled to the top, below the status capsule; the side and bottom
-    // padding keep the content inside the safe area's columns and end it
-    // at the safe area's bottom row.
+    // The title scrolls with the rows. Padding keeps the first and last
+    // items inside the safe area at either end of the scroll range.
     const hal::Area safe = hal::safe_rect(shape);
-    const hal::Area capsule = ui::SystemLayer::status_area(shape);
-    const int32_t title_y = std::max<int32_t>(capsule.y2 + 1 + ui::theme::kGapSm, safe.y1);
+    const int32_t title_y = safe.y1;
     f.root = make_root(scr, shape);
     f.list = lv_obj_create(f.root);
     lv_obj_t* list = f.list;

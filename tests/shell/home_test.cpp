@@ -193,8 +193,8 @@ TEST_P(HomeShapes, LayoutInsideVisibleArea) {
         } else {
             EXPECT_GT(l.hint.x1, l.hint.x2);
         }
-        // Clear of the status capsule.
-        EXPECT_GT(l.heard.y1, wisp::ui::SystemLayer::status_area(shape_).y2);
+        // Starts within the safe area.
+        EXPECT_GE(l.heard.y1, wisp::hal::safe_rect(shape_).y1);
         // The say text's first two lines and the body's first line under
         // them; a 360 px circle with a hint has room for the two say lines,
         // and the "more below" strip says the body follows.

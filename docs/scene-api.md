@@ -220,9 +220,9 @@ shown. Lay out from what the device reports instead of fixed margins:
   `circle`), `corner_radius` (the rounded rectangle's radius, half the smaller side for
   a circle, 0 for a rectangle) and `safe_area` (`x1`, `y1`, `x2`, `y2`, inclusive: the
   largest centred rectangle that is visible everywhere, with a small margin).
-- `wisp.device.info().status_area` (`x1`, `y1`, `x2`, `y2`, inclusive) is the system's
-  status capsule at the top centre of the safe area. It is given whether or not the
-  capsule shows, so a scene that keeps clear of it never has its layout jump.
+- `wisp.device.info().status_area` (`x1`, `y1`, `x2`, `y2`, inclusive) retains the former
+  status indicator's rectangle for existing scenes. No indicator is drawn there; new
+  layouts do not need to reserve this area.
 - `wisp.device.row_span(y)` returns `x1, x2`, the first and last visible pixel of
   screen row `y`, or `nil` when the row shows nothing or is off the screen.
 
@@ -252,9 +252,8 @@ system's pull-down gesture, at any angle: the touch reaches the scene like
 any other until it has moved 5% (24 px) down, when the system opens its
 pull-down panel and the widget under the finger gets no click
 (`PRESS_LOST`). It never starts while the keyboard, the error panel or a
-confirmation dialog is up. A tap on the status capsule (at `status_area`, shown
-while scenes run in the background or notifications are unread) opens the panel
-too. A swipe down from the top zone never reaches `on_swipe` while the panel can
+confirmation dialog is up. A swipe down from the top zone never reaches
+`on_swipe` while the panel can
 open.
 
 ## Helpers

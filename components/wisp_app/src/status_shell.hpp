@@ -1,14 +1,13 @@
 #pragma once
 
 // StatusShell (scene-device spec 5.3, 5.5, 5.6): feeds the system layer's
-// status capsule, pull-down panel and banners from the scene runtime and
+// pull-down panel and banners from the scene runtime and
 // the notification services. It only wires services together; what each
 // row or banner does is a call into one of them.
 //
 //   - Counts: scene.state, notification.* and power.state events (on the
 //     bus's dispatcher thread) queue one refresh on the UI thread, at most
-//     one at a time, which sets the capsule to {background scenes, unread
-//     notifications} and rebuilds the panel's model while it is open. A
+//     one at a time, which rebuilds the panel's model while it is open. A
 //     change of counts is logged "status: background=<n> unread=<m>".
 //   - Panel: the model is built when it opens and on every refresh while
 //     it is open. Its header is the local time (ui::format_clock() in the

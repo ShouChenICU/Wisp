@@ -228,10 +228,6 @@ SystemLayer::~SystemLayer() {
     banners_.clear();
     banner_event_depth_ = 0;
     hide_banner();
-    if (capsule_ != nullptr) {
-        lv_obj_delete(capsule_);
-        capsule_ = nullptr;
-    }
     if (arrow_ != nullptr) {
         lv_obj_delete(arrow_);
         arrow_ = nullptr;
@@ -322,7 +318,6 @@ std::vector<std::pair<const char*, lv_obj_t*>> SystemLayer::visible_pieces() con
         if (obj != nullptr && !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN))
             out.emplace_back(name, obj);
     };
-    add("capsule", capsule_);
     add("banner", banner_);
     add("panel", panel_);
     add("error", error_panel_);
@@ -936,8 +931,8 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Stacking ---
 
 void SystemLayer::raise() {
-    for (lv_obj_t* piece : {capsule_, banner_, panel_backdrop_, panel_, panel_handle_,
-                            error_backdrop_, error_panel_, kb_, candidates_, arrow_}) {
+    for (lv_obj_t* piece : {banner_, panel_backdrop_, panel_, panel_handle_, error_backdrop_,
+                            error_panel_, kb_, candidates_, arrow_}) {
         if (piece != nullptr) lv_obj_move_foreground(piece);
     }
     // The dialog's backdrop holds the box.
