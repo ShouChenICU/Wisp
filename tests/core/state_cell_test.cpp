@@ -6,13 +6,16 @@
 #include <atomic>
 #include <cstdint>
 #include <initializer_list>
+#include <latch>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "support/bus_flood.hpp"
 #include "support/manual_dispatcher.hpp"
 #include "support/wait.hpp"
 #include "wisp/base/fixed_string.hpp"
@@ -23,6 +26,7 @@ using wisp::core::CellSubscription;
 using wisp::core::EventBus;
 template <class T>
 using Cell = wisp::core::StateCell<T>;
+using wisp::test::BusFlood;
 using wisp::test::ManualDispatcher;
 using wisp::test::wait_until;
 
@@ -703,4 +707,145 @@ TEST_F(StateCell, CallbackResetsItsOwnHandleWhileTheCellIsDestroyed) {
     EXPECT_EQ(misuses().size(), 1u);
     ASSERT_TRUE(bus.wait_idle(1000));
     expect_nothing_attached();
+}
+
+namespace {
+
+// A mirror as an owner writes one: the change as a legacy bus event.
+void mirror_to_bus(EventBus& bus, const int& before, const int& after) {
+    wisp::core::Event e;
+    e.topic = "test.cell";
+    e.source = "test";
+    e.payload["before"] = before;
+    e.payload["after"] = after;
+    bus.publish(std::move(e));
+}
+
+// The (before, after) of every "test.cell" event `bus` dispatches.
+class MirrorLog {
+public:
+    explicit MirrorLog(EventBus& bus) : bus_(bus) {
+        id_ = bus_.subscribe("test.cell", [this](const wisp::core::Event& e) {
+            std::lock_guard<std::mutex> lock(mu_);
+            events_.emplace_back(static_cast<int>(e.payload.at("before").as_int()),
+                                 static_cast<int>(e.payload.at("after").as_int()));
+        });
+    }
+    ~MirrorLog() { bus_.unsubscribe(id_); }
+    MirrorLog(const MirrorLog&) = delete;
+    MirrorLog& operator=(const MirrorLog&) = delete;
+
+    std::vector<std::pair<int, int>> events() {
+        std::lock_guard<std::mutex> lock(mu_);
+        return events_;
+    }
+
+private:
+    EventBus& bus_;
+    wisp::core::SubscriptionId id_ = 0;
+    std::mutex mu_;
+    std::vector<std::pair<int, int>> events_;
+};
+
+}  // namespace
+
+TEST_F(StateCell, MirrorPublishesEachChangeWithBeforeAndAfter) {
+    MirrorLog log(bus);
+    Cell<int> c(bus, 0, &mirror_to_bus);
+    c.set(1);
+    c.set(2);
+    c.set(2);  // equal: no change, no event
+    c.set(3);
+    c.seed(9);  // a change, but not one to publish
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(log.events(), (std::vector<std::pair<int, int>>{{0, 1}, {1, 2}, {2, 3}}));
+}
+
+TEST_F(StateCell, MirrorEventsFollowRevisionOrderUnderConcurrentSetters) {
+    // Large enough to hold every change, so any gap or swap below is the
+    // cell's, not a drop.
+    EventBus big(2048);
+    ASSERT_TRUE(big.start().is_ok());
+    MirrorLog log(big);
+    Cell<int> c(big, 0, &mirror_to_bus);
+    constexpr int kThreads = 4, kEach = 250;
+    // Released together so the setters contend from the first update; the
+    // assertions hold for any interleaving.
+    std::latch start(kThreads);
+    std::vector<std::thread> setters;
+    for (int t = 0; t < kThreads; ++t) {
+        setters.emplace_back([&] {
+            start.arrive_and_wait();
+            for (int i = 0; i < kEach; ++i) {
+                c.update([](int& v) { ++v; });
+            }
+        });
+    }
+    for (std::thread& t : setters) {
+        t.join();
+    }
+    ASSERT_TRUE(big.wait_idle(5000));
+    EXPECT_EQ(big.dropped(), 0u);
+    EXPECT_EQ(c.get(), kThreads * kEach);
+    std::vector<std::pair<int, int>> events = log.events();
+    ASSERT_EQ(events.size(), static_cast<size_t>(kThreads * kEach));
+    for (int i = 0; i < kThreads * kEach; ++i) {
+        ASSERT_EQ(events[i], std::make_pair(i, i + 1)) << "event " << i;
+    }
+}
+
+TEST_F(StateCell, SubscribersConvergeOnASaturatedBus) {
+    MirrorLog log(bus);
+    Cell<int> c(bus, 0, &mirror_to_bus);
+    std::atomic<int> bus_last{-1};
+    CellSubscription on_bus = c.subscribe([&](const int& v) { bus_last = v; });
+    Recorder on_md_rec;
+    CellSubscription on_md = c.subscribe(on_md_rec.callback(), &md);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    ASSERT_EQ(bus_last.load(), 0);
+
+    BusFlood f(bus);
+    f.hold();
+    std::thread setter([&] {
+        for (int i = 1; i <= 100; ++i) {
+            c.set(i);
+        }
+    });
+    f.flood(10000);
+    setter.join();
+    // Held: nothing on the bus has run since hold().
+    EXPECT_EQ(bus_last.load(), 0);
+    f.release();
+
+    ASSERT_TRUE(bus.wait_idle(5000));
+    EXPECT_GT(bus.dropped(), 0u);
+    // A subscription is a slot: coalesced, never dropped, so it ends at
+    // the last value however full the bus was.
+    EXPECT_EQ(bus_last.load(), 100);
+    md.run_all();
+    EXPECT_EQ(on_md_rec.last(), 100);
+    // A mirror is an ordinary event: while the dispatcher was held only a
+    // queue's worth (64) of all 10 100 publishes could survive, so some
+    // of the 100 changes were never seen on the bus.
+    EXPECT_LT(log.events().size(), 100u);
+}
+
+TEST_F(StateCell, WaitIdleCoversTheLastSlot) {
+    Cell<int> c(bus, 0);
+    wisp::os::Semaphore entered(1, 0), gate(1, 0);
+    std::atomic<int> last{-1};
+    CellSubscription sub = c.subscribe([&](const int& v) {
+        if (v == 0) {
+            entered.give();
+            gate.take(kGateMs);
+        }
+        last = v;
+    });
+    ASSERT_TRUE(entered.take(kGateMs));
+    // Set while the first run is in progress, so the slot is queued again
+    // behind it and is still pending or running when wait_idle() starts.
+    c.set(5);
+    gate.give();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(last.load(), 5);
 }
