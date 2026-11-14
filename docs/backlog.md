@@ -323,4 +323,3 @@ Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-p
 - Parked: the agent's `lua.run` reaches devices as holder `agent` without leaving a conversation note, unlike `device.call`.
 - Parked: the `device.call` activity line carries no device identity (it would need a per-tool key preference in `activity_target()`).
 - Parked: `tools/check_layering.py`'s comment stripper can report a false positive on a line with a digit separator and an apostrophe in its comment.
-- Parked: `app.cpp`'s `power.state` handler wakes the sensors on an unknown state string, while `DeviceService` ignores it.
