@@ -145,8 +145,9 @@ protected:
     // Under the lock: the value has changed.
     void changed_locked();
     // From the derived destructor, while the value still exists: reports
-    // live subscriptions as misuse, then (device builds, where misuse
-    // returns) detaches each so a later release() only frees it.
+    // live subscriptions as misuse, then (where the report returns: on the
+    // device, or on the host under a test's misuse handler) detaches each
+    // so a later release() only frees it.
     void release_all();
 
     EventBus& bus_;

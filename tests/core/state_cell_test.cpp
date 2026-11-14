@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -47,8 +48,35 @@ using Peer = wisp::core::cell_detail::CellTestPeer;
 namespace {
 
 // Long enough that a correct run never reaches it, short enough that a
-// wrong one fails the test instead of hanging the binary.
-constexpr uint32_t kGateMs = 5000;
+// wrong one fails the test instead of hanging the binary. Shorter than the
+// cell's release bound (kReleaseWaitLimitMs, 3 s, in state_cell.cpp): a
+// run left blocked on a gate by a failed test ends before a misused
+// teardown waiting for that run gives up and aborts the whole binary.
+constexpr uint32_t kGateMs = 2000;
+
+// Declared after a test's threads (and before it starts them): on every
+// way out of the test, a failed ASSERT included, it opens the gate and
+// joins the threads, so the failure is reported by gtest instead of
+// std::terminate on a joinable thread.
+class GateAndJoin {
+public:
+    GateAndJoin(wisp::os::Semaphore& gate, std::initializer_list<std::thread*> threads)
+        : gate_(gate), threads_(threads) {}
+    ~GateAndJoin() {
+        gate_.give();
+        for (std::thread* t : threads_) {
+            if (t->joinable()) {
+                t->join();
+            }
+        }
+    }
+    GateAndJoin(const GateAndJoin&) = delete;
+    GateAndJoin& operator=(const GateAndJoin&) = delete;
+
+private:
+    wisp::os::Semaphore& gate_;
+    std::vector<std::thread*> threads_;
+};
 
 struct Seen {
     int value;
@@ -571,13 +599,15 @@ TEST_F(StateCell, ResetRacingDestructionWhenTheHandleClaimsFirst) {
         entered.give();
         gate.take(kGateMs);
     });
+    std::atomic<bool> destroyed{false};
+    std::thread handle, owner;
+    GateAndJoin guard(gate, {&handle, &owner});
     ASSERT_TRUE(entered.take(kGateMs));
     // The handle unlinks the subscription, then waits in cancel() for the
     // run blocked on `gate`.
-    std::thread handle([&] { sub.reset(); });
+    handle = std::thread([&] { sub.reset(); });
     ASSERT_TRUE(wait_until([&] { return Peer::releasing(*c) == 1; }, kGateMs));
-    std::atomic<bool> destroyed{false};
-    std::thread owner([&] {
+    owner = std::thread([&] {
         c.reset();
         destroyed = true;
     });
@@ -602,11 +632,13 @@ TEST_F(StateCell, ResetRacingDestructionWhenTheCellClaimsFirst) {
         entered.give();
         gate.take(kGateMs);
     });
+    std::thread owner;
+    GateAndJoin guard(gate, {&owner});
     ASSERT_TRUE(entered.take(kGateMs));
     CellSub* raw = Peer::sub(sub);
     // The cell takes the subscription over, then waits in cancel() for
     // the run blocked on `gate`.
-    std::thread owner([&] { c.reset(); });
+    owner = std::thread([&] { c.reset(); });
     ASSERT_TRUE(wait_until([&] { return (Peer::claim(raw) & CellSub::kCellOwned) != 0; }, kGateMs));
     // The handle loses the claim: it returns at once and leaves the free
     // to the cell, which still uses the subscription.
@@ -631,9 +663,11 @@ TEST_F(StateCell, DestructionWaitsForARunningCallbackThatReadsTheCell) {
         gate.take(kGateMs);
         read_back = cell->get();  // the cell is mid-destruction, still whole
     });
+    std::thread owner;
+    GateAndJoin guard(gate, {&owner});
     ASSERT_TRUE(entered.take(kGateMs));
     CellSub* raw = Peer::sub(sub);
-    std::thread owner([&] { c.reset(); });
+    owner = std::thread([&] { c.reset(); });
     ASSERT_TRUE(wait_until([&] { return (Peer::claim(raw) & CellSub::kCellOwned) != 0; }, kGateMs));
     gate.give();
     owner.join();
@@ -656,9 +690,11 @@ TEST_F(StateCell, CallbackResetsItsOwnHandleWhileTheCellIsDestroyed) {
         gate.take(kGateMs);
         sub.reset();
     });
+    std::thread owner;
+    GateAndJoin guard(gate, {&owner});
     ASSERT_TRUE(entered.take(kGateMs));
     CellSub* raw = Peer::sub(sub);
-    std::thread owner([&] { c.reset(); });
+    owner = std::thread([&] { c.reset(); });
     ASSERT_TRUE(wait_until([&] { return (Peer::claim(raw) & CellSub::kCellOwned) != 0; }, kGateMs));
     gate.give();
     owner.join();

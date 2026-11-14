@@ -124,7 +124,9 @@ void dispatch_misuse(const char* what);
 // Host builds only, for tests of what the device does after a misuse
 // report: while a handler is set, dispatch_misuse() calls it instead of
 // aborting, and returns as it does on the device. Returns the previous
-// handler; nullptr restores the abort.
+// handler; nullptr restores the abort. Suits teardown misuses only: one
+// reported while a lock is held and followed by taking that same lock
+// (a cell's re-entry check) hangs instead of being recorded.
 using MisuseHandler = void (*)(const char* what);
 MisuseHandler set_misuse_handler(MisuseHandler handler);
 #endif

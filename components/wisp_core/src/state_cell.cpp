@@ -16,10 +16,14 @@ thread_local const CellCore* tls_held = nullptr;
 #endif
 
 // How often a cell destroyed while a release() is still in flight looks
-// again (device builds only: on the host that destruction aborts first),
-// and for how long. A release() waits only for one run, which does
-// memory work, so a wait this long means it never ends: the cell is being
-// destroyed from the very run that release() waits for.
+// again, and for how long. This wait happens only after the destruction
+// was reported as misuse, so only where dispatch_misuse() returns: on the
+// device, or on the host while a test has installed a misuse handler.
+// The bound is not a promise about how long a run takes (a callback may
+// legally run longer); it exists to turn the one wait that can never end
+// -- the cell destroyed from the very run that release() waits for --
+// into a logged abort instead of a hang. A long callback racing a misused
+// teardown can trip it as well.
 constexpr uint32_t kReleasePollMs = 1;
 constexpr uint32_t kReleaseWaitLimitMs = 3000;
 
@@ -151,8 +155,9 @@ void CellCore::release_all() {
                   static_cast<unsigned>(live), live == 1 ? "" : "s");
     dispatch_misuse(what);
 
-    // Device builds: misuse returned. Detach every subscription so that
-    // no run, set() or later reset() touches this cell again.
+    // The report returned (the device, or a test's misuse handler).
+    // Detach every subscription so that no run, set() or later reset()
+    // touches this cell again.
     const uint64_t start = os::now_ms();
     while (true) {
         CellSub* claimed = nullptr;
