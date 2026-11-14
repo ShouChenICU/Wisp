@@ -8,12 +8,12 @@
 // covers the whole screen and the title is its first item, so the title
 // scrolls with the rows rather than holding a band at the top. The list's
 // padding keeps the content inside the safe area's columns, starts it
-// at the safe area's top and ends it above the talk overlay's tallest
-// card (talk_overlay_end_room(), wisp/shell/talk_overlay.hpp): scrolled to
-// the top, the title and the first row lie wholly in the safe area;
-// scrolled to the bottom, the last row does, clear of the card; in
-// between, the title and the rows may pass through the rows the screen
-// does not show.
+// at the safe area's top and ends it at the safe area's bottom row:
+// scrolled to the top, the title and the first row lie wholly in the safe
+// area; scrolled to the bottom, the last row does; in between, the title
+// and the rows may pass through the rows the screen does not show. While
+// the talk overlay's card shows, the list ends above it instead
+// (set_overlay_end_room()).
 //
 // A page adds its rows after the title (they start at kFirstRow), keeps
 // it when it rebuilds them (clear_rows(), not lv_obj_clean()) and puts
@@ -69,6 +69,13 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title);
 // A page's root on `parent`: as large as the screen, transparent, neither
 // clickable nor scrollable, bubbling its children's events.
 lv_obj_t* make_root(lv_obj_t* parent, const hal::ScreenShape& shape);
+
+// The talk overlay's room at the bottom of the screen (TalkOverlay::
+// end_room(); 0 with no card): every list make_page() built, now or
+// later, ends its scroll range above it while it lasts, and goes back to
+// its own end when it goes. Shell calls it as the card shows, hides or
+// changes height.
+void set_overlay_end_room(int32_t room);
 
 // Deletes the list's rows, keeping its title.
 void clear_rows(lv_obj_t* list);

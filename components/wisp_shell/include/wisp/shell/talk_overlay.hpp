@@ -34,9 +34,9 @@
 //
 // The card sits above the safe area's bottom edge and grows upward to fit
 // its text, three lines at most, then the text ends with an ellipsis; at
-// every height it keeps to the rows the screen shows. The scrolling
-// screens it shows over leave room for it at their end
-// (talk_overlay_end_room()).
+// every height it keeps to the rows the screen shows. While it shows,
+// Shell gives the scrolling screens under it room at their end
+// (end_room()), so their last item can be scrolled clear of it.
 //
 // A tap calls `open_home` (Shell::show(Home): a scene in front is sent
 // back first, as the back gesture does; a sub-page or the diagnostics
@@ -62,17 +62,6 @@ class SystemLayer;
 
 namespace wisp::shell {
 
-// The top row of the card at its tallest on `shape`. A scrolling screen
-// the card may show over (a sub-page, the diagnostics) keeps its content's
-// end kGapSm above it, so that scrolled to the end its last item is clear
-// of the card whatever the card shows (AGENTS.md section 3: the last item
-// fully visible).
-int32_t talk_overlay_top(const hal::ScreenShape& shape);
-// The bottom padding that gives a scrolling column as tall as `shape`
-// that end room: from talk_overlay_top() less kGapSm to the screen's
-// bottom edge.
-int32_t talk_overlay_end_room(const hal::ScreenShape& shape);
-
 class TalkOverlay {
 public:
     enum class Phase : uint8_t { Hidden, Listening, Thinking, Saying, Note };
@@ -97,6 +86,10 @@ public:
 
     Phase phase() const { return phase_; }
     lv_obj_t* obj() const { return obj_; }
+    // The rows a scrolling screen under the card keeps clear at its end
+    // while the card shows: from kGapSm above the card's top to the
+    // screen's bottom edge, at the card's current height; 0 while hidden.
+    int32_t end_room() const;
 
 private:
     // What a Saying or Note shows, and since when.
@@ -123,6 +116,7 @@ private:
     lv_obj_t* bar_ = nullptr;
     lv_obj_t* label_ = nullptr;
     bool pulsing_ = false;
+    int32_t card_top_ = 0;  // the card's top row, as fit() last placed it
 
     Phase phase_ = Phase::Hidden;
     os::LargeString step_shown_;  // the running step's label, while thinking

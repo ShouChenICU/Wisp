@@ -1,8 +1,8 @@
 #include "page_frame.hpp"
 
 #include <algorithm>
+#include <vector>
 
-#include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme_tokens.hpp"
@@ -20,7 +20,45 @@ constexpr int32_t kRowPadY = ui::theme::kGapSm;
 constexpr int32_t kIconPx = 20;
 // Above a group's heading, besides the list's row gap.
 constexpr int32_t kGroupGap = ui::theme::kGapSm;
+
+// The lists make_page() built that still exist, with their own bottom
+// padding, and the talk overlay's room they all keep now. UI thread only.
+struct TrackedList {
+    lv_obj_t* list;
+    int32_t pad;
+};
+std::vector<TrackedList>& tracked() {
+    static std::vector<TrackedList> lists;
+    return lists;
+}
+int32_t g_end_room = 0;
+
+void apply_end_room(const TrackedList& t) {
+    lv_obj_set_style_pad_bottom(t.list, std::max(t.pad, g_end_room), 0);
+    // A list scrolled into room that has just gone comes back to its end,
+    // as LVGL does when content shrinks.
+    lv_obj_update_layout(t.list);
+    lv_obj_readjust_scroll(t.list, LV_ANIM_OFF);
+}
+
+void untrack_cb(lv_event_t* e) {
+    auto* list = static_cast<lv_obj_t*>(lv_event_get_current_target(e));
+    std::erase_if(tracked(), [list](const TrackedList& t) { return t.list == list; });
+}
+
+void track_list(lv_obj_t* list, int32_t pad) {
+    tracked().push_back({list, pad});
+    lv_obj_add_event_cb(list, &untrack_cb, LV_EVENT_DELETE, nullptr);
+    if (g_end_room > pad) apply_end_room(tracked().back());
+}
+
 }  // namespace
+
+void set_overlay_end_room(int32_t room) {
+    if (room == g_end_room) return;
+    g_end_room = room;
+    for (const TrackedList& t : tracked()) apply_end_room(t);
+}
 
 bool colour_panel(lv_obj_t* obj) {
     return hal::panel_is_colour(ui::display_panel(lv_obj_get_display(obj)));
@@ -64,8 +102,7 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_add_flag(scr, LV_OBJ_FLAG_PRESS_LOCK);
 
     // The title scrolls with the rows. Padding keeps the first and last
-    // items inside the safe area at either end of the scroll range, the
-    // last one also above the talk overlay's card.
+    // items inside the safe area at either end of the scroll range.
     const hal::Area safe = hal::safe_rect(shape);
     const int32_t title_y = safe.y1;
     f.root = make_root(scr, shape);
@@ -77,10 +114,7 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     lv_obj_set_style_pad_left(list, safe.x1, 0);
     lv_obj_set_style_pad_right(list, shape.width - 1 - safe.x2, 0);
     lv_obj_set_style_pad_top(list, title_y, 0);
-    // Past the safe area's bottom, room for the talk overlay's tallest
-    // card: scrolled to the end, the last row lies clear of it, whatever
-    // the card shows over the page.
-    lv_obj_set_style_pad_bottom(list, talk_overlay_end_room(shape), 0);
+    lv_obj_set_style_pad_bottom(list, shape.height - 1 - safe.y2, 0);
     lv_obj_set_style_pad_row(list, kRowGap, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
@@ -89,6 +123,7 @@ PageFrame make_page(const hal::ScreenShape& shape, ui::StrId title) {
     // history's bottom end takes the page home.
     lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_flag(list, LV_OBJ_FLAG_EVENT_BUBBLE);
+    track_list(list, shape.height - 1 - safe.y2);
 
     f.title = lv_label_create(list);
     lv_obj_set_width(f.title, LV_PCT(100));

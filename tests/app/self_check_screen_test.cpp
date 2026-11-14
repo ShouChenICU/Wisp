@@ -45,10 +45,8 @@
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/shell/shell.hpp"
-#include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
-#include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 using wisp::app::SummaryLevel;
@@ -674,11 +672,6 @@ TEST(SelfCheckScreen, ScrollExtremesRestInsideSafeRect) {
             auto bottom = parse(probe(true));
             ASSERT_EQ(bottom.size(), 3u);
             EXPECT_TRUE(inside(bottom[2])) << shape << " last row at scroll end";
-            // Clear of the talk overlay's tallest card, which shows over
-            // the diagnostics too.
-            EXPECT_LE(bottom[2].y2 + wisp::ui::theme::kGapSm,
-                      wisp::shell::talk_overlay_top(shape_result.value()) - 1)
-                << shape << " last row under the talk card";
 
             h.app.stop();
         }

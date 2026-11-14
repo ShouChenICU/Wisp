@@ -397,6 +397,31 @@ TEST_F(TalkOverlayTest, NonVoiceTurnShowsOnlyHowItEnded) {
     });
 }
 
+// The room the pages under the card get follows the card: none while
+// hidden, kGapSm above its top while shown, more as it grows.
+TEST_F(TalkOverlayTest, EndRoomFollowsTheCard) {
+    start();
+    make();
+    on_ui([&] {
+        EXPECT_EQ(overlay_->end_room(), 0);
+        overlay_->on_turn(TurnView{}, VoiceState::Listening, 10, 0);
+        lv_obj_update_layout(overlay_->obj());
+        const int32_t one = overlay_->end_room();
+        EXPECT_EQ(one, kSide - coords_of(overlay_->obj()).y1 + wisp::ui::theme::kGapSm);
+        TurnView v = voice_view();
+        std::string say;
+        for (int i = 0; i < 30; ++i) say += "好的，已经记下来了。";
+        v.say.assign(say);
+        overlay_->on_turn(v, VoiceState::Idle, 0, 100);
+        lv_obj_update_layout(overlay_->obj());
+        EXPECT_GT(overlay_->end_room(), one);
+        EXPECT_EQ(overlay_->end_room(),
+                  kSide - coords_of(overlay_->obj()).y1 + wisp::ui::theme::kGapSm);
+        overlay_->hide();
+        EXPECT_EQ(overlay_->end_room(), 0);
+    });
+}
+
 // A say longer than a line grows the card, up to three lines, without
 // cutting it; the card keeps to the visible area.
 TEST_F(TalkOverlayTest, LongSayGrowsToThreeLines) {
@@ -507,8 +532,8 @@ TEST_P(TalkOverlayShapes, ThreeLinesAtMostInsideVisibleArea) {
         const lv_area_t l = coords_of(label);
         EXPECT_GE(l.y1, box.y1);
         EXPECT_LE(l.y2, box.y2);
-        // The tallest card is where the pages keep their end room from.
-        EXPECT_EQ(box.y1, wisp::shell::talk_overlay_top(shape_));
+        // The room the pages under it get: from kGapSm above its top.
+        EXPECT_EQ(overlay_->end_room(), shape_.height - box.y1 + wisp::ui::theme::kGapSm);
     });
 }
 

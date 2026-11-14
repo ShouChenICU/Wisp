@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "shell/shell_fixture.hpp"
 #include "support/fake_devices.hpp"
@@ -65,6 +66,7 @@ protected:
                     lv_obj_delete(diag);
                     diag = nullptr;
                 },
+            .diagnostics_end_room = [this](int32_t room) { diag_rooms.push_back(room); },
             .leave_scene = [this]() -> wisp::Result<bool> {
                 ++leaves;
                 if (scene == nullptr) return wisp::Result<bool>::ok(false);
@@ -146,6 +148,7 @@ protected:
     bool leaving = false;
     lv_obj_t* scene = nullptr;
     lv_obj_t* diag = nullptr;
+    std::vector<int32_t> diag_rooms;  // UI thread
 };
 
 }  // namespace
@@ -361,6 +364,33 @@ TEST_F(ShellTalkTest, TapOnASubPageShowsHome) {
 
     conv->hold_cancel();
     ASSERT_TRUE(settled());
+}
+
+// The diagnostics get the card's room while it shows and lose it when it
+// hides, as the sub-pages do.
+TEST_F(ShellTalkTest, DiagnosticsGetTheCardsEndRoom) {
+    make_shell();
+    on_ui([&] { shell_->open_diagnostics(); });
+    ASSERT_NE(diag, nullptr);
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+    std::vector<int32_t> rooms;
+    int32_t want = 0;
+    on_ui([&] {
+        rooms = diag_rooms;
+        want = shell_->talk()->end_room();
+    });
+    ASSERT_FALSE(rooms.empty());
+    EXPECT_GT(want, 0);
+    EXPECT_EQ(rooms.back(), want);
+
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+    ASSERT_TRUE(wait_phase(Phase::Hidden, 2000));
+    on_ui([&] { rooms = diag_rooms; });
+    EXPECT_EQ(rooms.back(), 0);
 }
 
 // On the diagnostics the tap closes them, as their back gesture does.

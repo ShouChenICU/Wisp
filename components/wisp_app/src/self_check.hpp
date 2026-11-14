@@ -16,6 +16,7 @@
 // only need to hold/forward a `std::unique_ptr<SelfCheck>` without
 // touching its insides, don't need to include any of its headers.
 
+#include <cstdint>
 #include <memory>
 
 namespace wisp::ui {
@@ -49,5 +50,9 @@ void start_self_check(App& app, ui::SystemLayer& system, SceneWiring* scenes,
 // ~SelfCheck() for how it runs the LVGL-specific teardown on the UI
 // thread (inline when already on it).
 void stop_self_check(std::unique_ptr<SelfCheck>& self_check);
+
+// SelfCheck::set_end_room() on the screen `self_check` holds, if any. UI
+// thread only.
+void set_self_check_end_room(const std::unique_ptr<SelfCheck>& self_check, int32_t room);
 
 }  // namespace wisp::app

@@ -67,6 +67,11 @@ public:
     // it.
     void build();
 
+    // The talk overlay's room at the bottom of the screen
+    // (shell::TalkOverlay::end_room(), 0 with no card): the page ends its
+    // scroll range above it while it lasts, then goes back to its own end.
+    void set_end_room(int32_t room);
+
     // The screen the page is built on; nullptr before build().
     lv_obj_t* screen() const { return screen_; }
 

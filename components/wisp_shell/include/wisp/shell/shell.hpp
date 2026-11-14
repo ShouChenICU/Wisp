@@ -146,6 +146,10 @@ struct ShellDeps {
     // tears it down. Called on the UI thread; either may be empty (no
     // diagnostics).
     std::function<void()> open_diagnostics, close_diagnostics;
+    // While the diagnostics are open: the talk overlay's room at the
+    // bottom of the screen (TalkOverlay::end_room(), 0 with no card), for
+    // their scrolling page to end above. UI thread; empty: none.
+    std::function<void(int32_t)> diagnostics_end_room;
     // Sends the scene in front back (SceneRuntime::close(), which on the
     // UI thread only queues it): true if there was one, false if none; an
     // error refuses the navigation. Empty: no scenes.
@@ -336,6 +340,9 @@ private:
     // update_talk() already queued.
     void request_talk();
     void update_talk();
+    // Hands the overlay card's room (TalkOverlay::end_room()) to the
+    // scrolling pages under it when it changed.
+    void sync_end_room();
     void on_voice_bus(const core::Event& e);
     static void talk_timer_cb(lv_timer_t* t);
 
@@ -400,6 +407,7 @@ private:
     std::atomic<voice::VoiceState> voice_state_{voice::VoiceState::Idle};
     std::atomic<uint8_t> voice_level_{0};
     std::atomic<bool> talk_posted_{false};
+    int32_t end_room_ = 0;  // the room last handed to the pages
 
     // Cleared by stop(): a back swipe's post queued before it does
     // nothing.

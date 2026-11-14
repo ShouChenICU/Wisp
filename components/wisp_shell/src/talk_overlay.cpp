@@ -26,8 +26,8 @@ constexpr int32_t kRowGap = ui::theme::kGapSm;
 constexpr int32_t kDotSize = 14;
 constexpr int32_t kBarH = 10;
 constexpr int32_t kMaxLines = 3;
-// Set on the label rather than inherited, so talk_overlay_top() knows the
-// tallest card without a label to ask.
+// Set on the label rather than inherited, so fit() can size the card
+// for a text before the label holds it.
 constexpr int32_t kLineSpace = 0;
 constexpr uint32_t kPulseMs = 900;
 
@@ -62,14 +62,6 @@ bool same(const os::LargeString& a, const os::LargeString& b) {
 }
 
 }  // namespace
-
-int32_t talk_overlay_top(const hal::ScreenShape& shape) {
-    return overlay_rect(shape, card_height(text_height(kMaxLines))).y1;
-}
-
-int32_t talk_overlay_end_room(const hal::ScreenShape& shape) {
-    return shape.height - talk_overlay_top(shape) + ui::theme::kGapSm;
-}
 
 TalkOverlay::TalkOverlay(ui::SystemLayer& layer, const hal::ScreenShape& shape,
                          std::function<void()> open_home)
@@ -270,6 +262,7 @@ void TalkOverlay::fit(const char* text) {
     const int32_t letter = lv_obj_get_style_text_letter_space(label_, LV_PART_MAIN);
     auto place = [&](int32_t text_h) {
         const lv_area_t box = overlay_rect(shape_, card_height(text_h));
+        card_top_ = box.y1;
         lv_obj_set_pos(obj_, box.x1, box.y1);
         lv_obj_set_size(obj_, std::max<int32_t>(lv_area_get_width(&box), 0),
                         lv_area_get_height(&box));
@@ -290,6 +283,11 @@ void TalkOverlay::fit(const char* text) {
         if (size.y <= text_h) return;
     }
     if (text == nullptr) place(text_h);
+}
+
+int32_t TalkOverlay::end_room() const {
+    if (phase_ == Phase::Hidden) return 0;
+    return shape_.height - card_top_ + ui::theme::kGapSm;
 }
 
 void TalkOverlay::set_pulse(bool on) {

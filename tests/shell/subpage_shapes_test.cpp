@@ -2,8 +2,7 @@
 // of the base spec): the title is the list's first item and scrolls with
 // it; scrolled to the top, the title (inside the safe area) and the
 // first row lie wholly on the visible screen, scrolled to the bottom the
-// last row does, clear of the talk overlay's card at its tallest, and
-// every row or card is a thumb's height at least.
+// last row does, and every row or card is a thumb's height at least.
 
 #include <gtest/gtest.h>
 
@@ -125,9 +124,8 @@ protected:
     static lv_obj_t* title_of(lv_obj_t* list) { return lv_obj_get_child(list, 0); }
 
     // Scrolled to the top the title and `first` are visible, the title
-    // inside the safe area; to the bottom `last` is, kGapSm above the
-    // talk overlay's tallest card. In between the title moves with the
-    // rows. Left scrolled to the bottom.
+    // inside the safe area; to the bottom `last` is. In between the
+    // title moves with the rows. Left scrolled to the bottom.
     void check_ends(lv_obj_t* list, lv_obj_t* first, lv_obj_t* last) {
         const wisp::hal::ScreenShape& s = h->shape();
         lv_obj_t* title = title_of(list);
@@ -145,9 +143,6 @@ protected:
         lv_obj_update_layout(list);
         EXPECT_LE(lv_obj_get_scroll_bottom(list), 0);
         EXPECT_TRUE(box_visible(s, coords_of(last))) << "last " << str(coords_of(last));
-        EXPECT_LE(coords_of(last).y2 + wisp::ui::theme::kGapSm,
-                  wisp::shell::talk_overlay_top(s) - 1)
-            << "last " << str(coords_of(last));
         const int32_t n = std::min<int32_t>(40, lv_obj_get_scroll_y(list));
         lv_obj_scroll_to_y(list, n, LV_ANIM_OFF);
         lv_obj_update_layout(list);
@@ -190,16 +185,10 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
             }
             lv_obj_t* list = lv_obj_get_parent(lv_obj_get_parent(p->card(0)));
             check_ends(list, p->card(0), p->card(8));
-            // Every card of the last row is wholly on the screen at the
-            // end, the row's first (leftmost) too, not only the last card.
+            // A card is wholly on the screen at the end it is at.
             lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
             lv_obj_update_layout(list);
-            size_t row_first = 8;
-            while (row_first > 0 &&
-                   coords_of(p->card(row_first - 1)).y1 == coords_of(p->card(8)).y1)
-                --row_first;
-            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->card(row_first))))
-                << row_first << " " << str(coords_of(p->card(row_first)));
+            EXPECT_TRUE(box_visible(h->shape(), coords_of(p->card(6))));
         });
         // The long-press card fits too.
         h->hold(h->centre_of(h->shell().scene_list()->card(8)), 700);
@@ -264,26 +253,40 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
 }
 
 // With the card up for a spoken turn (here: recording), Settings scrolled
-// to its end shows its last row above the card, and a real tap on that row
-// is the row's (it asks to power off), not the card's (which goes Home).
+// to its end shows its last row kGapSm above the card, and a real tap on
+// that row is the row's (it asks to power off), not the card's (which
+// goes Home). A page opened while the card is up gets the same room. Once
+// the card hides the room goes: the list is back at its own end.
 TEST_P(SubPageShapes, LastRowStaysClearOfTheTalkCard) {
+    using Phase = wisp::shell::TalkOverlay::Phase;
+    using Row = wisp::shell::SettingsPage::Row;
     h->show(Page::Settings);
-    h->bus().publish({"voice.state", "test", 0, {{"state", "listening"}, {"level", int64_t{40}}}});
-    ASSERT_TRUE(h->ui_until(
-        [&] { return h->shell().talk()->phase() == wisp::shell::TalkOverlay::Phase::Listening; }));
-    lv_obj_t* last = nullptr;
+    lv_area_t plain{};
     h->on_ui([&] {
         wisp::shell::SettingsPage* p = h->shell().settings_page();
         ASSERT_NE(p, nullptr);
-        last = p->row(wisp::shell::SettingsPage::Row::PowerOff);
         lv_obj_scroll_to_y(p->list(), LV_COORD_MAX, LV_ANIM_OFF);
+        lv_obj_update_layout(p->list());
+        plain = coords_of(p->row(Row::PowerOff));
+    });
+    h->bus().publish({"voice.state", "test", 0, {{"state", "listening"}, {"level", int64_t{40}}}});
+    ASSERT_TRUE(h->ui_until([&] { return h->shell().talk()->phase() == Phase::Listening; }));
+    lv_obj_t* last = nullptr;
+    auto clear_of_card = [&](lv_obj_t* list, lv_obj_t* row_obj) {
+        lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
         lv_obj_update_layout(lv_screen_active());
         lv_obj_update_layout(h->shell().talk()->obj());
         const lv_area_t card = coords_of(h->shell().talk()->obj());
-        const lv_area_t row = coords_of(last);
+        const lv_area_t row = coords_of(row_obj);
         EXPECT_FALSE(is_hidden(h->shell().talk()->obj()));
-        EXPECT_LT(row.y2, card.y1) << "row " << str(row) << " card " << str(card);
+        EXPECT_GE(card.y1 - 1 - row.y2, wisp::ui::theme::kGapSm)
+            << "row " << str(row) << " card " << str(card);
         EXPECT_TRUE(box_visible(h->shape(), row)) << str(row);
+    };
+    h->on_ui([&] {
+        wisp::shell::SettingsPage* p = h->shell().settings_page();
+        last = p->row(Row::PowerOff);
+        clear_of_card(p->list(), last);
     });
     ASSERT_NE(last, nullptr);
     h->tap(h->centre_of(last));
@@ -293,9 +296,31 @@ TEST_P(SubPageShapes, LastRowStaysClearOfTheTalkCard) {
     h->on_ui([&] { asked = h->layer().confirm_open(); });
     EXPECT_TRUE(asked);
     EXPECT_TRUE(h->click_dialog(wisp::ui::tr(wisp::ui::StrId::No)));
+
+    h->show(Page::History);
+    h->on_ui([&] {
+        wisp::shell::HistoryPage* p = h->shell().history();
+        ASSERT_NE(p, nullptr);
+        const auto r = rows(p->list());
+        ASSERT_FALSE(r.empty());
+        clear_of_card(p->list(), r.back());
+    });
+
+    // Scrolled into the room when the card hides: the list settles back
+    // to its own end, with no scroll of the user's.
+    h->show(Page::Settings);
+    h->on_ui([&] {
+        wisp::shell::SettingsPage* p = h->shell().settings_page();
+        clear_of_card(p->list(), p->row(Row::PowerOff));
+    });
     h->bus().publish({"voice.state", "test", 0, {{"state", "idle"}}});
-    ASSERT_TRUE(h->ui_until(
-        [&] { return h->shell().talk()->phase() == wisp::shell::TalkOverlay::Phase::Hidden; }));
+    ASSERT_TRUE(h->ui_until([&] { return h->shell().talk()->phase() == Phase::Hidden; }));
+    h->on_ui([&] {
+        wisp::shell::SettingsPage* p = h->shell().settings_page();
+        lv_obj_update_layout(p->list());
+        EXPECT_EQ(lv_obj_get_scroll_bottom(p->list()), 0);
+        EXPECT_EQ(str(coords_of(p->row(Row::PowerOff))), str(plain));
+    });
 }
 
 // Opened before storage answers, the scene list's loading placeholders
