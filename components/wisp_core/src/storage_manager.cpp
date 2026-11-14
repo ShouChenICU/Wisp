@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
@@ -20,8 +21,6 @@ namespace wisp::core {
 namespace {
 
 constexpr const char* kTag = "storage_manager";
-constexpr const char* kIntId = "storage.int";
-constexpr const char* kSdId = "storage.sd";
 
 // Lexically normalizes `path`: collapses repeated '/', drops '.'
 // components, and drops a trailing '/' (so the result never has one).
@@ -489,10 +488,10 @@ Result<void> StorageManager::init() {
     // at the very end, once every step below has actually succeeded.
     ready_ = false;
 
-    int_dev_ = registry_.get<hal::Storage>(kIntId);
+    int_dev_ = registry_.by_role<hal::Storage>(hal::role::kInternal);
     if (!int_dev_) {
         return Result<void>::err(ErrorCode::StorageUnavailable,
-                                 std::string(kIntId) + " not registered");
+                                 "no storage device with role internal");
     }
     Result<std::string> int_norm = normalize_path(int_dev_->mount_point());
     if (!int_norm) {
@@ -502,7 +501,7 @@ Result<void> StorageManager::init() {
     WISP_TRY(mkdir_p(int_mount_ + "/system"));
     WISP_TRY(mkdir_p(int_mount_ + "/library"));
 
-    sd_dev_ = registry_.get<hal::Storage>(kSdId);
+    sd_dev_ = registry_.by_role<hal::Storage>(hal::role::kRemovable);
     if (sd_dev_) {
         Result<std::string> sd_norm = normalize_path(sd_dev_->mount_point());
         if (!sd_norm) {
@@ -1065,7 +1064,7 @@ void StorageManager::refresh() {
     sd_online_ = now_online;
 
     Event e;
-    e.source = kSdId;
+    e.source = sd_dev_->info().id;
     if (sd_online_) {
         // Best-effort, same as init(): a write-protected/corrupt card
         // stays marked online rather than flipping refresh() back to
@@ -1089,6 +1088,7 @@ StorageStatus StorageManager::status() const {
         }
         MediaStatus m;
         m.id = dev->info().id;
+        m.removable = dev == sd_dev_;
         m.online = dev->online();
         Result<hal::Capacity> cap = dev->capacity();
         if (cap) {

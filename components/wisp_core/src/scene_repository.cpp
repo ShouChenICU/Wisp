@@ -28,7 +28,7 @@ constexpr size_t kMaxFiles = 256;
 // A card slot exists but holds no online card.
 bool sd_card_out(const StorageManager& storage) {
     for (const MediaStatus& m : storage.status().media)
-        if (!m.online) return true;
+        if (m.removable && !m.online) return true;
     return false;
 }
 // The directories of a scene's own that sit inside its package directory

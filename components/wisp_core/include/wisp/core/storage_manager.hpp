@@ -1,11 +1,14 @@
 #pragma once
 
 // Portable storage manager: tiered System/Library/Backup logical areas on
-// top of the two fixed storage devices every board registers --
-// "storage.int" (always-present internal flash, LittleFS on the ESP port)
-// and, optionally, "storage.sd" (a removable SD card, FAT on the ESP
-// port). See AGENTS.md's storage rule: every persistent write in Wisp goes
-// through write_atomic() here, never a raw fopen/fwrite elsewhere.
+// top of the two storage media a board registers, found by role
+// (wisp/hal/roles.hpp) rather than by id -- the one with role "internal"
+// (always-present internal flash, LittleFS on the ESP port) and,
+// optionally, the one with role "removable" (an SD card, FAT on the ESP
+// port). Comments here call them storage.int and storage.sd after their
+// usual ids; a board may name them otherwise. See AGENTS.md's storage
+// rule: every persistent write in Wisp goes through write_atomic() here,
+// never a raw fopen/fwrite elsewhere.
 //
 // Area root rules (spec 7.2):
 //   System  = [<int>/system]
@@ -164,6 +167,8 @@ struct MediaStatus {
     bool online = false;
     uint64_t total_bytes = 0;
     uint64_t free_bytes = 0;
+    // The medium found by role "removable" (the card), whatever its id.
+    bool removable = false;
 };
 
 struct StorageStatus {
@@ -189,14 +194,15 @@ public:
     StorageManager(const StorageManager&) = delete;
     StorageManager& operator=(const StorageManager&) = delete;
 
-    // Looks up "storage.int" (required) and "storage.sd" (optional) in the
-    // registry, and creates the area roots that should exist right now:
+    // Looks up the storage with role "internal" (required) and the one
+    // with role "removable" (optional) in the registry, and creates the
+    // area roots that should exist right now:
     // <int>/system, <int>/library always; <sd>/wisp/library and
     // <sd>/wisp/backup if storage.sd is present and currently online().
     // Fails with ErrorCode::StorageUnavailable (without creating anything,
     // and leaving every other method returning StorageUnavailable/empty
-    // roots -- see roots()/write_atomic()/read_file() below) if
-    // "storage.int" isn't registered -- every board must have one, so its
+    // roots -- see roots()/write_atomic()/read_file() below) if no
+    // storage has role "internal" -- every board must have one, so its
     // absence means storage is unusable, not merely degraded. A failure
     // to create <int>'s directories (e.g. a read-only internal
     // filesystem, or a non-directory file already sitting at that path --
@@ -336,8 +342,9 @@ public:
     // last init()/refresh(), (re)creates its area roots (on an
     // offline->online transition; a creation failure only logs a warning,
     // same as init() -- see its doc comment) and publishes
-    // "storage.sd.inserted" or "storage.sd.removed" (source "storage.sd")
-    // accordingly. A no-op if "storage.sd" isn't registered, or if its
+    // "storage.sd.inserted" or "storage.sd.removed" (source: the card's
+    // own id; the topics keep their names whatever the id) accordingly.
+    // A no-op if "storage.sd" isn't registered, or if its
     // online() state hasn't changed since the last call -- see the file
     // header's note on what that means for a card inserted and removed
     // between two polls. Intended to be called periodically (e.g. by a 2s

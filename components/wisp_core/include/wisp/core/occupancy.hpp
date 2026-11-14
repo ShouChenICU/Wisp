@@ -4,7 +4,7 @@
 // how. A holder ("system.<module>" or "scene.<id>") takes a device id
 // ("imu.main") in shared or exclusive mode. Shared holders coexist; an
 // exclusive one excludes every other holder. This release only records:
-// SensorService takes "imu.main" shared for each holder that subscribes,
+// SensorService takes the IMU's id shared for each holder that subscribes,
 // and the admin API lists the table. Preemption and asking the user are
 // left to later sub-projects.
 //
