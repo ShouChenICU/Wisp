@@ -63,9 +63,15 @@ public:
 
     // Devices with a schema, sorted by id: [{"id","class","model","role",
     // "schema"}]; "role" is the caps value (string or list) or null. Built
-    // on each call (a schema renders to a few KB at most) and owned by the
-    // caller.
+    // on each call and owned by the caller; for_each() collected.
     List list() const;
+
+    // The same entries, one at a time: each is built just before `visit`
+    // gets it, so a caller that renders and drops them holds one device's
+    // tree at a time, not every device's. `visit` returns false to stop.
+    // Walks a snapshot of the registry (DeviceRegistry::all()) and holds no
+    // lock of the service while `visit` runs.
+    void for_each(const std::function<bool(Value entry)>& visit) const;
 
     // Property `prop` of device `id`: NotFound (no such device, a device
     // without a schema, or no such property), Busy while a "standby: off"

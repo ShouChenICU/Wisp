@@ -85,20 +85,29 @@ DeviceService::DeviceService(DeviceRegistry& registry, OccupancyRegistry* occupa
 
 List DeviceService::list() const {
     List out;
+    for_each([&out](Value entry) {
+        out.push_back(std::move(entry));
+        return true;
+    });
+    return out;
+}
+
+void DeviceService::for_each(const std::function<bool(Value entry)>& visit) const {
     for (const auto& device : registry_.all()) {
         const hal::DeviceSchema* schema = device->describe();
         if (schema == nullptr) continue;
         const hal::DeviceInfo& info = device->info();
         auto role = info.caps.find("role");
-        out.push_back(Value(Map{
-            {"id", info.id},
-            {"class", hal::to_string(info.cls)},
-            {"model", info.model},
-            {"role", role == info.caps.end() ? Value() : role->second},
-            {"schema", hal::render_schema(*schema)},
-        }));
+        if (!visit(Value(Map{
+                {"id", info.id},
+                {"class", hal::to_string(info.cls)},
+                {"model", info.model},
+                {"role", role == info.caps.end() ? Value() : role->second},
+                {"schema", hal::render_schema(*schema)},
+            }))) {
+            return;
+        }
     }
-    return out;
 }
 
 Result<Value> DeviceService::get(const std::string& id, const std::string& prop) const {

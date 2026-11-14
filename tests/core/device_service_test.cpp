@@ -93,6 +93,25 @@ TEST_F(DeviceServiceTest, ListShowsTheRole) {
     EXPECT_EQ(list[0].as_map().at("role"), Value("main"));
 }
 
+// One device at a time, in list()'s order and shape, and the visitor can
+// stop the walk.
+TEST_F(DeviceServiceTest, ForEachVisitsOneDeviceAtATimeAndStops) {
+    ASSERT_TRUE(registry.add(std::make_shared<FakeImu>("imu.main")));
+    ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>("light.main", &kFakeGenericSchema)));
+    ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>("other.x", &kFakeGenericSchema)));
+    List seen;
+    service.for_each([&](Value entry) {
+        seen.push_back(std::move(entry));
+        return true;
+    });
+    EXPECT_EQ(seen, service.list());
+    ASSERT_EQ(seen.size(), 3u);
+
+    int visits = 0;
+    service.for_each([&](Value) { return ++visits < 2; });
+    EXPECT_EQ(visits, 2);
+}
+
 TEST_F(DeviceServiceTest, CallValidatesThenInvokes) {
     auto r = pulse();
     ASSERT_TRUE(r) << message_of(r);

@@ -17,6 +17,8 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/device_service.hpp"
+#include "wisp/core/log.hpp"
+#include "wisp/hal/device_schema.hpp"
 
 namespace {
 
@@ -100,8 +102,54 @@ TEST_F(DeviceCallTools, ListStopsAt32) {
     EXPECT_EQ(r.find("truncated")->as_bool(), true);
 }
 
+// A schema whose descriptions are `desc_bytes` long, for the byte budget.
+struct BigSchema {
+    explicit BigSchema(size_t desc_bytes)
+        : desc(desc_bytes, 'd'),
+          prop{{.name = "level", .type = wisp::hal::ParamType::Int, .desc = desc.c_str()}},
+          schema{.props = prop} {}
+    std::string desc;
+    wisp::hal::ParamSpec prop[1];
+    wisp::hal::DeviceSchema schema;
+};
+
+// Whole entries only, never past the budget: a valid document whose
+// entries stop before the one that would cross it.
+TEST_F(DeviceCallTools, ListStopsBeforeTheByteBudget) {
+    BigSchema big(20 * 1024);
+    for (const char* id : {"other.a", "other.b", "other.c", "other.d"}) {
+        ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>(id, &big.schema)));
+    }
+    ToolOutput out = call("device_list", "");
+    ASSERT_TRUE(out.ok);
+    EXPECT_LE(out.result_json.size(), wisp::agent::kDeviceListMaxBytes);
+    Value r = result_of(out);  // parses: a whole document
+    const auto& devices = r.find("devices")->as_list();
+    // haptic.main and three 20 KB devices fit in 64 KB; the fourth does not.
+    ASSERT_EQ(devices.size(), 4u);
+    EXPECT_EQ(str(devices[0], "id"), "haptic.main");
+    EXPECT_EQ(str(devices[3], "id"), "other.c");
+    for (const Value& d : devices) EXPECT_NE(d.find("schema"), nullptr);
+    ASSERT_NE(r.find("truncated"), nullptr);
+    EXPECT_EQ(r.find("truncated")->as_bool(), true);
+}
+
+TEST_F(DeviceCallTools, ADeviceLargerThanTheBudgetIsLeftOut) {
+    ASSERT_TRUE(registry.remove("haptic.main"));
+    BigSchema huge(wisp::agent::kDeviceListMaxBytes + 1);
+    ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>("other.huge", &huge.schema)));
+    ToolOutput out = call("device_list", "");
+    ASSERT_TRUE(out.ok);
+    Value r = result_of(out);
+    EXPECT_TRUE(r.find("devices")->as_list().empty());
+    ASSERT_NE(r.find("truncated"), nullptr);
+    EXPECT_EQ(r.find("truncated")->as_bool(), true);
+}
+
 TEST_F(DeviceCallTools, InvokeRunsTheCommandWithANote) {
-    ToolOutput out = pulse(150);
+    wisp::log::reset_for_test();
+    wisp::log::init();
+    ToolOutput out = pulse(1234);
     ASSERT_TRUE(out.ok) << wisp::to_json(result_of(out));
     Value r = result_of(out);
     EXPECT_EQ(r.find("ok")->as_bool(), true);
@@ -112,6 +160,14 @@ TEST_F(DeviceCallTools, InvokeRunsTheCommandWithANote) {
     ASSERT_EQ(calls.size(), 1u);
     EXPECT_EQ(calls[0].first, "pulse");
     EXPECT_EQ(calls[0].second.at("strength"), Value(int64_t{80}));
+    // The service logs the command; the arguments, which may carry user
+    // content, reach no log line.
+    // (Tags and messages only: a timestamp could hold the digits.)
+    std::string log;
+    for (const wisp::LogEntry& e : wisp::log::ring_entries()) log += e.tag + ": " + e.msg + "\n";
+    EXPECT_NE(log.find("haptic.main.pulse"), std::string::npos) << log;
+    EXPECT_EQ(log.find("1234"), std::string::npos) << log;
+    wisp::log::reset_for_test();
 }
 
 TEST_F(DeviceCallTools, QueriesHaveNoNote) {

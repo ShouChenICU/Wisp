@@ -16,11 +16,13 @@
 // the arguments, which may carry user content.
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "tool_io.hpp"
 #include "tools_json.hpp"
 #include "wisp/agent/tools.hpp"
+#include "wisp/base/json.hpp"
 #include "wisp/core/device_service.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -32,26 +34,43 @@ using detail::arg_str;
 using detail::done;
 using detail::fail;
 
-// device.list's entries at most. A schema renders to well under 1 KiB, so
-// the cap keeps the result a few tens of KB on any board.
+// device.list's entries at most (spec 4.2); kDeviceListMaxBytes bounds
+// the bytes, since descriptions and enum choices have no length limit.
 constexpr size_t kMaxListed = 32;
+constexpr std::string_view kListHead = R"({"ok":true,"devices":[)";
+constexpr std::string_view kListTail = R"(],"truncated":true})";
 
 ui::Lang lang_of(const ToolCtx& ctx) { return ui::parse_lang(ctx.lang).value_or(ui::Lang::Zh); }
 
 ToolOutput list_devices(const core::DeviceService& devices) {
-    const List list = devices.list();
     ToolOutput out;
-    // Written straight into PSRAM (os::LargeString): a board with many
-    // devices builds a result past the internal-RAM malloc threshold.
+    // Written straight into PSRAM (os::LargeString), one device at a time:
+    // only the device being rendered exists as a Value tree (default
+    // heap), and it is measured (json_size(), no allocation) before it is
+    // appended, so the text never grows past the budget.
     auto& json = out.result_json;
-    json = R"({"ok":true,"devices":[)";
-    const size_t n = list.size() < kMaxListed ? list.size() : kMaxListed;
-    for (size_t i = 0; i < n; ++i) {
-        if (i != 0) json.push_back(',');
-        detail::append_value(json, list[i]);
-    }
+    json.assign(kListHead.data(), kListHead.size());
+    size_t listed = 0;
+    bool truncated = false;
+    devices.for_each([&](Value entry) {
+        if (listed == kMaxListed) {
+            truncated = true;
+            return false;
+        }
+        const size_t comma = listed == 0 ? 0 : 1;
+        const size_t room = kDeviceListMaxBytes - json.size() - kListTail.size() - comma;
+        const size_t size = json_size(entry, room);
+        if (size > room) {
+            truncated = true;
+            return false;
+        }
+        if (comma != 0) json.push_back(',');
+        detail::append_value(json, entry);
+        ++listed;
+        return true;
+    });
     json.push_back(']');
-    if (list.size() > kMaxListed) json.append(R"(,"truncated":true)");
+    if (truncated) json.append(R"(,"truncated":true)");
     json.push_back('}');
     return out;
 }

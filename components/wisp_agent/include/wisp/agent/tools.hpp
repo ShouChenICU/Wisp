@@ -71,6 +71,12 @@ struct DeviceToolDeps {
 // notify.dismiss (spec 4.4).
 Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps);
 
+// device.list's result at most, envelope included: below the live turn's
+// tool-result budget (kLiveToolResultBytes, 96 KiB), so a long list is
+// never cut mid-JSON there. Entries that would cross it are left out and
+// "truncated" set.
+inline constexpr size_t kDeviceListMaxBytes = 64 * 1024;
+
 struct DeviceCallToolDeps {
     // Must outlive the registry (App resets it after the agent).
     core::DeviceService& devices;
