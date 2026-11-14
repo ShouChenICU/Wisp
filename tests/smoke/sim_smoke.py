@@ -73,8 +73,6 @@ import traceback
 TIMEOUT_S = 20
 EXIT_AFTER_MS = 3000
 
-# The 13 devices SimBoard::init() registers by default (see
-# components/wisp_port_sim/sim_board.cpp).
 # caps.role of each simulated device (wisp/hal/roles.hpp); button.vol_up
 # serves no portable role, so it declares none.
 EXPECTED_ROLES = {
@@ -92,6 +90,8 @@ EXPECTED_ROLES = {
     "touch.main": "main",
 }
 
+# The 13 devices SimBoard::init() registers by default (see
+# components/wisp_port_sim/sim_board.cpp).
 EXPECTED_DEVICE_IDS = {
     "audio_in.main",
     "audio_out.main",

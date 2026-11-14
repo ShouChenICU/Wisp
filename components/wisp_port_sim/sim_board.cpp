@@ -60,7 +60,8 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         report.record({id, cls, wisp::core::DeviceState::Failed, reason});
     };
     // A device the registry refuses (a class that does not match its
-    // interface, a duplicate id) is a failed device, as on the ESP boards,
+    // interface, a duplicate id, a role another device already holds
+    // under the same interface) is a failed device, as on the ESP boards,
     // never a reason to stop booting.
     // Returns whether the device is registered.
     auto register_device = [&](const std::shared_ptr<wisp::hal::Device>& device) {
