@@ -4,6 +4,7 @@
 #include <string_view>
 #include <utility>
 
+#include "outcome_text.hpp"
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
@@ -91,38 +92,6 @@ std::string payload_str(const core::Event& e, const char* key) {
     return it != e.payload.end() && it->second.type() == Value::Type::String
                ? it->second.as_string()
                : std::string();
-}
-
-ui::StrId error_text(voice::VoiceError e) {
-    switch (e) {
-        case voice::VoiceError::NoAsrProfile:
-            return ui::StrId::VoiceErrNoAsr;
-        case voice::VoiceError::NoTtsProfile:
-            return ui::StrId::VoiceErrNoTts;
-        case voice::VoiceError::Offline:
-            return ui::StrId::VoiceErrOffline;
-        case voice::VoiceError::AsrFailed:
-            return ui::StrId::VoiceErrAsr;
-        case voice::VoiceError::TtsFailed:
-            return ui::StrId::VoiceErrTts;
-        case voice::VoiceError::MicUnavailable:
-            return ui::StrId::VoiceErrMic;
-    }
-    return ui::StrId::VoiceErrAsr;
-}
-
-// The hint for a turn that ended with AgentEvent::reason `r`; anything
-// else reads as the model service's error.
-ui::StrId turn_text(std::string_view r) {
-    if (r == "stopped") return ui::StrId::HomeTurnStopped;
-    if (r == "step_limit") return ui::StrId::HomeTurnStepLimit;
-    if (r == "time_limit") return ui::StrId::HomeTurnTimeLimit;
-    if (r == "no_model") return ui::StrId::HomeTurnNoModel;
-    if (r == "unauthorized") return ui::StrId::HomeTurnUnauthorized;
-    if (r == "network") return ui::StrId::HomeTurnNetwork;
-    if (r == "network_lost") return ui::StrId::HomeTurnNetworkLost;
-    if (r == "context") return ui::StrId::HomeTurnContext;
-    return ui::StrId::HomeTurnServer;
 }
 
 // `a` in screen coordinates, `obj` in a parent whose top left is `origin`.
@@ -557,7 +526,7 @@ void Home::refresh() {
             (view_.turn != hint_turn_end_turn_ || view_.ended_ms != hint_turn_end_ms_)) {
             hint_turn_end_turn_ = view_.turn;
             hint_turn_end_ms_ = view_.ended_ms;
-            hint_turn_ = turn_text(view_.end_reason);
+            hint_turn_ = detail::turn_end_text(view_.end_reason);
             hint_since_ = view_.ended_ms != 0 && view_.ended_ms <= now ? view_.ended_ms : now;
         }
     }
@@ -687,8 +656,8 @@ std::string Home::hint_text(uint64_t now, bool in_turn) {
     if (hint_error_) {
         const voice::VoiceError e = *hint_error_;
         if (e == voice::VoiceError::NoAsrProfile || e == voice::VoiceError::NoTtsProfile)
-            return with_url(ui::tr(error_text(e)));
-        return ui::tr(error_text(e));
+            return with_url(ui::tr(detail::voice_error_text(e)));
+        return ui::tr(detail::voice_error_text(e));
     }
     if (hint_not_heard_) return ui::tr(ui::StrId::HomeNotHeard);
     return {};

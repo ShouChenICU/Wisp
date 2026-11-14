@@ -73,12 +73,15 @@
 // loading the screen it replaced. When the scene cannot be sent back the
 // navigation is refused and the scene stays in front.
 //
-// The talk overlay (wisp/shell/talk_overlay.hpp, mvp spec 6.5): while a
-// scene is in front (the active screen is none of the shell's own --
-// scene_in_front()), every change of the conversation or the voice state
-// is forwarded to it; its own tap opens the home screen the same way
-// leave_scene() does. Any "scene.state" event hides it at once, since the
-// scene that was in front may no longer be.
+// The talk overlay (wisp/shell/talk_overlay.hpp, mvp spec 6.5): while any
+// screen but Home is in front (a scene, a sub-page, a choice or
+// connections page, the diagnostics -- !home_in_front()), every change of
+// the conversation or the voice state is forwarded to it, and so is the
+// moment Home leaves the front; the moment Home comes in front it hides,
+// since Home shows the same itself. Its own tap is show(Home): a scene is
+// sent back as leave_scene() does, a page or the diagnostics close as
+// their own way back closes them. Any "scene.state" event hides it at
+// once, since the scene that was in front may no longer be.
 //
 // Threading: every member is UI thread only, like every lv_* call. A back
 // swipe's work is posted (it arrives from inside the pointer's read
@@ -323,9 +326,11 @@ private:
     void set_diag_back_handler();
     static void diag_loaded_cb(lv_event_t* e);
 
-    // The talk overlay. True while the active screen is a scene's own
-    // (none of the shell's).
-    bool scene_in_front() const;
+    // The talk overlay. True while the home screen is the active screen.
+    bool home_in_front() const;
+    // The home screen loaded (the overlay hides) or replaced (it shows
+    // what there is).
+    static void home_loaded_cb(lv_event_t* e);
     // Coalesces a burst of conversation/voice changes into one UI-thread
     // update_talk() already queued.
     void request_talk();
