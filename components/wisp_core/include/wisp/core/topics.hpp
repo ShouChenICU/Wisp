@@ -27,9 +27,10 @@
 // start of every button device id (chosen by the board), and the topic is
 // "<device id>.<edge>", e.g. "button.power.short". The registry lists
 // them as patterns: a row whose name contains '<' is a pattern, not a
-// literal topic (tools/check_topics.py relies on this marker). "<id>"
-// stands for a device id, which itself begins with "button.", and the
-// edge is one of kButtonDown/kButtonUp/kButtonShort/kButtonLong.
+// literal topic (tools/check_topics.py relies on this marker). A
+// button's device id is "button.<name>", so the patterns read
+// "button.<name>.<edge>": "<name>" is the part of the id after "button.",
+// and the edge is one of kButtonDown/kButtonUp/kButtonShort/kButtonLong.
 // A constant whose value contains a '.' and does not end with '.' is a topic
 // name and must appear in kAll (tools/check_topics.py checks); the others are
 // parts of a topic.
@@ -82,10 +83,10 @@ inline constexpr char kMemoryChanged[] = "memory.changed";
 inline constexpr char kTodoChanged[] = "todo.changed";
 
 inline constexpr Topic kAll[] = {
-    {"button.<id>.down", Kind::InputEdge, false},
-    {"button.<id>.up", Kind::InputEdge, false},
-    {"button.<id>.short", Kind::InputEdge, false},
-    {"button.<id>.long", Kind::InputEdge, false},
+    {"button.<name>.down", Kind::InputEdge, false},
+    {"button.<name>.up", Kind::InputEdge, false},
+    {"button.<name>.short", Kind::InputEdge, false},
+    {"button.<name>.long", Kind::InputEdge, false},
     {kPowerState, Kind::CellMirror, true},
     {kPowerWakelock, Kind::Telemetry, true},
     {kPowerChargingChanged, Kind::CellMirror, true},
@@ -113,7 +114,7 @@ inline constexpr Topic kAll[] = {
 };
 
 // The registered entry named exactly `name` (a button topic matches only
-// its pattern, e.g. "button.<id>.down"); nullptr when unregistered.
+// its pattern, e.g. "button.<name>.down"); nullptr when unregistered.
 constexpr const Topic* find(std::string_view name) {
     for (const Topic& t : kAll) {
         if (t.name == name) return &t;

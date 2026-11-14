@@ -6,7 +6,7 @@ Two rules:
      topics.hpp equal the first-column names of the table under
      "## Event topics" in docs/architecture.md. A cell is split on " / ";
      a piece starting with "." replaces the last dotted segment of the
-     previous name ("`button.<id>.down` / `.up`" gives "button.<id>.up").
+     previous name ("`button.<name>.down` / `.up`" gives "button.<name>.up").
   2. In components/ and simulator/ (except topics.hpp itself) no ordinary
      string literal equals a registered topic name; code uses the constants.
      Registered names containing '<' are patterns (the button topics are

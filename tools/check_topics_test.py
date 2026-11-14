@@ -28,8 +28,8 @@ inline constexpr char kStorageSdInserted[] = "storage.sd.inserted";
 inline constexpr char kStorageSdRemoved[] = "storage.sd.removed";
 
 inline constexpr Topic kAll[] = {
-    {"button.<id>.down", Kind::InputEdge, false},
-    {"button.<id>.up", Kind::InputEdge, false},
+    {"button.<name>.down", Kind::InputEdge, false},
+    {"button.<name>.up", Kind::InputEdge, false},
     {kPowerState, Kind::CellMirror, true},
     {kNetWifiState, Kind::CellMirror, true},
     {kNetApState, Kind::CellMirror, true},
@@ -46,7 +46,7 @@ Intro text.
 
 | Topic | Publisher | Notes |
 |---|---|---|
-| `button.<id>.down` / `.up` | `core::ButtonService` | edges |
+| `button.<name>.down` / `.up` | `core::ButtonService` | edges |
 | `power.state` | `app::PowerManager` | levels |
 | `net.wifi.state` | `net::WifiService` | state |
 | `net.ap.state` | `net::WifiService` | hotspot |
@@ -101,8 +101,8 @@ class CheckTopicsTest(unittest.TestCase):
         write(self.root, "docs/architecture.md", DOC.replace("`.up`", "`.long`"))
         errors = check_topics.check(self.root)
         self.assertEqual(len(errors), 2)
-        self.assertTrue(any('"button.<id>.up" is registered' in e for e in errors))
-        self.assertTrue(any('"button.<id>.long" has a row' in e for e in errors))
+        self.assertTrue(any('"button.<name>.up" is registered' in e for e in errors))
+        self.assertTrue(any('"button.<name>.long" has a row' in e for e in errors))
 
     def test_literal_topic_in_a_publish_call_fails(self):
         errors = self.code('void f() {\n    bus.publish({"power.state", 1});\n}\n')
@@ -129,7 +129,7 @@ class CheckTopicsTest(unittest.TestCase):
         self.assertEqual(self.code('bus.subscribe("net.", cb);\nauto s = "net.wifi.state.x";\n'), [])
 
     def test_patterns_and_the_registry_header_are_not_flagged(self):
-        self.assertEqual(self.code('auto s = "button.<id>.down";\n'), [])
+        self.assertEqual(self.code('auto s = "button.<name>.down";\n'), [])
         # topics.hpp itself spells every name.
         self.assertEqual(check_topics.check(self.root), [])
 

@@ -16,23 +16,18 @@ TEST(Topics, NamesAreUnique) {
     }
 }
 
-TEST(Topics, EveryConstantIsRegistered) {
-    constexpr std::string_view kConstants[] = {
-        topics::kPowerState,         topics::kPowerWakelock,      topics::kPowerChargingChanged,
-        topics::kPowerBatteryLow,    topics::kNotificationPosted, topics::kNotificationDismissed,
-        topics::kStorageSdInserted,  topics::kStorageSdRemoved,   topics::kSystemBootCompleted,
-        topics::kSystemFactoryReset, topics::kSystemFirmware,     topics::kSystemSettings,
-        topics::kSystemTime,         topics::kNetWifiEnabled,     topics::kNetWifiState,
-        topics::kNetApState,         topics::kNetPairingCode,     topics::kNetPairingFailed,
-        topics::kSceneState,         topics::kModelProfiles,      topics::kAgentState,
-        topics::kVoiceState,         topics::kMemoryChanged,      topics::kTodoChanged,
-    };
-    static_assert(std::size(kConstants) == 24);
-    for (std::string_view name : kConstants) {
-        const topics::Topic* t = topics::find(name);
-        ASSERT_NE(t, nullptr) << name;
-        EXPECT_EQ(t->name, name);
-    }
+// tools/check_topics.py reports a topic constant missing from kAll; this
+// pins find()'s matching.
+TEST(Topics, FindMatchesWholeRegisteredNamesOnly) {
+    const topics::Topic* t = topics::find(topics::kPowerState);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(t->name, topics::kPowerState);
+    // A button topic is "<device id>.<edge>" and a button's id is
+    // "button.<name>": the pattern names the part after "button.".
+    const topics::Topic* down = topics::find("button.<name>.down");
+    ASSERT_NE(down, nullptr);
+    EXPECT_EQ(down->kind, topics::Kind::InputEdge);
+    EXPECT_EQ(topics::find("button.power.down"), nullptr);
     EXPECT_EQ(topics::find("power.stat"), nullptr);
     EXPECT_EQ(topics::find("power.state.x"), nullptr);
     EXPECT_EQ(topics::find(""), nullptr);
