@@ -544,4 +544,23 @@ private:
     int set_volume_calls_ = 0;
 };
 
+// A device no typed interface covers (interface None): only info() and
+// the default set_power(). `cls` is a parameter so a test can register
+// one that is mislabelled.
+class FakeGeneric : public wisp::hal::Device {
+public:
+    explicit FakeGeneric(std::string id, wisp::hal::DeviceClass cls = wisp::hal::DeviceClass::Other,
+                         wisp::Properties caps = {}) {
+        info_.id = std::move(id);
+        info_.cls = cls;
+        info_.model = "FAKE";
+        info_.caps = std::move(caps);
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+private:
+    wisp::hal::DeviceInfo info_;
+};
+
 }  // namespace wisp::test

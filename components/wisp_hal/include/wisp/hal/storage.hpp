@@ -18,6 +18,8 @@ struct Capacity {
 class Storage : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Storage;
+    static constexpr Interface kInterface = Interface::Storage;
+    Interface interface() const final { return kInterface; }
 
     virtual std::string mount_point() const = 0;
 

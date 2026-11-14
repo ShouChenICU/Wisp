@@ -10,10 +10,12 @@
 // No RTTI: wisp_* components are built with -fno-rtti, so code that needs
 // to recover a concrete device type from a `std::shared_ptr<Device>` (e.g.
 // wisp::core::DeviceRegistry::get<T>()) must not use dynamic_cast/typeid.
-// Instead, every concrete interface below declares a
-// `static constexpr DeviceClass kClass`, and callers compare
-// `device->info().cls == T::kClass` before a plain
-// `std::static_pointer_cast<T>`.
+// Instead, every typed interface declares `static constexpr Interface
+// kInterface` and overrides `interface()` as `final`, and callers compare
+// `device->interface() == T::kInterface` before a plain
+// `std::static_pointer_cast<T>`. A concrete device cannot change the tag
+// it inherits, so the cast is sound; `info().cls` is a data field a device
+// fills in itself and is only a display category (spec 2.1).
 
 #include <cstdint>
 #include <optional>
@@ -36,6 +38,8 @@ enum class DeviceClass {
     AudioIn,
     Storage,
     Network,
+    // A device no typed interface covers (interface None).
+    Other,
 };
 
 // Returns the snake_case name of `cls`, e.g. DeviceClass::AudioOut ->
@@ -45,6 +49,29 @@ const char* to_string(DeviceClass cls);
 // Inverse of to_string(); returns std::nullopt for any string that isn't
 // one of the names to_string() produces.
 std::optional<DeviceClass> class_from_string(std::string_view s);
+
+// The typed interface a device object implements, one per interface class
+// below. None is a device that only has the Device base (spec 2.1).
+enum class Interface : uint8_t {
+    None,
+    Display,
+    Touch,
+    Imu,
+    Power,
+    Clock,
+    Button,
+    AudioOut,
+    AudioIn,
+    Storage,
+    Wifi,
+};
+
+// "none", "display", ..., "audio_out", "audio_in", "storage", "wifi".
+const char* to_string(Interface i);
+
+// The class a device of interface `i` must report in info().cls: the same
+// name, except Wifi -> Network and None -> Other.
+DeviceClass class_of(Interface i);
 
 // The device-wide power level (spec 4.1). Active and Dim keep the screen
 // on (Dim only lowers its brightness); Standby turns the screen off;
@@ -93,6 +120,11 @@ class Device {
 public:
     virtual ~Device() = default;
     virtual const DeviceInfo& info() const = 0;
+
+    // The typed interface this object implements. Each interface class
+    // overrides it as `final`; only a device deriving from Device itself
+    // reports None.
+    virtual Interface interface() const { return Interface::None; }
 
     // Moves the device to `level`. A device that declares caps "standby"
     // overrides this; calling it again with a level that maps to the

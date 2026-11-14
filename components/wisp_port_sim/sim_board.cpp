@@ -56,6 +56,17 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
                                const std::string& reason = "disabled by --disable") {
         report.record({id, cls, wisp::core::DeviceState::Failed, reason});
     };
+    // A device the registry refuses (a class that does not match its
+    // interface, a duplicate id) is a failed device, as on the ESP boards,
+    // never a reason to stop booting.
+    auto register_device = [&](const std::shared_ptr<wisp::hal::Device>& device) {
+        auto added = registry.add(device);
+        if (!added) {
+            WLOG_E(kTag, "registry.add: %s", added.error().message.c_str());
+            report.record({device->info().id, device->info().cls, wisp::core::DeviceState::Failed,
+                           "registry.add: " + added.error().message});
+        }
+    };
     // Checks --disable *before* constructing the device: avoids doing
     // any device-construction work for an id the caller explicitly
     // disabled, rather than building it and throwing it away.
@@ -66,7 +77,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
             record_disabled(id, cls);
             return;
         }
-        registry.add(factory());
+        register_device(factory());
     };
 
     if (is_disabled("display.main", wisp::hal::DeviceClass::Display)) {
@@ -74,7 +85,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     } else {
         display_ = std::make_shared<SimDisplay>("display.main", kWidth, kHeight, config_.shape,
                                                 kCornerRadius, config_.panel);
-        registry.add(display_);
+        register_device(display_);
     }
 
     make_or_fail("touch.main", wisp::hal::DeviceClass::Touch,
@@ -112,7 +123,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         record_disabled("audio_out.main", wisp::hal::DeviceClass::AudioOut,
                         "SDL audio unavailable");
     } else {
-        registry.add(std::make_shared<SimAudioOut>("audio_out.main"));
+        register_device(std::make_shared<SimAudioOut>("audio_out.main"));
     }
 
     // audio_in.main also needs a real SDL capture device; the "dummy"
@@ -135,7 +146,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         // at that point, rather than assuming there's nothing to use.
         record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn, "no capture device");
     } else {
-        registry.add(std::make_shared<SimAudioIn>("audio_in.main"));
+        register_device(std::make_shared<SimAudioIn>("audio_in.main"));
     }
 
     std::error_code ec;
@@ -145,9 +156,9 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     if (is_disabled("storage.int", wisp::hal::DeviceClass::Storage)) {
         record_disabled("storage.int", wisp::hal::DeviceClass::Storage);
     } else {
-        registry.add(std::make_shared<SimStorage>("storage.int", config_.data_dir + "/int",
-                                                  /*removable=*/false, "littlefs", kIntTotalBytes,
-                                                  nullptr));
+        register_device(std::make_shared<SimStorage>("storage.int", config_.data_dir + "/int",
+                                                     /*removable=*/false, "littlefs",
+                                                     kIntTotalBytes, nullptr));
     }
 
     if (is_disabled("storage.sd", wisp::hal::DeviceClass::Storage)) {
@@ -157,7 +168,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         auto sd_storage = std::make_shared<SimStorage>("storage.sd", config_.data_dir + "/sd",
                                                        /*removable=*/true, "fat", kSdTotalBytes,
                                                        [input] { return input->sd_present(); });
-        registry.add(sd_storage);
+        register_device(sd_storage);
         if (!sd_storage->online()) {
             report.record({"storage.sd", wisp::hal::DeviceClass::Storage,
                            wisp::core::DeviceState::Missing, "no SD card"});

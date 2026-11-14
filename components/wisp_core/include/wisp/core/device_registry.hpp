@@ -27,9 +27,14 @@ public:
     DeviceRegistry(const DeviceRegistry&) = delete;
     DeviceRegistry& operator=(const DeviceRegistry&) = delete;
 
-    // Registers `device`. Fails with ErrorCode::AlreadyExists (leaving the
-    // existing registration untouched) if a device with the same id is
-    // already registered.
+    // Registers `device`, leaving the registry unchanged on any failure:
+    //   - InvalidArgument for a null device, for one whose info().cls is
+    //     not hal::class_of(device->interface()) (a mislabelled device is
+    //     caught here at boot rather than at a cast), and for a generic
+    //     device (interface None) whose id is not "<kind>.<name>"
+    //     ([a-z][a-z0-9_]*\.[a-z0-9_]+) of at most 32 bytes;
+    //   - AlreadyExists if a device with the same id is registered.
+    // Boards record a failure as a failed device; it never blocks boot.
     Result<void> add(std::shared_ptr<hal::Device> device);
 
     // Unregisters the device with id `id`. Fails with ErrorCode::NotFound
@@ -39,27 +44,28 @@ public:
     // Returns the device registered under `id`, or nullptr if none.
     std::shared_ptr<hal::Device> find(const std::string& id) const;
 
-    // Like find(), but also requires the device's class to match T::kClass
-    // (every concrete hal:: interface declares this constant), returning
-    // nullptr instead of the device if it doesn't. No RTTI is used: the
-    // cast below is a plain static_pointer_cast, safe only because of the
-    // class check immediately above it. See device.hpp's file header.
+    // Like find(), but also requires the device to implement interface T
+    // (device->interface() == T::kInterface), returning nullptr instead of
+    // the device if it doesn't, whatever its id or class say. No RTTI is
+    // used: the cast below is a plain static_pointer_cast, safe because
+    // each interface class overrides interface() as final. See
+    // device.hpp's file header.
     template <class T>
     std::shared_ptr<T> get(const std::string& id) const {
         auto device = find(id);
-        if (!device || device->info().cls != T::kClass) {
+        if (!device || device->interface() != T::kInterface) {
             return nullptr;
         }
         return std::static_pointer_cast<T>(device);
     }
 
-    // Returns every registered device whose class matches T::kClass, in
-    // the same (sorted-by-id) order as all().
+    // Returns every registered device that implements interface T, in the
+    // same (sorted-by-id) order as all().
     template <class T>
     std::vector<std::shared_ptr<T>> list() const {
         std::vector<std::shared_ptr<T>> result;
         for (const auto& device : all()) {
-            if (device->info().cls == T::kClass) {
+            if (device->interface() == T::kInterface) {
                 result.push_back(std::static_pointer_cast<T>(device));
             }
         }

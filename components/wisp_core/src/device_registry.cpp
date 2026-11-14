@@ -45,11 +45,44 @@ std::optional<hal::Area> fallback_safe_area(const std::string& device_id, const 
     return hal::safe_rect(fallback);
 }
 
+// "<kind>.<name>": [a-z][a-z0-9_]*\.[a-z0-9_]+, at most 32 bytes. A
+// generic device has no typed interface to say what it is, so its id has
+// to (spec 2.2).
+bool valid_generic_id(const std::string& id) {
+    constexpr size_t kMaxIdBytes = 32;
+    if (id.empty() || id.size() > kMaxIdBytes) return false;
+    auto lower_digit_or_underscore = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+    };
+    if (!(id[0] >= 'a' && id[0] <= 'z')) return false;
+    size_t dot = id.find('.');
+    if (dot == std::string::npos || dot + 1 == id.size()) return false;
+    for (size_t i = 1; i < id.size(); ++i) {
+        if (i != dot && !lower_digit_or_underscore(id[i])) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 Result<void> DeviceRegistry::add(std::shared_ptr<hal::Device> device) {
+    if (!device) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "null device");
+    }
+    const hal::DeviceInfo& info = device->info();
+    const hal::Interface iface = device->interface();
+    if (info.cls != hal::class_of(iface)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 info.id + ": class " + hal::to_string(info.cls) +
+                                     " does not match interface " + hal::to_string(iface));
+    }
+    if (iface == hal::Interface::None && !valid_generic_id(info.id)) {
+        return Result<void>::err(
+            ErrorCode::InvalidArgument,
+            info.id + ": a generic device id is <kind>.<name>, at most 32 bytes");
+    }
     std::lock_guard<os::Mutex> lock(mutex_);
-    const std::string& id = device->info().id;
+    const std::string& id = info.id;
     for (const auto& existing : devices_) {
         if (existing->info().id == id) {
             return Result<void>::err(ErrorCode::AlreadyExists, id);

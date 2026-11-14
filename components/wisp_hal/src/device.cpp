@@ -24,6 +24,8 @@ const char* to_string(DeviceClass cls) {
             return "storage";
         case DeviceClass::Network:
             return "network";
+        case DeviceClass::Other:
+            return "other";
     }
     return "unknown";
 }
@@ -39,7 +41,64 @@ std::optional<DeviceClass> class_from_string(std::string_view s) {
     if (s == "audio_in") return DeviceClass::AudioIn;
     if (s == "storage") return DeviceClass::Storage;
     if (s == "network") return DeviceClass::Network;
+    if (s == "other") return DeviceClass::Other;
     return std::nullopt;
+}
+
+const char* to_string(Interface i) {
+    switch (i) {
+        case Interface::None:
+            return "none";
+        case Interface::Display:
+            return "display";
+        case Interface::Touch:
+            return "touch";
+        case Interface::Imu:
+            return "imu";
+        case Interface::Power:
+            return "power";
+        case Interface::Clock:
+            return "clock";
+        case Interface::Button:
+            return "button";
+        case Interface::AudioOut:
+            return "audio_out";
+        case Interface::AudioIn:
+            return "audio_in";
+        case Interface::Storage:
+            return "storage";
+        case Interface::Wifi:
+            return "wifi";
+    }
+    return "unknown";
+}
+
+DeviceClass class_of(Interface i) {
+    switch (i) {
+        case Interface::None:
+            return DeviceClass::Other;
+        case Interface::Display:
+            return DeviceClass::Display;
+        case Interface::Touch:
+            return DeviceClass::Touch;
+        case Interface::Imu:
+            return DeviceClass::Imu;
+        case Interface::Power:
+            return DeviceClass::Power;
+        case Interface::Clock:
+            return DeviceClass::Clock;
+        case Interface::Button:
+            return DeviceClass::Button;
+        case Interface::AudioOut:
+            return DeviceClass::AudioOut;
+        case Interface::AudioIn:
+            return DeviceClass::AudioIn;
+        case Interface::Storage:
+            return DeviceClass::Storage;
+        case Interface::Wifi:
+            return DeviceClass::Network;
+    }
+    return DeviceClass::Other;
 }
 
 const char* to_string(PowerLevel level) {

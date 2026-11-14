@@ -20,6 +20,8 @@ struct AudioFormat {
 class AudioOut : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioOut;
+    static constexpr Interface kInterface = Interface::AudioOut;
+    Interface interface() const final { return kInterface; }
 
     virtual Result<void> open(const AudioFormat& format) = 0;
     virtual Result<size_t> write(const int16_t* frames, size_t count) = 0;
@@ -30,6 +32,8 @@ public:
 class AudioIn : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioIn;
+    static constexpr Interface kInterface = Interface::AudioIn;
+    Interface interface() const final { return kInterface; }
 
     virtual Result<void> open(const AudioFormat& format) = 0;
     virtual Result<size_t> read(int16_t* frames, size_t count) = 0;

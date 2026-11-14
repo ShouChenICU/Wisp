@@ -14,6 +14,7 @@
 #include "wisp/hal/imu.hpp"
 
 using wisp::test::FakeDisplay;
+using wisp::test::FakeGeneric;
 using wisp::test::FakeImu;
 
 TEST(DeviceRegistry, AddFindGetList) {
@@ -122,7 +123,76 @@ TEST(DeviceRegistry, ManifestSafeArea) {
     }
 }
 
+TEST(DeviceRegistry, TypedLookupChecksTheInterfaceNotTheId) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<FakeGeneric>("display.x")));
+    EXPECT_EQ(reg.get<wisp::hal::Display>("display.x"), nullptr);
+    EXPECT_TRUE(reg.list<wisp::hal::Display>().empty());
+    EXPECT_NE(reg.find("display.x"), nullptr);
+}
+
+namespace {
+
+// An IMU that claims to be a display: the class is a data field a device
+// can get wrong, the interface is not.
+class MislabelledImu : public FakeImu {
+public:
+    explicit MislabelledImu(std::string id) : FakeImu(std::move(id)) {
+        mislabelled_ = FakeImu::info();
+        mislabelled_.cls = wisp::hal::DeviceClass::Display;
+    }
+    const wisp::hal::DeviceInfo& info() const override { return mislabelled_; }
+
+private:
+    wisp::hal::DeviceInfo mislabelled_;
+};
+
+}  // namespace
+
+TEST(DeviceRegistry, RejectsAClassThatDoesNotMatchTheInterface) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<MislabelledImu>("imu.main"));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "imu.main: class display does not match interface imu");
+    EXPECT_EQ(reg.find("imu.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsAGenericDeviceWithATypedClass) {
+    wisp::core::DeviceRegistry reg;
+    auto added =
+        reg.add(std::make_shared<FakeGeneric>("haptic.main", wisp::hal::DeviceClass::Button));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(reg.find("haptic.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsANullDevice) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(nullptr);
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_TRUE(reg.all().empty());
+}
+
+TEST(DeviceRegistry, GenericDeviceIdsNeedAKind) {
+    wisp::core::DeviceRegistry reg;
+    const std::string too_long = "h." + std::string(31, 'x');  // 33 bytes
+    for (const std::string& id : {std::string("haptic"), std::string("Haptic.main"), too_long}) {
+        auto added = reg.add(std::make_shared<FakeGeneric>(id));
+        ASSERT_FALSE(added) << id;
+        EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument) << id;
+        EXPECT_EQ(added.error().message,
+                  id + ": a generic device id is <kind>.<name>, at most 32 bytes");
+    }
+    EXPECT_TRUE(reg.add(std::make_shared<FakeGeneric>("h." + std::string(30, 'x'))));
+    EXPECT_TRUE(reg.add(std::make_shared<FakeGeneric>("led.status")));
+    EXPECT_EQ(reg.all().size(), 2u);
+}
+
 TEST(DeviceClass, StringRoundTrip) {
     EXPECT_EQ(wisp::hal::class_from_string("audio_out"), wisp::hal::DeviceClass::AudioOut);
+    EXPECT_EQ(wisp::hal::class_from_string("other"), wisp::hal::DeviceClass::Other);
+    EXPECT_STREQ(wisp::hal::to_string(wisp::hal::DeviceClass::Other), "other");
     EXPECT_FALSE(wisp::hal::class_from_string("gpu").has_value());
 }

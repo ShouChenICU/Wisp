@@ -25,6 +25,8 @@ struct ButtonEdgeSink {
 class Button : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Button;
+    static constexpr Interface kInterface = Interface::Button;
+    Interface interface() const final { return kInterface; }
 
     virtual bool pressed() = 0;
     virtual ButtonInputMode input_mode() const { return ButtonInputMode::PollOnly; }
