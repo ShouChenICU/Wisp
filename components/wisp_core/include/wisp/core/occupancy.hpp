@@ -46,6 +46,9 @@ public:
     Result<void> acquire(std::string device, std::string holder, OccupancyMode mode);
     // Nothing happens if `holder` does not hold `device`.
     void release(std::string_view device, std::string_view holder);
+    // The holder that has `device` exclusively, or empty. Copies only that
+    // name, so a caller on a hot path need not copy the whole table.
+    std::string exclusive_holder(std::string_view device) const;
     // Every entry, in the order they were taken.
     std::vector<OccupancyEntry> list() const;
 

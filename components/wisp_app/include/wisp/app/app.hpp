@@ -107,6 +107,7 @@ class MemoryStore;
 class WakeLockRegistry;
 class OccupancyRegistry;
 class SensorService;
+class DeviceService;
 class StorageWorker;
 }  // namespace wisp::core
 
@@ -380,6 +381,9 @@ public:
     // The IMU's subscribers (scene-device spec 6.1): built by start(),
     // stopped and reset by stop(); nullptr before start() or after stop().
     core::SensorService* sensors();
+    // The generic device path (device model spec 3.6): built by start(),
+    // reset by stop(); nullptr before start() or after stop().
+    core::DeviceService* devices();
     // The "wisp.fs" storage worker the scenes and notifications share:
     // nullptr without scenes, and before start() or after stop().
     core::StorageWorker* storage_worker();

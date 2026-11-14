@@ -37,6 +37,14 @@ void OccupancyRegistry::release(std::string_view device, std::string_view holder
     });
 }
 
+std::string OccupancyRegistry::exclusive_holder(std::string_view device) const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    for (const OccupancyEntry& e : entries_) {
+        if (e.device == device && e.mode == OccupancyMode::Exclusive) return e.holder;
+    }
+    return {};
+}
+
 std::vector<OccupancyEntry> OccupancyRegistry::list() const {
     std::lock_guard<os::Mutex> lock(mutex_);
     return entries_;

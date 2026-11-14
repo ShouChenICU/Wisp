@@ -96,6 +96,8 @@ wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
 wisp_test(NAME tone_player_test SRCS core/tone_player_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME occupancy_test SRCS core/occupancy_test.cpp LIBS wisp_core wisp_port_sim_os)
+wisp_test(NAME device_service_test SRCS core/device_service_test.cpp
+          LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME gesture_test SRCS core/gesture_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME sensor_service_test SRCS core/sensor_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)

@@ -30,6 +30,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -293,6 +294,39 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
     h.app.bus().unsubscribe(key_sub);
 
     h.app.stop();
+}
+
+// The device service follows power.state: a "standby: off" device is
+// unreachable while the screen is off, and reachable again after.
+TEST(AppBoot, DeviceServiceFollowsThePowerState) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::DeviceService* devices = h.app.devices();
+    ASSERT_NE(devices, nullptr);
+    auto haptic = std::make_shared<wisp::test::FakeGeneric>(
+        "haptic.main", &wisp::test::kFakeGenericSchema, wisp::Properties{}, std::string{}, true);
+    ASSERT_TRUE(h.app.registry().add(haptic));
+    // Before any power.state event the level is Active.
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+
+    auto publish = [&](const char* state) {
+        h.app.bus().publish(wisp::core::Event{"power.state", "test", 0,
+                                              wisp::Properties{{"state", wisp::Value(state)}}});
+        ASSERT_TRUE(h.app.bus().wait_idle(1000));
+    };
+    publish("standby");
+    auto busy = devices->get("haptic.main", "level");
+    ASSERT_FALSE(busy);
+    EXPECT_EQ(busy.error().code, wisp::ErrorCode::Busy);
+    publish("dim");
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+    publish("deep_standby");
+    EXPECT_FALSE(devices->get("haptic.main", "level"));
+    publish("active");
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+
+    h.app.stop();
+    EXPECT_EQ(h.app.devices(), nullptr);
 }
 
 // A display that does not declare the role is not the main display: the

@@ -36,6 +36,7 @@
 #include "wisp/app/system_notices.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -153,6 +154,10 @@ struct App::Impl {
     // by stop() once both are gone. Follows power.state (sensor_sub).
     std::unique_ptr<core::SensorService> sensors;
     core::SubscriptionId sensor_sub = 0;
+    // Self-describing devices (device model spec 3.6): built by start()
+    // next to sensors, reset by stop() after it; its power level follows
+    // the same power.state subscription (sensor_sub).
+    std::unique_ptr<core::DeviceService> devices;
     // audio/notify_vol and sys/tz_min, kept from system.settings: the
     // router reads the volume on the posting thread (the scene task) and
     // the status shell the time zone on the UI thread, neither of which

@@ -470,12 +470,20 @@ Result<void> App::start() {
     if (auto r = impl_->sensors->start(); !r) {
         WLOG_W("app", "sensors off: %s", r.error().message.c_str());
     }
-    impl_->sensor_sub =
-        impl_->bus.subscribe("power.state", [sensors = impl_->sensors.get()](const core::Event& e) {
+    // Generic devices (device model spec 3.6), for the agent tools and the
+    // scenes; it follows the same power.state as the sensors.
+    impl_->devices = std::make_unique<core::DeviceService>(impl_->registry, &impl_->occupancy);
+    impl_->sensor_sub = impl_->bus.subscribe(
+        "power.state",
+        [sensors = impl_->sensors.get(), devices = impl_->devices.get()](const core::Event& e) {
             auto it = e.payload.find("state");
             if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
             const std::string& state = it->second.as_string();
             sensors->set_standby(state == "standby" || state == "deep_standby");
+            for (hal::PowerLevel level : {hal::PowerLevel::Active, hal::PowerLevel::Dim,
+                                          hal::PowerLevel::Standby, hal::PowerLevel::DeepStandby}) {
+                if (state == hal::to_string(level)) devices->set_power_level(level);
+            }
         });
 
     auto power_key = impl_->registry.by_role<hal::Button>(hal::role::kPower);
@@ -1051,6 +1059,7 @@ void App::stop() {
         impl_->sensors->stop();
         impl_->sensors.reset();
     }
+    impl_->devices.reset();
 
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn
@@ -1319,6 +1328,7 @@ core::NotificationService* App::notifications() { return impl_->notifications.ge
 core::ReminderScheduler* App::reminders() { return impl_->reminders.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
+core::DeviceService* App::devices() { return impl_->devices.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
 core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() : nullptr; }
 shell::ConversationController* App::conversation() {
