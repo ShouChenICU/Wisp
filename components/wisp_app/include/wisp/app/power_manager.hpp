@@ -147,6 +147,8 @@ public:
 
     hal::PowerLevel level() const;
     // The level, for components that follow it. Only transitions change it.
+    // A subscriber releases its subscription before PowerManager is
+    // destroyed (App::stop() order; wisp/core/state_cell.hpp).
     const core::StateCell<hal::PowerLevel>& level_cell() const { return level_cell_; }
     // level() >= Standby: the screen is off.
     bool standby() const;
