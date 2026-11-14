@@ -262,7 +262,7 @@ const char* strings_zh(StrId id) {
         case StrId::AgentErrServer:
             return "模型服务出错，请稍后再试";
         case StrId::AgentErrContext:
-            return "对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型。";
+            return "对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型";
         case StrId::AgentRolledOver:
             return "对话太长，已存档并开始新对话";
         case StrId::AgentContextDropped:

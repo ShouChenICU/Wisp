@@ -19,6 +19,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/shell/home.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/shell/talk_overlay.hpp"
@@ -253,6 +254,34 @@ TEST_F(ShellTalkTest, WebTurnOverSettingsShowsOnlyItsFailure) {
     ASSERT_TRUE(wait_phase(Phase::Note, 3000));
     EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
     EXPECT_TRUE(overlay_shown());
+}
+
+// A turn that fails with Settings in front, Home shown within a second:
+// Home's hint line says why, in the same short words.
+TEST_F(ShellTalkTest, FailedTurnThenHomeShowsTheShortReason) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+
+    virtual_ms += 900;
+    std::string hint;
+    on_ui([&] {
+        shell_->show(wisp::shell::Page::Home);
+        wisp::shell::Home* home = shell_->home();
+        ASSERT_NE(home, nullptr);
+        home->refresh();
+        lv_obj_t* label = home->hint_label();
+        if (label != nullptr && !lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN))
+            hint = lv_label_get_text(label);
+    });
+    EXPECT_EQ(active(), shell_->home_screen());
+    EXPECT_EQ(hint, wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_EQ(phase(), Phase::Hidden);
 }
 
 // A spoken turn over Settings shows that it is being worked on.

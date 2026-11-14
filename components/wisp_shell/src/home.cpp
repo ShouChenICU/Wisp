@@ -162,14 +162,16 @@ HomeLayout home_layout(const hal::ScreenShape& s, bool in_turn, bool hint_visibl
     l.more = l.column;
     l.more.y1 = std::max(l.column.y1, l.column.y2 - kMorePx + 1);
     // Stop's room: right of the wisp, on its rows, which the heard text
-    // and the column leave alone, so it moves nothing when it comes.
+    // and the column leave alone, so it moves nothing when it comes. None
+    // where that is narrower than the control: a screen too narrow has no
+    // Stop rather than one too small to hit.
     {
         const int32_t y1 = (l.wisp.y1 + l.wisp.y2 + 1) / 2 - kStopPx / 2;
         const int32_t y2 = y1 + kStopPx - 1;
         const hal::Span a = hal::row_span(s, y1);
         const hal::Span b = hal::row_span(s, y2);
-        if (!a.empty() && !b.empty())
-            l.stop = lv_area_t{l.wisp.x2 + 1 + kGap, y1, std::min(a.x2, b.x2) - kPad, y2};
+        const lv_area_t room{l.wisp.x2 + 1 + kGap, y1, std::min(a.x2, b.x2) - kPad, y2};
+        if (!a.empty() && !b.empty() && lv_area_get_width(&room) >= kStopPx) l.stop = room;
     }
     // The list takes the column's room while it is empty; the summary
     // alone is the column's first line.
@@ -582,8 +584,9 @@ void Home::refresh() {
     } else if (!laid_out_ || hint_visible != hint_visible_) {
         apply_layout(false, hint_visible);
     }
-    // Stop: exactly while a turn runs (the turn layout is up then).
-    if (view_.running && shown_in_turn_ && !fading_) {
+    // Stop: exactly while a turn runs (the turn layout is up then), where
+    // the screen has room for it.
+    if (view_.running && shown_in_turn_ && !fading_ && layout_.stop.x1 <= layout_.stop.x2) {
         lv_obj_remove_flag(stop_, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(stop_, LV_OBJ_FLAG_HIDDEN);
@@ -737,6 +740,7 @@ void Home::place_stop() {
     lv_text_get_size(&size, lv_label_get_text(label),
                      lv_obj_get_style_text_font(label, LV_PART_MAIN), 0, 0, LV_COORD_MAX,
                      LV_TEXT_FLAG_NONE);
+    // home_layout() gives no room narrower than kStopPx.
     const int32_t room_w = lv_area_get_width(&room);
     const int32_t w = std::clamp<int32_t>(size.x + 1 + 2 * kPad, kStopPx, room_w);
     const int32_t x = room.x1 + (room_w - w) / 2;

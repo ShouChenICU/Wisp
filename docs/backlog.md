@@ -221,16 +221,14 @@ Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator
 
 - `mem` after a turn with a 64 KB `scene.read_file` result: the `Mem::Large` peak and the `wisp.agent` stack high-water mark.
 - A real turn over weak Wi-Fi that stays associated (requests fail at the TCP/TLS level): the retry is invisible apart from the delay; no doubled text or speech. A Wi-Fi disconnect is not retried: the turn ends `network_lost` (during a request) or `network` (between steps), and Home shows the matching short reason.
-- The Stop button and the taller talk overlay on the 1.75C round panel: touch target, spacing, no clipping.
+- On the 1.75C round AMOLED panel: the Stop button's touch target and spacing, and the taller talk overlay card with no clipping; with a voice turn's card up, a sub-page scrolled to its end shows its last row above the card. The overlay card on e-paper too.
 - A provider 400 for an over-long context on the owner's gateway: the turn recovers (note which `error.code` the gateway sends).
 - The Stop button's colours on a two-colour panel.
-- The taller overlay card on the real round AMOLED and on e-paper.
 - A provider's real `Retry-After` and 4xx bodies over TLS.
 
 ## Agent turn reliability parked review findings
 
 - Deferred: wait for Wi-Fi to reconnect and resume the turn. Today a Wi-Fi disconnect ends a running turn (`Abort::Network` during a request, the `network_up()` check between steps; agent-core spec 3.6); the retries only cover TCP/TLS failures while the link stays up.
-
 - `docs.read` has no tests for an `offset` in the middle of a character or exactly at the end of the text.
 - The agent loop has no test for the keep-1 compression step on its own, nor for the 50/300 clamp of `est_scale_pct`.
 - The estimate scale is keyed on the model name only: two profiles with the same model name on different providers share it.
@@ -238,6 +236,11 @@ Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator
 - `Home::fitted_url()` and `TalkOverlay::fit()` redo layout work on every refresh.
 - The talk overlay's tap tests send `LV_EVENT_CLICKED` directly and bypass hit-testing.
 - The old no-model / no-ASR / no-TTS hints are cut on the 360 px round test shape; to be replaced by the readiness checklist of the voice-and-wake plan.
+- No boundary test for the elided call arguments at exactly `kCallArgsKeepBytes` and one byte over.
+- No test for a `docs.read` page of a long topic that has no newline to break at (the cut falls back to a character boundary).
+- A summary request's reported usage does not calibrate the estimate scale, and no test pins that down.
+- The same voice error twice in a row is not shown again (Home and the talk overlay only show a change of `TurnView::error`).
+- With a small context window, the keep-1 compression runs before the current turn's live tool results are cut, so one large read can cost the earlier turns' detail; consider cutting the live results first.
 
 ## CI speed
 

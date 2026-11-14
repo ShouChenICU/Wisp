@@ -38,8 +38,9 @@
 //
 // Stop (HomeStop): while a turn runs -- any turn, with or without steps or
 // text, also while a hold records -- a button kStopPx high right of the
-// wisp, centred on its rows (HomeLayout::stop), which nothing else uses;
-// a tap -> the controller's stop_turn(). Its presses do not bubble, so
+// wisp, centred on its rows (HomeLayout::stop), which nothing else uses
+// (none on a screen too narrow for it); a tap -> the controller's
+// stop_turn(). Its presses do not bubble, so
 // they are never a press on the wisp, a page drag or a swipe.
 //
 // The turn's text fades kFadeAfterMs after the later of the turn's end
@@ -155,6 +156,8 @@ struct HomeLayout {
     size_t row_count = 0;
     // In a turn: the room right of the wisp for the Stop control, kStopPx
     // high and centred on the wisp's box; the control is centred in it.
+    // Empty (and the control hidden) where it would be narrower than
+    // kStopPx.
     lv_area_t stop = kNone;
 };
 

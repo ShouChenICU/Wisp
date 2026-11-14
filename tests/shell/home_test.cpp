@@ -678,6 +678,27 @@ TEST_P(HomeShapes, StopRoomBesideTheWisp) {
     EXPECT_GT(idle.stop.x1, idle.stop.x2);
 }
 
+// On a screen too narrow for a kStopPx-wide control right of the wisp,
+// there is no Stop room at all (Home then keeps the control hidden),
+// never a room narrower than the control.
+TEST(HomeLayoutStop, NoRoomNarrowerThanTheControl) {
+    int narrow = 0;
+    for (int32_t w = 120; w <= 480; w += 2) {
+        const wisp::hal::ScreenShape s{.kind = wisp::hal::ScreenShapeKind::Rect,
+                                       .width = w,
+                                       .height = 480,
+                                       .corner_radius = 0};
+        const lv_area_t st = home_layout(s, true, false).stop;
+        if (st.x2 < st.x1) {
+            ++narrow;
+            continue;
+        }
+        EXPECT_GE(lv_area_get_width(&st), wisp::shell::kStopPx) << w << " " << str(st);
+    }
+    // The narrow end of the range has no room.
+    EXPECT_GT(narrow, 0);
+}
+
 // The Stop control as drawn, in every language, while a turn with steps
 // runs: in its room, at least 48 x 48, its label whole on one line.
 TEST_P(HomeShapes, StopControlAsDrawn) {
