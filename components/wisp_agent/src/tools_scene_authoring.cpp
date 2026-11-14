@@ -165,7 +165,7 @@ Result<void> add_scene_authoring_tools(ToolRegistry& reg, SceneWorkspace& ws) {
     WISP_TRY(reg.add({
         .name = "scene.rollback",
         .description = "Swaps the installed scene with its previous version (the version from "
-                       "before this turn's first scene.install), opens it and reports the same "
+                       "before the last turn that installed it), opens it and reports the same "
                        "check as scene.install. Calling it again swaps back.",
         .schema_json = kIdOnly,
         .risk = ToolRisk::Note,

@@ -10,6 +10,7 @@
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 
 namespace {
 
@@ -62,6 +63,15 @@ protected:
     ToolCtx ctx;
     std::unique_ptr<wisp::agent::ToolRegistry> tools;
 };
+
+// The description states the slice the runtime enforces.
+TEST_F(LuaRun, DescriptionNamesTheSlice) {
+    const wisp::agent::ToolDef* def = tools->find("lua.run");
+    ASSERT_NE(def, nullptr);
+    const std::string want = "at most " + std::to_string(wisp::scene::kLuaRunSliceMs) + " ms";
+    EXPECT_NE(std::string(def->description.data(), def->description.size()).find(want),
+              std::string::npos);
+}
 
 TEST_F(LuaRun, Schema) {
     const auto* def = tools->find("lua.run");

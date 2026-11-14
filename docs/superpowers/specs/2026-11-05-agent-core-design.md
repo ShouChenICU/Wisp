@@ -222,7 +222,7 @@
 | `scene.delete_file(id, path)` | 只删草稿中的文件 | 普通 | 5 s |
 | `scene.install(id)` | 校验草稿 → 已安装版本保留为 `.prev`（同一轮里只有该场景的第一次安装这样做，见下方规则）→ 原子替换 → 前台打开或重载 → 自动检查（5.1） | 说明；新增 http 域名时为确认 | 30 s |
 | `scene.discard_draft(id)` | 丢弃草稿 | 说明 | 5 s |
-| `scene.rollback(id)` | 用 `.prev` 换回已安装版本并重载，回到本轮第一次安装之前的版本；没有 `.prev` 时返回 `not_found` | 说明 | 30 s |
+| `scene.rollback(id)` | 用 `.prev` 换回已安装版本并重载，回到最近一次安装该场景的那一轮之前的版本，再调用一次换回来；没有 `.prev` 时返回 `not_found` | 说明 | 30 s |
 
 规则：
 
@@ -230,7 +230,7 @@
 - `install` 的校验内容：manifest 字段、Lua 语法（`check_sources()`）、控件白名单（建树检查）。失败时返回 `{"ok":false,"errors":[{"file","line","message","suggestion"}]}`，已安装版本不动，草稿保留。
 - `install` 前比较新旧 manifest 的 `permissions.http`。有新增域名时先请求设备确认，拒绝则不安装。
 - `.prev` 只保留一个。`install` 和 `rollback` 都会替换它。删除场景时一并删除。
-- 安装会话（2026-11-14 修订）：`.prev` 是用户在这一轮之前的版本。工具调用带 `ToolCtx::turn`，这是本次开机内的轮次序号（不是对话里的轮次编号，对话轮次会从 1 重新数；轮次之外为 0）。同一轮里某个场景的第一次成功安装写 `.prev` 并开始一个会话；同一轮后续的安装不再动 `.prev`（被替换的版本直接删除），所以 `scene.rollback` 回到本轮之前的版本。会话在以下情况结束：下一轮开始（下一次安装带的是别的 `turn`）、`scene.discard_draft`、`scene.rollback`、重启（会话只在内存里）、或其他任何途径替换或删除了该场景（`SceneRepository::changed_since()`，例如管理后台上传）。同一轮里再次 `scene.rollback` 会再交换一次（相当于重做），不丢版本。轮次之外（`turn == 0`）的调用每次都写 `.prev`。场景的 `data/` 与 `files/` 在版本之间照旧迁移，不做备份。
+- 安装会话（2026-11-14 修订）：`.prev` 是用户在这一轮之前的版本。工具调用带 `ToolCtx::turn`，这是本次开机内的轮次序号（不是对话里的轮次编号，对话轮次会从 1 重新数；轮次之外为 0）。同一轮里某个场景的第一次成功安装写 `.prev` 并开始一个会话；同一轮后续的安装不再动 `.prev`（被替换的版本直接删除），所以 `scene.rollback` 回到本轮之前的版本；会话结束后 `.prev` 仍在，下一轮的 `scene.rollback` 同样回到最近一次安装过该场景的那一轮之前的版本。会话在以下情况结束：下一轮开始（下一次安装带的是别的 `turn`）、`scene.discard_draft`、`scene.rollback`、重启（会话只在内存里）、或其他任何途径替换或删除了该场景（`SceneRepository::changed_since()`，例如管理后台上传）。同一轮里再次 `scene.rollback` 会再交换一次（相当于重做），不丢版本。轮次之外（`turn == 0`）的调用每次都写 `.prev`。场景的 `data/` 与 `files/` 在版本之间照旧迁移，不做备份。
 
 ### 4.2 操作场景
 
