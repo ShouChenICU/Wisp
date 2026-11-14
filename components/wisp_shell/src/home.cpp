@@ -673,13 +673,36 @@ std::string Home::hint_text(uint64_t now, bool in_turn) {
         if (!url.empty()) s += "\n" + fitted_url(url);
         return s;
     };
+    // Why the last try failed, inside its own window ("" otherwise).
+    auto fresh = [&]() -> std::string {
+        if (now - hint_since_ >= kFadeAfterMs) return {};
+        if (hint_turn_) {
+            const ui::StrId id = *hint_turn_;
+            if (id == ui::StrId::HomeTurnNoModel || id == ui::StrId::HomeTurnUnauthorized)
+                return with_url(ui::tr(id));
+            return ui::tr(id);
+        }
+        if (hint_error_) {
+            const voice::VoiceError e = *hint_error_;
+            if (e == voice::VoiceError::NoAsrProfile || e == voice::VoiceError::NoTtsProfile)
+                return with_url(ui::tr(detail::voice_error_text(e)));
+            return ui::tr(detail::voice_error_text(e));
+        }
+        if (hint_not_heard_) return ui::tr(ui::StrId::HomeNotHeard);
+        return {};
+    };
     const Readiness r = readiness();
     if (r.net == Readiness::Net::Down) return ui::tr(ui::StrId::HomeNoWifi);
     if (r.net == Readiness::Net::Connecting) return ui::tr(ui::StrId::HomeConnecting);
-    // Nothing set up (the first boot) in one short line: the list of all
-    // three would not fit the smallest screen's line.
-    if (!r.llm && !r.asr && !r.tts) return with_url(ui::tr(ui::StrId::HomeNoModels));
     if (!r.complete()) {
+        // Talking works (say, only speech is missing): why the last try
+        // failed matters more than the standing list, for its window.
+        if (r.can_talk()) {
+            if (std::string f = fresh(); !f.empty()) return f;
+        }
+        // Nothing set up (the first boot) in one short line: the list of
+        // all three would not fit the smallest screen's line.
+        if (!r.llm && !r.asr && !r.tts) return with_url(ui::tr(ui::StrId::HomeNoModels));
         const char* sep = ui::lang() == ui::Lang::En ? ", " : "、";
         std::string items;
         for (const auto& [missing, id] :
@@ -692,21 +715,7 @@ std::string Home::hint_text(uint64_t now, bool in_turn) {
         return with_url(ui::tr_fill(ui::StrId::HomeMissing, items));
     }
     if (tap_at_ && now - *tap_at_ < kFadeAfterMs) return ui::tr(ui::StrId::HomeHoldToTalk);
-    if (now - hint_since_ >= kFadeAfterMs) return {};
-    if (hint_turn_) {
-        const ui::StrId id = *hint_turn_;
-        if (id == ui::StrId::HomeTurnNoModel || id == ui::StrId::HomeTurnUnauthorized)
-            return with_url(ui::tr(id));
-        return ui::tr(id);
-    }
-    if (hint_error_) {
-        const voice::VoiceError e = *hint_error_;
-        if (e == voice::VoiceError::NoAsrProfile || e == voice::VoiceError::NoTtsProfile)
-            return with_url(ui::tr(detail::voice_error_text(e)));
-        return ui::tr(detail::voice_error_text(e));
-    }
-    if (hint_not_heard_) return ui::tr(ui::StrId::HomeNotHeard);
-    return {};
+    return fresh();
 }
 
 void Home::apply_layout(bool in_turn, bool hint_visible) {
@@ -1056,9 +1065,10 @@ void Home::act(WispPress::Action a) {
         case WispPress::Action::Tap:
             // No voice effect. Set up, the hint says how to talk; before
             // that the hint below the wisp is already up and says what is
-            // missing (hint_text()).
+            // missing (hint_text()). While a turn runs its text and Stop
+            // are up, and the hint would only cover them.
             conv_->tap();
-            tap_at_ = deps_.now_ms();
+            if (!conv_->current().running) tap_at_ = deps_.now_ms();
             on_request();
             break;
         case WispPress::Action::HoldBegin:

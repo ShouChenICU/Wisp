@@ -1654,6 +1654,78 @@ TEST_F(HomeTest, TapShowsTheHintThenFades) {
     ASSERT_TRUE(settled());
 }
 
+// A tap while a turn runs says nothing new: the turn's own text and Stop
+// are up, and the tap hint would only cover them.
+TEST_F(HomeTest, TapDuringARunningTurnSetsNoHint) {
+    boot();
+    server.llm().push(wisp::test::llm_text("never", /*hold_after=*/0));
+    ASSERT_TRUE(agent->submit("做一个时钟场景", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_until([&] { return server.llm().held() == 1; }, 3000));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn(); }));
+    const lv_point_t c = wisp_centre();
+    const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
+    feed({at});
+    feed({at});
+    feed({});
+    EXPECT_FALSE(conv->holding());
+    EXPECT_EQ(hint_shown(), "");
+    conv->stop_turn();
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+}
+
+// Talking works without a tts profile, so a fresh failure is worth more
+// than the standing checklist: it shows for its own window, then the
+// checklist comes back.
+TEST_F(HomeTest, FreshFailureOutranksTheChecklistWhileTalkingWorks) {
+    boot();
+    const std::string url = "http://10.0.0.7:8900";
+    const std::string checklist = "还差：语音合成\n" + url;
+    const std::string note = wisp::ui::tr(wisp::ui::StrId::HomeTurnUnauthorized);
+    ready.store(wisp::shell::Readiness{.tts = false});
+    ASSERT_EQ(hint_shown(), checklist);
+
+    server.llm().push({.status = 401, .chunks = {"{\"error\":\"bad key\"}"}});
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn() && !conv->current().running; }));
+    EXPECT_EQ(hint_shown(), note);
+    // Shown with the text all the while: the hint's own wait has not run.
+    home_ms.store(kFadeAfterMs - 1000);
+    EXPECT_EQ(hint_shown(), note);
+    home_ms.store(kFadeAfterMs + 1000);
+    ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
+    EXPECT_EQ(hint_shown(), note + "\n" + url);
+    home_ms.store(2 * kFadeAfterMs);
+    EXPECT_EQ(hint_shown(), checklist);
+
+    // "Not heard" likewise.
+    h->bus.publish(
+        {"voice.state", "voice", 0,
+         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
+    EXPECT_TRUE(wait_until([&] { return hint_shown() == "没听清"; }, 3000));
+    home_ms.fetch_add(kFadeAfterMs + 1000);
+    EXPECT_EQ(hint_shown(), checklist);
+}
+
+// When talking cannot work (no asr profile), the checklist says why and
+// stays on top of a fresh hint.
+TEST_F(HomeTest, ChecklistStaysWhileTalkingCannotWork) {
+    boot();
+    const std::string checklist = "还差：语音识别\nhttp://10.0.0.7:8900";
+    ready.store(wisp::shell::Readiness{.asr = false});
+    ASSERT_EQ(hint_shown(), checklist);
+    h->bus.publish(
+        {"voice.state", "voice", 0,
+         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
+    h->bus.wait_idle(1000);
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(hint_shown(), checklist);
+    // The hint was there all along: with talking possible it shows.
+    ready.store(wisp::shell::Readiness{.tts = false});
+    EXPECT_EQ(hint_shown(), "没听清");
+}
+
 // Pressing to talk after a failed turn takes its outcome off the hint.
 TEST_F(HomeTest, CaptureClearsTheOutcomeHint) {
     boot();

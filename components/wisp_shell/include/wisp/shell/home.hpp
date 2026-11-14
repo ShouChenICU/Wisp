@@ -50,21 +50,24 @@
 // leaves the screen idle. Turns from the web page show the same way; the
 // controller only leaves them unspoken.
 //
-// The hint: the controller's readiness first, for as long as it lasts
-// (Net::Down: HomeNoWifi; Net::Connecting: HomeConnecting; online with
-// nothing set up: HomeNoModels, with some missing: HomeMissing listing
-// the HomeNeed* items; either with the admin address, on a line of its
-// own, without its scheme where the whole address would not fit on one
-// line). Else, newest first: a tap on the wisp (HomeHoldToTalk) until a
-// capture, a turn or another hint; the later of the controller's last
-// voice error (VoiceErr*, with the address for a missing profile) or
-// "not heard" (HomeNotHeard), first seen, and why the last turn did not
-// end "done" (TurnView::end_reason as a short HomeTurn* string, with the
-// address for "no_model" and "unauthorized"; the full note stays in the
-// conversation), from its ended_ms, until the next turn or capture; each
-// for kFadeAfterMs. While the turn's text shows the wait of the error and
-// turn hints does not run, so the full hint still gets its time after the
-// fade.
+// The hint (spec 6.6): the controller's readiness first, for as long as
+// it lasts (Net::Down: HomeNoWifi; Net::Connecting: HomeConnecting;
+// online with nothing set up: HomeNoModels, with some missing:
+// HomeMissing listing the HomeNeed* items; either with the admin address,
+// on a line of its own, without its scheme where the whole address would
+// not fit on one line) -- except that while talking works (can_talk(),
+// say only speech is missing) a failure hint inside its window shows
+// instead of the missing-items list, which comes back after it. Else,
+// newest first: a tap on the wisp (HomeHoldToTalk; not set while a turn
+// runs) until a capture, a turn or another hint; the failure hints: the
+// later of the controller's last voice error (VoiceErr*, with the address
+// for a missing profile) or "not heard" (HomeNotHeard), first seen, and
+// why the last turn did not end "done" (TurnView::end_reason as a short
+// HomeTurn* string, with the address for "no_model" and "unauthorized";
+// the full note stays in the conversation), from its ended_ms, until the
+// next turn or capture; each for kFadeAfterMs. While the turn's text
+// shows the wait of the error and turn hints does not run, so the full
+// hint still gets its time after the fade.
 //
 // The wisp's mood follows "agent.state" and "voice.state" (mood_for());
 // listening and speaking pass on their level, a running tool sets
