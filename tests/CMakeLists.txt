@@ -429,6 +429,10 @@ target_include_directories(completion_box_test PRIVATE ${WISP_ROOT}/components/w
 wisp_test(NAME scene_background_test SRCS scene/scene_background_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 90)
 target_include_directories(scene_background_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
+# The scene task's lanes (scene_runtime.hpp, "Scheduling").
+wisp_test(NAME scene_lanes_test SRCS scene/scene_lanes_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+target_include_directories(scene_lanes_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 wisp_test(NAME notify_binding_test SRCS scene/notify_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 target_include_directories(notify_binding_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)

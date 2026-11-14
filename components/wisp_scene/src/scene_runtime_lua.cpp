@@ -11,6 +11,7 @@
 // lua_settle(), which ends the run.
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -42,6 +43,9 @@ constexpr uint32_t kGraceMs = 4000;
 constexpr uint32_t kPushMs = 1000;
 // The log tag of print and wisp.log in the run's VM.
 constexpr const char* kOutputTag = "agent.lua";
+// A step of the run that takes longer than this is logged, as a scene's
+// message is (scene_runtime.cpp).
+constexpr uint64_t kSlowMs = 50;
 // What wisp.notify posts as (spec 4.2: the source is Wisp itself).
 constexpr const char* kNotifyName = "Wisp";
 
@@ -323,22 +327,41 @@ void SceneRuntime::lua_end(LuaRunResult r) {
 }
 
 void SceneRuntime::lua_clock() {
-    if (!agent_) return;
-    const uint64_t now = os::now_ms();
-    if (now >= agent_->job->deadline_ms) {
-        char text[64];
-        std::snprintf(text, sizeof(text), "timed out after %u ms",
-                      static_cast<unsigned>(agent_->job->timeout_ms));
-        lua_end(failure("timeout", text));
-        return;
+    if (!agent_ || os::now_ms() < agent_->job->deadline_ms) return;
+    char text[64];
+    std::snprintf(text, sizeof(text), "timed out after %u ms",
+                  static_cast<unsigned>(agent_->job->timeout_ms));
+    lua_end(failure("timeout", text));
+}
+
+bool SceneRuntime::agent_has_work(uint64_t now) {
+    if (!agent_) return false;
+    if (!agent_->box->empty() || !agent_->due_timers.empty()) return true;
+    const std::optional<uint64_t> due = agent_->api.timers.next_due();
+    return due && *due <= now;
+}
+
+void SceneRuntime::run_agent_item(uint64_t now) {
+    AgentRun& a = *agent_;
+    const uint64_t t0 = os::now_ms();
+    const char* kind = "timer";
+    CompletionBox::Item item;
+    // Each step may end the run (lua_settle()); `a` is not used after it.
+    if (a.box->take(item)) {
+        kind = item.files ? "files" : "http";
+        Vm& vm = *a.vm;
+        lua_settle(item.files ? run_files_callback(vm, item.id, files_result(item))
+                              : run_http_callback(vm, item.id, http_result(item)));
+    } else {
+        if (a.due_timers.empty()) a.due_timers = a.api.timers.due(now);
+        if (a.due_timers.empty()) return;
+        const uint32_t id = a.due_timers.front();
+        a.due_timers.erase(a.due_timers.begin());
+        const bool once = !a.api.timers.contains(id);
+        lua_settle(run_timer(*a.vm, id, once));
     }
-    const uint32_t instance = agent_->instance;
-    for (uint32_t id : agent_->api.timers.due(now)) {
-        // Each one may end the run.
-        if (!agent_ || agent_->instance != instance) break;
-        const bool once = !agent_->api.timers.contains(id);
-        lua_settle(run_timer(*agent_->vm, id, once));
-    }
+    const uint64_t ms = os::now_ms() - t0;
+    if (ms > kSlowMs) WLOG_W(kOutputTag, "slow message %s %" PRIu64 " ms", kind, ms);
 }
 
 uint64_t SceneRuntime::lua_wait_ms(uint64_t now) const {

@@ -242,7 +242,7 @@ TEST_F(RunLua, Timeout) {
     EXPECT_FALSE(r.ok);
     EXPECT_EQ(r.error, "timeout");
     EXPECT_EQ(str(r.output), "zz\n");
-    EXPECT_GE(ms, 900);
+    EXPECT_GE(ms, 150);
     EXPECT_LT(ms, 3000);
     EXPECT_EQ(rt->vm_pool_used(), before);
 }
@@ -256,8 +256,8 @@ TEST_F(RunLua, SliceLimit) {
             .count();
     EXPECT_FALSE(r.ok);
     EXPECT_EQ(r.error, "timeout");
-    EXPECT_NE(r.message.find("1000 ms"), std::string::npos) << r.message;
-    EXPECT_GE(ms, 900);
+    EXPECT_NE(r.message.find("200 ms"), std::string::npos) << r.message;
+    EXPECT_GE(ms, 150);
     EXPECT_LT(ms, 5000);
 }
 

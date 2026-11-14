@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <utility>
+#include <variant>
 
 namespace wisp::scene {
 
@@ -69,6 +70,26 @@ size_t CompletionBox::close() {
     head_ = 0;
     size_ = 0;
     return n;
+}
+
+const net::SceneHttpResult& http_result(const CompletionBox::Item& item) {
+    static const net::SceneHttpResult no_memory = [] {
+        net::SceneHttpResult r;
+        r.error = "other";
+        return r;
+    }();
+    const auto* r = item.payload ? std::get_if<net::SceneHttpResult>(item.payload.get()) : nullptr;
+    return r != nullptr ? *r : no_memory;
+}
+
+const FilesResult& files_result(const CompletionBox::Item& item) {
+    static const FilesResult no_memory = [] {
+        FilesResult r;
+        r.error = "no_memory";
+        return r;
+    }();
+    const auto* r = item.payload ? std::get_if<FilesResult>(item.payload.get()) : nullptr;
+    return r != nullptr ? *r : no_memory;
 }
 
 }  // namespace wisp::scene

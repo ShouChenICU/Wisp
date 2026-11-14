@@ -241,6 +241,9 @@ struct SceneRuntime::Slot {
     // Its finished wisp.http / wisp.files calls (add_slot()); shared with
     // the deliver lambdas, closed when the VM goes.
     std::shared_ptr<CompletionBox> box;
+    // Timer ids TimerSet::due() returned and the lanes have not run yet,
+    // oldest first (scene_runtime.hpp, "Scheduling").
+    std::vector<uint32_t> due_timers;
     // What the scene last saw, for "battery" and "lang".
     bool has_battery = false;
     int64_t battery = 0;
@@ -257,6 +260,8 @@ struct SceneRuntime::AgentRun {
     std::shared_ptr<FilesGate> files_gate;
     // As Slot::box, closed by lua_end().
     std::shared_ptr<CompletionBox> box;
+    // As Slot::due_timers, for its wisp.sleep timers.
+    std::vector<uint32_t> due_timers;
     OutputTail output;
     // The task ended (SceneApi::task_done) with `outcome`.
     bool ended = false;

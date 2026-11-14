@@ -75,4 +75,10 @@ private:
     size_t head_ = 0, size_ = 0;
 };
 
+// What a taken item's callback runs with: its payload, or for a null one
+// (no memory to keep the result) the error a lack of memory gives the call
+// elsewhere: "other" (the proxy's word for it) or "no_memory".
+const net::SceneHttpResult& http_result(const CompletionBox::Item& item);
+const FilesResult& files_result(const CompletionBox::Item& item);
+
 }  // namespace wisp::scene

@@ -357,7 +357,7 @@ a nested coroutine cannot wait, even when its parent is a task.
 `wisp.sleep(ms)` waits only in a task, accepts integers from 0 to 300000 and
 returns nil. Values below 50 ms wait 50 ms because of the timer resolution.
 Waiting does not use CPU execution-slice time. Each resume starts a new slice:
-200 ms for scene tools, 1000 ms for Agent Lua. The overall tool deadline includes
+200 ms for scene tools and for Agent Lua. The overall tool deadline includes
 waiting. VM faults stop further resume attempts.
 
 ## Agent Lua and HTTP tools
