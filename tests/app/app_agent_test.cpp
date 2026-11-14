@@ -326,6 +326,10 @@ TEST(AppAgent, HapticIsOffWhileTheScreenIsOff) {
     wisp::agent::ToolOutput off = call_tool(h, "device_call", pulse_args());
     EXPECT_FALSE(ok_of(off));
     EXPECT_EQ(str_of(off.result, "error"), "busy") << wisp::to_json(off.result);
+    // The service's own refusal, not the motor's: the App fed it power.state.
+    EXPECT_NE(str_of(off.result, "message").find("is off while the screen is off"),
+              std::string::npos)
+        << wisp::to_json(off.result);
     EXPECT_TRUE(off.note.empty());
     EXPECT_TRUE(pm->standby());
 
