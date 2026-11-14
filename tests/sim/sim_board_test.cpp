@@ -330,7 +330,8 @@ TEST(SimButton, SamePhysicalKeyCannotAcquireASecondSink) {
 TEST(SimButton, ConcurrentInjectionAndServiceLifecycleAreSafe) {
     using namespace wisp::port::sim;
     auto input = std::make_shared<SimInput>();
-    auto button = std::make_shared<SimButton>("button.power", SimButton::Kind::Power, input);
+    auto button = std::make_shared<SimButton>("button.power", SimButton::Kind::Power, input,
+                                              wisp::hal::role::kPower);
     wisp::core::DeviceRegistry registry;
     ASSERT_TRUE(registry.add(button));
     wisp::core::EventBus bus;
