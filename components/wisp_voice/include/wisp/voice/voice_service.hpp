@@ -20,9 +20,11 @@
 // text to the on_transcript callback. Offline with network_expected()
 // (Wi-Fi coming back from deep standby, which the round's network lock
 // asks for), the capture records anyway and recognition stays in
-// transcribing for up to kNetWaitMs until network_up(): still offline is
-// the "offline" error, a cancel or stop() ends the round without one.
-// Offline and not expected is refused at once. cancel_capture() drops the
+// transcribing for up to kNetWaitMs until network_up(), as long as the
+// network stays expected: still offline, or no longer expected, is the
+// "offline" error; a cancel or stop() ends the round without one. Offline
+// and not expected, at the start or once the recording is done, is the
+// "offline" error at once. cancel_capture() drops the
 // recording, or aborts the ASR request already sent. The start tone goes
 // through TonePlayer, which plays the newest sound only: starting a
 // capture silences an alarm that is ringing.

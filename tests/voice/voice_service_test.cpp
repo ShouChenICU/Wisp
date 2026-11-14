@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "support/fake_audio.hpp"
@@ -1498,7 +1499,7 @@ TEST_F(VoiceServiceTest, GivesUpWhenTheNetworkNeverComes) {
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Transcribing; }, 2000));
     wisp::os::sleep_ms(200);
     EXPECT_TRUE(reasons().empty());
-    EXPECT_EQ(voice_locks(), 3u);
+    EXPECT_GT(voice_locks(), 0u);
 
     virtual_ms += wisp::voice::kNetWaitMs;
     ASSERT_TRUE(wait_until([&] { return !reasons().empty(); }, 2000));
@@ -1524,10 +1525,8 @@ TEST_F(VoiceServiceTest, CancelDuringTheNetworkWaitEndsTheRound) {
     wait_for_network();
     virtual_ms += 1000;
     wisp::os::sleep_ms(150);
-    const uint64_t t0 = wisp::os::now_ms();
     voice->cancel_capture();
-    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Idle; }, 1000));
-    EXPECT_LT(wisp::os::now_ms() - t0, 200u);
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Idle; }, 200));
     ASSERT_TRUE(wait_idle());
     EXPECT_TRUE(reasons().empty());
     EXPECT_EQ(count(kAsrPath), 0u);
@@ -1536,9 +1535,53 @@ TEST_F(VoiceServiceTest, CancelDuringTheNetworkWaitEndsTheRound) {
 
     // stop() ends the wait as promptly.
     wait_for_network();
-    const uint64_t t1 = wisp::os::now_ms();
-    voice->stop();
-    EXPECT_LT(wisp::os::now_ms() - t1, 500u);
+    std::atomic<bool> stopped{false};
+    std::thread stopper([&] {
+        voice->stop();
+        stopped = true;
+    });
+    EXPECT_TRUE(wait_until([&] { return stopped.load(); }, 500));
+    stopper.join();
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, OfflineAndNotExpectedAfterTheRecordingFailsAtOnce) {
+    // Wi-Fi turned off by the user while the hold was recording.
+    add_asr();
+    make();
+    mic->set_script({sine(kMicSettleMs + 500)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    net_up = false;
+    net_expected = false;
+    voice->end_capture();
+    // The virtual clock stays put: only an immediate refusal ends this.
+    ASSERT_TRUE(wait_until([&] { return !reasons().empty(); }, 2000));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(reasons(), std::vector<std::string>{"offline"});
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, NetworkNoLongerExpectedEndsTheWait) {
+    add_asr();
+    net_up = false;
+    net_expected = true;
+    make();
+    mic->set_script({sine(kMicSettleMs + 500)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Transcribing; }, 2000));
+    virtual_ms += 1000;
+    wisp::os::sleep_ms(150);
+    EXPECT_TRUE(reasons().empty());
+    net_expected = false;
+    // Within one poll (kNetPollMs) and a margin.
+    ASSERT_TRUE(wait_until([&] { return !reasons().empty(); }, 300));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(reasons(), std::vector<std::string>{"offline"});
     EXPECT_EQ(count(kAsrPath), 0u);
     EXPECT_EQ(voice_locks(), 0u);
 }

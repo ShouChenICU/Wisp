@@ -686,12 +686,15 @@ void VoiceService::capture(const Command& c, bool primed) {
     publish(VoiceState::Transcribing);
     const uint32_t seq = c.capture;
     if (deps_.network_up && !deps_.network_up()) {
-        // Up to kNetWaitMs for a network on its way, on the injected
-        // clock; a cancel or stop() ends the wait within one poll.
+        // Up to kNetWaitMs, on the injected clock, and only while a
+        // network is on its way: Wi-Fi turned off or its last network
+        // forgotten fails at once. A cancel or stop() ends the wait within
+        // one poll.
+        auto expected = [this] { return deps_.network_expected && deps_.network_expected(); };
         const uint64_t deadline = deps_.now_ms() + kNetWaitMs;
         while (!deps_.network_up()) {
             if (capture_cancelled(seq)) return finish(nullptr);
-            if (deps_.now_ms() >= deadline) return failed(VoiceError::Offline);
+            if (!expected() || deps_.now_ms() >= deadline) return failed(VoiceError::Offline);
             os::sleep_ms(kNetPollMs);
         }
     }
