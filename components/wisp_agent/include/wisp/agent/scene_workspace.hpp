@@ -39,8 +39,8 @@
 // from (a redo), so it loses none. The turn's earlier installs between
 // the first and the last are not kept.
 //
-// The previous version is the one from before the turn (plan deviation 4
-// of docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md):
+// The previous version is the one from before the turn (agent-core spec
+// section 4.1):
 // the first successful install of a scene in an agent turn (ToolCtx::turn,
 // unique per boot) starts a session, and later installs of that scene in the same turn
 // leave .prev alone (InstallOptions::keep_prev false: the replaced package

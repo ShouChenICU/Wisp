@@ -269,7 +269,7 @@ Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. 
 
 - `mem` at the worst case: a large `wisp.http.download` in flight and an agent `http.fetch` of an HTTPS page at the same time (two TLS sessions from the proxy at once), with STA+AP and both httpd instances up. Internal free and largest block against `kWorstInternalFreeMin`/`kWorstInternalLargestMin` (`ram_budget.hpp`), and the stack high-water marks of `wisp.shttp` and `wisp.shttp.dl`. Record them in `docs/hardware/<board>.md`.
 - `mem` idle after boot: the cost of the second HTTP worker (TCB, watch timer, semaphore) against `kIdleInternalFreeMin`.
-- The agent's usual `lua.run` scripts (JSON over a fetched page, a loop over a 64 KB result) on the S3 at the 200 ms slice: none ends in `timeout`.
+- The agent's usual `lua.run` scripts (JSON over a fetched page, a loop over a 64 KB result) on the S3 at the 200 ms slice: none ends in `timeout`; also `wisp.json.decode` of a full agent HTTP response at the 200 ms slice.
 - Tap latency on the front scene while a background scene runs a 50 ms timer and the agent waits on fetches: no visible lag.
 - `WISP_PERF` while scrolling and while replacing the items of a long list (ledger example) against the baseline, and no blank frame on the reset, on the 2.16 and the 1.75C round panel; and how long a large list reset takes to rebuild on the device.
 - Two `scene.install` calls of one scene in one spoken turn, then "undo" (`scene.rollback`): the version from before the turn comes back after a restart too (the `.prev` on flash).
@@ -279,9 +279,9 @@ Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. 
 - After a list reset the old rows' image and canvas pixels count toward the view's 4 MB media budget until the new rows arrive, so a media growth in the same batch can be refused where it used to fit.
 - A narrow race between the install session check (`SceneWorkspace::in_session()`) and the start of staging: an admin upload of the same id that completes in between is replaced without becoming `.prev`.
 - No test for `SceneHttp::start()` failing on only the second worker (the simulator's spawn hook fails every spawn).
-- No integration test of the `no_memory` result path (a box item with a null payload) through `run_completions()`, nor of `Link::complete`'s `wake_failed()` branch with a live runtime.
+- No integration test of the `no_memory` result path (a box item with a null payload) through the lanes' `run_item`, nor of `Link::complete`'s `wake_failed()` branch with a live runtime.
 - A VM whose callbacks keep producing immediate results (a refused call made from each callback) delays its own due timers: within one VM a waiting result runs before a taken timer.
-- In the simulator, a request stuck in its TLS handshake (a server that accepts and never answers) is not stopped by `cancel_scene()` or `SceneHttp::stop()`: libcurl's progress callback did not run during that wait, so `wisp_sim` took 13.6 s to exit on SIGTERM with a scene `wisp.http.get` in that state (its 15 s deadline) and would wait up to the 5-minute deadline for a download. The worker and `SimHttpClient` code path is the same as before the two lanes; check whether the device's client stops at an abort there.
+- In the simulator, a request stuck in its TLS handshake (a server that accepts and never answers) is not stopped by `cancel_scene()` or `SceneHttp::stop()`: libcurl's progress callback did not run during that wait, so `wisp_sim` took 13.6 s to exit on SIGTERM with a scene `wisp.http.get` in that state (its 15 s deadline) and would wait up to the 5-minute deadline for a download. The worker and `SimHttpClient` code path is the same as before the two lanes; check whether the device's client stops at an abort there. With two lanes, two requests can be stuck at once; `stop()` aborts both before joining, so the waits overlap and the worst case is the longer one.
 - `queue_load` still drops a loaded-package message when the scene queue is full (`<id>: loaded, but the scene queue is full`); call results no longer go through the queue, but this receipt does.
 
 ## CI speed

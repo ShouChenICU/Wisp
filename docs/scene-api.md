@@ -617,6 +617,9 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
   scene's quota. `cb(err, res)`: `res = {status, size, deferred}`. A response that
   is not 2xx leaves the file as it was and gives `size = 0`. Errors are those of
   `wisp.http` and of `wisp.files`.
+- At most 2 downloads wait device-wide (`download_queue`); one more is answered
+  `rate_limited`. A download and an ordinary request of one scene may complete in
+  either order.
 - In deep standby (the screen has been off for a while) Wi-Fi is off. Requests and
   downloads then wait in a queue, at most 4 per scene (`deferred_queue_full` past
   it), until the system turns Wi-Fi on for a short network window, at most every 15

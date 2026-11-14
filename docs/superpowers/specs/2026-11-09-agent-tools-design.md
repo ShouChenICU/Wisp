@@ -71,7 +71,7 @@
 | `ToolIndex` | `wisp_agent` | 新：已安装场景的工具索引，供 `tools.find` / `tools.call`（第 5.3 节） |
 | 新工具 | `wisp_agent` | `http.fetch`、`lua.run`、`tools.find`、`tools.call` |
 
-不新增任何任务（task）：Agent 的 HTTP 跑在已有的 `wisp.shttp`，Lua 跑在已有的场景线程，工具等待在 `wisp.agent` 上完成。内部 RAM 用量不应变化，仍需在设备上复测（第 8.2 节）。
+本规格不新增任何任务（task）：Agent 的 HTTP 跑在已有的 `wisp.shttp`（2026-11-14 修订：3a 的两条通道另加了下载专用的 `wisp.shttp.dl`，`http.fetch` 仍走 `wisp.shttp` 这一条，不占下载通道），Lua 跑在已有的场景线程，工具等待在 `wisp.agent` 上完成。内部 RAM 用量不应变化，仍需在设备上复测（第 8.2 节）。
 
 内置工具由 37 个变为 41 个。
 

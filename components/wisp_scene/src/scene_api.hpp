@@ -70,15 +70,16 @@
 //       with lua_json.hpp. Every call works on the store's in-memory
 //       index; persisting is the store's own job on the wisp.fs worker.
 //   wisp.http (bind_http.cpp): the scene's requests go to the SceneHttp
-//       proxy through SceneApi::http_submit; each result comes back to the
-//       scene task as a message, and run_http_callback() calls the
-//       scene's callback with it. At most kMaxCallsInFlight calls of
+//       proxy through SceneApi::http_submit; each result waits in the VM's
+//       completion box (the queue carries only a wake-up), and the scene
+//       task's lane calls the scene's callback with it. At most kMaxCallsInFlight calls of
 //       wisp.http and wisp.files together wait for results
 //       (SceneApi::calls_in_flight); one more raises "too many calls
 //       waiting for results". Each result counts its call down whether or
 //       not its callback is still there (dropped by cancel_task() or a
-//       fault), since every counted call gets exactly one result; a closed
-//       scene's results never arrive, but its SceneApi goes with the VM.
+//       fault), since every counted call gets exactly one result; no
+//       result is dropped while the VM lives, and a closed VM's box is
+//       closed with it, so its SceneApi goes with the VM.
 //   wisp.files (bind_files.cpp; scene-device spec 7.1), over
 //       core::SceneFiles, every call asynchronous:
 //       write(name, data, cb), append(name, data, cb) -> cb(err, true);
