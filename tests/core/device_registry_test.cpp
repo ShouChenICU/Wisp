@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -331,6 +332,34 @@ TEST(DeviceRegistry, MainRoleGapsNameTheInterfacesAndIds) {
     ASSERT_TRUE(reg.remove("display.panel"));
     ASSERT_TRUE(reg.add(std::make_shared<FakeDisplay>("display.panel", 480, 480)));
     EXPECT_TRUE(wisp::core::main_role_gaps(reg).empty());
+}
+
+// One key holding both power and talk gets no gesture arbitration: holding
+// it to talk also triggers the power key's long press. App warns at boot.
+TEST(DeviceRegistry, PowerKeyThatAlsoTalksIsReported) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_FALSE(wisp::core::power_key_also_talks(reg));  // no power key
+
+    ASSERT_TRUE(reg.add(std::make_shared<FakeButton>(
+        "button.side",
+        wisp::Properties{{"role", wisp::List{wisp::Value("power"), wisp::Value("talk")}}})));
+    EXPECT_EQ(wisp::core::power_key_also_talks(reg), std::optional<std::string>("button.side"));
+}
+
+TEST(DeviceRegistry, SeparatePowerAndTalkKeysAreNotReported) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(
+        reg.add(std::make_shared<FakeButton>("button.a", wisp::Properties{{"role", "power"}})));
+    ASSERT_TRUE(
+        reg.add(std::make_shared<FakeButton>("button.b", wisp::Properties{{"role", "talk"}})));
+    EXPECT_FALSE(wisp::core::power_key_also_talks(reg));
+}
+
+TEST(DeviceRegistry, TalkKeyAloneIsNotReported) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(
+        reg.add(std::make_shared<FakeButton>("button.b", wisp::Properties{{"role", "talk"}})));
+    EXPECT_FALSE(wisp::core::power_key_also_talks(reg));
 }
 
 TEST(DeviceClass, StringRoundTrip) {

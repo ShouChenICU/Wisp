@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -122,5 +123,11 @@ struct RoleGap {
 // Every such interface, in the order above. An interface with no devices
 // at all is not a gap (the boot report already shows it missing).
 std::vector<RoleGap> main_role_gaps(const DeviceRegistry& registry);
+
+// The id of the key with role power when it also holds role talk. Such a
+// key gets no gesture arbitration (a hold of a second or more opens the
+// power-off dialog while the user talks), so App warns about it at boot.
+// Empty when the power key is missing or does not talk.
+std::optional<std::string> power_key_also_talks(const DeviceRegistry& registry);
 
 }  // namespace wisp::core

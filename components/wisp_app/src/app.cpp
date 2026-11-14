@@ -158,6 +158,12 @@ Result<void> App::start() {
         WLOG_W("app", "no device with role main among %s: %s", hal::to_string(gap.iface),
                ids.c_str());
     }
+    if (auto key = core::power_key_also_talks(impl_->registry)) {
+        WLOG_W("app",
+               "%s holds roles power and talk: holding it to talk also triggers the power "
+               "key's long press",
+               key->c_str());
+    }
 
     // Step 3: core services.
     impl_->bus.start();

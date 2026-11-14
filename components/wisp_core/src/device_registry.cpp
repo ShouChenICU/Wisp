@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/hal/button.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/roles.hpp"
 
@@ -203,6 +204,12 @@ std::vector<RoleGap> main_role_gaps(const DeviceRegistry& registry) {
         if (!gap.ids.empty() && !has_main) gaps.push_back(std::move(gap));
     }
     return gaps;
+}
+
+std::optional<std::string> power_key_also_talks(const DeviceRegistry& registry) {
+    const auto key = registry.by_role<hal::Button>(hal::role::kPower);
+    if (!key || !hal::has_role(key->info(), hal::role::kTalk)) return std::nullopt;
+    return key->info().id;
 }
 
 }  // namespace wisp::core

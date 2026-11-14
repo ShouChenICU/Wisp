@@ -291,3 +291,7 @@ Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. 
 ## Agent core tool enhancements
 
 - `lua.run` failures now carry their full payload in `ToolOutput.result_json`, while `AgentService::execute_tool` still reads the diagnostic error code only from `ToolOutput.result`. Runtime/compile/timeout/memory/cancelled failures therefore log `error:failed`; the model result and ToolEnd summary remain correct. Preserve a small structured error code or expose explicit metadata without parsing the large JSON payload. Add a regression at the production consumer boundary.
+
+## Device model
+
+- A key that holds both roles `power` and `talk` (device-model spec 2.3) gets no gesture arbitration: holding it to talk also triggers the power key's long press (the power-off dialog after a second). It needs arbitration where talk owns the hold and the power key keeps only a short press; that belongs to the input-generality work of the device-model spec's part 3. Until then `App` warns about such a board at boot (`core::power_key_also_talks()`).
