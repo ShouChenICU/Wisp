@@ -5,8 +5,10 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <latch>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include "support/fake_devices.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -444,8 +446,54 @@ TEST_F(DeviceServiceTest, AFullRateTableReplacesAnExpiredEntryFirst) {
     EXPECT_NE(r.error().message.find("retry_after_ms=4900"), std::string::npos);
 }
 
-// With nothing expired the oldest stamp goes: the one closest to expiry.
-TEST_F(DeviceServiceTest, AFullRateTableWithNothingExpiredReplacesTheOldest) {
+constexpr auto kSlowFirstCmds = make_cmds<60000, 5000>();
+constexpr DeviceSchema kSlowFirstSchema{.cmds = kSlowFirstCmds};
+
+// A full table of running intervals fails closed: the new pair is refused
+// with the soonest any running interval ends, and no running interval is
+// evicted, however long it still has to run.
+TEST_F(DeviceServiceTest, AFullRateTableRefusesInsteadOfEvicting) {
+    ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>("relay.a", &kSlowFirstSchema)));
+    ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>("relay.b", &kLongSchema)));
+    auto relay_c = std::make_shared<FakeGeneric>("relay.c", &kLongSchema);
+    ASSERT_TRUE(registry.add(relay_c));
+    t = 0;
+    ASSERT_TRUE(pulse());                        // 100 ms
+    ASSERT_TRUE(run(service, "relay.a", "c0"));  // 60 s
+    for (size_t i = 1; i < 16; ++i) {
+        t += 1;
+        ASSERT_TRUE(run(service, "relay.a", kCmdNames[i]));  // 5 s each
+    }
+    for (size_t i = 0; i < 15; ++i) {
+        t += 1;
+        ASSERT_TRUE(run(service, "relay.b", kCmdNames[i]));
+    }
+
+    t = 40;
+    auto full = run(service, "relay.c", "c0");
+    ASSERT_FALSE(full);
+    EXPECT_EQ(full.error().code, ErrorCode::RateLimited);
+    EXPECT_EQ(full.error().message, "'relay.c.c0' cannot be rate-tracked now; retry_after_ms=60");
+    EXPECT_TRUE(relay_c->invocations().empty());
+    auto again = pulse();
+    ASSERT_FALSE(again);
+    EXPECT_NE(again.error().message.find("called again too soon; retry_after_ms=60"),
+              std::string::npos);
+    EXPECT_FALSE(run(service, "relay.a", "c0"));
+    // A command without an interval needs no slot.
+    EXPECT_TRUE(service.call("haptic.main", "set_mode", Value(Map{{"mode", "soft"}}), "agent"));
+
+    // Once the shortest interval ends, its slot takes the new pair.
+    t = 100;
+    EXPECT_TRUE(run(service, "relay.c", "c0"));
+    EXPECT_EQ(relay_c->invocations().size(), 1u);
+    auto slow = run(service, "relay.a", "c0");
+    ASSERT_FALSE(slow);
+    EXPECT_NE(slow.error().message.find("retry_after_ms=59900"), std::string::npos);
+}
+
+// Equal intervals: the 33rd pair waits for the oldest stamp to run out.
+TEST_F(DeviceServiceTest, AFullRateTableWithEqualIntervalsRefusesTheNewPair) {
     for (const char* id : {"relay.a", "relay.b", "relay.c"}) {
         ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>(id, &kLongSchema)));
     }
@@ -456,10 +504,49 @@ TEST_F(DeviceServiceTest, AFullRateTableWithNothingExpiredReplacesTheOldest) {
             t += 1;
         }
     }
-    ASSERT_TRUE(run(service, "relay.c", "c0"));
-    t += 1;
-    EXPECT_TRUE(run(service, "relay.a", "c0"));  // its stamp was replaced
-    auto r = run(service, "relay.b", "c15");
+    t = 40;
+    auto r = run(service, "relay.c", "c0");
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::RateLimited);
+    EXPECT_EQ(r.error().message, "'relay.c.c0' cannot be rate-tracked now; retry_after_ms=4960");
+    EXPECT_FALSE(run(service, "relay.a", "c0"));
+    t = 5000;
+    EXPECT_TRUE(run(service, "relay.c", "c0"));
+    EXPECT_FALSE(run(service, "relay.a", "c1"));  // stamped at 1, ends at 5001
+}
+
+// Rate entries are keyed by id, not by the device object.
+TEST_F(DeviceServiceTest, ADeviceReAddedUnderTheSameIdIsStillLimited) {
+    ASSERT_TRUE(pulse());
+    ASSERT_TRUE(registry.remove("haptic.main"));
+    ASSERT_TRUE(registry.add(std::make_shared<FakeGeneric>("haptic.main", &kFakeGenericSchema)));
+    t = 50;
+    auto r = pulse();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::RateLimited);
+}
+
+// Two callers racing the same rate-limited command at one instant: the
+// check and the stamp are one critical section, so exactly one reaches the
+// driver.
+TEST_F(DeviceServiceTest, RacingCallsPassOneAtATime) {
+    constexpr int kRounds = 300;
+    for (int round = 0; round < kRounds; ++round) {
+        t = 1000 + static_cast<uint64_t>(round) * 100;  // the previous interval has ended
+        std::latch go(2);
+        std::array<wisp::Result<Value>, 2> results{wisp::Result<Value>::ok(Value()),
+                                                   wisp::Result<Value>::ok(Value())};
+        auto racer = [&](size_t i) {
+            go.arrive_and_wait();
+            results[i] = pulse(i == 0 ? "agent" : "scene.a");
+        };
+        std::thread a(racer, 0), b(racer, 1);
+        a.join();
+        b.join();
+        const int ok = (results[0] ? 1 : 0) + (results[1] ? 1 : 0);
+        ASSERT_EQ(ok, 1) << "round " << round;
+        const auto& refused = results[0] ? results[1] : results[0];
+        ASSERT_EQ(refused.error().code, ErrorCode::RateLimited) << "round " << round;
+    }
+    EXPECT_EQ(haptic->invocations().size(), static_cast<size_t>(kRounds));
 }

@@ -318,6 +318,10 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     auto busy = devices->get("haptic.main", "level");
     ASSERT_FALSE(busy);
     EXPECT_EQ(busy.error().code, wisp::ErrorCode::Busy);
+    // The App's power.state handler maps the state names; one it does not
+    // know leaves the level as it was.
+    publish("hibernate");
+    EXPECT_FALSE(devices->get("haptic.main", "level"));
     publish("dim");
     EXPECT_TRUE(devices->get("haptic.main", "level"));
     publish("deep_standby");

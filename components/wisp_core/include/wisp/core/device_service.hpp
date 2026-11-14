@@ -23,8 +23,11 @@
 // Memory: the rate table is reserved once in PSRAM (os::LargeVector of
 // kMaxRateEntries fixed-size entries) and never grows. A call allocates
 // only what Value and Result need: the validated argument map, the
-// driver's result, its JSON for the size check (at most what the driver
-// returned) and, on refusal, the error message.
+// driver's result and, on refusal, the error message. The result's size
+// is measured without serialising it (json_size()).
+//
+// Rate entries are keyed by id and outlive the device: a device removed
+// and added again under the same id within its interval is still limited.
 
 #include <array>
 #include <atomic>
@@ -81,12 +84,21 @@ public:
     //   2. NotFound: no such command;
     //   3. PermissionDenied: the device is typed (spec 3.4);
     //   4. InvalidArgument: hal::validate_args();
-    //   5. Busy: another holder has the device exclusively;
-    //   6. Busy: a "standby: off" device while the screen is off;
+    //   5. Busy: another holder has the device exclusively. Occupancy is
+    //      checked, not held: a holder that takes the device exclusively
+    //      after this check does not stop this call;
+    //   6. Busy: a "standby: off" device while the screen is off. Advisory
+    //      only: PowerManager powers devices down before it publishes
+    //      power.state, which the bus delivers asynchronously, so a call can
+    //      still reach a driver that is already off; the driver must refuse
+    //      (Busy) while off;
     //   7. RateLimited: closer than min_interval_ms to the previous call
     //      that reached the driver, across all holders ("retry_after_ms=N"
     //      in the message); otherwise the call is stamped, whatever the
-    //      driver then returns.
+    //      driver then returns. If the command is not in the table yet and
+    //      the table is full of running intervals, the call is refused too
+    //      ("cannot be rate-tracked now", N = the soonest any of them ends):
+    //      a running interval is never evicted.
     // Then the driver's invoke(); its error passes through unchanged. A
     // result whose JSON exceeds kMaxResultBytes is DeviceFailure. A call
     // over hal::kDeviceCallBudgetMs logs one warning per (id, cmd); a
@@ -97,7 +109,9 @@ public:
 
     // From power.state: at Standby/DeepStandby, "standby: off" devices are
     // unreachable (Busy). The service never wakes a device. Starts at
-    // Active, the level the device boots in.
+    // Active, the level the device boots in. The event arrives after
+    // PowerManager has already switched the devices, so this check is
+    // advisory; drivers stay authoritative (hal::Device::invoke()).
     void set_power_level(hal::PowerLevel level);
 
 private:
@@ -117,11 +131,16 @@ private:
 
     // Under mutex_: the entry for (id, name, kind), or null.
     RateEntry* find_entry(std::string_view id, std::string_view name, Kind kind) const;
-    // Under mutex_: a fresh entry for (id, name, kind) in a free slot,
-    // else in one whose interval has run out, else (only if `may_evict`)
-    // in the one stamped longest ago; null if none may be taken.
-    RateEntry* claim_entry(std::string_view id, std::string_view name, Kind kind, uint64_t now,
-                           bool may_evict) const;
+    // Under mutex_: a fresh entry for (id, name, kind) in a free slot, else
+    // in one whose interval has run out (or that never had one); null when
+    // every entry's interval still runs. A running interval is never
+    // evicted.
+    RateEntry* claim_entry(std::string_view id, std::string_view name, Kind kind,
+                           uint64_t now) const;
+    // Under mutex_: the least time until a running interval in the table
+    // ends, for the retry_after_ms of a call refused because the table is
+    // full.
+    uint64_t soonest_expiry(uint64_t now) const;
 
     // After the driver returned, for call() and get(): the budget warning
     // (once per entry) and the result size check.

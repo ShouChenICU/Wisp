@@ -145,6 +145,7 @@ Result<Value> DeviceService::call(const std::string& id, const std::string& cmd,
     if (spec->min_interval_ms > 0) {
         const uint64_t now = now_ms_();
         uint64_t retry_after = 0;
+        bool untracked = false;
         {
             std::lock_guard<os::Mutex> lock(mutex_);
             RateEntry* entry = find_entry(id, cmd, Kind::Cmd);
@@ -152,16 +153,26 @@ Result<Value> DeviceService::call(const std::string& id, const std::string& cmd,
                 const uint64_t since = elapsed(entry->at_ms, now);
                 if (since < spec->min_interval_ms) retry_after = spec->min_interval_ms - since;
             }
+            if (retry_after == 0 && entry == nullptr) {
+                entry = claim_entry(id, cmd, Kind::Cmd, now);
+                // A full table of running intervals fails closed: evicting
+                // one would let its command be repeated at once, and the
+                // interval is what protects the hardware.
+                if (entry == nullptr) {
+                    untracked = true;
+                    retry_after = soonest_expiry(now);
+                }
+            }
             if (retry_after == 0) {
-                if (entry == nullptr) entry = claim_entry(id, cmd, Kind::Cmd, now, true);
                 entry->interval_ms = spec->min_interval_ms;
                 entry->at_ms = now;
             }
         }
         if (retry_after > 0) {
-            return refuse(ErrorCode::RateLimited, "'" + id + "." + cmd +
-                                                      "' called again too soon; retry_after_ms=" +
-                                                      std::to_string(retry_after));
+            const char* why = untracked ? "' cannot be rate-tracked now; retry_after_ms="
+                                        : "' called again too soon; retry_after_ms=";
+            return refuse(ErrorCode::RateLimited,
+                          "'" + id + "." + cmd + why + std::to_string(retry_after));
         }
     }
 
@@ -183,26 +194,25 @@ DeviceService::RateEntry* DeviceService::find_entry(std::string_view id, std::st
     return nullptr;
 }
 
+namespace {
+
+bool expired(uint32_t interval_ms, uint64_t at_ms, uint64_t now) {
+    return interval_ms == 0 || elapsed(at_ms, now) >= interval_ms;
+}
+
+}  // namespace
+
 DeviceService::RateEntry* DeviceService::claim_entry(std::string_view id, std::string_view name,
-                                                     Kind kind, uint64_t now,
-                                                     bool may_evict) const {
+                                                     Kind kind, uint64_t now) const {
     RateEntry* slot = nullptr;
     if (rates_.size() < kMaxRateEntries) {
         slot = &rates_.emplace_back();  // reserved: never reallocates
     } else {
         for (RateEntry& e : rates_) {
-            if (e.interval_ms == 0 || elapsed(e.at_ms, now) >= e.interval_ms) {
+            if (expired(e.interval_ms, e.at_ms, now)) {
                 slot = &e;
                 break;
             }
-        }
-        // Every entry's interval still runs: the one stamped longest ago is
-        // the closest to running out, so dropping it frees the shortest
-        // remaining wait.
-        if (slot == nullptr && may_evict) {
-            slot = &*std::min_element(
-                rates_.begin(), rates_.end(),
-                [](const RateEntry& a, const RateEntry& b) { return a.at_ms < b.at_ms; });
         }
         if (slot == nullptr) return nullptr;
     }
@@ -211,6 +221,17 @@ DeviceService::RateEntry* DeviceService::claim_entry(std::string_view id, std::s
     copy_name(slot->name, name);
     slot->kind = kind;
     return slot;
+}
+
+uint64_t DeviceService::soonest_expiry(uint64_t now) const {
+    uint64_t soonest = std::numeric_limits<uint64_t>::max();
+    for (const RateEntry& e : rates_) {
+        if (expired(e.interval_ms, e.at_ms, now)) continue;
+        soonest = std::min<uint64_t>(soonest, e.interval_ms - elapsed(e.at_ms, now));
+    }
+    // Only called when nothing has expired, so some entry set it; 1 keeps
+    // the answer a refusal even if that ever changes.
+    return soonest == std::numeric_limits<uint64_t>::max() ? 1 : soonest;
 }
 
 Result<Value> DeviceService::finish(const std::string& id, std::string_view name, Kind kind,
@@ -223,7 +244,7 @@ Result<Value> DeviceService::finish(const std::string& id, std::string_view name
             RateEntry* entry = find_entry(id, name, kind);
             // A warning never pushes out a running interval: with no room
             // it is simply not remembered, and may be logged again.
-            if (entry == nullptr) entry = claim_entry(id, name, kind, started_ms, false);
+            if (entry == nullptr) entry = claim_entry(id, name, kind, started_ms);
             if (entry != nullptr) {
                 first = !entry->warned;
                 entry->warned = true;
@@ -238,8 +259,11 @@ Result<Value> DeviceService::finish(const std::string& id, std::string_view name
         }
     }
     if (!result) return result;
-    const size_t bytes = to_json(result.value()).size();
-    if (bytes > kMaxResultBytes) {
+    // Measured, not serialised: a faulty driver's huge result is refused
+    // without a second copy of it in RAM. Its exact size, for the message,
+    // is measured the same way.
+    if (json_size(result.value(), kMaxResultBytes) > kMaxResultBytes) {
+        const size_t bytes = json_size(result.value(), std::numeric_limits<size_t>::max() - 1);
         return refuse(ErrorCode::DeviceFailure,
                       "result too large (" + std::to_string(bytes) + " bytes)");
     }
