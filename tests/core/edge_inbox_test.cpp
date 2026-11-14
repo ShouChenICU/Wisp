@@ -342,35 +342,49 @@ private:
 TEST(EdgeInbox, DestroyedOffItsDispatcherWaitsForTheHandlerInProgress) {
     EventBus bus;
     ASSERT_TRUE(bus.start().is_ok());
-    wisp::os::Semaphore entered(1, 0);
-    wisp::os::Semaphore gate(1, 0);
-    CancelSpy spy(bus, gate);
-    std::atomic<bool> returned{false};
-    std::atomic<bool> timed_out{false};
-    auto inbox = std::make_unique<Inbox8>("test", spy, [&](const Edge&) {
-        entered.give();
-        // Opened only by the destructor's cancel() (or the guard on a
-        // failure): a destructor that never cancels leaves this to time out.
-        if (!gate.take(kGateMs)) {
-            timed_out = true;
+    // What the handler touches after it parks. Held by pointer and copied
+    // into a local first: if the destructor did not wait, it would free the
+    // handler's callable (and its captures) under the parked handler.
+    struct Shared {
+        wisp::os::Semaphore entered{1, 0};
+        wisp::os::Semaphore gate{1, 0};
+        wisp::os::Semaphore finished{1, 0};
+        std::atomic<bool> returned{false};
+        std::atomic<bool> timed_out{false};
+    } shared;
+    CancelSpy spy(bus, shared.gate);
+    Shared* captured = &shared;
+    auto inbox = std::make_unique<Inbox8>("test", spy, [captured](const Edge&) {
+        Shared* sh = captured;
+        sh->entered.give();
+        // Nothing but the destructor's cancel() opens the gate: a
+        // destructor that never cancels leaves this to time out.
+        if (!sh->gate.take(kGateMs)) {
+            sh->timed_out = true;
         }
-        returned = true;
+        sh->returned = true;
+        sh->finished.give();
     });
     inbox->push({1});
-    ASSERT_TRUE(entered.take(kGateMs));
+    ASSERT_TRUE(shared.entered.take(kGateMs));
+
     std::atomic<bool> handler_had_returned{false};
-    std::vector<std::thread> threads;
-    {
-        GateAndJoin guard(gate, threads);
-        threads.emplace_back([&] {
-            inbox.reset();
-            handler_had_returned = returned.load();
-        });
-    }
+    std::thread destroyer([&] {
+        inbox.reset();
+        handler_had_returned = shared.returned.load();
+    });
+    // reset() returns once cancel() has opened the gate and waited for the
+    // handler, or, if it never cancels, at once; neither path can block
+    // past kGateMs, so a plain join is bounded.
+    destroyer.join();
+
     // The handler could return only after cancel() began, so seeing it
     // returned once reset() is back proves the destructor waited for it.
     EXPECT_TRUE(handler_had_returned.load());
-    EXPECT_FALSE(timed_out.load());
+    // Bounded by the handler's own timeout; keeps the bus from stopping
+    // under a handler that is still parked when the destructor did not wait.
+    EXPECT_TRUE(shared.finished.take(2 * kGateMs));
+    EXPECT_FALSE(shared.timed_out.load());
     EXPECT_EQ(spy.attached(), 0u);
     bus.stop();
 }
