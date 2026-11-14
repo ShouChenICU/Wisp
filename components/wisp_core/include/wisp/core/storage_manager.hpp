@@ -437,8 +437,9 @@ private:
     std::string int_mount_;  // never has a trailing '/'; see init()
     std::string sd_mount_;   // ditto; empty if storage.sd isn't registered
     bool sd_online_ = false;
-    // Declared after bus_, whose reference its constructor uses; the
-    // manager is destroyed before the bus stops.
+    // Declared after bus_, whose reference its constructor uses. The
+    // manager's owner declares it after the bus, so this cell is destroyed
+    // before the bus object is.
     StateCell<SdStatus> sd_cell_;
     // calls(); bumped by checked_path().
     mutable std::atomic<uint64_t> calls_{0};

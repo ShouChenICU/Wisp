@@ -290,7 +290,7 @@ TEST(StorageManager, SdEventsCarryTheManagerSourceAndNoPayload) {
 
 // A card that is present but whose directories cannot be made stays
 // online: refresh() still reports it inserted, once.
-TEST(StorageManager, SdCellCountsACardThatFailsToMount) {
+TEST(StorageManager, SdCellCountsACardWhoseDirectoriesCannotBeMade) {
     if (getuid() == 0) {
         GTEST_SKIP() << "running as root: chmod-based read-only test would not be meaningful";
     }
