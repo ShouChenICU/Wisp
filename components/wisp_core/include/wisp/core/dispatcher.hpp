@@ -42,14 +42,24 @@ public:
     // running is queued again and runs once more after the current run.
     // Never blocks on a run, never allocates, never fails -- except that a
     // slot being cancelled (from inside its run, or by a cancel() waiting
-    // for its run) is not queued: the owner is freeing it.
+    // for its run) is not queued: the owner is freeing it. Such a refused
+    // schedule() is dropped, not deferred: keeping it would re-queue a slot
+    // its owner is about to free.
     virtual void schedule(DispatchSlot& slot) = 0;
     // Unqueues `slot`. Returns true when the owner may free it now: off
     // this dispatcher's thread, after waiting for a run of `slot` in
     // progress (only that one: schedules of `slot` made meanwhile, its own
     // included, are refused) to return. Returns false only when called
     // on this dispatcher's thread from inside `slot`'s own run; the
-    // dispatcher then calls slot.finish, which must be set, after the run.
+    // dispatcher then calls slot.finish, which must be set, after the run;
+    // schedules of `slot` stay refused until finish returns, since the
+    // dispatcher still owns the slot until then.
+    // An owner that keeps the slot instead of freeing it (after cancel()
+    // returned true, or after finish) must reset its own coalescing state
+    // ("already scheduled") and schedule it again: the schedules refused
+    // meanwhile were dropped, so the notification is otherwise lost.
+    // At most one cancel() of a slot may be in progress at a time: a
+    // second one could touch the slot after the first caller freed it.
     // Never waits after the dispatcher has stopped. Must not be called
     // while holding a lock the slot's own run takes.
     [[nodiscard]] virtual bool cancel(DispatchSlot& slot) = 0;
