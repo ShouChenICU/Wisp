@@ -18,8 +18,11 @@ A constant counts as a topic name when its value contains a '.' and does
 not end with '.'; that leaves out the button prefix ("button.") and the
 edge names ("down", "up", ...), which are parts of a topic, not topics.
 The doc table is the first table under the "## Event topics" heading; a
-heading closes it. A table row after the table's first break (a blank line)
-in the same section is reported rather than skipped.
+blank line or a heading ends it. The scan goes on to the next "## "
+heading: a later table row whose first cell has a topic's shape (backticked
+dotted names joined by " / ") is reported as outside the topic table, since
+the comparison with the registry would otherwise miss it; other tables
+(such as the one under "### State cells and edge inboxes") are left alone.
 Each first-column piece must be exactly one backticked name.
 
 Prints "path:line: message" lines and exits 1 when any rule fails; silent
@@ -178,6 +181,26 @@ def load_registry(root):
     return entries, errors
 
 
+def _topic_names(cell):
+    """The names a first-column cell lists, or None when it is not one
+    backticked name per " / " piece."""
+    names = []
+    for piece in cell.split(" / "):
+        m = _PIECE_RE.match(piece.strip())
+        if not m:
+            return None
+        name = m.group(1)
+        if name.startswith(".") and names:
+            name = names[-1].rsplit(".", 1)[0] + name
+        names.append(name)
+    return names
+
+
+def _looks_like_topic_row(cell):
+    names = _topic_names(cell)
+    return bool(names) and "." in names[0] and not names[0].startswith(".")
+
+
 def doc_rows(root):
     """Return (rows, errors); rows are (name, line) of the table's first column."""
     try:
@@ -188,9 +211,14 @@ def doc_rows(root):
     in_section = started = ended = False
     for number, line in enumerate(lines, 1):
         if line.startswith("#"):
-            if started:
-                break
-            in_section = line.strip() == "## Event topics"
+            # "# " and "## " open a new section; deeper headings stay in it
+            # but end the topic table.
+            if line.startswith(("# ", "## ")):
+                if in_section and started:
+                    break
+                in_section = line.strip() == "## Event topics"
+            elif started:
+                ended = True
             continue
         if not in_section:
             continue
@@ -198,26 +226,18 @@ def doc_rows(root):
             if started:
                 ended = True
             continue
-        if ended:
-            # A blank line inside the table would otherwise hide the rows
-            # after it from the comparison with the registry.
-            errors.append(f"{ARCH_DOC}:{number}: topic table continues after a break; "
-                          "keep it one contiguous table")
-            break
-        started = True
         cell = line.split("|")[1].strip()
+        if ended:
+            # Rows of a topic table split by a blank line or moved under a
+            # sub-heading would otherwise escape the comparison with the
+            # registry.
+            if _looks_like_topic_row(cell):
+                errors.append(f"{ARCH_DOC}:{number}: topic row outside the topic table")
+            continue
+        started = True
         if cell == "Topic" or set(cell) <= {"-", " ", ":"}:
             continue
-        names = []
-        for piece in cell.split(" / "):
-            m = _PIECE_RE.match(piece.strip())
-            if not m:
-                names = None
-                break
-            name = m.group(1)
-            if name.startswith(".") and names:
-                name = names[-1].rsplit(".", 1)[0] + name
-            names.append(name)
+        names = _topic_names(cell)
         if names is None:
             errors.append(f'{ARCH_DOC}:{number}: malformed topic cell "{cell}"')
         else:

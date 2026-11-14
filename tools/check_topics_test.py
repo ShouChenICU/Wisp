@@ -193,20 +193,36 @@ class CheckTopicsTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn(":3:", errors[0])
 
-    def test_only_the_first_table_under_the_heading_is_read(self):
-        extra = "\n### Sub\n\n| Topic | P | N |\n|---|---|---|\n| `bogus.one` | x | y |\n"
-        write(self.root, "docs/architecture.md", DOC + extra)
+    def outside(self, doc, row):
+        write(self.root, "docs/architecture.md", doc)
+        line = doc.splitlines().index(row) + 1
+        return f"docs/architecture.md:{line}: topic row outside the topic table"
+
+    def test_topic_row_under_a_sub_heading_is_reported(self):
+        row = "| `bogus.one` / `.two` | x | y |"
+        doc = DOC + "\n### Sub\n\n| Topic | P | N |\n|---|---|---|\n" + row + "\n"
+        expected = self.outside(doc, row)
+        self.assertEqual(check_topics.check(self.root), [expected])
+
+    def test_other_tables_under_a_sub_heading_are_accepted(self):
+        doc = DOC + (
+            "\n### State cells and edge inboxes\n\n"
+            "| Path | Delivery | Lost when |\n|---|---|---|\n"
+            "| Cell subscription | Coalesced | Never |\n"
+            "| Edge inbox | Every edge, in push order | The dispatcher stalls for `N` edges |\n"
+            "| `x` | not dotted | y |\n")
+        write(self.root, "docs/architecture.md", doc)
         self.assertEqual(check_topics.check(self.root), [])
 
-    def test_rows_after_a_break_in_the_table_are_reported(self):
-        both = DOC.replace("\nTrailing", "\n| `bogus.two` | x | y |\n\nTrailing")
-        write(self.root, "docs/architecture.md", both)
-        line = both.splitlines().index("| `bogus.two` | x | y |") + 1
-        self.assertEqual(check_topics.check(self.root), [
-            f"docs/architecture.md:{line}: topic table continues after a break; "
-            "keep it one contiguous table"])
-        # A later table under a sub-heading is another section and stays legal.
-        write(self.root, "docs/architecture.md", DOC + "\n### Sub\n\n| T |\n|---|\n| `x` |\n")
+    def test_topic_row_after_a_blank_line_is_reported_once(self):
+        row = "| `bogus.two` | x | y |"
+        doc = DOC.replace("\nTrailing", "\n" + row + "\n\nTrailing")
+        expected = self.outside(doc, row)
+        self.assertEqual(check_topics.check(self.root), [expected])
+
+    def test_scan_stops_at_the_next_section(self):
+        doc = DOC + "\n## Other\n\n| T |\n|---|\n| `bogus.three` |\n"
+        write(self.root, "docs/architecture.md", doc)
         self.assertEqual(check_topics.check(self.root), [])
 
     def test_constant_missing_from_kall_is_reported_but_prefixes_are_not(self):
