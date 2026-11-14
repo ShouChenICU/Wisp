@@ -12,8 +12,9 @@
 //     (boot_id, seq) names a line exactly: a browser drops any copy it
 //     has already shown, e.g. the replay after a re-subscribe. A message that
 //     contains '\n' is still one line.
-//   - "events": events under net., power., storage. and system. arrive as
-//     {"t":"event","topic","payload"}.
+//   - "events": events whose topic forwards() accepts (under memory., net.,
+//     power., scene., storage., system. and todo.) arrive as
+//     event_frame()'s {"t":"event","topic","payload"}.
 //   - "agent": the agent's frames {"t":"agent","k",...} (agent-core spec
 //     7.2), as the owner hands them to send_agent(); nothing is replayed.
 //
@@ -79,6 +80,10 @@
 
 namespace wisp::admin {
 
+// The frame an "events" subscriber receives for `e`:
+// {"t":"event","topic":<topic>,"payload":<payload>}.
+std::string event_frame(const core::Event& e);
+
 class WsHub : public LogSink {
 public:
     // Registers itself as a log sink and subscribes to the forwarded event
@@ -136,6 +141,10 @@ public:
     // sender task sends the pings.
     void keepalive();
     static constexpr int kKeepaliveMisses = 3;
+
+    // Whether "events" subscribers receive `topic`: true when one of the
+    // forwarded prefixes is a prefix of it.
+    static bool forwards(std::string_view topic);
 
     // Sends what is owed, per client the hello (until it goes through),
     // the dropped notice and up to one queue's worth, in that order,

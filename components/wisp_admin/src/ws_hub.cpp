@@ -18,8 +18,10 @@ namespace {
 
 constexpr const char* kTag = "ws";
 
-// Event prefixes forwarded to "events" subscribers (spec 6.2). memory.* and
-// todo.* events carry a count only (MemoryStore, ReminderScheduler), never
+// Event prefixes forwarded to "events" subscribers (spec 6.2); the hub
+// subscribes to each, and forwards() answers from the same list, which a
+// test checks against the `forwarded` flags of wisp/core/topics.hpp.
+// memory.* and todo.* events carry a count only (MemoryStore, ReminderScheduler), never
 // note or todo text, so forwarding them is no privacy issue.
 constexpr const char* kForwardedPrefixes[] = {"memory.",  "net.",    "power.", "scene.",
                                               "storage.", "system.", "todo."};
@@ -344,10 +346,21 @@ void WsHub::send_agent(std::string json) {
     wake_.give();
 }
 
+std::string event_frame(const core::Event& e) {
+    return to_json(Value(
+        Map{{"t", Value("event")}, {"topic", Value(e.topic)}, {"payload", Value(e.payload)}}));
+}
+
+bool WsHub::forwards(std::string_view topic) {
+    for (const char* prefix : kForwardedPrefixes) {
+        if (topic.starts_with(prefix)) return true;
+    }
+    return false;
+}
+
 void WsHub::on_event(const core::Event& e) {
     if (event_subscribers_.load() == 0) return;
-    const std::string json = to_json(Value(
-        Map{{"t", Value("event")}, {"topic", Value(e.topic)}, {"payload", Value(e.payload)}}));
+    const std::string json = event_frame(e);
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         for (auto& c : clients_) {

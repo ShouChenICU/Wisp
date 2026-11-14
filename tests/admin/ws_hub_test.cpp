@@ -20,6 +20,7 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/os/os.hpp"
@@ -415,6 +416,45 @@ TEST(WsHub, ForwardsOnlyAllowedTopics) {
     EXPECT_EQ(str(sent[6], "topic"), "todo.changed");
     EXPECT_EQ(sent[6].as_map().at("payload"), Value(Map{{"count", Value(int64_t{3})}}));
     EXPECT_EQ(logs->sent_count(), 0u);
+    bus.stop();
+}
+
+// The registry's forwarded flag and the hub's prefixes describe the same
+// wire behaviour; neither may drift from the other.
+TEST(WsHub, ForwardedFlagsMatchTheRegistry) {
+    for (const wisp::core::topics::Topic& t : wisp::core::topics::kAll) {
+        EXPECT_EQ(t.forwarded, WsHub::forwards(t.name)) << t.name;
+    }
+}
+
+TEST(WsHub, ForwardsMatchesWholePrefixes) {
+    EXPECT_TRUE(WsHub::forwards("net.wifi.state"));
+    EXPECT_TRUE(WsHub::forwards("todo.changed"));
+    EXPECT_FALSE(WsHub::forwards("voice.state"));
+    EXPECT_FALSE(WsHub::forwards("netx.y"));
+    EXPECT_FALSE(WsHub::forwards("button.power.down"));
+    EXPECT_FALSE(WsHub::forwards("net"));
+    EXPECT_FALSE(WsHub::forwards(""));
+}
+
+TEST(WsHub, EventFrameIsWhatClientsReceive) {
+    wisp::log::reset_for_test();
+    EventBus bus;
+    WsHub hub(bus);
+    ASSERT_TRUE(bus.start());
+    auto events = std::make_shared<FakeWsConnection>(1);
+    ASSERT_TRUE(hub.open(events));
+    hub.on_message(1, R"({"sub":["events"]})");
+
+    const Event e{"system.time", "test", 0, {{"state", Value("synced")}}};
+    bus.publish(e);
+    ASSERT_TRUE(bus.wait_idle(2000));
+    hub.pump();
+
+    const std::vector<std::string> sent = events->sent_raw();
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0], wisp::admin::event_frame(e));
+    EXPECT_EQ(sent[0], R"({"payload":{"state":"synced"},"t":"event","topic":"system.time"})");
     bus.stop();
 }
 
