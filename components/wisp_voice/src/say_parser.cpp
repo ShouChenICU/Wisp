@@ -116,7 +116,11 @@ void SayParser::feed(std::string_view delta) {
             emit(std::string_view(pending_).substr(0, i));
             pending_.erase(0, i + tag.size());
             inside_ = !inside_;
-            if (inside_) saw_say_ = true;
+            if (inside_) {
+                saw_say_ = true;
+            } else if (out_.say_end) {
+                out_.say_end();
+            }
             continue;
         }
         const size_t keep = std::max(partial_tag(pending_, kOpen), partial_tag(pending_, kClose));

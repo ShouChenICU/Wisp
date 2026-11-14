@@ -30,9 +30,13 @@
 // being synthesized while sentence n plays. Only the first sentence of a
 // turn may be requested while the LLM is still streaming
 // (set_llm_busy(true)), and with overlap_first_sentence = false not even
-// that one. A TTS failure ends the turn's speech (the text is still
-// shown by others). stop_speaking() clears the queue, aborts the request
-// in flight and stops playback.
+// that one -- until say_closed() says the say block has closed: then the
+// rest of the queue is synthesized while the model streams the body.
+// Either way it is one TTS request at a time, so a turn never holds more
+// than two model connections (the LLM stream and one TTS). A TTS failure
+// ends the turn's speech (the text is still shown by others).
+// stop_speaking() clears the queue, aborts the request in flight and
+// stops playback.
 //
 // Rounds and wake locks. The round ends -- its locks are released, and
 // only then is the final idle published, so a listener that sees idle
@@ -43,9 +47,9 @@
 // transcript with end_speech() (also when nothing is spoken: muted, the
 // agent refused the text, the turn failed) or stop_speaking(). As a
 // safety net only, a round that has delivered its transcript and then
-// seen no begin_speech()/speak()/end_speech()/stop_speaking()/
-// set_llm_busy() for kVoiceRoundBackstopMs ends itself (log "voice: round
-// backstop"). set_llm_busy() counts because a turn that runs tools for
+// seen no begin_speech()/speak()/say_closed()/end_speech()/
+// stop_speaking()/set_llm_busy() for kVoiceRoundBackstopMs ends itself
+// (log "voice: round backstop"). set_llm_busy() counts because a turn that runs tools for
 // minutes without speaking yet is still alive.
 //
 // Sharing the output (spec 4.4). TonePlayer and PcmPlayer must never have
@@ -193,6 +197,10 @@ public:
     void begin_speech();
     void speak(std::string_view say_delta);
     void end_speech();
+    // The reply's say block has closed: no more say text arrives while
+    // the model goes on streaming the body (see the file header). A no-op
+    // when no speech is open.
+    void say_closed();
     void stop_speaking();
     void set_llm_busy(bool busy);
 
@@ -222,7 +230,8 @@ private:
         bool open = false;   // begin_speech() .. its end
         bool ended = false;  // end_speech() called
         bool sent_first = false;
-        bool stopped = false;  // stop_speaking() ended it; its round ends too
+        bool say_closed = false;  // say_closed() called
+        bool stopped = false;     // stop_speaking() ended it; its round ends too
         uint32_t round = 0;
         uint32_t next_index = 1;
         std::deque<std::string> pending;

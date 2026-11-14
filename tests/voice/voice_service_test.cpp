@@ -613,6 +613,92 @@ TEST_F(VoiceServiceTest, NoOverlapWhenConfiguredSerial) {
     ASSERT_TRUE(wait_idle());
 }
 
+TEST_F(VoiceServiceTest, SecondSentenceWaitsForTheLlmWithoutSayClosed) {
+    add_tts();
+    make();
+    server.push_tts(pcm_reply(ramp(480)));
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("一。二。");
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 1 && out->frames() == 480; }, 2000));
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(count(kTtsPath), 1u);
+    voice->set_llm_busy(false);
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 2; }, 2000));
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"一。", "二。"}));
+}
+
+TEST_F(VoiceServiceTest, SayClosedLetsLaterSentencesRunWhileTheLlmIsBusy) {
+    add_tts();
+    make();
+    for (int i = 0; i < 3; ++i) server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("一。二。三。");
+    voice->say_closed();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 3; }, 2000));
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"一。", "二。", "三。"}));
+    EXPECT_EQ(server.max_concurrent(), 1);
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+}
+
+TEST_F(VoiceServiceTest, SayClosedDoesNotLeakIntoTheNextSpeech) {
+    add_tts();
+    make();
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->begin_speech();
+    voice->speak("一。");
+    voice->say_closed();
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 1; }, 2000));
+    ASSERT_TRUE(wait_idle());
+
+    server.push_tts(pcm_reply(ramp(480)));
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("甲。乙。");
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 2; }, 2000));
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(count(kTtsPath), 2u);
+    voice->set_llm_busy(false);
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 3; }, 2000));
+    voice->end_speech();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(tts_inputs(), (std::vector<std::string>{"一。", "甲。", "乙。"}));
+}
+
+TEST_F(VoiceServiceTest, SayClosedWithoutSpeechIsANoOp) {
+    add_tts();
+    make();
+    voice->say_closed();
+    wisp::os::sleep_ms(50);
+    bus.wait_idle(1000);
+    EXPECT_EQ(voice->state(), VoiceState::Idle);
+    EXPECT_TRUE(events().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+    EXPECT_EQ(count(kTtsPath), 0u);
+
+    // Nor does it carry over into a speech that opens later.
+    server.push_tts(pcm_reply(ramp(480)));
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->set_llm_busy(true);
+    voice->begin_speech();
+    voice->speak("一。二。");
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 1; }, 2000));
+    wisp::os::sleep_ms(100);
+    EXPECT_EQ(count(kTtsPath), 1u);
+    voice->set_llm_busy(false);
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return count(kTtsPath) == 2; }, 2000));
+    ASSERT_TRUE(wait_idle());
+}
+
 TEST_F(VoiceServiceTest, CapsSpeechAt200Chars) {
     add_tts();
     make();

@@ -258,6 +258,16 @@ void VoiceService::end_speech() {
     wake();
 }
 
+void VoiceService::say_closed() {
+    touch();
+    {
+        std::lock_guard<os::Mutex> lock(speech_mu_);
+        if (!speech_.open) return;
+        speech_.say_closed = true;
+    }
+    wake();
+}
+
 void VoiceService::stop_speaking() {
     stop_speech();
     wake();
@@ -595,8 +605,11 @@ bool VoiceService::pump_speech() {
             stopped_round = speech_.round;
         }
         if (speech_.open && gen == speech_gen_.load()) {
-            const bool may =
-                speech_.sent_first ? !llm_busy_ : (config_.overlap_first_sentence || !llm_busy_);
+            // Later sentences wait for the stream unless the say block has
+            // closed: the body is not spoken, so only its connection is
+            // left. speak_sentence() runs on this task, one at a time.
+            const bool may = speech_.sent_first ? (!llm_busy_ || speech_.say_closed)
+                                                : (config_.overlap_first_sentence || !llm_busy_);
             if (!speech_.pending.empty() && may) {
                 text = std::move(speech_.pending.front());
                 speech_.pending.pop_front();

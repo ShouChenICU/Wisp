@@ -171,3 +171,32 @@ TEST(SayParser, FirstSentenceSkipsBlankLinesAndTrims) {
     EXPECT_EQ(first_sentence("Hi? there"), "Hi?");
     EXPECT_EQ(first_sentence(" \n "), "");
 }
+
+TEST(SayParser, SayEndFiresWhenTheTagCloses) {
+    int ends = 0;
+    std::string say;
+    SayParser p({.say = [&](std::string_view s) { say += s; },
+                 .body = [](std::string_view) {},
+                 .say_end = [&] { ++ends; }});
+    p.feed("<say>你好。再见。</sa");
+    EXPECT_EQ(ends, 0);
+    p.feed("y>正文");
+    EXPECT_EQ(ends, 1);
+    EXPECT_EQ(say, "你好。再见。");
+}
+
+TEST(SayParser, StrayCloseAndFinishDoNotFireSayEnd) {
+    int ends = 0;
+    SayParser stray({.say = [](std::string_view) {},
+                     .body = [](std::string_view) {},
+                     .say_end = [&] { ++ends; }});
+    stray.feed("</say>text");
+    EXPECT_EQ(ends, 0);
+
+    SayParser open({.say = [](std::string_view) {},
+                    .body = [](std::string_view) {},
+                    .say_end = [&] { ++ends; }});
+    open.feed("<say>open");
+    open.finish();
+    EXPECT_EQ(ends, 0);
+}
