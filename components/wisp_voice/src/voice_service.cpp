@@ -196,7 +196,12 @@ void VoiceService::prime() {
 }
 
 void VoiceService::unprime() {
-    unprimed_seq_.store(prime_seq_.load());
+    // Only ever moves forward: an unprime() that read an older prime_seq_
+    // must not undo a newer one's mark.
+    const uint32_t seq = prime_seq_.load();
+    uint32_t marked = unprimed_seq_.load();
+    while (marked < seq && !unprimed_seq_.compare_exchange_weak(marked, seq)) {
+    }
     wake();
 }
 
@@ -446,13 +451,19 @@ void VoiceService::run() {
         const uint32_t wait = more ? 0 : (player_begun_ ? kLevelIntervalMs : kIdleWaitMs);
         if (cmds_.pop(c, wait)) {
             if (c.cmd == Cmd::Wake) wake_pending_.store(false);
-            if (c.cmd == Cmd::BeginCapture) capture(c, false);
+            if (c.cmd == Cmd::BeginCapture) {
+                capture(c, false);
+                // A press made during the capture is spent with it.
+                prime_seen_ = prime_seq_.load();
+            }
         }
         if (quit_.load()) break;
         if (const uint32_t seq = prime_seq_.load(); seq != prime_seen_) {
             prime_seen_ = seq;
-            if (std::optional<Command> begin = prime_mic(seq)) {
-                capture(*begin, begin->mode == CaptureMode::Hold);
+            const Primed primed = prime_mic(seq);
+            if (primed.begin) {
+                capture(*primed.begin, primed.mic_open);
+                prime_seen_ = prime_seq_.load();
             }
             if (quit_.load()) break;
         }
@@ -478,17 +489,17 @@ bool VoiceService::speech_has_work() {
     return speech_.open && (!speech_.pending.empty() || speech_.ended);
 }
 
-std::optional<VoiceService::Command> VoiceService::prime_mic(uint32_t seq) {
-    if (unprimed_seq_.load() >= seq || capture_busy_.load() || !deps_.mic) return std::nullopt;
-    if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) return std::nullopt;
+VoiceService::Primed VoiceService::prime_mic(uint32_t seq) {
+    if (unprimed_seq_.load() >= seq || capture_busy_.load() || !deps_.mic) return {};
+    if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) return {};
     // The output must be quiet: a reply playing (or about to) is not
     // something to record, and speech must not wait behind the priming.
-    if (player_begun_ || deps_.player.active()) return std::nullopt;
-    if (deps_.tones != nullptr && deps_.tones->playing()) return std::nullopt;
-    if (speech_has_work()) return std::nullopt;
+    if (player_begun_ || deps_.player.active()) return {};
+    if (deps_.tones != nullptr && deps_.tones->playing()) return {};
+    if (speech_has_work()) return {};
     if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {
         WLOG_W(kTag, "prime: mic: %s", opened.error().message.c_str());
-        return std::nullopt;
+        return {};
     }
 
     CaptureBuffer& buf = *buffer_;
@@ -522,10 +533,12 @@ std::optional<VoiceService::Command> VoiceService::prime_mic(uint32_t seq) {
         buf.commit(frame.size());
         if (buf.full() || buf.ms() > 2 * keep) buf.keep_tail(keep);
     }
-    if (begin && begin->mode == CaptureMode::Hold && !quit_.load()) return begin;
+    if (begin && begin->mode == CaptureMode::Hold && !quit_.load()) {
+        return {.begin = begin, .mic_open = true};
+    }
     deps_.mic->close();
     buf.clear();
-    return begin;
+    return {.begin = begin, .mic_open = false};
 }
 
 void VoiceService::capture(const Command& c, bool primed) {

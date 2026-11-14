@@ -35,7 +35,10 @@
 // is in the recording by design (the mic being open while the output
 // plays is this path's deliberate exception), and preroll_ms = 0 turns
 // priming off for a board where that hurts recognition. kMinSpeechMs
-// counts the part after the pre-roll only.
+// counts the part after the pre-roll only, while max_record_ms caps the
+// pre-roll and the hold together. A press made while a capture is in
+// progress (recording or transcribing) is spent with it. A Vad
+// begin_capture() on a primed mic closes it and opens it again, unprimed.
 //
 // Speech (spec 4.4, 4.5). begin_speech() opens the turn's speech;
 // speak() feeds it the say text as it streams (SentenceSplitter, at most
@@ -270,10 +273,16 @@ private:
     // stop_speaking() without the wake-up.
     void stop_speech();
     void run();
+    // How a priming ended: the BeginCapture that came meanwhile, if one
+    // did, and whether the mic is still open for it (only for a Hold, and
+    // not once stop() has begun).
+    struct Primed {
+        std::optional<Command> begin;
+        bool mic_open = false;
+    };
     // Keeps the mic primed for prime() number `seq` until it ends (see the
-    // file header). Returns the BeginCapture that came meanwhile, if one
-    // did; the mic is still open only when that one is Hold mode.
-    std::optional<Command> prime_mic(uint32_t seq);
+    // file header).
+    Primed prime_mic(uint32_t seq);
     // `primed`: the mic is open and the buffer holds the pre-roll.
     void capture(const Command& c, bool primed);
     // Fills `frame` from the mic; false when the mic fails.
