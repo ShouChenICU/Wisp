@@ -12,11 +12,19 @@
 // docs/superpowers/specs/2026-11-06-flash-thread-design.md): its first
 // act is os::set_flash_thread() and its last os::clear_flash_thread().
 //
-// Jobs run one at a time on the one worker task, from two lanes (spec
-// 3.1): Normal (settings, JSON documents, scene data) and Bulk (firmware
-// and download chunks, each at most kIoChunk bytes). A queued Normal job
-// always runs before any queued Bulk job, so the worst wait for Normal
-// work is one Bulk chunk; within a lane, jobs run in submission order.
+// Jobs run one at a time on the one worker task, from three lanes in
+// priority order (spec 3.1): Interactive (short jobs a user or the agent
+// waits for: settings saves, conversation appends, memory and todos),
+// Normal (JSON documents, scene data, listings) and Bulk (firmware and
+// download chunks, each at most kIoChunk bytes). Within a lane jobs run in
+// submission order; across lanes there is no order, so a producer that
+// needs two jobs on different lanes in order waits for the first.
+// The worker takes the highest non-empty lane, except that a lower lane
+// that has been passed over by kLaneTurnAfter higher jobs while it waited
+// gets one forced turn, and two forced turns never run back to back. So a
+// steady stream of higher work cannot starve Normal or Bulk, and an
+// Interactive job waits at most for the job already running (one Bulk
+// chunk at worst) plus one forced turn of a lower lane.
 // submit() never blocks: a full lane is reported to the caller, which
 // decides whether to retry, merge or drop. A job must not block on
 // another job submitted after it (the worker would wait on itself) and
@@ -40,9 +48,27 @@ namespace wisp::core {
 // work for at most one flash erase-and-write of this size.
 inline constexpr size_t kIoChunk = 32 * 1024;
 
-enum class IoLane : uint8_t { Normal, Bulk };
+// In priority order; the value indexes per-lane state.
+enum class IoLane : uint8_t { Interactive, Normal, Bulk };
+inline constexpr size_t kLaneCount = 3;
+
+// How many higher-lane jobs may run while a lower lane waits before that
+// lane gets a forced turn: bounds starvation without letting a lower lane
+// interleave with every higher job.
+inline constexpr uint32_t kLaneTurnAfter = 8;
+
+// Per-lane figures since start(), for the mem command. Wait is the time a
+// job spent queued (its start minus its enqueue time); job is how long it
+// ran. Jobs run inline by run_sync() are not counted.
+struct LaneStats {
+    uint64_t jobs = 0;
+    uint64_t max_wait_us = 0;
+    uint64_t max_job_us = 0;
+};
 
 struct StorageWorkerConfig {
+    // Interactive lane capacity.
+    size_t interactive_capacity = 16;
     // Normal lane capacity.
     size_t queue_capacity = 32;
     // Bulk lane capacity: a producer of large data (an OTA upload) can be
@@ -66,6 +92,9 @@ struct StorageWorkerConfig {
     // only 740 B, under the quarter the mem rule keeps free, so 8 KB.
     size_t stack_bytes = 8192;
     int priority = 3;
+    // The clock behind the lane statistics; empty means os::now_us. Tests
+    // inject one so the figures are exact.
+    std::function<uint64_t()> now_us;
 };
 
 class StorageWorker {
@@ -87,7 +116,7 @@ public:
     Result<void> start();
 
     // Stops accepting jobs, lets the worker finish every job already
-    // queued in either lane, then joins it. Idempotent; a no-op before
+    // queued in every lane, then joins it. Idempotent; a no-op before
     // start().
     void stop();
 
@@ -121,21 +150,41 @@ public:
     // queued, rather than guessing how long that takes.
     size_t pending() const { return pending_.load(); }
 
+    // `lane`'s statistics (see LaneStats). Safe from any thread while the
+    // worker runs; the three fields are read one by one, so a job finishing
+    // meanwhile may show in some of them only.
+    LaneStats stats(IoLane lane) const;
+
 private:
+    struct Item {
+        std::function<void()> fn;
+        uint64_t queued_us = 0;
+    };
+
+    // Written only by the worker thread; relaxed atomics are enough since
+    // each field stands alone, and they cost the hot path no lock.
+    struct AtomicLaneStats {
+        std::atomic<uint64_t> jobs{0};
+        std::atomic<uint64_t> max_wait_us{0};
+        std::atomic<uint64_t> max_job_us{0};
+    };
+
     void run();
+    uint64_t now() const;
+    // The lane the next job comes from (the turn rule in the file header),
+    // given which lanes hold a job; updates passed_ and last_forced_.
+    size_t pick_lane(const bool (&queued)[kLaneCount]);
 
     StorageWorkerConfig config_;
-    // An empty function on the Normal lane is the stop sentinel; submit()
-    // refuses empty jobs. The worker acts on it only once the Bulk lane is
-    // empty too.
-    os::Queue<std::function<void()>> normal_;
-    os::Queue<std::function<void()>> bulk_;
-    // One count per item pushed to either lane (the sentinel included),
-    // given after the push: the worker sleeps on this, not on a lane.
+    // Indexed by IoLane.
+    os::Queue<Item> lanes_[kLaneCount];
+    // One count per item pushed to any lane, given after the push, plus
+    // one from stop(): the worker sleeps on this, not on a lane, and exits
+    // on a wake-up that finds every lane empty once stopping_ is set.
     os::Semaphore work_;
     std::unique_ptr<os::Task> task_;
-    // Guards accepting_ together with the push in submit(), so stop()'s
-    // sentinel is always the last item queued.
+    // Guards accepting_ together with the push and give in submit(), so
+    // every accepted job is queued and counted before stop() gives work_.
     os::Mutex mutex_;
     bool accepting_ = false;
     bool started_ = false;
@@ -145,6 +194,12 @@ private:
     // Jobs submitted and not yet finished; counted before the push so
     // drain() never sees a queued job as idle.
     std::atomic<size_t> pending_{0};
+    std::atomic<bool> stopping_{false};
+    // Worker-thread state of the turn rule: passed_[L] counts the
+    // higher-lane jobs that ran while lane L held a job, since L last ran.
+    uint32_t passed_[kLaneCount] = {};
+    bool last_forced_ = false;
+    AtomicLaneStats stats_[kLaneCount];
 };
 
 // fn() (returning Result<T>) on `worker` and its result, waiting as long as
