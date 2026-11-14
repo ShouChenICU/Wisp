@@ -164,8 +164,8 @@ std::string system_prompt(const DeviceSnapshot& d) {
          "widget/<name>, lua, lua/<module>, screen, examples, example/<id>. Long topics come "
          "in pages; pass next_offset to read on.\n"
          "- Work on a draft: scene_list, scene_read_file, then scene_write_file or "
-         "scene_edit_file, then scene_install. scene_rollback brings back the version before "
-         "the last install.\n\n";
+         "scene_edit_file, then scene_install. scene_rollback brings back the version from "
+         "before this turn's first install.\n\n";
 
     p += "Checking your work:\n"
          "- After scene_install or scene_rollback succeeds, the scene is open on the screen and "

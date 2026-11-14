@@ -832,6 +832,7 @@ struct AgentService::Impl {
             ctx.cancelled = [this] { return aborted(); };
             ctx.deadline_ms = os::now_ms() + left;
             ctx.lang = ui::lang_code(lang());
+            ctx.turn = turn;
             o = deps.tools.call(c.name, sv(c.arguments), ctx);
         }
         ++out.steps;

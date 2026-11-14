@@ -46,6 +46,7 @@ struct ToolCtx {
     std::function<bool()> cancelled;
     uint64_t deadline_ms = 0;  // os::now_ms() based, 0 for none
     std::string lang;          // "zh" | "ja" | "en", for note text
+    uint32_t turn = 0;         // the agent turn the call belongs to; 0 outside a turn
 };
 
 struct ToolOutput {

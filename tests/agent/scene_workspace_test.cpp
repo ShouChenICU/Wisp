@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,7 +20,9 @@
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/zip.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/scene/ui_inspector.hpp"
 
@@ -124,6 +127,14 @@ protected:
     void write(const std::string& id, const std::string& path, const std::string& body) {
         auto r = ws->write_file(id, path, body);
         ASSERT_TRUE(r) << r.error().message;
+    }
+
+    // Installs the draft of counter as `version` in ctx's turn.
+    void install_counter(const std::string& version) {
+        write("counter", "scene.json", counter_json(version));
+        ToolOutput out = ws->install("counter", ctx);
+        ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+        ASSERT_EQ(repo->info("counter").value().manifest.version, version);
     }
 
     const Value* scene_in_list(const std::string& id) {
@@ -445,6 +456,128 @@ TEST_F(SceneWorkspaceTest, RollbackWithoutPrevIsNotFound) {
     ToolOutput out = ws->rollback("counter", ctx);
     ASSERT_FALSE(out.ok);
     EXPECT_EQ(str(out.result, "error"), "not_found");
+}
+
+namespace {
+
+// The version in .prev/counter/scene.json, "" without one.
+std::string prev_version(const std::string& root) {
+    const fs::path p = fs::path(root) / "scenes" / ".prev" / "counter" / "scene.json";
+    if (!fs::exists(p)) return "";
+    auto parsed = wisp::from_json(slurp(p));
+    return parsed ? str(parsed.value(), "version") : "";
+}
+
+}  // namespace
+
+TEST_F(SceneWorkspaceTest, SecondInstallInATurnKeepsTheBaseline) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "1.0.0");
+    ToolOutput out = ws->rollback("counter", ctx);
+    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+    EXPECT_EQ(repo->info("counter").value().manifest.version, "1.0.0");
+    EXPECT_EQ(prev_version(in), "3.0.0");
+    // A second rollback swaps again, as every rollback does: it brings
+    // back the turn's last install. The turn's earlier ones are gone.
+    out = ws->rollback("counter", ctx);
+    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+    EXPECT_EQ(repo->info("counter").value().manifest.version, "3.0.0");
+    EXPECT_EQ(prev_version(in), "1.0.0");
+}
+
+TEST_F(SceneWorkspaceTest, ANewTurnStartsANewBaseline) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ctx.turn = 6;
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "2.0.0");
+}
+
+TEST_F(SceneWorkspaceTest, DiscardEndsTheSession) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    write("counter", "scene.json", counter_json("3.0.0"));
+    ASSERT_TRUE(ws->discard("counter"));
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "2.0.0");
+}
+
+TEST_F(SceneWorkspaceTest, RollbackEndsTheSession) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    ASSERT_TRUE(ws->rollback("counter", ctx).ok);
+    ASSERT_EQ(repo->info("counter").value().manifest.version, "1.0.0");
+    ASSERT_EQ(prev_version(in), "3.0.0");
+    ASSERT_NO_FATAL_FAILURE(install_counter("4.0.0"));
+    EXPECT_EQ(prev_version(in), "1.0.0");
+}
+
+TEST_F(SceneWorkspaceTest, AnotherInstallerEndsTheSession) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    // What the admin page's upload does: core::install_scene() without
+    // keep_prev, which leaves .prev alone.
+    wisp::core::ZipWriter w;
+    auto add = [&](const std::string& path, const std::string& body) {
+        w.add(path,
+              std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(body.data()), body.size()));
+    };
+    add("scene.json", counter_json("2.5.0"));
+    add("main.lua", kCounter);
+    wisp::os::LargeBuffer zip = w.finish();
+    ASSERT_TRUE(zip.ok());
+    auto uploaded = wisp::core::install_scene(*repo, *rt, zip.span(), {});
+    ASSERT_TRUE(uploaded) << uploaded.error().message;
+    ASSERT_EQ(prev_version(in), "1.0.0");
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "2.5.0");
+}
+
+// A delete removes .prev with the package, so a scene reinstalled in the
+// same turn starts from nothing: its second install keeps no previous
+// version either, and rollback has none.
+TEST_F(SceneWorkspaceTest, ADeleteEndsTheSession) {
+    begin();
+    ctx.turn = 5;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ASSERT_TRUE(rt->exit("counter"));
+    ASSERT_TRUE(repo->remove("counter", true));
+    ASSERT_EQ(prev_version(in), "");
+    write("counter", "main.lua", kCounter);
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    ASSERT_NO_FATAL_FAILURE(install_counter("4.0.0"));
+    EXPECT_EQ(prev_version(in), "");
+    EXPECT_EQ(str(ws->rollback("counter", ctx).result, "error"), "not_found");
+}
+
+TEST_F(SceneWorkspaceTest, CallsOutsideATurnAlwaysKeepPrev) {
+    begin();
+    ctx.turn = 0;
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "2.0.0");
+}
+
+// A failed install starts no session: the next one is still the turn's
+// first and keeps the installed version.
+TEST_F(SceneWorkspaceTest, AFailedInstallStartsNoSession) {
+    begin();
+    ctx.turn = 5;
+    write("counter", "scene.json", counter_json("2.0.0"));
+    write("counter", "main.lua", "return ui.screen {\n");
+    ASSERT_FALSE(ws->install("counter", ctx).ok);
+    write("counter", "main.lua", kCounter);
+    ASSERT_NO_FATAL_FAILURE(install_counter("2.0.0"));
+    ASSERT_NO_FATAL_FAILURE(install_counter("3.0.0"));
+    EXPECT_EQ(prev_version(in), "1.0.0");
 }
 
 TEST_F(SceneWorkspaceTest, DraftsSurviveRestart) {

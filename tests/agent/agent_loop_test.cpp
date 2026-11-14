@@ -455,6 +455,28 @@ TEST_F(AgentLoop, TimeLimitDuringRequestEndsAsTimeLimit) {
     EXPECT_EQ(n[0], "超过 1 分钟，已停止");
 }
 
+TEST_F(AgentLoop, ToolCallsCarryTheTurn) {
+    std::vector<uint32_t> turns;
+    add_tool("scene.list", [&](const Value&, ToolCtx& ctx) {
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            turns.push_back(ctx.turn);
+        }
+        return ToolOutput{.ok = true, .result = Map{{"ok", true}}};
+    });
+    start();
+    for (int turn = 0; turn < 2; ++turn) {
+        h->server.push(tool_reply("c" + std::to_string(turn), "scene_list", "{}"));
+        h->server.push(text_reply("ok"));
+    }
+    ASSERT_TRUE(svc->submit("one", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(svc->submit("two", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(turns, (std::vector<uint32_t>{1, 2}));
+}
+
 TEST_F(AgentLoop, GeneratedCallIdsAreUniqueAcrossTurns) {
     add_tool("scene.list");
     start();
