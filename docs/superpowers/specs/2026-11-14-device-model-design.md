@@ -1,8 +1,8 @@
 # Device model, driver adapters and board kit: design
 
 - Date: 2026-11-14
-- Status: draft, waiting for the owner's approval
-- Scope: phase H of the architecture roadmap (`docs/superpowers/plans/2026-11-14-architecture-optimization-roadmap.md`, section H). Device identity (interfaces, classes, roles), a generic access path for devices no core service knows, the agent tool and Lua binding built on it, chip adapters moved out of the ESP port, a shared board kit, target readiness for the next SoC ("ESP32-S31"), input and display generality, a headless agent, and channel roles for audio capture.
+- Status: approved by the owner on 2026-11-14 (section 20), with the scope corrections recorded there
+- Scope: phase H of the architecture roadmap (`docs/superpowers/plans/2026-11-14-architecture-optimization-roadmap.md`, section H). Device identity (interfaces, classes, roles), a generic access path for devices no core service knows, the agent tool and Lua binding built on it, chip adapters moved out of the ESP port, a shared board kit, target readiness for the next SoC ("ESP32-S31"), input and display generality, and channel roles for audio capture.
 - Prerequisites: foundation spec (`2026-11-01-foundation-design.md`, section 5 "HAL and capability list"), scene-device spec (`2026-11-05-scene-device-design.md`, standby policy and occupancy), agent-core spec (`2026-11-05-agent-core-design.md`, confirmation), flash-thread spec (`2026-11-06-flash-thread-design.md`, task and memory rules).
 - Basis: a read of `main` at `85a99aa` (2026-11-14). Every statement about current behaviour below names the file and line it comes from.
 - Owner rulings already in force: the agent gets as much control as possible and is asked as rarely as possible (roadmap "Scope"); `device.call` is allowed for every self-describing device without confirmation (roadmap "Open decisions", item 2, proposal accepted).
@@ -77,9 +77,9 @@ Roles already exist for one case: a button declares caps `role: "talk"` (`compon
 
 #### 1.1.7 Assumptions about the hardware shape
 
-- `Mem::Large` maps to `MALLOC_CAP_SPIRAM` with no fallback (`components/wisp_port_esp/os/os_esp.cpp:97-98`), so without PSRAM every large allocation returns null. The LVGL heap falls back to internal RAM itself (`components/wisp_ui/src/lv_mem_wisp.cpp:98-101`), the Lua allocator does not (`components/wisp_scene/src/vm.cpp:666`). `docs/porting-guide.md` ("Scene runtime") claims both fall back, which is wrong for Lua.
+- `Mem::Large` maps to `MALLOC_CAP_SPIRAM` with no fallback (`components/wisp_port_esp/os/os_esp.cpp:97-98`), so without PSRAM every large allocation returns null. The LVGL heap falls back to internal RAM itself (`components/wisp_ui/src/lv_mem_wisp.cpp:98-101`), the Lua allocator does not (`components/wisp_scene/src/vm.cpp:666`). `docs/porting-guide.md` ("Scene runtime") claims both fall back, which is wrong for Lua. (The owner's ruling makes 8 MB of PSRAM a requirement instead of designing a fallback, section 8.3.)
 - The UI accepts only RGB565 (`components/wisp_ui/src/ui_runtime.cpp:11`, `components/wisp_ui/config/lv_conf.h:53`) and registers only a pointer input device (`ui_runtime.cpp:619-626`); a board with keys but no touch screen cannot move focus.
-- The agent is built only when a UI, a system layer and a scene runtime exist (`app.cpp:583-589`); voice only with the agent (`app.cpp:591`). Confirmation already degrades: with no confirmation service the agent refuses (`components/wisp_agent/src/agent_service.cpp:284-286`). But `AgentWiring` also needs the `UiRuntime` for the UI tool executor, the `UiInspector` and the `ConfirmService` (`components/wisp_app/src/agent_wiring.cpp:431-448`), and the scene runtime it needs is built only over a `UiRuntime` (`components/wisp_app/src/scene_wiring.cpp:136-150`). A `ConfirmPort` alone does not make a headless agent possible.
+- The agent is built only when a UI, a system layer and a scene runtime exist (`app.cpp:583-589`); voice only with the agent (`app.cpp:591`). Confirmation already degrades: with no confirmation service the agent refuses (`components/wisp_agent/src/agent_service.cpp:284-286`). But `AgentWiring` also needs the `UiRuntime` for the UI tool executor, the `UiInspector` and the `ConfirmService` (`components/wisp_app/src/agent_wiring.cpp:431-448`), and the scene runtime it needs is built only over a `UiRuntime` (`components/wisp_app/src/scene_wiring.cpp:136-150`). A `ConfirmPort` alone would not make a headless agent possible. (Out of scope by the owner's ruling: a device without a display is not a supported configuration, section 1.4.)
 - `AudioIn` is mono-only (`components/wisp_hal/include/wisp/hal/audio.hpp:30-38`); the port downmixes (`audio_downmix.hpp:28-34`).
 
 ### 1.2 Goals
@@ -99,9 +99,9 @@ From the roadmap, section H (binding unless the code shows otherwise; section 18
 - `describe()` / `get(prop)` / `invoke(cmd, Value)` on `hal::Device`, with an agent tool `device.call` and a Lua binding `wisp.device.call`;
 - chip adapters move next to their drivers; the port no longer requires chip drivers;
 - a board kit driven by a declarative `BoardSpec`, pins from the bmgr YAML only;
-- target-specific sdkconfig, a defined `Mem::Large` without PSRAM, a support matrix;
+- target-specific sdkconfig, a support matrix (amended at approval: PSRAM of 8 MB or more is required, no fallback is designed);
 - LVGL keypad/encoder groups when the board has such devices; pixel format in display caps;
-- a `ConfirmPort` so the agent and voice start without a display;
+- ~~a `ConfirmPort` so the agent and voice start without a display~~ (removed at approval, section 1.4);
 - channel roles for `AudioIn` in caps.
 
 Owner: `device.call` needs no confirmation for any self-describing device.
@@ -115,6 +115,8 @@ Owner: `device.call` needs no confirmation for any self-describing device.
 - E-paper or monochrome panels, an encoder interface, multi-channel capture or echo cancellation (listed as follow-ups in sections 9 and 11).
 - Hot-plugging devices at run time. `DeviceRegistry::add/remove` keep working, but no service re-resolves roles after boot.
 - A plugin system that discovers drivers at run time. Boards name their drivers in code and CMake (section 6.3).
+- A device without a display. It is not a supported configuration for now: the agent and voice keep requiring the UI (`app.cpp:583-591`). The existing behaviour stays: without a main display the boot report records headless mode and the device only degrades. No `ConfirmPort`, no optional UI dependencies in `AgentWiring`, no UI-free tool groups (owner's ruling at approval, section 20).
+- Running without PSRAM, or with less than 8 MB. PSRAM of 8 MB or more is required; no fallback is designed (section 8.3).
 
 ---
 
@@ -513,7 +515,7 @@ ESP-IDF loads `sdkconfig.defaults.<IDF_TARGET>` after `sdkconfig.defaults`. Move
 
 To verify first in the plan: that the target-specific file is also picked up when `SDKCONFIG_DEFAULTS` is passed explicitly, as the multi-board build does (`docs/porting-guide.md`, "Building several boards"). If not, that command lists `sdkconfig.defaults.<target>` explicitly.
 
-PSRAM-dependent options stay in the shared file (every supported board has PSRAM, section 8.4); a board without PSRAM overrides them in its `sdkconfig.defaults.board`, which bmgr gives priority (`2_16/sdkconfig.defaults.board:4-5`), as the shared file already tells ESP32 boards to do for `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` (`firmware/sdkconfig.defaults:48-54`).
+PSRAM-dependent options stay in the shared file: every supported board has PSRAM of 8 MB or more (section 8.4).
 
 ### 8.2 Partition tables by flash size
 
@@ -521,13 +523,13 @@ Shared tables in `boards/common/partitions/`: `16mb.csv` (the 2.16's table, byte
 
 Alternative considered: keep one copy per board. Rejected only mildly: it works, but a third 16 MB board would copy the 2.16's table and the conventions (names, the 16 MB cache limit) would drift one copy at a time.
 
-### 8.3 `Mem::Large` without PSRAM
+### 8.3 PSRAM: 8 MB or more, required
 
-Recommended: **fall back, never refuse to boot.** `os_esp.cpp` checks once at start whether the heap has any `MALLOC_CAP_SPIRAM` memory; if not, `Mem::Large` maps to `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` and `Mem::DmaLarge` stays unavailable (its existing `kNoCaps` path, `os_esp.cpp:103-110`). `App` records the boot-report note `"psram": "none"` and logs one warning. Services that cannot get their memory already degrade with a log line (for example `app.cpp:615`, "no memory for the voice").
+Owner's ruling at approval: PSRAM of at least 8 MB is a requirement of every supported board. No fallback is designed: `Mem::Large` keeps mapping to `MALLOC_CAP_SPIRAM` (`os_esp.cpp:97-98`) and the Lua allocator keeps using `Mem::Large` only (`vm.cpp:666,879,889`).
 
-Alternative considered: refuse to boot without PSRAM. Rejected: it breaks the rule that a missing device never blocks boot, and on a new board the self-check, serial console and admin page are exactly what one needs to find out why PSRAM did not come up. The support matrix (8.4) says plainly that scenes and the agent need PSRAM.
+At boot the ESP platform reads the PSRAM size it found (`heap_caps_get_total_size(MALLOC_CAP_SPIRAM)`). With less than 8 MB, or none, `App` records the boot-report note `"psram": "<N>MB"` (`"none"` without PSRAM) and logs one `WLOG_E`; with 8 MB or more there is no note. The device then keeps booting, so the serial log and the boot report stay readable; nothing else is promised to work, and the build does not try to work around it.
 
-The Lua allocator gets the same fallback (it calls `os::realloc` with `Mem::Large` only, `vm.cpp:666,879,889`), and `docs/porting-guide.md` is corrected.
+`docs/porting-guide.md` ("Scene runtime") states the requirement instead of its wrong claim that the Lua heap falls back.
 
 ### 8.4 Support matrix (for `docs/porting-guide.md`)
 
@@ -537,12 +539,10 @@ The Lua allocator gets the same fallback (it calls `os::realloc` with `Mem::Larg
 | Admin console, OTA | Wi-Fi; flash with two OTA slots of at least 1.25× the image (image 3.6 MB on 2026-11-12, `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md:26`) | 80 % slot budget |
 | Large text, CJK body text | `fonts` (2.4 MB) and `glyphs` (1.1 MB) partitions; PSRAM for the glyph cache | porting guide, partition table |
 | Recommended flash | 16 MB | both boards |
-| Scenes, agent | PSRAM; tested with 8 MB (idle free 6.76 MB, `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md:72`); minimum not measured | — |
+| PSRAM | 8 MB or more, required (section 8.3) | both boards have 8 MB (idle free 6.76 MB, `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md:72`) |
 | UI | a `Display` with `pixel_format: rgb565` and a `Touch` or keypad roles (section 9) | — |
 | Voice | `AudioIn` 16 kHz mono, `AudioOut` mono at the TTS rate (porting guide, "Voice and the talk key") | — |
 | Internal RAM | the budget in `wisp/app/ram_budget.hpp` (worst case 40 KB free / 16 KB block) | — |
-
-The minimum PSRAM for scenes and the agent is a device measurement (section 14.4), not a number this spec can invent.
 
 ### 8.5 Everything target-specific, in one list
 
@@ -574,35 +574,9 @@ What an e-paper or monochrome panel would still need (out of scope): an LVGL col
 
 ---
 
-## 10. Headless agent and `ConfirmPort`
+## 10. ~~Headless agent and `ConfirmPort`~~ (removed at approval)
 
-### 10.1 `ConfirmPort`
-
-```cpp
-namespace wisp::agent {
-class ConfirmPort {
-public:
-    virtual ~ConfirmPort() = default;
-    virtual Answer ask(const std::string& text, const std::function<bool()>& cancelled) = 0;
-    virtual std::optional<std::string> pending() const = 0;
-};
-}
-```
-
-`ConfirmService` (`components/wisp_agent/include/wisp/agent/confirm.hpp:48-76`) implements it unchanged; `AgentService::set_confirm()` takes a `ConfirmPort*` (today `ConfirmService*`, `agent_service.cpp:932,1101`).
-
-**With no screen, confirmation means deny.** That is today's behaviour when no confirmation service is set (`agent_service.cpp:284-286`), and it keeps irreversible steps (deleting a scene, clearing the conversation) impossible without the user's yes. A later `ConfirmPort` over voice ("say yes") or a button can replace it without touching the agent. Alternative considered: allow everything when there is no screen. Rejected: the confirmations that exist protect user data; the owner's autonomy ruling removed confirmations from device control, not from deletion.
-
-### 10.2 Starting the agent and voice without a display
-
-`AgentWiringDeps` makes `ui`, `layer` and `runtime` optional. Without them:
-
-- no `UiInspector`, no `ConfirmService`, `ToolExecutors::ui` empty (a `ToolThread::Ui` tool then fails with `unsupported`);
-- the tool groups that need the scene runtime or the UI are not registered: scene authoring, UI, scene ops, Lua, scene tools (`agent_wiring.cpp:520-547`); the device, settings, notification, docs, HTTP, memory and to-do tools are, plus `device.list`/`device.call`;
-- `device_status` omits `shape`/`safe_area` (`app.cpp:1163-1171` builds them from the screen shape);
-- the prompt's dynamic part says the device has no screen and no scenes.
-
-`App` builds the agent when it has an HTTP client and storage (`app.cpp:586` today also requires the UI and the scene runtime), and voice when it has the agent, as now (`app.cpp:591`). The scene runtime stays UI-only (`scene_wiring.cpp:136-150`): a headless scene runtime is a separate design (it would need a UI-less `SceneHost`), not this phase.
+Removed by the owner's ruling (section 20, answer 4): a device without a display is not a supported configuration for now, so this phase adds no `ConfirmPort`, keeps `AgentWiring`'s UI dependencies required and registers no UI-free tool groups. The agent and voice keep requiring the UI; without a main display the boot report records headless mode and the device only degrades, as today. Section number kept so later references stay valid.
 
 ---
 
@@ -618,11 +592,11 @@ New or changed, by component:
 
 - `wisp_hal`: `Interface`, `Device::interface()/describe()/get()/invoke()`, `kInterface` and `final interface()` on every interface, `DeviceClass::Other`, `ParamSpec/CmdSpec/DeviceSchema`, `render_schema`, `validate_args`, `has_role`, `wisp/hal/roles.hpp`, caps keys `role`, `pixel_format` (Display), `channels` (AudioIn).
 - `wisp_core`: `DeviceRegistry::by_role<T>()`, interface-checked `get/list`, the `add()` checks (class/interface match, role uniqueness, no hand-written `schema`), `manifest()` renders `schema`; `DeviceService`; `ButtonService`, `SensorService`, `StorageManager` take ids or roles instead of literals; `SceneManifest` parses `permissions.device`.
-- `wisp_agent`: `device.list`, `device.call`, `ConfirmPort`.
+- `wisp_agent`: `device.list`, `device.call`.
 - `wisp_scene`: `wisp.device.list/get/call`.
 - `wisp_ui`: keypad input device, `push_key()`, default group, `pixel_format` check; `SystemLayer` dialogs join the group.
-- `wisp_app`: role lookups, `DeviceService` construction, nav-key adapter, optional UI deps for the agent, `psram` and `display` notes.
-- `wisp_port_esp`: ids/roles from configs, `AudioIn` channel config, Wi-Fi model/bands by target, `Mem::Large` fallback, DFS minimum by target, generic GPIO helpers; chip adapters removed.
+- `wisp_app`: role lookups, `DeviceService` construction, nav-key adapter, `psram` (below 8 MB) and `display` notes.
+- `wisp_port_esp`: ids/roles from configs, `AudioIn` channel config, Wi-Fi model/bands by target, the PSRAM size check, DFS minimum by target, generic GPIO helpers; chip adapters removed.
 - `wisp_port_sim`: roles on `SimBoard`'s devices, `SimHaptic`.
 - `drivers/*`: adapters; `boards/common/`: the kit and partition tables; `boards/*`: `BoardSpec`, `board.cmake`, YAML button peripherals.
 
@@ -647,18 +621,17 @@ Delivers: no fixed ids in portable code; generic devices usable by the agent and
 2. `boards/common/` kit and `BoardSpec`; the 2.16 first, then the 1.75C; bmgr verifications of 7.1 and 7.3 come first.
 3. Pins from YAML; `setup_device.c` overrides removed.
 4. `sdkconfig.defaults.esp32s3`, DFS minimum and Wi-Fi facts by target, shared partition tables.
-5. `Mem::Large` fallback and the `psram` note; Lua allocator fallback.
+5. The PSRAM size check and the `psram` note (section 8.3); the porting guide states the 8 MB requirement.
 6. `AudioIn` channel roles.
 7. Porting guide: support matrix, new board steps, actuator guideline.
 Delivers: a third S3 board is a `BoardSpec`; the port is board-independent; the S31 port has defined places to go.
 
-**Plan H3: input, display format and the headless agent** (host-testable, plus device checks). Depends on H1 only; can run in parallel with H2.
+**Plan H3: keypad input for system UI and the pixel-format cap** (host-testable, plus device checks). Depends on H1 only; can run in parallel with H2.
 1. `pixel_format` caps and check.
 2. Keypad input device, `push_key()`, default group, dialogs, back; simulator keys for the nav roles.
-3. `ConfirmPort`; optional UI deps in `AgentWiring`; `App` builds the agent without UI; prompt note.
-Delivers: boards with keys and no touch, or with no screen at all, are supported for system UI and voice.
+Delivers: boards with keys and no touch are supported for system UI. (The headless agent was removed at approval, section 10.)
 
-The simulator board is updated in H1 (roles, `SimHaptic`) and H3 (nav keys on the keyboard, `--disable display.main` to exercise the headless agent; `SimBoard` already supports disabling the display, `sim_board.cpp:72-73`).
+The simulator board is updated in H1 (roles, `SimHaptic`) and H3 (nav keys on the keyboard).
 
 ---
 
@@ -674,7 +647,6 @@ Following AGENTS.md section 5 (GoogleTest, TDD, clean output) and `docs/testing.
 - Agent tools: `device.list` filtering and limit; `device.call` argument schema, error mapping, the note only for `changes_state`.
 - Lua: `wisp.device.call` success, `nil, code` on each error, `permission_denied` for an undeclared id, holder names.
 - Migration: `StorageManager`, `ButtonService`, `SensorService`, `PowerManager` tests use boards whose ids are not the old literals (for example `button.side` with role `power`), proving no literal remains.
-- `ConfirmPort` with no screen denies; `AgentWiring` without UI registers only the UI-free groups.
 - Keypad: `push_key` ordering and overflow; a dialog's default focus.
 - Port headers that are pure (downmix by roles, target fact tables) under `tests/port_esp/`, as today.
 - Driver schema tables under `tests/drivers/` (names, counts, ranges).
@@ -682,7 +654,6 @@ Following AGENTS.md section 5 (GoogleTest, TDD, clean output) and `docs/testing.
 ### 14.2 Simulator and smoke tests
 
 - `tests/smoke/sim_smoke.py`: the expected device list gains `haptic.main`; the manifest is still one line of JSON; caps `role` present on the `main` devices; `schema` present on `haptic.main`.
-- `tests/app/app_boot_test.cpp`: boot with the display disabled starts the agent and voice (H3).
 
 ### 14.3 Static checks
 
@@ -701,7 +672,6 @@ On both boards, after H2:
 7. `WISP_PERF` `bench scroll 10`: frame rate at the baseline (no rendering change is intended).
 8. OTA upload accepted and confirmed (the partition table file moved but is byte-identical).
 9. 1.75C: RTC still reported `missing`, IMU orientation unchanged, power key on GPIO3.
-10. PSRAM minimum (optional, informs 8.4): `mem` during an agent turn with a scene running.
 
 After H3, on a board with keys (or the 2.16 with nav roles assigned to its volume keys for the test): dialogs answerable by keys; back works.
 
@@ -713,7 +683,7 @@ In the same commits as the code (roadmap "Global Constraints"):
 
 - AGENTS.md section 3 "Device model": ids are names, roles are how code finds devices; one typed interface per device object; the generic path and the commands-only-on-generic-devices rule; the port must not require chip drivers. Section 5: drivers carry their Wisp adapters.
 - `docs/architecture.md`: device identity, `DeviceService`, the manifest fields.
-- `docs/porting-guide.md`: the kit and `BoardSpec`; buttons as bmgr `gpio` peripherals; `board.cmake`; shared partition tables; the support matrix; the actuator guideline (3.5); the Lua fallback correction; the target list of 8.5.
+- `docs/porting-guide.md`: the kit and `BoardSpec`; buttons as bmgr `gpio` peripherals; `board.cmake`; shared partition tables; the support matrix; the actuator guideline (3.5); the 8 MB PSRAM requirement in place of the wrong Lua fallback statement; the target list of 8.5.
 - `docs/hardware/*.md`: the manifest lines with `role`.
 - Foundation spec section 5: a note pointing to this spec for identity and roles.
 
@@ -752,8 +722,8 @@ The project's notes on this chip are marked unverified (`docs/porting-guide.md`,
 1. **Two agent tools instead of one** (`device.list` + `device.call`, section 4.1). Recommendation: accept.
 2. **Commands only on generic devices** (section 3.4). This forbids, for example, a PMU "charge current" command. Recommendation: accept; a typed device that needs a control gets it through its service and a setting, with a UI.
 3. **Scene access to `wisp.device.call`**: a scene must declare the device in `permissions.device` (enforced at call time from H1); the install-time prompt comes with phase I's general permission mechanism (same proposal as roadmap open decision 3). Between H1 and phase I a declared device is granted without a prompt. Recommendation: accept this window, since scenes are mostly written by the agent and the protections of section 3.5 apply to every caller. If the owner does not accept it, H1 exposes the binding only in the agent's `lua.run` and scenes get it with phase I.
-4. **Headless confirmation denies** (section 10.1). Recommendation: accept; a voice "yes" port later.
-5. **`Mem::Large` falls back instead of refusing to boot** (section 8.3). Recommendation: accept.
+4. ~~**Headless confirmation denies** (section 10.1).~~ Answered at approval: headless devices are not supported for now; section 10 removed.
+5. ~~**`Mem::Large` falls back instead of refusing to boot** (section 8.3).~~ Answered at approval: PSRAM of 8 MB or more is required; no fallback (section 8.3 rewritten).
 6. **Shared partition tables** (section 8.2). Recommendation: accept; low value but low cost.
 7. **Encoder deferred** until a board has one (section 9.1). Recommendation: accept.
 
@@ -780,9 +750,9 @@ The project's notes on this chip are marked unverified (`docs/porting-guide.md`,
 | `describe()` in caps, `get`, `invoke`; one agent tool | Schema is a C++ table rendered into caps; properties read-only; commands only on generic devices; two tools (`device.list`, `device.call`) | Typed validation; one way to change state; a hard boundary for what the agent can reach; a clearer tool schema (3.2, 3.4, 4.1) |
 | Adapters move to `drivers/<chip>/wisp_adapter.*` | `drivers/<chip>/wisp/` inside the same component, `EspPmuPowerKey` included; boards select drivers in `board.cmake`; a layering rule | The power key also depends on the AXP2101; `firmware/main` must require the board's drivers (6.1, 6.3) |
 | `boards/common/` shared init; pins from the bmgr YAML only | Adopted, with two plan-time bmgr checks and fallbacks; buttons become bmgr `gpio` peripherals; `setup_device.c` overrides removed | The pins are duplicated in three places today (1.1.5) |
-| Chip sdkconfig to `sdkconfig.defaults.<target>`; `Mem::Large` fallback with a boot note; support matrix | Adopted at the firmware level; plus DFS minimum and Wi-Fi facts by target, shared partition tables, the Lua allocator fallback, a porting-guide correction | The Lua heap has no fallback, contrary to the porting guide (1.1.7) |
+| Chip sdkconfig to `sdkconfig.defaults.<target>`; `Mem::Large` fallback with a boot note; support matrix | Adopted at the firmware level, plus DFS minimum and Wi-Fi facts by target and shared partition tables; the fallback replaced at approval by a required 8 MB of PSRAM with a boot-report note when less is found; porting-guide correction | Owner's ruling (section 20); the porting guide wrongly claims a Lua heap fallback (1.1.7) |
 | Keypad/encoder group | Keypad via button nav roles for system UI; encoder deferred | No board has an encoder (9.1) |
-| `ConfirmPort` lets the agent and voice start without a display | Adopted, plus optional UI dependencies in `AgentWiring` and UI-free tool groups; scene runtime stays UI-only | `ConfirmPort` alone is not enough (1.1.7, 10.2) |
+| `ConfirmPort` lets the agent and voice start without a display | Removed at approval: a device without a display is not supported for now | Owner's ruling (section 20) |
 | `AudioIn` channel roles in caps | Adopted; the port's hard-coded channel count becomes board configuration | A board fact sits in the port today (1.1.4) |
 
 ---
@@ -795,8 +765,23 @@ The project's notes on this chip are marked unverified (`docs/porting-guide.md`,
 - `wisp_port_esp` requires no chip driver; `tools/check_layering.py` enforces it.
 - Both boards build from `BoardSpec`, with pins only in YAML (or, under the 7.3 fallback, only in `BoardSpec`), and pass device checks 1-9 of section 14.4.
 - `firmware/sdkconfig.defaults` names no chip; `sdkconfig.defaults.esp32s3` exists.
-- A build without PSRAM boots to the self-check with the note `psram: none` (simulator test of the fallback logic; device check optional).
-- With the display disabled in the simulator, the agent and voice start and confirmations are denied.
+- A board with less than 8 MB of PSRAM (or none) keeps booting and records the `psram` note with an error log (device check optional; no fallback is designed).
 - With nav roles on two simulator keys, a system dialog is answered without the pointer.
 - `WISP_MANIFEST` and `WISP_BOOT_REPORT` remain single-line JSON; the smoke test and documentation describe the added fields.
 - `bash tools/ci.sh` is green after each plan.
+
+---
+
+## 20. Approval
+
+Approved by the owner on 2026-11-14. Answers to the open questions of section 17.2:
+
+1. Two agent tools (`device.list`, `device.call`) instead of one: accepted.
+2. Commands only for generic devices (interface `None`); typed devices such as the PMU are not reachable through the generic path: accepted.
+3. A scene that declares `permissions.device` may call the device from H1 on, checked at call time; the install-time prompt comes with phase I; until then a declared permission is honoured: accepted.
+4. Headless devices are not supported for now; the headless agent (`ConfirmPort`, optional UI dependencies, UI-free tool groups) is removed from this phase (sections 1.4 and 10).
+5. PSRAM minimum 8 MB, required; no fallback (section 8.3).
+6. Partition tables shared by flash size: accepted.
+7. Encoder input deferred: accepted.
+
+The facts about the new SoC (section 17.1) are still to be supplied by the owner; they are needed for H2 only.
