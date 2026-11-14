@@ -189,7 +189,7 @@ Source: glyph partition review records.
 
 ## Home screen (MVP shell)
 
-- Shell home: without a `ConversationController` (voice off), the first-boot "no Wi-Fi / no model" hint never shows. Pass a readiness callback through ShellDeps → HomeDeps from the app wiring so the hint does not depend on voice.
+- Shell home: without a `ConversationController` (voice off), the readiness checklist ("no Wi-Fi", "connecting", the missing models) never shows: `Home::readiness()` falls back to a complete `Readiness`. Pass a readiness callback through ShellDeps → HomeDeps from the app wiring so the hint does not depend on voice.
 
 ## Shell sub-pages (MVP spec 6.4)
 
@@ -235,12 +235,33 @@ Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator
 - A voice text refused "busy" in the window between the stop and the submit shows no outcome on screen.
 - `Home::fitted_url()` and `TalkOverlay::fit()` redo layout work on every refresh.
 - The talk overlay's tap tests send `LV_EVENT_CLICKED` directly and bypass hit-testing.
-- The old no-model / no-ASR / no-TTS hints are cut on the 360 px round test shape; to be replaced by the readiness checklist of the voice-and-wake plan.
 - No boundary test for the elided call arguments at exactly `kCallArgsKeepBytes` and one byte over.
 - No test for a `docs.read` page of a long topic that has no newline to break at (the cut falls back to a character boundary).
 - A summary request's reported usage does not calibrate the estimate scale, and no test pins that down.
 - The same voice error twice in a row is not shown again (Home and the talk overlay only show a change of `TurnView::error`).
 - With a small context window, the keep-1 compression runs before the current turn's live tool results are cut, so one large read can cost the earlier turns' detail; consider cutting the live results first.
+
+## Voice and wake responsiveness: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-voice-wake-responsiveness.md`. Simulator and unit tests only so far.
+
+- Recognition accuracy with the start tone inside a primed recording, on both boards; if it suffers, set `VoiceConfig::preroll_ms = 0` for that board and report.
+- Opening the microphone at the press: no pop in the speaker, no I2S reconfiguration glitch; `mem` for the `wisp.voice` stack high-water mark.
+- A spoken multi-sentence reply during a long body: no pause after the first sentence; `mem` worst case with the LLM stream and a TTS request open together.
+- Deep standby, then press and speak at once: the sentence is transcribed after Wi-Fi reconnects; time from release to transcript.
+- Standby current with the changed `TalkKey` (the press tracked while the screen is off): unchanged.
+- Readiness right after a standby wake: does a hold record while Wi-Fi reconnects (Home shows "正在连接 Wi-Fi…"), and how long until the transcript.
+- The microphone opening about 300 ms after a dark-screen press (an unprimed capture) against the audio path powering up on wake: no lost or garbled start.
+- The readiness checklist and the tap hint on the round 466 panel (1.75C): fully visible, wrapped as in the simulator.
+
+## Voice and wake responsiveness parked review findings
+
+- The talk key and the wisp share one `press_held_` in `ConversationController`: a key tap during a pending wisp press ends that press's priming, so the wisp's hold loses its pre-roll.
+- `NetWiring` builds a vector of the saved SSIDs on every 250 ms tick only to test that it is not empty; a `has_saved_networks()` accessor would do.
+- Some negative voice tests rely on short real sleeps (`PrimeIsSkippedWhileSpeechPlays`, `PrerollZeroDisablesPriming`, `UnprimeBeforeTheTaskSawThePrime`; `wait_until(Idle, 200)` on a 100 ms poll): they could pass by luck or flake under heavy load.
+- No app-level test of a hold while Wi-Fi reconnects: `HoldRecordsWhileConnecting` checks only the controller's gate, and the voice tests the wait.
+- A tap hint can interrupt an error hint's window: a tap during a voice error's or turn reason's `kFadeAfterMs` shows `HomeHoldToTalk` in its place for that time.
+- The English checklist wording ("Needed: chat, listening") is terse, shortened to fit the 360 px round shape; the owner may want to reword it (the ja `HomeNeedLlm` "対話" likewise).
 
 ## CI speed
 

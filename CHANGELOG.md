@@ -15,16 +15,18 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - Holding to talk stops the speech but no longer stops a running turn, such as a scene build started from the web page. The new question replaces the turn only once it has been heard; cancelling the hold or not being heard leaves the turn running.
 - The talk overlay now appears over every screen but Home (scenes, settings and other pages, diagnostics), shows why a turn ended or a voice error, and grows to three lines before cutting the text.
 - The agent sees its current turn's tool results whole (up to 96 KB) instead of cut to 4 KB, and no longer resends large tool-call arguments from earlier turns.
-- Speech continues once the reply's say block has closed, while the model goes on streaming the rest of the reply.
-- The microphone is primed at the talk key's press and keeps a 500 ms pre-roll, so the first words of a hold are recorded (`VoiceConfig::preroll_ms`; 0 turns priming off). The start tone is part of a primed recording.
-- Recognition waits up to 8 s for a network that is expected (Wi-Fi enabled with a saved network, for example reconnecting after deep standby) instead of failing offline at once.
+- A spoken reply no longer pauses after its first sentence while the model writes a long answer: once the spoken part is complete, the rest of it is synthesized while the text still streams (still one speech request at a time).
+- Words said right as you press are no longer lost: the microphone opens at the press of the talk key or the wisp and keeps the last 500 ms before the hold starts (`VoiceConfig::preroll_ms`; 0 turns this off for a board). The start tone is now part of such a recording. "Listening" shows only once the microphone is actually recording.
+- Talking right after the device wakes from deep standby works: a hold records while Wi-Fi reconnects to a saved network, and recognition waits up to 8 s for it instead of failing "offline" at once. With Wi-Fi turned off or no saved network a hold is still refused at once.
+- The talk key works from a dark screen: held, it wakes the screen and records; a short press only wakes the screen.
+- The home screen lists what is missing to talk instead of one generic hint: "Connecting to Wi-Fi…" while it reconnects, "No models set up yet" on first boot, or the missing items ("Needed: listening, speech"), with the admin address. A muted device does not ask for a speech model. A tap on the wisp says "Hold the wisp to talk" once everything is set up.
 
 ### Fixes
 
 - Recover from an over-long context: summarize harder, then cut the current turn's results, and retry once when the model refuses the request as too long; the token estimate calibrates itself from the model's reported usage.
 - Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key. These retries cover connection and TLS failures only: a Wi-Fi disconnect still ends the running turn ("lost connection" during a request, "no network" between steps).
 
-Device checks are pending (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run"); these changes are verified in the simulator and unit tests only.
+Device checks are pending for both the turn reliability and the voice and wake changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run" and "Voice and wake responsiveness: device checks not run"); these changes are verified in the simulator and unit tests only.
 
 ## 0.5.2 — 2026-11-14
 
