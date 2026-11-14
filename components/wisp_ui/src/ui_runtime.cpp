@@ -230,12 +230,13 @@ void UiRuntime::Impl::ui_main() {
     while (running.load(std::memory_order_acquire)) {
         if (paused.load(std::memory_order_acquire)) {
             was_paused = true;
-            // Blocks indefinitely waiting for post()'d work -- no LVGL
-            // timer fires and no flush happens while paused, and no
-            // periodic wake happens either: spec 6.7
+            // While no slot is queued, blocks indefinitely waiting for
+            // post()'d work -- no LVGL timer fires and no flush happens
+            // while paused, and there is no periodic wake: spec 6.7
             // requires standby to have "没有周期性的 UI 定时器，也没有
-            // 高频轮询", so this must not poll on any fixed interval of
-            // its own. A concurrent post() wakes this immediately
+            // 高频轮询". Only while a slot stays queued is the wait
+            // paced by kLoopPeriodMs (below). A concurrent post() wakes
+            // this immediately
             // (Queue::push() signals the same semaphore pop() waits on);
             // stop() additionally pushes a no-op job after flipping
             // `running` to false specifically to wake a UI task that
@@ -725,12 +726,13 @@ void UiRuntime::stop() {
         return;
     }
     // ui_main()'s paused branch blocks forever (os::kForever) waiting
-    // for post()'d work, rather than polling every kPausedPollMs --
-    // so if the UI task happens to be paused and
-    // sitting in that wait right now, it will never notice `running`
-    // just went false on its own. Push a no-op to wake it; if the queue
-    // is already full, there is pending work that will wake it on its
-    // own (either way, join() below will see it exit promptly).
+    // for post()'d work whenever no slot is queued; it is bounded by
+    // kLoopPeriodMs only while a slot stays queued -- so if the UI task
+    // happens to be paused and sitting in an unbounded wait right now,
+    // it will never notice `running` just went false on its own. Push a
+    // no-op to wake it; if the queue is already full, there is pending
+    // work that will wake it on its own (either way, join() below will
+    // see it exit promptly).
     impl_->post_queue.push([] {}, 0);
     if (impl_->task) {
         impl_->task->join();
