@@ -643,6 +643,39 @@ TEST(LlmClient, ErrorCodeThatIsAPieceOfTheKeyIsDropped) {
     EXPECT_EQ(r.code, "");
 }
 
+// A code that holds 8 bytes or more of the key anywhere in it (here 10,
+// wrapped in other characters, so neither holds the other whole) is
+// dropped from the result and the log alike.
+TEST(LlmClient, ErrorCodeHoldingAPieceOfTheKeyIsDropped) {
+    const std::string key = "sk-proj-abcdefghijklmnop";
+    const std::string piece = key.substr(8, 10);  // "abcdefghij"
+    Fixture f(/*with_profile=*/true, key.c_str());
+    f.server.push({.status = 400,
+                   .chunks = {R"({"error":{"code":"bad_)" + piece + R"(_key","message":"bad"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code, "");
+    for (const auto& e : wisp::log::ring_entries()) {
+        EXPECT_EQ(e.msg.find(piece), std::string::npos) << e.msg;
+    }
+}
+
+// The metadata line of a failed request carries the provider's code, so
+// the gateway's error.code can be read off the device's log.
+TEST(LlmClient, FailedRequestLogsTheProviderCode) {
+    Fixture f;
+    f.server.push(
+        {.status = 400, .chunks = {R"({"error":{"code":"model_not_found","message":"no such"}})"}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.code, "model_not_found");
+    bool logged = false;
+    for (const auto& e : wisp::log::ring_entries()) {
+        if (e.msg.find("error=http code=model_not_found") != std::string::npos) logged = true;
+    }
+    EXPECT_TRUE(logged);
+}
+
 TEST(LlmClient, BrokenEventIsBadStream) {
     Fixture f;
     f.server.push({.status = 200,

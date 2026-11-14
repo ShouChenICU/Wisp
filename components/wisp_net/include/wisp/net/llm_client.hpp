@@ -11,8 +11,10 @@
 // up to kErrorBodyBytes for its error code, never logged or kept: only
 // LlmResult::code, an identifier with the key scrubbed, comes out of it.
 // The only log line per call is metadata under the "llm" tag:
-// "model=<m> status=<s> ms=<t> tokens=<u>", plus " error=<code>" when it
-// failed.
+// "model=<m> status=<s> ms=<t> tokens=<u>", plus " error=<error>" when it
+// failed and then " code=<code>" when the provider sent one that passed
+// the scrub (LlmResult::code: dropped when it holds the key or any 8 or
+// more bytes of it).
 //
 // Retries: a 429, a 5xx and a transport error that came before any of
 // the reply (any_body false) share one budget of two retries,
@@ -86,7 +88,7 @@ struct LlmResult {
     std::string model;      // the profile's model name
     // The provider's error.code (else error.type) from a failed
     // attempt's body: at most 64 bytes of [A-Za-z0-9_.-], "" when absent,
-    // malformed or holding the API key.
+    // malformed or holding the API key or any 8 or more bytes of it.
     std::string code;
 };
 
