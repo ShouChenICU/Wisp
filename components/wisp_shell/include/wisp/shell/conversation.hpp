@@ -113,6 +113,10 @@ struct TurnView {
     uint64_t started_ms = 0;
     uint64_t ended_ms = 0;
     bool thinking = false;
+    // Set at TurnEnd: AgentEvent::reason and AgentEvent::note ("" for a
+    // turn that went well).
+    std::string end_reason;
+    os::LargeString end_note;
 
     // The step under way, if the last one still runs.
     const TurnStep* running_step() const {

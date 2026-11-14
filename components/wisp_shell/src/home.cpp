@@ -1,6 +1,7 @@
 #include "wisp/shell/home.hpp"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "page_frame.hpp"
@@ -107,6 +108,20 @@ ui::StrId error_text(voice::VoiceError e) {
             return ui::StrId::VoiceErrMic;
     }
     return ui::StrId::VoiceErrAsr;
+}
+
+// The hint for a turn that ended with AgentEvent::reason `r`; anything
+// else reads as the model service's error.
+ui::StrId turn_text(std::string_view r) {
+    if (r == "stopped") return ui::StrId::HomeTurnStopped;
+    if (r == "step_limit") return ui::StrId::HomeTurnStepLimit;
+    if (r == "time_limit") return ui::StrId::HomeTurnTimeLimit;
+    if (r == "no_model") return ui::StrId::HomeTurnNoModel;
+    if (r == "unauthorized") return ui::StrId::HomeTurnUnauthorized;
+    if (r == "network") return ui::StrId::HomeTurnNetwork;
+    if (r == "network_lost") return ui::StrId::HomeTurnNetworkLost;
+    if (r == "context") return ui::StrId::HomeTurnContext;
+    return ui::StrId::HomeTurnServer;
 }
 
 // `a` in screen coordinates, `obj` in a parent whose top left is `origin`.
@@ -498,11 +513,19 @@ void Home::refresh() {
             was_running_ = false;
         }
         // The hint follows the last error or "not heard" from when it is
-        // first seen.
+        // first seen, or why a turn that ended after it did not end "done".
         if (view_.error != hint_error_ || view_.not_heard != hint_not_heard_) {
             hint_error_ = view_.error;
             hint_not_heard_ = view_.not_heard;
             hint_since_ = now;
+            hint_turn_.reset();
+        }
+        if (!view_.running && !view_.end_reason.empty() &&
+            (view_.turn != hint_note_turn_ || view_.ended_ms != hint_note_ended_)) {
+            hint_note_turn_ = view_.turn;
+            hint_note_ended_ = view_.ended_ms;
+            hint_turn_ = turn_text(view_.end_reason);
+            hint_since_ = view_.ended_ms != 0 && view_.ended_ms <= now ? view_.ended_ms : now;
         }
     }
 
@@ -524,7 +547,8 @@ void Home::refresh() {
     const bool in_turn = (view_.running || has_text) && !fade_.faded(now);
 
     // While the turn's text shows, the error hint's wait does not run.
-    if (in_turn && (hint_error_ || hint_not_heard_) && now - hint_since_ < kFadeAfterMs)
+    if (in_turn && (hint_error_ || hint_not_heard_ || hint_turn_) &&
+        now - hint_since_ < kFadeAfterMs)
         hint_since_ = now;
     // The short form while the turn layout is up, fading included.
     const std::string hint = hint_text(now, in_turn || shown_in_turn_);
@@ -582,8 +606,7 @@ HomeTextStats Home::take_text_stats() { return std::exchange(text_stats_, HomeTe
 
 std::string Home::hint_text(uint64_t now, bool in_turn) {
     // One line during a turn: the address waits for the idle layout.
-    auto with_url = [&](ui::StrId id) {
-        std::string s = ui::tr(id);
+    auto with_url = [&](std::string s) {
         if (in_turn || !deps_.admin_url) return s;
         const std::string url = deps_.admin_url();
         if (!url.empty()) s += "\n" + url;
@@ -593,15 +616,21 @@ std::string Home::hint_text(uint64_t now, bool in_turn) {
         case Readiness::NoWifi:
             return ui::tr(ui::StrId::HomeNoWifi);
         case Readiness::NoLlm:
-            return with_url(ui::StrId::HomeNoLlm);
+            return with_url(ui::tr(ui::StrId::HomeNoLlm));
         case Readiness::Ready:
             break;
     }
     if (now - hint_since_ >= kFadeAfterMs) return {};
+    if (hint_turn_) {
+        const ui::StrId id = *hint_turn_;
+        if (id == ui::StrId::HomeTurnNoModel || id == ui::StrId::HomeTurnUnauthorized)
+            return with_url(ui::tr(id));
+        return ui::tr(id);
+    }
     if (hint_error_) {
         const voice::VoiceError e = *hint_error_;
         if (e == voice::VoiceError::NoAsrProfile || e == voice::VoiceError::NoTtsProfile)
-            return with_url(error_text(e));
+            return with_url(ui::tr(error_text(e)));
         return ui::tr(error_text(e));
     }
     if (hint_not_heard_) return ui::tr(ui::StrId::HomeNotHeard);

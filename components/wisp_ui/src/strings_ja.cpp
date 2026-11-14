@@ -365,6 +365,24 @@ const char* strings_ja(StrId id) {
             return "モデルが未設定です。管理画面のモデルページで設定してください";
         case StrId::HomeNotHeard:
             return "聞き取れませんでした";
+        case StrId::HomeTurnStopped:
+            return "停止しました";
+        case StrId::HomeTurnStepLimit:
+            return "ステップが多すぎるため停止しました";
+        case StrId::HomeTurnTimeLimit:
+            return "時間がかかりすぎたため停止しました";
+        case StrId::HomeTurnNoModel:
+            return "対話モデルが未設定です";
+        case StrId::HomeTurnUnauthorized:
+            return "モデルのキーが無効です";
+        case StrId::HomeTurnNetwork:
+            return "ネットワークに接続できません";
+        case StrId::HomeTurnNetworkLost:
+            return "ネットワークが切れました";
+        case StrId::HomeTurnServer:
+            return "モデルサービスでエラーが発生しました";
+        case StrId::HomeTurnContext:
+            return "会話が長すぎます。新しい会話を始めてください";
         case StrId::VoiceErrNoAsr:
             return "音声認識が未設定です。管理画面のモデルページで設定してください";
         case StrId::VoiceErrNoTts:

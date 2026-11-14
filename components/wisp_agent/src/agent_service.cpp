@@ -62,6 +62,8 @@ std::string summary(std::string_view s) {
 
 struct Outcome {
     const char* status = "done";
+    // AgentEvent::reason, set where the note that explains it is written.
+    const char* reason = "";
     uint32_t steps = 0;
     uint32_t tokens = 0;
     // The turn's last reply or note: the done notice's text.
@@ -455,6 +457,10 @@ struct AgentService::Impl {
         end.kind = AgentEvent::Kind::TurnEnd;
         end.turn = turn;
         end.status = out.status;
+        if (std::string_view(out.status) != "done") {
+            end.reason = out.reason;
+            end.note = summary(sv(out.last_text));
+        }
         emit(end);
     }
 
@@ -474,17 +480,20 @@ struct AgentService::Impl {
                 note_text(ui::tr_fill(ui::StrId::AgentTimeLimit, lang(),
                                       std::to_string(minutes(turn_ms.load()))),
                           turn, &out);
+                out.reason = "time_limit";
                 return "time_limit";
             case Abort::Network:
             case Abort::Stall:
                 set_state(AgentState::Error);
                 note(ui::StrId::AgentErrNetworkLost, turn, &out);
+                out.reason = "network_lost";
                 return "error";
             case Abort::Stop:
             case Abort::None:
                 break;
         }
         note(ui::StrId::AgentStopped, turn, &out);
+        out.reason = "stopped";
         return "stopped";
     }
 
@@ -636,6 +645,7 @@ struct AgentService::Impl {
             if (!network_up()) {
                 set_state(AgentState::Error);
                 note(ui::StrId::AgentErrNetwork, turn, &out);
+                out.reason = "network";
                 return "error";
             }
             set_state(AgentState::Thinking);
@@ -688,6 +698,7 @@ struct AgentService::Impl {
                     // it again.
                     set_state(AgentState::Error);
                     note(ui::StrId::AgentErrContext, turn, &out);
+                    out.reason = "context";
                     return "error";
                 }
                 refused_tokens.reset();
@@ -735,15 +746,21 @@ struct AgentService::Impl {
                     WLOG_W(kTag, "context too long for the model: compressing and retrying");
                     continue;
                 }
-                ui::StrId why = ui::StrId::AgentErrServer;
-                if (res.error == "context_length") why = ui::StrId::AgentErrContext;
-                if (res.error == "no_model") why = ui::StrId::AgentErrNoModel;
-                if (res.error == "unauthorized") why = ui::StrId::AgentErrUnauthorized;
+                struct Why {
+                    ui::StrId id;
+                    const char* reason;
+                };
+                Why why{ui::StrId::AgentErrServer, "server"};
+                if (res.error == "context_length") why = {ui::StrId::AgentErrContext, "context"};
+                if (res.error == "no_model") why = {ui::StrId::AgentErrNoModel, "no_model"};
+                if (res.error == "unauthorized")
+                    why = {ui::StrId::AgentErrUnauthorized, "unauthorized"};
                 if (res.error == "transport")
-                    why =
-                        res.any_body ? ui::StrId::AgentErrNetworkLost : ui::StrId::AgentErrNetwork;
+                    why = res.any_body ? Why{ui::StrId::AgentErrNetworkLost, "network_lost"}
+                                       : Why{ui::StrId::AgentErrNetwork, "network"};
                 set_state(AgentState::Error);
-                note(why, turn, &out);
+                note(why.id, turn, &out);
+                out.reason = why.reason;
                 return "error";
             }
 
@@ -781,6 +798,7 @@ struct AgentService::Impl {
                 if (out.steps >= max_steps) {
                     skip_calls(turn, calls.subspan(i), "the turn reached its step limit");
                     note(ui::StrId::AgentStepLimit, turn, &out);
+                    out.reason = "step_limit";
                     return "step_limit";
                 }
                 // With finish_reason "length" the last call's arguments

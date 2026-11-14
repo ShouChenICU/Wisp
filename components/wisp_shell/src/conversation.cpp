@@ -408,6 +408,8 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                 view_.running = false;
                 view_.thinking = false;
                 view_.ended_ms = now();
+                view_.end_reason = e.reason;
+                view_.end_note.assign(e.note);
                 // Ends the round (muted, refused, stopped or spoken alike);
                 // with the speech still playing, once it has played.
                 if (end) deps_.voice.end_speech();

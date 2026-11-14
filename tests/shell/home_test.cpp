@@ -534,6 +534,83 @@ TEST_P(HomeShapes, StepListAsDrawn) {
     ui.stop();
 }
 
+// Why a turn ended, idle under the wisp, for every reason in every
+// language (the admin address after the two that need a setting): the hint
+// lies on rows the screen shows, like every hint band (home_layout()), and
+// is wrapped whole, never cut with "...".
+TEST_P(HomeShapes, TurnOutcomeHintsFit) {
+    wisp::ui::UiRuntime ui(display_, nullptr);
+    ASSERT_TRUE(ui.start());
+    wisp::core::EventBus bus;
+    ASSERT_TRUE(bus.start());
+    auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
+    const std::string url = "http://192.168.100.100:8900";
+    Home home(wisp::shell::HomeDeps{
+        .ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = [&] { return url; }});
+    lv_obj_t* before = nullptr;
+    on_ui([&] {
+        before = lv_screen_active();
+        ASSERT_TRUE(home.start());
+        lv_screen_load(home.screen());
+    });
+    using wisp::ui::Lang;
+    using wisp::ui::StrId;
+    struct Reason {
+        const char* reason;
+        StrId id;
+        bool with_url;
+    };
+    const Reason reasons[] = {
+        {"stopped", StrId::HomeTurnStopped, false},
+        {"step_limit", StrId::HomeTurnStepLimit, false},
+        {"time_limit", StrId::HomeTurnTimeLimit, false},
+        {"no_model", StrId::HomeTurnNoModel, true},
+        {"unauthorized", StrId::HomeTurnUnauthorized, true},
+        {"network", StrId::HomeTurnNetwork, false},
+        {"network_lost", StrId::HomeTurnNetworkLost, false},
+        {"server", StrId::HomeTurnServer, false},
+        {"context", StrId::HomeTurnContext, false},
+    };
+    uint32_t turn = 0;
+    for (const Lang lang : {Lang::Zh, Lang::Ja, Lang::En}) {
+        for (const Reason& r : reasons) {
+            const std::string text = wisp::ui::tr(r.id, lang);
+            const std::string want = r.with_url ? text + "\n" + url : text;
+            SCOPED_TRACE(want);
+            on_ui([&] {
+                wisp::ui::set_lang(lang);
+                TurnView v;
+                v.turn = ++turn;
+                v.end_reason = r.reason;
+                v.end_note.assign("the agent's full note");
+                v.ended_ms = wisp::os::now_ms();
+                v.started_ms = v.ended_ms;
+                home.show_view(v);
+                lv_obj_update_layout(home.screen());
+                ASSERT_FALSE(home.in_turn());
+                ASSERT_FALSE(hidden(home.hint_label()));
+                EXPECT_EQ(label_text(home.hint_label()), want);  // not cut with "..."
+                const lv_area_t a = coords(home.hint_label());
+                EXPECT_TRUE(box_visible(shape_, a)) << str(a);
+                lv_point_t size;
+                lv_text_get_size(&size, want.c_str(),
+                                 lv_obj_get_style_text_font(home.hint_label(), LV_PART_MAIN), 0, 0,
+                                 lv_obj_get_content_width(home.hint_label()), LV_TEXT_FLAG_NONE);
+                EXPECT_LE(size.y, lv_obj_get_content_height(home.hint_label()))
+                    << str(a) << " needs " << size.y << " px at "
+                    << lv_obj_get_content_width(home.hint_label()) << " px wide";
+            });
+        }
+    }
+    on_ui([&] {
+        wisp::ui::set_lang(Lang::Zh);
+        lv_screen_load(before);
+        home.stop();
+    });
+    bus.stop();
+    ui.stop();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Shapes, HomeShapes,
     ::testing::Values(ShapeCase{"rect", 480, 480}, ShapeCase{"rounded_rect", 480, 480},
@@ -661,6 +738,15 @@ protected:
     lv_obj_t* active() {
         lv_obj_t* s = nullptr;
         on_ui([&] { s = lv_screen_active(); });
+        return s;
+    }
+    // The hint as shown after a refresh ("" while hidden).
+    std::string hint_shown() {
+        std::string s;
+        on_ui([&] {
+            home().refresh();
+            s = hidden(home().hint_label()) ? "" : label_text(home().hint_label());
+        });
         return s;
     }
     bool logged(const std::string& needle) {
@@ -1047,4 +1133,85 @@ TEST_F(HomeTest, TurnHintIsShortUntilTheTextFades) {
     EXPECT_EQ(hint(), full);
     home_ms.store(2 * kFadeAfterMs);
     EXPECT_EQ(hint(), "");
+}
+
+// A turn that failed leaves why in the hint, short, for kFadeAfterMs after
+// it ended; the agent's full note is not what Home prints.
+TEST_F(HomeTest, FailedTurnShowsItsNoteThenFades) {
+    boot();
+    uint64_t t = 0;
+    on_ui([&] {
+        t = wisp::os::now_ms() + home_ms.load();
+        TurnView v;
+        v.turn = 3;
+        v.end_reason = "server";
+        v.end_note.assign("N");
+        v.started_ms = t - 500;
+        v.ended_ms = t;
+        home().show_view(v);
+    });
+    home_ms.fetch_add(1000);
+    EXPECT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+    home_ms.fetch_add(kFadeAfterMs - 1000);
+    EXPECT_EQ(hint_shown(), "");
+
+    // A reason Home does not know reads as the service's error.
+    on_ui([&] {
+        TurnView v;
+        v.turn = 4;
+        v.end_reason = "something_new";
+        v.end_note.assign("N");
+        v.ended_ms = wisp::os::now_ms() + home_ms.load();
+        v.started_ms = v.ended_ms;
+        home().show_view(v);
+    });
+    EXPECT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+}
+
+// A refused key: during the turn's text the hint is one line; once the text
+// has faded it carries the admin address, like the other hints that need a
+// setting.
+TEST_F(HomeTest, UnauthorizedNoteCarriesTheAdminUrl) {
+    boot();
+    const std::string url = "http://10.0.0.7:8900";
+    const std::string note = wisp::ui::tr(wisp::ui::StrId::HomeTurnUnauthorized);
+    server.llm().push({.status = 401, .chunks = {"{\"error\":\"bad key\"}"}});
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn() && !conv->current().running; }));
+    EXPECT_EQ(hint_shown(), note);
+    // Shown with the text all the while: the hint's own wait has not run.
+    home_ms.store(kFadeAfterMs - 1000);
+    EXPECT_EQ(hint_shown(), note);
+    home_ms.store(kFadeAfterMs + 1000);
+    ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
+    EXPECT_EQ(hint_shown(), note + "\n" + url);
+    home_ms.store(2 * kFadeAfterMs);
+    EXPECT_EQ(hint_shown(), "");
+}
+
+// A voice hint that comes after the turn's outcome takes its place.
+TEST_F(HomeTest, LaterVoiceHintReplacesTheNote) {
+    boot();
+    for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});
+    ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
+    EXPECT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+    h->bus.publish(
+        {"voice.state", "voice", 0,
+         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
+    EXPECT_TRUE(wait_until([&] { return hint_shown() == "没听清"; }, 3000));
+}
+
+// A turn that went well leaves no hint, during its text or after.
+TEST_F(HomeTest, DoneTurnShowsNoNote) {
+    boot();
+    server.llm().push(wisp::test::llm_text("<say>好。</say>"));
+    ASSERT_TRUE(agent->submit("在吗", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return home().in_turn() && !conv->current().running; }));
+    EXPECT_EQ(hint_shown(), "");
+    fade_out();
+    EXPECT_EQ(hint_shown(), "");
 }

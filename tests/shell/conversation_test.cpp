@@ -715,3 +715,48 @@ TEST_F(ConversationTest, ACallCutByATransportErrorIsNoStep) {
     EXPECT_EQ(v.step_count, 0);
     EXPECT_EQ(v.running_step(), nullptr);
 }
+
+// Why the turn ended reaches the view with the agent's note, for the
+// screens to show.
+TEST_F(ConversationTest, TurnEndReasonReachesTheView) {
+    start();
+    // A 500, retried twice by the client.
+    for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});
+    ASSERT_TRUE(agent->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    const TurnView v = conv->current();
+    EXPECT_FALSE(v.running);
+    EXPECT_EQ(v.end_reason, "server");
+    EXPECT_EQ(text(v.end_note), wisp::ui::tr(wisp::ui::StrId::AgentErrServer, wisp::ui::Lang::Zh));
+}
+
+TEST_F(ConversationTest, ANewTurnClearsTheLastOutcome) {
+    start();
+    for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});
+    ASSERT_TRUE(agent->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_EQ(conv->current().end_reason, "server");
+
+    server.llm().push({.status = 200,
+                       .chunks = {FakeLlmServer::sse_text("<say>好。</say>"),
+                                  FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()},
+                       .hold_after = 1});
+    ASSERT_TRUE(agent->submit("again", Source::Web));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const TurnView v = conv->current();
+            return v.running && v.heard == "again";
+        },
+        5000));
+    TurnView v = conv->current();
+    EXPECT_TRUE(v.end_reason.empty()) << v.end_reason;
+    EXPECT_TRUE(v.end_note.empty());
+    server.llm().release();
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_TRUE(settled());
+    v = conv->current();
+    EXPECT_TRUE(v.end_reason.empty()) << v.end_reason;
+    EXPECT_TRUE(v.end_note.empty());
+}

@@ -44,10 +44,14 @@
 // controller only leaves them unspoken.
 //
 // The hint: readiness first (NoWifi: HomeNoWifi; NoLlm: HomeNoLlm and the
-// admin address), else the controller's last voice error (VoiceErr*, with
-// the address for a missing profile) or "not heard" (HomeNotHeard), for
-// kFadeAfterMs after it was first seen; while the turn's text shows the
-// wait does not run, so the full hint still gets its time after the fade.
+// admin address), else the later of the controller's last voice error
+// (VoiceErr*, with the address for a missing profile) or "not heard"
+// (HomeNotHeard), first seen, and why the last turn did not end "done"
+// (TurnView::end_reason as a short HomeTurn* string, with the address for
+// "no_model" and "unauthorized"; the full note stays in the
+// conversation), from its ended_ms; each for kFadeAfterMs. While the
+// turn's text shows the wait does not run, so the full hint still gets its
+// time after the fade.
 //
 // The wisp's mood follows "agent.state" and "voice.state" (mood_for());
 // listening and speaking pass on their level, a running tool sets
@@ -334,9 +338,14 @@ private:
     std::string shown_heard_;
     os::LargeString shown_say_, shown_body_;
     std::string shown_hint_;
-    // The voice error / not-heard the hint shows, and since when.
+    // The voice error / not-heard last seen, the turn outcome the hint
+    // shows instead when it came later (HomeTurn*), the turn end it came
+    // from, and since when the hint shows.
     std::optional<voice::VoiceError> hint_error_;
     bool hint_not_heard_ = false;
+    std::optional<ui::StrId> hint_turn_;
+    uint32_t hint_note_turn_ = 0;
+    uint64_t hint_note_ended_ = 0;
     uint64_t hint_since_ = 0;
 
     // The press being tracked.

@@ -295,6 +295,18 @@ enum class StrId : uint16_t {
     HomeNoWifi,
     HomeNoLlm,
     HomeNotHeard,
+    // Why the last turn ended, short (the conversation keeps the agent's
+    // full note); the address follows HomeTurnNoModel and
+    // HomeTurnUnauthorized too.
+    HomeTurnStopped,
+    HomeTurnStepLimit,
+    HomeTurnTimeLimit,
+    HomeTurnNoModel,
+    HomeTurnUnauthorized,
+    HomeTurnNetwork,
+    HomeTurnNetworkLost,
+    HomeTurnServer,
+    HomeTurnContext,
     VoiceErrNoAsr,
     VoiceErrNoTts,
     VoiceErrOffline,
