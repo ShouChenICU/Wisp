@@ -272,7 +272,10 @@ WifiSnapshot WifiService::wifi_snapshot_locked() const {
         WLOG_W(kTag, "address '%s' cut in the state cell", status_.ip.c_str());
     }
     s.rssi = status_.rssi;
-    s.reason.assign(status_.reason);  // one of the fixed codes, all fit
+    // One of the fixed codes, all of which fit; a cut is logged like the others.
+    if (!s.reason.assign(status_.reason)) {
+        WLOG_W(kTag, "reason '%s' cut in the state cell", status_.reason.c_str());
+    }
     return s;
 }
 
@@ -740,10 +743,9 @@ void WifiService::forget_all() {
     // A factory reset turns Wi-Fi back on without announcing it (the device
     // reboots right after), so the cell takes the flag with seed(), not
     // set(): followers still see it, and the wire stays as it was. The
-    // other fields stay; any state change below publishes as usual.
-    WifiSnapshot reenabled = wifi_cell_.get();
-    reenabled.enabled = true;
-    wifi_cell_.seed(reenabled);
+    // snapshot is built from the service's own state, as init() does; any
+    // state change below publishes as usual.
+    wifi_cell_.seed(wifi_snapshot_locked());
     manually_disconnected_ = false;
     apply_radio_locked(os::now_ms());
     // On a failed write the networks come back after a reboot; the write
@@ -766,7 +768,10 @@ void WifiService::forget_all() {
 void WifiService::publish_ap_locked(bool active, const std::string& ssid) {
     ApSnapshot s;
     s.active = active;
-    s.ssid.assign(ssid);  // "Wisp-XXXX" (start_provisioning()), always fits
+    // "Wisp-XXXX" (start_provisioning()) always fits; a cut is logged and kept.
+    if (!s.ssid.assign(ssid)) {
+        WLOG_W(kTag, "hotspot SSID longer than %zu bytes cut in the state cell", s.ssid.capacity());
+    }
     s.clients = active ? ap_clients_ : 0;
     // No event is lost to an equal value: every caller changes the hotspot.
     // An open follows a closed one (start_provisioning() returns early while

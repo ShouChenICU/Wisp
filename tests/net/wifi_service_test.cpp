@@ -1003,6 +1003,51 @@ TEST(WifiService, ForgettingCurrentNetworkDisconnects) {
     EXPECT_EQ(svc.status().state, WifiState::Off);
 }
 
+// One set() of the cell publishes both events, state first (wifi_mirror()),
+// and nothing else: the flag moved before the radio switch.
+TEST(WifiService, EnablingWithASavedNetworkPublishesStateThenEnabled) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.set_enabled(false, 100));
+    f.clear_events();
+
+    ASSERT_TRUE(svc.set_enabled(true, 200));
+    auto events = f.all_events();
+    ASSERT_EQ(events.size(), 2u);
+    EXPECT_EQ(events[0].topic, wisp::core::topics::kNetWifiState);
+    EXPECT_EQ(str_of(events[0].payload, "state"), "connecting");
+    EXPECT_EQ(events[1].topic, wisp::core::topics::kNetWifiEnabled);
+    EXPECT_TRUE(events[1].payload.at("enabled").as_bool());
+}
+
+// The hotspot closes first (the radio switch closes it before the station
+// state is set), then one set() publishes state off and enabled false.
+TEST(WifiService, DisablingWhileConnectedWithTheHotspotOpenPublishesInOrder) {
+    Fixture f;
+    f.in_range("Home", -50, "homepass1");
+    f.seed({{"Home", "homepass1"}});
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    svc.tick(0);
+    svc.tick(250);
+    ASSERT_EQ(svc.status().state, WifiState::Connected);
+    ASSERT_TRUE(svc.start_provisioning(300));
+    f.clear_events();
+
+    ASSERT_TRUE(svc.set_enabled(false, 1000));
+    auto events = f.all_events();
+    ASSERT_EQ(events.size(), 3u);
+    EXPECT_EQ(events[0].topic, wisp::core::topics::kNetApState);
+    EXPECT_FALSE(events[0].payload.at("active").as_bool());
+    EXPECT_EQ(events[1].topic, wisp::core::topics::kNetWifiState);
+    EXPECT_EQ(str_of(events[1].payload, "state"), "off");
+    EXPECT_EQ(events[2].topic, wisp::core::topics::kNetWifiEnabled);
+    EXPECT_FALSE(events[2].payload.at("enabled").as_bool());
+}
+
 TEST(WifiService, ForgetAllClearsEverything) {
     Fixture f;
     f.in_range("A", -40, "passwordA");
