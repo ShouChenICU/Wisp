@@ -64,7 +64,10 @@ protected:
         ctx.lang = "zh";
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
-        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        fc.submit_io = [this](wisp::core::Medium, wisp::core::IoLane lane,
+                              std::function<void()> job) {
+            return worker.submit(std::move(job), lane);
+        };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) { d.files = files.get(); };
     }

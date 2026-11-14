@@ -53,7 +53,10 @@ protected:
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
         fc.max_list = 3;  // small enough for a test to go past it
-        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        fc.submit_io = [this](wisp::core::Medium, wisp::core::IoLane lane,
+                              std::function<void()> job) {
+            return worker.submit(std::move(job), lane);
+        };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
             d.http = http.get();
@@ -352,7 +355,10 @@ protected:
         fc.declared = [](std::string_view) {
             return wisp::Result<wisp::core::FilesWant>::ok(wisp::core::FilesWant::Sd);
         };
-        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        fc.submit_io = [this](wisp::core::Medium, wisp::core::IoLane lane,
+                              std::function<void()> job) {
+            return worker.submit(std::move(job), lane);
+        };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
     }
 

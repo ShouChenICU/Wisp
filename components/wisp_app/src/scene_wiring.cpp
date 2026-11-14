@@ -84,8 +84,10 @@ void SceneWiring::start_storage() {
     if (internal) {
         core::SceneFilesConfig files_config;
         files_config.data_root = internal.value() + "/scenes";
-        files_config.submit_io = [this](std::function<void()> job) {
-            return worker_.submit(std::move(job));
+        // Every medium on wisp.fs for now, which may touch both.
+        files_config.submit_io = [this](core::Medium, core::IoLane lane,
+                                        std::function<void()> job) {
+            return worker_.submit(std::move(job), lane);
         };
         // The repository never calls into SceneFiles, so taking its lock
         // under SceneFiles' locks cannot deadlock.

@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <system_error>
@@ -27,12 +29,18 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_worker.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::ErrorCode;
 using wisp::core::FilesLocation;
 using wisp::core::FilesWant;
+using wisp::core::IoLane;
+using wisp::core::Medium;
+using wisp::core::SceneFileList;
 using wisp::core::SceneFiles;
 using wisp::core::SceneFilesConfig;
+using wisp::core::StorageWorker;
 using wisp::core::valid_file_name;
 
 namespace fs = std::filesystem;
@@ -117,6 +125,7 @@ struct Fixture {
         config.data_root = in + "/scenes";
         // Scenes not in `declared` are not installed.
         config.declared = [this](std::string_view id) -> wisp::Result<FilesWant> {
+            declared_calls.fetch_add(1);
             std::lock_guard<std::mutex> lock(declared_mu);
             auto it = declared.find(std::string(id));
             if (it == declared.end())
@@ -155,6 +164,7 @@ struct Fixture {
     SceneFilesConfig cfg;
     std::mutex declared_mu;
     std::map<std::string, FilesWant> declared;
+    std::atomic<int> declared_calls{0};
     std::unique_ptr<SceneFiles> files;
 };
 
@@ -585,7 +595,7 @@ TEST(SceneFiles, PushWaitsForTheWorkerUntilCancelled) {
     std::mutex mu;
     std::vector<std::function<void()>> stalled;
     SceneFilesConfig config;
-    config.submit_io = [&](std::function<void()> job) {
+    config.submit_io = [&](Medium, IoLane, std::function<void()> job) {
         std::lock_guard<std::mutex> lock(mu);
         stalled.push_back(std::move(job));
         return true;
@@ -722,4 +732,340 @@ TEST(SceneFiles, AgentAreaInTheLibrary) {
     // Other ids outside the scene id rules stay refused.
     EXPECT_FALSE(f.files->write("@other", "a.txt", as_bytes("x")));
     EXPECT_FALSE(f.files->write("agent/..", "a.txt", as_bytes("x")));
+}
+
+namespace {
+
+// A stand-in for StorageRouter behind SceneFilesConfig::submit_io: records
+// where each job was sent, then runs it at once or, with `hold`, keeps it.
+struct FakeRoute {
+    struct Sent {
+        Medium medium;
+        IoLane lane;
+        bool operator==(const Sent&) const = default;
+    };
+
+    std::function<bool(Medium, IoLane, std::function<void()>)> fn() {
+        return [this](Medium m, IoLane lane, std::function<void()> job) {
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                if (refuse > 0 || (hold && held.size() >= capacity)) {
+                    if (refuse > 0) --refuse;
+                    ++refused;
+                    return false;
+                }
+                sent.push_back({m, lane});
+                if (hold) {
+                    held.push_back(std::move(job));
+                    return true;
+                }
+            }
+            job();
+            return true;
+        };
+    }
+    void run_held() {
+        std::vector<std::function<void()>> jobs;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            jobs.swap(held);
+        }
+        for (auto& j : jobs) j();
+    }
+    std::vector<Medium> media() {
+        std::lock_guard<std::mutex> lock(mu);
+        std::vector<Medium> out;
+        for (const Sent& s : sent) out.push_back(s.medium);
+        return out;
+    }
+
+    std::mutex mu;
+    bool hold = false;
+    int refuse = 0;
+    // With `hold`: how many jobs may be held before the lane is full.
+    size_t capacity = SIZE_MAX;
+    int refused = 0;
+    std::vector<Sent> sent;
+    std::vector<std::function<void()>> held;
+};
+
+SceneFilesConfig routed(FakeRoute& route) {
+    SceneFilesConfig c;
+    c.submit_io = route.fn();
+    return c;
+}
+
+// Gives `sem` when the test body exits, including by a failed ASSERT, so a
+// worker parked on it can be joined. Declare it after the worker.
+struct GiveOnExit {
+    wisp::os::Semaphore& sem;
+    ~GiveOnExit() { sem.give(); }
+};
+
+// fn() on `w` and its result.
+template <class T, class Fn>
+wisp::Result<T> on(StorageWorker& w, Fn fn) {
+    std::optional<wisp::Result<T>> out;
+    auto r = w.run_sync([&] { out.emplace(fn()); }, 5000);
+    if (!r) return wisp::Result<T>::err(r.error().code, r.error().message);
+    return std::move(*out);
+}
+
+}  // namespace
+
+TEST(SceneFiles, UnknownSceneJobsGoToInternal) {
+    FakeRoute route;
+    Fixture f(true, routed(route));
+    bool ran = false;
+    EXPECT_TRUE(f.files->submit("a", [&] { ran = true; }));
+    EXPECT_TRUE(ran);
+    EXPECT_EQ(route.media(), std::vector<Medium>{Medium::Internal});
+    EXPECT_EQ(f.files->medium_of("a"), Medium::Internal);
+}
+
+TEST(SceneFiles, CardSceneJobsGoToTheCardOnceLoaded) {
+    FakeRoute route;
+    Fixture f(true, routed(route));
+    f.declared["a"] = FilesWant::Sd;
+    f.declared["b"] = FilesWant::Int;
+    ASSERT_TRUE(f.files->write("a", "x", as_bytes("a")));
+    ASSERT_TRUE(f.files->write("b", "x", as_bytes("b")));
+    EXPECT_TRUE(f.files->submit("a", [] {}));
+    EXPECT_TRUE(f.files->submit("b", [] {}));
+    EXPECT_EQ(route.media(), (std::vector<Medium>{Medium::Sd, Medium::Internal}));
+    EXPECT_EQ(f.files->medium_of("a"), Medium::Sd);
+    EXPECT_EQ(f.files->medium_of("b"), Medium::Internal);
+}
+
+// The first call of a scene runs on wisp.fs and picks the card; a call made
+// before it has finished must not overtake it on the card's worker.
+TEST(SceneFiles, SceneJobsStayInternalWhileAnInternalJobIsInFlight) {
+    FakeRoute route;
+    route.hold = true;
+    Fixture f(true, routed(route));
+    std::vector<int> order;
+    EXPECT_TRUE(f.files->submit("a", [&] { order.push_back(1); }));
+    ASSERT_TRUE(f.files->write("a", "x", as_bytes("a")));
+    EXPECT_TRUE(f.files->submit("a", [&] { order.push_back(2); }));
+    EXPECT_EQ(f.files->medium_of("a"), Medium::Internal);
+    route.run_held();
+    EXPECT_EQ(f.files->medium_of("a"), Medium::Sd);
+    EXPECT_TRUE(f.files->submit("a", [&] { order.push_back(3); }));
+    route.run_held();
+    EXPECT_EQ(route.media(), (std::vector<Medium>{Medium::Internal, Medium::Internal, Medium::Sd}));
+    EXPECT_EQ(order, (std::vector<int>{1, 2, 3}));
+}
+
+TEST(SceneFiles, RefusedSubmitLeavesNoJobInFlight) {
+    FakeRoute route;
+    route.refuse = 1;
+    Fixture f(true, routed(route));
+    bool ran = false;
+    EXPECT_FALSE(f.files->submit("a", [&] { ran = true; }));
+    EXPECT_FALSE(ran);
+    ASSERT_TRUE(f.files->write("a", "x", as_bytes("a")));
+    EXPECT_TRUE(f.files->submit("a", [] {}));
+    EXPECT_EQ(route.media(), std::vector<Medium>{Medium::Sd});
+}
+
+// Loading a record reads internal flash and asks the repository: neither
+// may happen on the SD I/O thread.
+TEST(SceneFiles, SdThreadNeverLoadsARecord) {
+    Fixture f(true);
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(s.start());
+    f.declared["x"] = FilesWant::Sd;
+    const int asked = f.declared_calls.load();
+    auto r = on<void>(s, [&] { return f.files->write("x", "a", as_bytes("a")); });
+    EXPECT_EQ(code_of(r), "busy");
+    EXPECT_FALSE(on_disk(f.record("x")));
+    EXPECT_FALSE(on_disk(f.sd_files("x")));
+    EXPECT_EQ(f.declared_calls.load(), asked);
+    EXPECT_EQ(code_of(on<SceneFileList>(s, [&] { return f.files->list("x"); })), "busy");
+}
+
+TEST(SceneFiles, SdDataCallsNeverAskTheDeclaration) {
+    Fixture f(true);
+    f.declared["a"] = FilesWant::Sd;
+    ASSERT_TRUE(f.files->write("a", "x", as_bytes("abc")));
+    const int asked = f.declared_calls.load();
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(s.start());
+    EXPECT_TRUE(on<void>(s, [&] { return f.files->write("a", "y", as_bytes("yy")); }));
+    EXPECT_TRUE(on<void>(s, [&] { return f.files->append("a", "y", as_bytes("z")); }));
+    auto read = on<wisp::os::LargeBuffer>(s, [&] { return f.files->read("a", "y", 0, 10); });
+    ASSERT_TRUE(read);
+    EXPECT_EQ(text(read.value()), "yyz");
+    auto listed = on<SceneFileList>(s, [&] { return f.files->list("a"); });
+    ASSERT_TRUE(listed);
+    EXPECT_EQ(listed.value().entries.size(), 2u);
+    EXPECT_TRUE(on<wisp::core::SceneFileEntry>(s, [&] { return f.files->stat("a", "x"); }));
+    EXPECT_TRUE(on<void>(s, [&] { return f.files->remove("a", "x"); }));
+    auto info = on<wisp::core::SceneFilesInfo>(s, [&] { return f.files->info("a"); });
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info.value().want, FilesWant::Sd);
+    EXPECT_EQ(info.value().location, FilesLocation::Sd);
+    EXPECT_EQ(info.value().used, 3u);
+    EXPECT_EQ(f.declared_calls.load(), asked);
+    EXPECT_FALSE(on_disk(f.sd_files("a") / "x"));
+}
+
+// A card job holds only the card's lock: a scene on internal storage goes
+// on meanwhile.
+TEST(SceneFiles, CardWorkDoesNotHoldInternalScenes) {
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    std::atomic<bool> armed{false};
+    SceneFilesConfig config;
+    config.on_io = [&](std::string_view scene) {
+        if (!armed.load() || scene != "c") return;
+        entered.give();
+        release.take(wisp::os::kForever);
+    };
+    Fixture f(true, config);
+    f.declared["c"] = FilesWant::Sd;
+    f.declared["i"] = FilesWant::Int;
+    ASSERT_TRUE(f.files->write("c", "x", as_bytes("c")));
+    ASSERT_TRUE(f.files->write("i", "x", as_bytes("i")));
+    armed = true;
+
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(s.start());
+    GiveOnExit unpark{release};
+    std::atomic<bool> card_ok{false};
+    ASSERT_TRUE(
+        s.submit([&] { card_ok = static_cast<bool>(f.files->write("c", "y", as_bytes("y"))); }));
+    ASSERT_TRUE(entered.take(5000));
+
+    wisp::os::Semaphore done(1, 0);
+    std::atomic<bool> int_ok{false};
+    std::thread other([&] {
+        int_ok = static_cast<bool>(f.files->write("i", "y", as_bytes("y")));
+        done.give();
+    });
+    const bool finished = done.take(5000);
+    release.give();
+    other.join();
+    EXPECT_TRUE(finished);
+    EXPECT_TRUE(int_ok);
+    ASSERT_TRUE(s.drain(5000));
+    EXPECT_TRUE(card_ok);
+}
+
+// A card change: wisp.fs marks the card's scenes, each is counted on the
+// SD I/O thread, and the orphan log runs on wisp.fs again.
+TEST(SceneFiles, RecountRunsPerSceneOnTheCard) {
+    Fixture f(true);
+    f.declared["p"] = FilesWant::Sd;
+    f.declared["q"] = FilesWant::Auto;
+    ASSERT_TRUE(f.files->write("p", "x", as_bytes("pp")));
+    ASSERT_TRUE(f.files->write("q", "x", as_bytes("q")));
+    write_raw(f.sd_files("p") / "copied", "12345");
+
+    f.set_sd(false);
+    EXPECT_TRUE(f.files->sd_changed_begin().empty());
+    f.set_sd(true);
+    std::vector<std::string> ids = f.files->sd_changed_begin();
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(ids, (std::vector<std::string>{"p", "q"}));
+
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(s.start());
+    for (const std::string& id : ids)
+        EXPECT_TRUE(on<void>(s, [&] { return f.files->recount(id); })) << id;
+    // Not on the card: nothing to do.
+    EXPECT_TRUE(on<void>(s, [&] { return f.files->recount("nothing"); }));
+    auto p = on<wisp::core::SceneFilesInfo>(s, [&] { return f.files->info("p"); });
+    ASSERT_TRUE(p);
+    EXPECT_EQ(p.value().used, 7u);
+    EXPECT_EQ(f.files->info("q").value().used, 1u);
+
+    LogTap tap;
+    f.files->sd_changed_end();
+    EXPECT_EQ(tap.count({"scene_files|"}), 0u);
+}
+
+// run_files() runs on the scene's worker and hands the result back.
+TEST(SceneFiles, RunFilesWaitsOnTheScenesWorker) {
+    StorageWorker flash;
+    StorageWorker sd(StorageWorker::sd_io_config());
+    SceneFilesConfig config;
+    config.submit_io = [&](Medium m, IoLane lane, std::function<void()> job) {
+        return (m == Medium::Sd ? sd : flash).submit(std::move(job), lane);
+    };
+    std::mutex mu;
+    std::vector<bool> on_sd;
+    config.on_io = [&](std::string_view) {
+        std::lock_guard<std::mutex> lock(mu);
+        on_sd.push_back(sd.on_worker());
+    };
+    Fixture f(true, config);
+    ASSERT_TRUE(flash.start());
+    ASSERT_TRUE(sd.start());
+    auto wrote = wisp::core::run_files<void>(
+        *f.files, "a", [](SceneFiles& files) { return files.write("a", "x", as_bytes("hi")); });
+    ASSERT_TRUE(wrote) << wrote.error().message;
+    auto read = wisp::core::run_files<wisp::os::LargeBuffer>(
+        *f.files, "a", [](SceneFiles& files) { return files.read("a", "x", 0, 10); });
+    ASSERT_TRUE(read) << read.error().message;
+    EXPECT_EQ(text(read.value()), "hi");
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(on_sd, (std::vector<bool>{false, true}));
+}
+
+// One download's appends and its finish go to one worker on the Bulk lane,
+// even once the scene's other calls would go elsewhere.
+TEST(SceneFiles, DownloadChunksStayOnOneWorker) {
+    FakeRoute route;
+    route.hold = true;
+    Fixture f(true, routed(route));
+    using wisp::core::FileDownload;
+    auto dl = f.files->begin_download("d", "f.bin").value();
+    EXPECT_EQ(dl->scene(), "d");
+    const std::string chunk(FileDownload::kChunk, 'x');
+    EXPECT_TRUE(dl->push(as_bytes(chunk)));
+    route.run_held();
+    // Loaded on the card, nothing in flight: a plain call goes to the card.
+    EXPECT_EQ(f.files->medium_of("d"), Medium::Sd);
+    EXPECT_TRUE(dl->push(as_bytes(chunk)));
+    std::atomic<bool> fin{false};
+    EXPECT_TRUE(dl->submit([&] { fin = static_cast<bool>(dl->finish(true)); }));
+    route.run_held();
+    EXPECT_TRUE(fin);
+    std::lock_guard<std::mutex> lock(route.mu);
+    using S = FakeRoute::Sent;
+    EXPECT_EQ(route.sent, (std::vector<S>{{Medium::Internal, IoLane::Bulk},
+                                          {Medium::Internal, IoLane::Bulk},
+                                          {Medium::Internal, IoLane::Bulk}}));
+    EXPECT_EQ(read_raw(f.sd_files("d") / "f.bin"), chunk + chunk);
+}
+
+// The lane is full of the download's own appends when it ends: finish
+// waits for room rather than dropping a complete download.
+TEST(SceneFiles, DownloadFinishWaitsForRoomInItsLane) {
+    FakeRoute route;
+    route.hold = true;
+    route.capacity = 1;
+    Fixture f(false, routed(route));
+    using wisp::core::FileDownload;
+    auto dl = f.files->begin_download("d", "f.bin").value();
+    const std::string chunk(FileDownload::kChunk, 'x');
+    EXPECT_TRUE(dl->push(as_bytes(chunk)));
+    std::atomic<bool> queued{false};
+    std::atomic<bool> fin{false};
+    std::thread proxy(
+        [&] { queued = dl->submit([&] { fin = static_cast<bool>(dl->finish(true)); }); });
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lock(route.mu);
+            if (route.refused > 0) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    route.run_held();
+    proxy.join();
+    EXPECT_TRUE(queued);
+    route.run_held();
+    EXPECT_TRUE(fin);
+    EXPECT_TRUE(read_raw(f.int_files("d") / "f.bin") == chunk);
 }

@@ -41,7 +41,10 @@ protected:
         ASSERT_TRUE(http->start());
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
-        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        fc.submit_io = [this](wisp::core::Medium, wisp::core::IoLane lane,
+                              std::function<void()> job) {
+            return worker.submit(std::move(job), lane);
+        };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         notes = std::make_unique<wisp::core::NotificationService>(wisp::core::NotificationDeps{
             .bus = bus, .storage = *storage, .submit_io = {}, .make_timer = {}});
