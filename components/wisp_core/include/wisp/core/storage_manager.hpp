@@ -121,14 +121,38 @@
 // online->offline transition publishes "storage.sd.removed". Neither
 // event is published by init() itself, only by a later refresh() call
 // that observes a change -- callers (e.g. a 2s poll timer, not added by
-// this task) are expected to call refresh() periodically. Every public
-// method here serializes on one mutex, so refresh() and a concurrent
-// write_atomic()/read_file() never interleave -- but this also means a
-// card that's inserted and removed again entirely between two refresh()
-// polls is never observed at all: no event is published for it, the same
-// way a button press shorter than ButtonService's poll period produces
-// no events. refresh() must be called often enough for a caller's
-// purposes to tolerate that.
+// this task) are expected to call refresh() periodically. refresh()
+// holds the SD card's I/O lock (below), so it never interleaves with a
+// card operation in flight -- but a card that's inserted and removed
+// again entirely between two refresh() polls is never observed at all: no
+// event is published for it, the same way a button press shorter than
+// ButtonService's poll period produces no events. refresh() must be
+// called often enough for a caller's purposes to tolerate that.
+//
+// Media, threads and locks: every path belongs to one Medium --
+// Medium::Sd at or under storage.sd's mount (online or not), else
+// Medium::Internal (see medium_of()). Each path operation checks the
+// calling thread against its path's medium (WISP_ASSERT_MEDIUM_THREAD,
+// wisp/os/flash_guard.hpp: internal flash only on the flash thread, the
+// card on the SD I/O thread or the flash thread) and holds that medium's
+// I/O lock across all of its I/O, so card work never holds up internal
+// flash work here and vice versa. Operations on one medium are
+// serialized. init() and status() take both I/O locks; refresh() takes
+// the card's. The mount state (ready, mount points, devices, whether the
+// card is online) has a lock of its own, never held across I/O.
+//
+// A card removed under an operation: init(), refresh() and status() call
+// storage.sd's online(), which may deinit a removed card, only under the
+// card's I/O lock, so no card operation is in flight then. A card pulled
+// physically mid-operation fails that operation with the filesystem's
+// error (ErrorCode::IoError, or NotFound for a read of a vanished file);
+// once refresh() has seen the removal, the next mutating card operation
+// fails with StorageUnavailable before any I/O, and a read finds nothing
+// at the mount (NotFound). Each operation re-reads the mount state after
+// taking its I/O lock, so a path is never resolved against a state older
+// than the last refresh(); if an init() ran between picking the medium
+// and taking its lock and moved the path to the other medium, the
+// operation fails with StorageUnavailable without I/O.
 //
 // Only <cstdio>, <dirent.h>, <sys/stat.h>, <unistd.h> are used for all
 // filesystem access (no std::filesystem) -- those are available in both
@@ -154,6 +178,9 @@
 namespace wisp::core {
 
 enum class Area { System, Library, Backup };
+
+// Which storage device a path lives on; see medium_of().
+enum class Medium : uint8_t { Internal, Sd };
 
 struct StorageConfig {
     uint64_t internal_library_quota = 3ull * 1024 * 1024;  // 3 MiB; see AGENTS.md/spec 7.2
@@ -294,8 +321,8 @@ public:
 
     // list_dir() one entry at a time, in directory order (unsorted),
     // without holding the whole listing: `visit` returns false to stop.
-    // It runs with the manager's lock held, so it must not call back into
-    // this class.
+    // It runs with the I/O lock of `path`'s medium held, so it must not
+    // call back into this class.
     Result<void> visit_dir(const std::string& path,
                            const std::function<bool(const DirEntry&)>& visit);
 
@@ -316,7 +343,8 @@ public:
     // it). Moving into "<int>/library/" from outside it counts the moved
     // tree's size against the quota. Both paths must pass the
     // containment rule in the file header (else ErrorCode::InvalidArgument)
-    // and be on the same storage device.
+    // and be on the same storage device (else ErrorCode::InvalidArgument,
+    // before any I/O).
     Result<void> rename(const std::string& from, const std::string& to);
 
     // The total size of the regular files at or under `path`, excluding
@@ -332,6 +360,17 @@ public:
     // ErrorCode::StorageUnavailable before init() has succeeded.
     Result<std::string> internal_root() const;
 
+    // The medium `path` (normalized first) lives on: Medium::Sd when it is
+    // at or under storage.sd's mount point, whether the card is online or
+    // not; Medium::Internal for everything else -- paths outside both
+    // mounts, malformed paths (which every operation then rejects without
+    // I/O) and every path before init() has succeeded. No file work.
+    Medium medium_of(const std::string& path) const;
+
+    // Whether "storage.sd" is registered, as of the last successful
+    // init(); false before it.
+    bool has_sd() const;
+
     // Re-probes storage.sd's online() state and, on a change since the
     // last init()/refresh(), (re)creates its area roots (on an
     // offline->online transition; a creation failure only logs a warning,
@@ -346,9 +385,9 @@ public:
 
     // A snapshot of every registered storage device's current id/online/
     // capacity, for diagnostics (e.g. a self-check screen). Slow, and not
-    // for the UI thread: it takes mutex_, the same lock write_atomic()
-    // holds across its fsync()+rename() calls (see file header), and
-    // measuring capacity reaches the medium -- on LittleFS it walks every
+    // for the UI thread: it takes both media's I/O locks, which
+    // write_atomic() holds across its fsync()+rename() calls (see file
+    // header), and measuring capacity reaches the medium -- on LittleFS it walks every
     // block in use, so it takes longer the more is stored. The self-check
     // screen reads it on the storage worker
     // (SceneWiring::storage_status_async() in wisp_app).
@@ -365,53 +404,82 @@ public:
     // observes whatever online() returns while the underlying device's
     // own detection is paused.
     //
-    // Unlike every other method here, this one does NOT take mutex_ --
-    // see its own doc comment in storage_manager.cpp for why that's
-    // still safe.
+    // Unlike the operations here, this one takes no lock (in particular
+    // not the card's I/O lock) -- see its own comment in
+    // storage_manager.cpp for why that's still safe.
     void set_standby(bool standby);
 
 private:
-    // Shared argument handling for the primitives above, called with
-    // mutex_ held: the ready_ check, normalization, and the ".."/reserved
-    // suffix rules; `mutating` adds the offline-SD check.
-    Result<std::string> checked_path(const std::string& raw, bool mutating) const;
+    // The mount state one operation works from: copied under state_mu_
+    // (view()) right after the operation has taken its medium's I/O lock,
+    // so it is at least as new as the last init()/refresh().
+    struct View {
+        bool ready = false;
+        std::string int_mount;
+        std::string sd_mount;  // empty if storage.sd isn't registered
+        bool sd_online = false;
+    };
+    View view() const;
+
+    // medium_of() for a normalized `path` against `v`.
+    static Medium medium_in(const View& v, const std::string& path);
+
+    os::Mutex& io_mu(Medium m) const { return m == Medium::Sd ? sd_io_mu_ : int_io_mu_; }
+
+    // Shared argument handling for the primitives above: the ready check,
+    // normalization, and the ".."/reserved suffix rules; `mutating` adds
+    // the offline-SD check. Bumps calls().
+    Result<std::string> checked_path(const View& v, const std::string& raw, bool mutating) const;
+
+    // Fails with ErrorCode::StorageUnavailable if normalized `path` is no
+    // longer on `locked`, the medium whose I/O lock the caller took.
+    static Result<void> check_locked_medium(const View& v, const std::string& path, Medium locked);
 
     // read_file()'s checks and ".new" recovery; returns the normalized
-    // path and the regular file's size. Called with mutex_ held.
-    Result<std::pair<std::string, uint64_t>> open_for_read(const std::string& raw);
+    // path and the regular file's size. Called with `medium`'s I/O lock
+    // held.
+    Result<std::pair<std::string, uint64_t>> open_for_read(const View& v, const std::string& raw,
+                                                           Medium medium);
 
     // Fails with ErrorCode::InvalidArgument if normalized `path` lies
-    // more than 16 levels below a storage mount point. Called with mutex_
-    // held.
-    Result<void> check_depth(const std::string& path) const;
+    // more than 16 levels below a storage mount point.
+    static Result<void> check_depth(const View& v, const std::string& path);
 
     // Fails with ErrorCode::InvalidArgument unless normalized `path` is
     // strictly inside storage.int's mount or an online storage.sd's mount
-    // and is not a mount point, an area root or "<sd>/wisp". Called with
-    // mutex_ held.
-    Result<void> check_contained(const std::string& path) const;
+    // and is not a mount point, an area root or "<sd>/wisp".
+    static Result<void> check_contained(const View& v, const std::string& path);
 
     // Whether `path` is under the quota-checked "<int>/library".
-    bool in_internal_library(const std::string& path) const;
+    static bool in_internal_library(const View& v, const std::string& path);
 
     DeviceRegistry& registry_;
     EventBus& bus_;
     StorageConfig config_;
 
-    // Guards every member below against concurrent calls -- refresh() may
-    // be driven by a periodic timer task while writes come from service
-    // tasks (see AGENTS.md's thread-safety expectations for this class).
-    // Held across EventBus::publish() calls in refresh(), which is safe
-    // because publish() never blocks on (or calls back into) a handler --
-    // see event_bus.hpp.
-    mutable os::Mutex mutex_;
+    // Lock order, outer first: int_io_mu_ -> sd_io_mu_ -> state_mu_. A
+    // thread holding one never takes an earlier one; an operation needing
+    // both I/O locks (init(), status()) takes them in this order.
+    //
+    // int_io_mu_ / sd_io_mu_: held across one operation's I/O on internal
+    // flash / the SD card (including visit_dir()'s callback, the quota
+    // walk and write_atomic()'s staging and ".new"/".tmp" recovery), so
+    // operations on one medium never interleave and those on different
+    // media never wait for each other. sd_io_mu_ is also what makes
+    // storage.sd's online() safe to deinit a removed card
+    // (EspSdStorage): it is only called with sd_io_mu_ held.
+    mutable os::Mutex int_io_mu_;
+    mutable os::Mutex sd_io_mu_;
+    // Guards every member below. Never held across I/O or a call into a
+    // device. init() writes the members with both I/O locks and this one
+    // held; refresh() writes sd_online_ with sd_io_mu_ and this one held.
+    mutable os::Mutex state_mu_;
 
     std::shared_ptr<hal::Storage> int_dev_;
-    // Assigned exactly once, inside init() (re-init()ing re-assigns it,
-    // but no caller does that concurrently with set_standby() in
-    // practice -- App::start() calls init() once, before anything can
-    // call set_standby()); set_standby() above relies on that to read it
-    // without mutex_.
+    // Assigned only inside init() (no caller re-init()s concurrently with
+    // set_standby() in practice -- App::start() calls init() once, before
+    // anything can call set_standby()); set_standby() above relies on
+    // that to read it without a lock.
     std::shared_ptr<hal::Storage> sd_dev_;
     std::string int_mount_;  // never has a trailing '/'; see init()
     std::string sd_mount_;   // ditto; empty if storage.sd isn't registered
@@ -420,8 +488,8 @@ private:
     mutable std::atomic<uint64_t> calls_{0};
 
     // True once init() has found "storage.int" and created its
-    // directories; roots()/write_atomic()/read_file() all refuse to do
-    // anything (StorageUnavailable) while this is false, rather than
+    // directories; every operation refuses to do anything
+    // (StorageUnavailable/empty roots) while this is false, rather than
     // operating on empty int_mount_/sd_mount_ strings.
     bool ready_ = false;
 };
