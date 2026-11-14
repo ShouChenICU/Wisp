@@ -22,6 +22,12 @@ inline constexpr uint32_t kMinSpeechMs = 300;
 // the start tone's tail land here, out of the recording and the VAD's
 // noise estimate.
 inline constexpr uint32_t kMicSettleMs = 100;
+// A primed mic (VoiceService::prime(), at the talk key's press) keeps the
+// last kPrerollMs before the hold is confirmed, so the first words said
+// while the press is still being told from a tap are in the recording.
+inline constexpr uint32_t kPrerollMs = 500;
+// A priming that no capture follows ends by itself after this long.
+inline constexpr uint32_t kPrimeMaxMs = 2000;
 
 inline constexpr size_t kFrameSamples = kSampleRate / 1000 * kFrameMs;
 

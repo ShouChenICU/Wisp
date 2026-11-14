@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,6 +44,7 @@ using wisp::test::audio::FakeAudioIn;
 using wisp::test::audio::FakeAudioOut;
 using wisp::test::audio::noise;
 using wisp::test::audio::OrderLog;
+using wisp::test::audio::ramp_value;
 using wisp::test::audio::silence;
 using wisp::test::audio::sine;
 using wisp::voice::CaptureMode;
@@ -79,6 +81,35 @@ FakeTtsReply pcm_reply(const std::vector<int16_t>& pcm, int hold_after = -1) {
 FakeReply asr_text(const std::string& text) {
     return FakeReply{.status = 200, .chunks = {R"({"text":")" + text + R"("})"}};
 }
+
+// The PCM of an ASR upload's WAV.
+std::vector<int16_t> wav_pcm(const std::string& body) {
+    const size_t data = body.find("data", body.find("WAVE"));
+    if (data == std::string::npos) return {};
+    uint32_t bytes = 0;
+    std::memcpy(&bytes, body.data() + data + 4, 4);
+    if (data + 8 + bytes > body.size()) return {};
+    std::vector<int16_t> pcm(bytes / 2);
+    std::memcpy(pcm.data(), body.data() + data + 8, bytes);
+    return pcm;
+}
+
+// The ramp samples of a recording, in order: what the mic's live silence
+// (around a hold_at() point) did not add.
+std::vector<int16_t> ramp_samples(const std::vector<int16_t>& pcm) {
+    std::vector<int16_t> out;
+    std::copy_if(pcm.begin(), pcm.end(), std::back_inserter(out), [](int16_t v) { return v != 0; });
+    return out;
+}
+
+// The ramp the mic reads from `pos` frames on, `n` samples of it.
+std::vector<int16_t> ramp_from(uint64_t pos, size_t n) {
+    std::vector<int16_t> out(n);
+    for (size_t i = 0; i < n; ++i) out[i] = ramp_value(pos + i);
+    return out;
+}
+
+constexpr uint64_t frames_of(uint32_t ms) { return uint64_t{ms} * 16; }
 
 std::string str(const Map& m, const char* key) {
     auto it = m.find(key);
@@ -204,6 +235,18 @@ struct VoiceServiceTest : ::testing::Test {
                 return !e.empty() && str(e.back(), "state") == "idle";
             },
             timeout_ms);
+    }
+    // The value of `key=` in the last capture log line, -1 if none.
+    static long capture_log(const char* key) {
+        long v = -1;
+        const std::string k = std::string(" ") + key + "=";
+        for (const auto& e : wisp::log::ring_entries()) {
+            if (e.tag != "voice" || e.msg.rfind("capture ", 0) != 0) continue;
+            const size_t at = e.msg.find(k);
+            if (at != std::string::npos)
+                v = std::strtol(e.msg.c_str() + at + k.size(), nullptr, 10);
+        }
+        return v;
     }
     std::vector<std::string> got_transcripts() const {
         std::lock_guard<std::mutex> lock(mu);
@@ -1108,4 +1151,246 @@ TEST_F(VoiceServiceTest, LocksAreGoneWhenIdleArrives) {
     bus.wait_idle(1000);
     bus.unsubscribe(check);
     EXPECT_EQ(idle_with_locks.load(), 0);
+}
+
+// --- Primed microphone (prime() at key down, begin_capture() at the hold) ---
+
+namespace audio = wisp::test::audio;
+using wisp::voice::kMicSettleMs;
+
+TEST_F(VoiceServiceTest, PrimedHoldKeepsThePreroll) {
+    add_asr();
+    make();
+    server.push_asr(asr_text("早"));
+    // Settle, 300 ms before the hold is confirmed, 400 ms after it.
+    mic->set_script({audio::ramp(kMicSettleMs + 300 + 400)});
+    mic->hold_at(kMicSettleMs + 300);
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->holding(); }, 2000));
+    // Priming is silent: no state, no wake lock.
+    bus.wait_idle(1000);
+    EXPECT_TRUE(events().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+    EXPECT_EQ(voice->state(), VoiceState::Idle);
+
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    mic->release();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    EXPECT_EQ(mic->opens(), 1);
+
+    // The first sample read after the settle time opens the upload, and
+    // every scripted sample after it is there: 300 ms of pre-roll + 400.
+    const std::vector<int16_t> pcm = wav_pcm(server.requests().at(0).body);
+    ASSERT_FALSE(pcm.empty());
+    EXPECT_EQ(pcm.front(), ramp_value(frames_of(kMicSettleMs)));
+    EXPECT_EQ(ramp_samples(pcm), ramp_from(frames_of(kMicSettleMs), frames_of(700)));
+    // Besides it only the mic's live silence while the test waited.
+    EXPECT_LE(pcm.size(), frames_of(700 + 200));
+    const long preroll = capture_log("preroll_ms");
+    EXPECT_GE(preroll, 300);
+    EXPECT_LE(preroll, 360);
+}
+
+TEST_F(VoiceServiceTest, PrerollIsCappedAtPrerollMs) {
+    add_asr();
+    make();
+    server.push_asr(asr_text("早"));
+    mic->set_script({audio::ramp(kMicSettleMs + 1200 + 400)});
+    mic->hold_at(kMicSettleMs + 1200);
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->holding(); }, 2000));
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    mic->release();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+
+    // The last kPrerollMs before begin_capture() (a few frames of it the
+    // live silence while the test waited), then the whole hold.
+    const std::vector<int16_t> got = ramp_samples(wav_pcm(server.requests().at(0).body));
+    const uint64_t end = frames_of(kMicSettleMs + 1200 + 400);
+    ASSERT_LE(got.size(), frames_of(wisp::voice::kPrerollMs + 400));
+    ASSERT_GE(got.size(), frames_of(wisp::voice::kPrerollMs - 3 * wisp::voice::kFrameMs + 400));
+    EXPECT_EQ(got, ramp_from(end - got.size(), got.size()));
+}
+
+TEST_F(VoiceServiceTest, UnprimeClosesTheMicAndRecordsNothing) {
+    add_asr();
+    make();
+    mic->set_script({audio::ramp(kMicSettleMs + 100)});
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    EXPECT_TRUE(mic->is_open());
+    voice->unprime();
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 1000));
+    bus.wait_idle(1000);
+    EXPECT_TRUE(events().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_FALSE(voice->capturing());
+
+    // The next hold starts afresh: unprimed, settle time and all.
+    clear_events();
+    mic->set_script({silence(kMicSettleMs), sine(400)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    EXPECT_EQ(mic->opens(), 2);
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(capture_log("preroll_ms"), 0);
+}
+
+TEST_F(VoiceServiceTest, UnprimeBeforeTheTaskSawThePrime) {
+    add_asr();
+    make();
+    // The transcript's consumer holds wisp.voice while prime() and
+    // unprime() come.
+    std::atomic<bool> in_cb{false}, stall{true};
+    voice->set_on_transcript([&](std::string) {
+        in_cb = true;
+        while (stall.load()) wisp::os::sleep_ms(1);
+    });
+    server.push_asr(asr_text("你好"));
+    mic->set_script({silence(300), sine(600), silence(900)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Vad));
+    ASSERT_TRUE(wait_until([&] { return in_cb.load(); }, 3000));
+    voice->prime();
+    voice->unprime();
+    stall = false;
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_FALSE(mic->is_open());
+    voice->end_speech();
+    EXPECT_TRUE(wait_until([&] { return voice_locks() == 0; }, 1000));
+}
+
+TEST_F(VoiceServiceTest, PrimeTimesOutByItself) {
+    add_asr();
+    make();
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 2000));
+    virtual_ms += wisp::voice::kPrimeMaxMs + 100;
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 1000));
+    bus.wait_idle(1000);
+    EXPECT_TRUE(events().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, PrimeIsSkippedWhileSpeechPlays) {
+    add_asr();
+    add_tts();
+    make();
+    server.push_tts(pcm_reply(ramp(4800), /*hold_after=*/1));
+    voice->begin_speech();
+    voice->speak("一。二。");
+    ASSERT_TRUE(wait_until([&] { return voice->speaking() && server.held() == 1; }, 2000));
+    voice->prime();
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(mic->opens(), 0);
+
+    // The hold still records, unprimed.
+    mic->set_script({silence(kMicSettleMs), sine(400)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    EXPECT_EQ(mic->opens(), 1);
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+}
+
+TEST_F(VoiceServiceTest, SpeechEndsThePriming) {
+    add_asr();
+    add_tts();
+    make();
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 2000));
+    // A reply that has something to say needs the output: the priming
+    // gives way at once rather than at kPrimeMaxMs.
+    server.push_tts(pcm_reply(ramp(480)));
+    voice->begin_speech();
+    voice->speak("一。");
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
+    ASSERT_TRUE(wait_until([&] { return saw("speaking"); }, 2000));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(out->overlapping_opens(), 0);
+}
+
+TEST_F(VoiceServiceTest, PrimedHoldPlaysTheToneWithoutClosingTheMic) {
+    add_asr();
+    make();
+    std::atomic<int> state_at_tone{-1}, mic_open_at_tone{-1};
+    out->set_open_hook([&](int index) {
+        if (index != 0) return;
+        state_at_tone = static_cast<int>(voice->state());
+        mic_open_at_tone = mic->is_open() ? 1 : 0;
+    });
+    mic->set_script({audio::ramp(kMicSettleMs + 300)});
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 1; }, 2000));
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(state_at_tone.load(), static_cast<int>(VoiceState::Listening));
+    EXPECT_EQ(mic_open_at_tone.load(), 1);
+    EXPECT_EQ(mic->opens(), 1);
+    const auto log = order->entries();
+    ASSERT_GE(log.size(), 2u);
+    EXPECT_EQ(log[0], "in.open");
+    EXPECT_EQ(log[1], "out.open");
+}
+
+TEST_F(VoiceServiceTest, ShortHoldAfterPrimeIsNotHeard) {
+    add_asr();
+    make();
+    mic->set_script({audio::ramp(kMicSettleMs + 400 + 100)});
+    mic->hold_at(kMicSettleMs + 400);
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->holding(); }, 2000));
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    mic->release();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_idle());
+    // 400 ms of pre-roll do not make a 100 ms hold long enough.
+    EXPECT_TRUE(saw("idle", "result", "not_heard"));
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, ListeningIsPublishedAfterTheMicOpens) {
+    add_asr();
+    make();
+    std::atomic<int> state_at_tone{-1};
+    out->set_open_hook([&](int index) {
+        if (index == 0) state_at_tone = static_cast<int>(voice->state());
+    });
+    mic->set_script({silence(kMicSettleMs), sine(1000)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    // Unprimed: the tone, then the mic, then "listening".
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_EQ(state_at_tone.load(), static_cast<int>(VoiceState::Idle));
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+}
+
+TEST_F(VoiceServiceTest, PrerollZeroDisablesPriming) {
+    add_asr();
+    make(VoiceConfig{.preroll_ms = 0});
+    voice->prime();
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(mic->opens(), 0);
+    voice->unprime();
+    mic->set_script({silence(kMicSettleMs), sine(400)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    EXPECT_EQ(mic->opens(), 1);
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
 }

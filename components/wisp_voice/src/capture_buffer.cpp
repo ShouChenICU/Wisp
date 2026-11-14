@@ -79,6 +79,14 @@ void CaptureBuffer::commit(size_t frames) {
     frames_ = std::min(frames_ + frames, capacity_frames_);
 }
 
+void CaptureBuffer::keep_tail(uint32_t ms) {
+    const size_t keep = static_cast<size_t>(ms) * kSampleRate / 1000;
+    if (frames_ <= keep) return;
+    auto* pcm = reinterpret_cast<int16_t*>(storage_.data() + kHeadReserve);
+    std::memmove(pcm, pcm + (frames_ - keep), keep * sizeof(int16_t));
+    frames_ = keep;
+}
+
 uint32_t CaptureBuffer::ms() const { return static_cast<uint32_t>(frames_ * 1000 / kSampleRate); }
 
 std::span<const uint8_t> CaptureBuffer::finish_multipart(std::string_view boundary,

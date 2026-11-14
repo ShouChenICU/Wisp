@@ -70,6 +70,16 @@ uint32_t read_u32le(std::string_view s, size_t at) {
            (static_cast<uint32_t>(static_cast<uint8_t>(s[at + 3])) << 24);
 }
 
+// Commits `n` samples valued by their index.
+void fill_ramp(CaptureBuffer& b, size_t n) {
+    auto space = b.free_space();
+    for (size_t i = 0; i < n; ++i) space[i] = static_cast<int16_t>(i);
+    b.commit(n);
+}
+
+// The first sample of the PCM region: where free_space() starts when empty.
+int16_t first_sample(CaptureBuffer& b) { return *(b.free_space().data() - b.frames()); }
+
 }  // namespace
 
 TEST(CaptureBuffer, ThirtySecondsIs960000Bytes) {
@@ -164,4 +174,31 @@ TEST(CaptureBuffer, WavHeaderDescribesThePcm) {
     const uint32_t data_size = read_u32le(wav, 40);
     EXPECT_EQ(data_size, 100u * sizeof(int16_t));
     EXPECT_EQ(wav.size() - wisp::voice::kWavHeaderBytes, data_size);
+}
+
+TEST(CaptureBuffer, KeepTailKeepsTheLastSamples) {
+    auto r = CaptureBuffer::create(2000);
+    ASSERT_TRUE(r);
+    CaptureBuffer& b = r.value();
+    fill_ramp(b, 16000);  // 1000 ms
+    b.keep_tail(500);
+    EXPECT_EQ(b.ms(), 500u);
+    EXPECT_EQ(b.frames(), 8000u);
+    EXPECT_EQ(first_sample(b), 8000);
+    // Appending goes on after what was kept.
+    EXPECT_EQ(b.free_space().size(), 32000u - 8000u);
+}
+
+TEST(CaptureBuffer, KeepTailOfMoreThanHeldIsANoOp) {
+    auto r = CaptureBuffer::create(2000);
+    ASSERT_TRUE(r);
+    CaptureBuffer& b = r.value();
+    fill_ramp(b, 4800);  // 300 ms
+    b.keep_tail(500);
+    EXPECT_EQ(b.frames(), 4800u);
+    EXPECT_EQ(first_sample(b), 0);
+    b.keep_tail(300);
+    EXPECT_EQ(b.frames(), 4800u);
+    b.keep_tail(0);
+    EXPECT_EQ(b.frames(), 0u);
 }

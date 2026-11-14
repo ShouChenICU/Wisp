@@ -90,6 +90,9 @@ Result<void> VoiceService::start() {
         if (!watch_) return Result<void>::err(ErrorCode::NoMemory, "no request watch");
     }
     quit_.store(false);
+    // A prime() from before start() is not for the task; taken here, not
+    // on the task, so a prime() right after start() is not lost.
+    prime_seen_ = prime_seq_.load();
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });
     if (!task_) return Result<void>::err(ErrorCode::NoMemory, "cannot start wisp.voice");
     std::lock_guard<os::Mutex> lock(locks_mu_);
@@ -184,6 +187,23 @@ void VoiceService::cancel_capture() {
         if (uint32_t t = asr_ticket_.load()) watch_->abort(t);
     }
     wake();
+}
+
+void VoiceService::prime() {
+    if (config_.preroll_ms == 0) return;
+    prime_seq_.fetch_add(1);
+    wake();
+}
+
+void VoiceService::unprime() {
+    unprimed_seq_.store(prime_seq_.load());
+    wake();
+}
+
+uint32_t VoiceService::preroll_ms() const {
+    // Half the buffer at most, so a primed mic always has room to read
+    // into after keep_tail().
+    return std::min(config_.preroll_ms, config_.max_record_ms / 2);
 }
 
 bool VoiceService::capture_cancelled(uint32_t seq) const {
@@ -426,9 +446,16 @@ void VoiceService::run() {
         const uint32_t wait = more ? 0 : (player_begun_ ? kLevelIntervalMs : kIdleWaitMs);
         if (cmds_.pop(c, wait)) {
             if (c.cmd == Cmd::Wake) wake_pending_.store(false);
-            if (c.cmd == Cmd::BeginCapture) capture(c);
+            if (c.cmd == Cmd::BeginCapture) capture(c, false);
         }
         if (quit_.load()) break;
+        if (const uint32_t seq = prime_seq_.load(); seq != prime_seen_) {
+            prime_seen_ = seq;
+            if (std::optional<Command> begin = prime_mic(seq)) {
+                capture(*begin, begin->mode == CaptureMode::Hold);
+            }
+            if (quit_.load()) break;
+        }
         more = pump_speech();
         if (player_begun_) publish_level(VoiceState::Speaking, deps_.player.level());
         check_backstop();
@@ -436,7 +463,74 @@ void VoiceService::run() {
     if (player_begun_ && end_playback(true)) publish(VoiceState::Idle);
 }
 
-void VoiceService::capture(const Command& c) {
+bool VoiceService::read_frame(std::span<int16_t> frame) {
+    size_t got = 0;
+    while (got < frame.size()) {
+        auto r = deps_.mic->read(frame.data() + got, frame.size() - got);
+        if (!r || r.value() == 0) return false;
+        got += r.value();
+    }
+    return true;
+}
+
+bool VoiceService::speech_has_work() {
+    std::lock_guard<os::Mutex> lock(speech_mu_);
+    return speech_.open && (!speech_.pending.empty() || speech_.ended);
+}
+
+std::optional<VoiceService::Command> VoiceService::prime_mic(uint32_t seq) {
+    if (unprimed_seq_.load() >= seq || capture_busy_.load() || !deps_.mic) return std::nullopt;
+    if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) return std::nullopt;
+    // The output must be quiet: a reply playing (or about to) is not
+    // something to record, and speech must not wait behind the priming.
+    if (player_begun_ || deps_.player.active()) return std::nullopt;
+    if (deps_.tones != nullptr && deps_.tones->playing()) return std::nullopt;
+    if (speech_has_work()) return std::nullopt;
+    if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {
+        WLOG_W(kTag, "prime: mic: %s", opened.error().message.c_str());
+        return std::nullopt;
+    }
+
+    CaptureBuffer& buf = *buffer_;
+    buf.clear();
+    const uint32_t keep = preroll_ms();
+    const uint64_t start = deps_.now_ms();
+    uint32_t settled_ms = 0;
+    std::optional<Command> begin;
+    for (;;) {
+        // Every frame (kFrameMs) looks at what came in: a BeginCapture
+        // takes over the open mic, a wake-up may be speech that needs the
+        // output.
+        Command cmd;
+        while (!begin && cmds_.pop(cmd, 0)) {
+            if (cmd.cmd == Cmd::Wake) wake_pending_.store(false);
+            if (cmd.cmd == Cmd::BeginCapture) begin = cmd;
+        }
+        if (begin || quit_.load() || unprimed_seq_.load() >= seq) break;
+        if (deps_.now_ms() - start >= kPrimeMaxMs || speech_has_work()) break;
+        std::span<int16_t> frame = buf.free_space();
+        frame = frame.first(std::min(frame.size(), kFrameSamples));
+        if (!read_frame(frame)) {
+            WLOG_W(kTag, "prime: mic read failed");
+            break;
+        }
+        // Settle time: read into the buffer's free space and never commit.
+        if (settled_ms < kMicSettleMs) {
+            settled_ms += kFrameMs;
+            continue;
+        }
+        buf.commit(frame.size());
+        if (buf.full() || buf.ms() > 2 * keep) buf.keep_tail(keep);
+    }
+    if (begin && begin->mode == CaptureMode::Hold && !quit_.load()) return begin;
+    deps_.mic->close();
+    buf.clear();
+    return begin;
+}
+
+void VoiceService::capture(const Command& c, bool primed) {
+    // A prime() from before this capture is spent.
+    prime_seen_ = prime_seq_.load();
     // Every ending settles the round before its final idle.
     auto finish = [&](const char* result) {
         capture_busy_.store(false);
@@ -449,41 +543,56 @@ void VoiceService::capture(const Command& c) {
     };
 
     if (player_begun_ && end_playback(true)) publish(VoiceState::Idle);
-    if (capture_cancelled(c.capture)) return finish(nullptr);
-    if (!deps_.mic) return failed(VoiceError::MicUnavailable);
-    if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) {
-        return failed(VoiceError::NoAsrProfile);
-    }
-    if (deps_.network_up && !deps_.network_up()) return failed(VoiceError::Offline);
-
-    publish(VoiceState::Listening, 0);
-    // The start tone must not be skipped for speech that is still closing
-    // the output, and the mic must not hear it.
-    wait_for([this] { return !deps_.player.active(); }, kToneWaitMs);
-    if (deps_.tones != nullptr) {
-        deps_.tones->play(core::ToneKind::Tone, deps_.volume ? deps_.volume() : 100);
-        wait_for([this] { return !deps_.tones->playing(); }, kToneWaitMs);
-    }
-    if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {
-        WLOG_W(kTag, "mic: %s", opened.error().message.c_str());
-        return failed(VoiceError::MicUnavailable);
-    }
-
     CaptureBuffer& buf = *buffer_;
-    buf.clear();
-    // Settle time: read into the buffer's free space and never commit.
-    for (uint32_t ms = 0; ms < kMicSettleMs; ms += kFrameMs) {
-        std::span<int16_t> frame = buf.free_space();
-        frame = frame.first(std::min(frame.size(), kFrameSamples));
-        size_t got = 0;
-        while (got < frame.size()) {
-            auto r = deps_.mic->read(frame.data() + got, frame.size() - got);
-            if (!r || r.value() == 0) {
+    const bool cancelled_early = capture_cancelled(c.capture);
+    std::optional<VoiceError> refused;
+    if (!deps_.mic) {
+        refused = VoiceError::MicUnavailable;
+    } else if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) {
+        refused = VoiceError::NoAsrProfile;
+    } else if (deps_.network_up && !deps_.network_up()) {
+        refused = VoiceError::Offline;
+    }
+    if (primed && (cancelled_early || refused)) {
+        deps_.mic->close();
+        buf.clear();
+    }
+    if (cancelled_early) return finish(nullptr);
+    if (refused) return failed(*refused);
+
+    uint32_t preroll = 0;
+    if (primed) {
+        buf.keep_tail(preroll_ms());
+        preroll = buf.ms();
+        publish(VoiceState::Listening, 0);
+        // The mic stays open: the tone lands in the recording (see the
+        // file header). Not waited for, so the recording goes on.
+        if (deps_.tones != nullptr) {
+            deps_.tones->play(core::ToneKind::Tone, deps_.volume ? deps_.volume() : 100);
+        }
+    } else {
+        // The start tone must not be skipped for speech that is still
+        // closing the output, and the mic must not hear it.
+        wait_for([this] { return !deps_.player.active(); }, kToneWaitMs);
+        if (deps_.tones != nullptr) {
+            deps_.tones->play(core::ToneKind::Tone, deps_.volume ? deps_.volume() : 100);
+            wait_for([this] { return !deps_.tones->playing(); }, kToneWaitMs);
+        }
+        if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {
+            WLOG_W(kTag, "mic: %s", opened.error().message.c_str());
+            return failed(VoiceError::MicUnavailable);
+        }
+        buf.clear();
+        // Settle time: read into the buffer's free space and never commit.
+        for (uint32_t ms = 0; ms < kMicSettleMs; ms += kFrameMs) {
+            std::span<int16_t> frame = buf.free_space();
+            if (!read_frame(frame.first(std::min(frame.size(), kFrameSamples)))) {
                 deps_.mic->close();
                 return failed(VoiceError::MicUnavailable);
             }
-            got += r.value();
         }
+        // Only now: "listening" on the screen means the recording runs.
+        publish(VoiceState::Listening, 0);
     }
     // A press-and-hold never runs the VAD: the release says when the user
     // is done, and a VAD that misjudged the level (a start-up transient
@@ -495,6 +604,7 @@ void VoiceService::capture(const Command& c) {
     bool cancelled = false, read_failed = false;
     // Signal statistics for the capture log line: levels only, never audio.
     int64_t sum = 0;
+    size_t counted = 0;
     int32_t peak = 0;
     double max_e = 0, head_e = 0;
     for (;;) {
@@ -514,17 +624,12 @@ void VoiceService::capture(const Command& c) {
         }
         std::span<int16_t> frame = buf.free_space();
         frame = frame.first(std::min(frame.size(), kFrameSamples));
-        size_t got = 0;
-        while (got < frame.size()) {
-            auto r = deps_.mic->read(frame.data() + got, frame.size() - got);
-            if (!r || r.value() == 0) {
-                read_failed = true;
-                break;
-            }
-            got += r.value();
+        if (!read_frame(frame)) {
+            read_failed = true;
+            break;
         }
-        if (read_failed) break;
         double e = 0;
+        counted += frame.size();
         for (int16_t v : frame) {
             sum += v;
             peak = std::max(peak, std::abs(static_cast<int32_t>(v)));
@@ -533,7 +638,7 @@ void VoiceService::capture(const Command& c) {
         if (!frame.empty()) {
             e /= static_cast<double>(frame.size());
             max_e = std::max(max_e, e);
-            if (buf.ms() < kNoiseEstimateMs) head_e = std::max(head_e, e);
+            if (buf.ms() - preroll < kNoiseEstimateMs) head_e = std::max(head_e, e);
         }
         buf.commit(frame.size());
         if (vad) verdict = vad->push(frame);
@@ -541,16 +646,21 @@ void VoiceService::capture(const Command& c) {
         if (verdict != VadVerdict::Continue) break;
     }
     deps_.mic->close();
-    WLOG_I(kTag, "capture ms=%u speech_ms=%u verdict=%d peak=%d dc=%d max_rms=%d head_rms=%d",
-           static_cast<unsigned>(buf.ms()), static_cast<unsigned>(vad ? vad->speech_ms() : 0),
-           static_cast<int>(verdict), static_cast<int>(peak),
-           static_cast<int>(buf.frames() ? sum / static_cast<int64_t>(buf.frames()) : 0),
+    // Signal statistics cover the recording after the pre-roll.
+    WLOG_I(kTag,
+           "capture ms=%u preroll_ms=%u speech_ms=%u verdict=%d peak=%d dc=%d max_rms=%d "
+           "head_rms=%d",
+           static_cast<unsigned>(buf.ms()), static_cast<unsigned>(preroll),
+           static_cast<unsigned>(vad ? vad->speech_ms() : 0), static_cast<int>(verdict),
+           static_cast<int>(peak),
+           static_cast<int>(counted ? sum / static_cast<int64_t>(counted) : 0),
            static_cast<int>(std::sqrt(max_e)), static_cast<int>(std::sqrt(head_e)));
 
     if (cancelled) return finish(nullptr);
     if (read_failed) return failed(VoiceError::MicUnavailable);
-    // Hold: recorded length alone, kMinSpeechMs or more is sent.
-    const bool send = hold ? buf.ms() >= kMinSpeechMs : verdict == VadVerdict::Done;
+    // Hold: recorded length alone, kMinSpeechMs or more after the
+    // pre-roll is sent (what the pre-roll holds was not a hold yet).
+    const bool send = hold ? buf.ms() - preroll >= kMinSpeechMs : verdict == VadVerdict::Done;
     if (!send) return finish("not_heard");
 
     publish(VoiceState::Transcribing);
