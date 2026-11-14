@@ -25,7 +25,9 @@
 // every call while the cache could not be loaded or allocated. Before
 // the worker starts and after it stops, run_sync() runs it right here.
 // They take the Interactive lane, as the cache's saves do: each is one
-// small NVS call that its caller waits for, and a full lane is retried as
+// small NVS call that its caller waits for. As with the cache's saves, a
+// full Interactive lane sends the call to the Normal lane (one NVS call
+// does not care what order it runs in); a full Normal lane is retried as
 // call_on_worker() does and then reported Busy to the caller. Those calls
 // wait for the worker without the lock, so a job on the worker that reads
 // a setting cannot deadlock against a caller waiting for it.
@@ -128,8 +130,16 @@ private:
             if (cache_ != nullptr) return fn(*cache_);
             worker = worker_;
         }
-        return core::call_on_worker<T>(
-            worker, [&] { return fn(*platform_); }, core::IoLane::Interactive);
+        // Only a full lane falls back, never an error of the call itself:
+        // `ran` tells the two apart.
+        bool ran = false;
+        auto call = [&] {
+            ran = true;
+            return fn(*platform_);
+        };
+        Result<T> r = core::call_on_worker<T>(worker, call, core::IoLane::Interactive, 0);
+        if (ran || r || r.error().code != ErrorCode::Busy || !worker->running()) return r;
+        return core::call_on_worker<T>(worker, call, core::IoLane::Normal);
     }
 
     std::unique_ptr<core::SettingsBackend> platform_;
