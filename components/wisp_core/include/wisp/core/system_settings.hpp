@@ -35,8 +35,9 @@
 // which applies them from the next turn on.
 // The consumers (App at boot, the audio path, PowerManager::tick()) read
 // these keys fresh, so only brightness needs an explicit "apply now" hook.
-// The device UI language follows `on_changed` (spec 8.3): App publishes it
-// as the system.settings event and the UI rebuilds its text from that,
+// The whole snapshot lives in a state cell (cell()) that follows every
+// stored batch; consumers follow it. Its mirror publishes the
+// system.settings event (spec 8.3), from which the UI rebuilds its text,
 // with revision() as the fallback when that event is lost.
 //
 // Thread-safe: set() calls are serialized so concurrent batches cannot
@@ -50,12 +51,24 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::core {
 
 inline constexpr const char* kDefaultNtpServers = "pool.ntp.org,ntp.aliyun.com";
+
+// The other keys' defaults, shared by the key table (system_settings.cpp)
+// and SystemSettingsValues' member initializers so the two cannot drift.
+inline constexpr int64_t kDefaultBrightness = 200;
+inline constexpr int64_t kDefaultVolume = 60;
+inline constexpr const char* kDefaultLanguage = "zh";
+inline constexpr int64_t kDefaultUtcOffsetMin = 480;
+inline constexpr int64_t kDefaultNotifyVol = 60;
+inline constexpr bool kDefaultTtsMute = false;
+inline constexpr bool kDefaultTime24h = true;
 
 // The power keys' defaults and valid ranges, shared with
 // wisp::app::PowerManager, which reads Settings "power" itself and treats a
@@ -74,20 +87,26 @@ inline constexpr int64_t kDefaultAgentTurnMin = 15;
 inline constexpr int64_t kMinAgentTurnMin = 2;
 inline constexpr int64_t kMaxAgentTurnMin = 60;
 
+// Default-constructed, it is what an empty store reads as.
 struct SystemSettingsValues {
-    int brightness;
-    int volume;
-    int screen_off_s;
-    std::string language;
-    int utc_offset_min;
-    std::string ntp_servers;
-    int deep_after_s;
-    int notify_vol;
-    bool tts_mute;
-    bool time_24h;
-    int agent_max_steps;
-    int agent_turn_min;
+    int brightness = static_cast<int>(kDefaultBrightness);
+    int volume = static_cast<int>(kDefaultVolume);
+    int screen_off_s = static_cast<int>(kDefaultScreenOffS);
+    std::string language = kDefaultLanguage;
+    int utc_offset_min = static_cast<int>(kDefaultUtcOffsetMin);
+    std::string ntp_servers = kDefaultNtpServers;
+    int deep_after_s = static_cast<int>(kDefaultDeepAfterS);
+    int notify_vol = static_cast<int>(kDefaultNotifyVol);
+    bool tts_mute = kDefaultTtsMute;
+    bool time_24h = kDefaultTime24h;
+    int agent_max_steps = static_cast<int>(kDefaultAgentMaxSteps);
+    int agent_turn_min = static_cast<int>(kDefaultAgentTurnMin);
+
+    bool operator==(const SystemSettingsValues&) const = default;
 };
+
+// Event::source of system.settings: App published it before the cell did.
+inline constexpr char kSystemSettingsSource[] = "app";
 
 // {"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
 // "ntp_servers", "deep_after_s", "notify_vol", "tts_mute",
@@ -98,23 +117,37 @@ Map to_map(const SystemSettingsValues& values);
 class SystemSettings {
 public:
     // `apply_brightness` is called after a batch containing "brightness"
-    // has been stored (App passes PowerManager::set_brightness).
-    // `on_changed` is called after every non-empty batch has been stored,
-    // with the values as they now are. Both run with set()'s lock held, in
-    // the order batches were stored, so they must not call set(). Either
-    // may be empty.
-    SystemSettings(SettingsBackend& backend, std::function<void(uint8_t)> apply_brightness,
-                   std::function<void(const SystemSettingsValues&)> on_changed = {});
+    // has been stored (App passes PowerManager::set_brightness), with
+    // set()'s lock held, in the order batches were stored, so it must not
+    // call set(). It may be empty. `bus` carries system.settings and must
+    // outlive this object.
+    SystemSettings(SettingsBackend& backend, EventBus& bus,
+                   std::function<void(uint8_t)> apply_brightness);
 
     SystemSettings(const SystemSettings&) = delete;
     SystemSettings& operator=(const SystemSettings&) = delete;
 
+    // Reads the store (the settings cache once App has attached it).
     SystemSettingsValues get() const;
 
-    // Moves (wrapping) every time a batch is stored, before the hooks run;
-    // rejected, empty and rolled-back batches leave it alone. Lets a poller
-    // that may have missed `on_changed`'s event notice a change with one
-    // atomic load instead of reading storage each time.
+    // The snapshot as the last stored batch left it (seed_cell() before
+    // that). It moves only when a value changed; system.settings, published
+    // by its mirror, also goes out for a stored batch that changed nothing.
+    // Its get() copies the snapshot and so allocates (ntp_servers outgrows
+    // the short-string buffer): a frequent reader uses read() instead. A
+    // subscriber releases its subscription before this object is destroyed
+    // (App::stop() order; wisp/core/state_cell.hpp).
+    const StateCell<SystemSettingsValues>& cell() const { return cell_; }
+    // Loads the cell from the store without publishing anything: App calls
+    // it once at boot, after the settings cache is attached and before
+    // anyone follows the cell.
+    void seed_cell();
+
+    // Moves (wrapping) every time a batch is stored, whether or not a value
+    // changed, before apply_brightness runs; rejected, empty and rolled-back
+    // batches leave it alone. Lets a poller that may have missed the
+    // system.settings event notice a change with one atomic load instead of
+    // reading storage each time.
     uint32_t revision() const;
 
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
@@ -122,16 +155,20 @@ public:
     // "ntp_servers" (strings) and "tts_mute", "time_24h" (booleans). An unknown key,
     // a value of the wrong type or an out-of-range value fails the whole batch with InvalidArgument
     // before anything is written. If the backend fails partway, the keys already written are
-    // restored (best effort) and the backend's error returned; the hooks only run once the whole
-    // batch is stored.
+    // restored (best effort) and the backend's error returned; apply_brightness and the event
+    // only happen once the whole batch is stored. Every stored batch publishes exactly one
+    // system.settings event, after apply_brightness.
     Result<void> set(const std::map<std::string, Value>& changes);
 
 private:
     SettingsBackend& backend_;
+    EventBus& bus_;
     std::function<void(uint8_t)> apply_brightness_;
-    std::function<void(const SystemSettingsValues&)> on_changed_;
     os::Mutex mutex_;
     std::atomic<uint32_t> revision_{0};
+    // Declared after bus_ because its constructor takes it; this object is
+    // destroyed before the bus stops (App::stop() order).
+    StateCell<SystemSettingsValues> cell_;
 };
 
 }  // namespace wisp::core

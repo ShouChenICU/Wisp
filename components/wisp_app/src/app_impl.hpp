@@ -83,18 +83,15 @@ struct App::Impl {
     // Brightness goes through PowerManager so a change made in standby
     // waits for the wake-up (spec 5.4). power_manager is only reset after
     // the HTTP server and the net task have stopped (App::stop()), so no
-    // caller races with it going away. Every stored change is published
-    // as system.settings (spec 8.3); SystemDuties moves the system
+    // caller races with it going away. Every stored batch is published as
+    // system.settings (spec 8.3), by its cell; SystemDuties moves the system
     // language (ui::lang()) and an open confirm dialog to a new language
-    // from it.
-    core::SystemSettings system_settings{
-        *platform.settings,
-        [this](uint8_t level) {
-            if (power_manager) power_manager->set_brightness(level);
-        },
-        [this](const core::SystemSettingsValues& now) {
-            bus.publish({core::topics::kSystemSettings, "app", 0, core::to_map(now)});
-        }};
+    // from it. Declared after `bus`, which its cell takes.
+    core::SystemSettings system_settings{*platform.settings, bus, [this](uint8_t level) {
+                                             if (power_manager) {
+                                                 power_manager->set_brightness(level);
+                                             }
+                                         }};
 
     // Only constructed by start() -- see App::start()/App::stop().
     std::unique_ptr<ui::UiRuntime> ui;

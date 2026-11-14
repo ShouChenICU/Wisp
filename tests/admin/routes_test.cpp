@@ -374,7 +374,7 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
     std::vector<uint8_t> applied;
     f.srv.reset();
     f.settings = std::make_unique<wisp::core::SystemSettings>(
-        *f.backend, [&applied](uint8_t level) { applied.push_back(level); });
+        *f.backend, f.bus, [&applied](uint8_t level) { applied.push_back(level); });
     f.srv = std::make_unique<wisp::admin::AdminServer>(f.make_deps());
     const std::string token = f.token();
 

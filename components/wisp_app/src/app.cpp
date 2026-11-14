@@ -322,6 +322,9 @@ Result<void> App::start() {
             impl->settings_cache.reset();
         }
     }
+    // The settings cell starts from what is stored, read from the cache
+    // just attached, before anything below reads the language or follows it.
+    impl_->system_settings.seed_cell();
     // The SD card hot-plug probe, on the worker like every other storage
     // access.
     impl_->refresh_pending.store(false);

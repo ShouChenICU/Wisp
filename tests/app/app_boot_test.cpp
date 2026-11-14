@@ -38,6 +38,8 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/system_settings.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
@@ -252,6 +254,22 @@ TEST(AppBoot, StartingTwiceIsBusy) {
     EXPECT_FALSE(second);
     EXPECT_EQ(second.error().code, wisp::ErrorCode::Busy);
     EXPECT_EQ(h.lines.size(), 2u);
+}
+
+// The settings cell starts from what is stored, and boot announces nothing:
+// no system.settings event while start() runs.
+TEST(AppBoot, SettingsCellIsSeededFromStorage) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(wisp::core::Settings(*h.app.platform().settings, "sys").set("lang", "en"));
+    std::atomic<int> events{0};
+    auto sub = h.app.bus().subscribe(wisp::core::topics::kSystemSettings,
+                                     [&](const wisp::core::Event&) { ++events; });
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(h.app.system_settings().cell().get().language, "en");
+    EXPECT_TRUE(h.app.system_settings().cell().get() == h.app.system_settings().get());
+    EXPECT_TRUE(h.app.bus().wait_idle(2000));
+    EXPECT_EQ(events.load(), 0);
+    h.app.bus().unsubscribe(sub);
 }
 
 // The App's bus has the default capacity (64 events), so 200 events

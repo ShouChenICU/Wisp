@@ -8,6 +8,7 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 
 namespace wisp::core {
 
@@ -35,9 +36,9 @@ bool valid_language(const Value& v) {
     return code == "zh" || code == "ja" || code == "en";
 }
 
-const KeySpec kBrightness{"brightness", "display", "brightness", Value(200),
+const KeySpec kBrightness{"brightness", "display", "brightness", Value(kDefaultBrightness),
                           [](const Value& v) { return int_in(v, 10, 255); }};
-const KeySpec kVolume{"volume", "audio", "volume", Value(60),
+const KeySpec kVolume{"volume", "audio", "volume", Value(kDefaultVolume),
                       [](const Value& v) { return int_in(v, 0, 100); }};
 const KeySpec kScreenOff{
     "screen_off_s", "power", "screen_off_s", Value(kDefaultScreenOffS),
@@ -45,11 +46,11 @@ const KeySpec kScreenOff{
 const KeySpec kDeepAfter{
     "deep_after_s", "power", "deep_after_s", Value(kDefaultDeepAfterS),
     [](const Value& v) { return v.type() == Value::Type::Int && valid_deep_after_s(v.as_int()); }};
-const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(60),
+const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(kDefaultNotifyVol),
                          [](const Value& v) { return int_in(v, 0, 100); }};
-const KeySpec kTtsMute{"tts_mute", "voice", "tts_mute", Value(false),
+const KeySpec kTtsMute{"tts_mute", "voice", "tts_mute", Value(kDefaultTtsMute),
                        [](const Value& v) { return v.type() == Value::Type::Bool; }};
-const KeySpec kTime24h{"time_24h", "sys", "time_24h", Value(true),
+const KeySpec kTime24h{"time_24h", "sys", "time_24h", Value(kDefaultTime24h),
                        [](const Value& v) { return v.type() == Value::Type::Bool; }};
 const KeySpec kAgentMaxSteps{
     "agent_max_steps", "agent", "max_steps", Value(kDefaultAgentMaxSteps),
@@ -57,9 +58,9 @@ const KeySpec kAgentMaxSteps{
 const KeySpec kAgentTurnMin{
     "agent_turn_min", "agent", "turn_min", Value(kDefaultAgentTurnMin),
     [](const Value& v) { return int_in(v, kMinAgentTurnMin, kMaxAgentTurnMin); }};
-const KeySpec kLanguage{"language", "sys", "lang", Value("zh"), valid_language};
+const KeySpec kLanguage{"language", "sys", "lang", Value(kDefaultLanguage), valid_language};
 
-const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(480),
+const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(kDefaultUtcOffsetMin),
                          [](const Value& v) { return int_in(v, -720, 840); }};
 
 // One or two comma-separated time servers (connectivity spec 5.4), each a
@@ -108,6 +109,19 @@ Value read(SettingsBackend& backend, const KeySpec& spec) {
     return stored.value();
 }
 
+// The one system.settings event: the mirror's and set()'s own publish for a
+// batch that changed nothing both build it here, so the two cannot differ.
+Event settings_event(const SystemSettingsValues& values) {
+    return {topics::kSystemSettings, kSystemSettingsSource, 0, to_map(values)};
+}
+
+// Reproduces the system.settings event App published after every stored
+// batch.
+void mirror_settings(EventBus& bus, const SystemSettingsValues&,
+                     const SystemSettingsValues& after) {
+    bus.publish(settings_event(after));
+}
+
 }  // namespace
 
 bool valid_screen_off_s(int64_t s) { return s == 0 || (s >= 15 && s <= 3600); }
@@ -131,12 +145,17 @@ Map to_map(const SystemSettingsValues& values) {
     };
 }
 
-SystemSettings::SystemSettings(SettingsBackend& backend,
-                               std::function<void(uint8_t)> apply_brightness,
-                               std::function<void(const SystemSettingsValues&)> on_changed)
+SystemSettings::SystemSettings(SettingsBackend& backend, EventBus& bus,
+                               std::function<void(uint8_t)> apply_brightness)
     : backend_(backend),
+      bus_(bus),
       apply_brightness_(std::move(apply_brightness)),
-      on_changed_(std::move(on_changed)) {}
+      cell_(bus, SystemSettingsValues{}, &mirror_settings) {}
+
+void SystemSettings::seed_cell() {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    cell_.seed(get());
+}
 
 SystemSettingsValues SystemSettings::get() const {
     SystemSettingsValues values;
@@ -203,8 +222,13 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
     if (brightness != changes.end() && apply_brightness_) {
         apply_brightness_(static_cast<uint8_t>(brightness->second.as_int()));
     }
-    if (on_changed_) {
-        on_changed_(get());
+    // Exactly one system.settings per stored batch, as before the cell: the
+    // mirror publishes it when a value changed, and a batch that stored
+    // what was already there (the cell skips equal values) publishes it
+    // here. Under mutex_, so events go out in the order batches were stored.
+    const SystemSettingsValues now = get();
+    if (!cell_.set(now)) {
+        bus_.publish(settings_event(now));
     }
     return Result<void>::ok();
 }

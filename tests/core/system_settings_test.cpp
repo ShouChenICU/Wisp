@@ -3,16 +3,23 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
+#include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 
 using wisp::ErrorCode;
+using wisp::Map;
+using wisp::Value;
+using wisp::core::Event;
+using wisp::core::EventBus;
 using wisp::core::Settings;
 using wisp::core::SystemSettings;
 using wisp::core::SystemSettingsValues;
@@ -20,16 +27,46 @@ using wisp::port::sim::JsonFileSettingsBackend;
 
 namespace {
 
+// Records every system.settings event on a started bus. The recorder is
+// declared before the bus, which is declared before the settings: the
+// settings (and their cell) go first, then the bus stops, then the record.
+struct Recorder {
+    void attach(EventBus& bus) {
+        bus.start();
+        bus.subscribe(wisp::core::topics::kSystemSettings, [this](const Event& e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            events.push_back(e);
+        });
+    }
+    // The events so far, once the bus has delivered everything queued.
+    std::vector<Event> all(EventBus& bus) {
+        bus.wait_idle(2000);
+        std::lock_guard<std::mutex> lock(mutex);
+        return events;
+    }
+
+    std::mutex mutex;
+    std::vector<Event> events;
+};
+
 struct Fixture {
     Fixture()
         : backend((wisp::test::temp_dir() / "settings.json").string()),
-          settings(
-              backend, [this](uint8_t level) { applied.push_back(level); },
-              [this](const SystemSettingsValues& now) { changed.push_back(now); }) {}
+          settings(backend, bus, [this](uint8_t level) { applied.push_back(level); }) {
+        recorder.attach(bus);
+    }
+
+    // The payloads of the system.settings events published so far.
+    std::vector<Map> changed() {
+        std::vector<Map> out;
+        for (const Event& e : recorder.all(bus)) out.push_back(e.payload);
+        return out;
+    }
 
     JsonFileSettingsBackend backend;
     std::vector<uint8_t> applied;
-    std::vector<SystemSettingsValues> changed;
+    Recorder recorder;
+    EventBus bus;
     SystemSettings settings;
 };
 
@@ -56,7 +93,7 @@ TEST(SystemSettings, NtpServersValidateAndAreStored) {
         EXPECT_EQ(fx.settings.get().ntp_servers, ok);
         EXPECT_EQ(Settings(fx.backend, "sys").get_string("ntp", ""), ok);
     }
-    EXPECT_EQ(fx.changed.back().ntp_servers, "UPPER.Example.COM");
+    EXPECT_EQ(fx.changed().back().at("ntp_servers"), Value("UPPER.Example.COM"));
     const std::string long64(64, 'a');
     const std::string long63(63, 'a');
     ASSERT_TRUE(fx.settings.set({{"ntp_servers", long63 + "," + long63}}));
@@ -85,7 +122,7 @@ TEST(SystemSettings, UtcOffsetValidatesAndIsStored) {
         EXPECT_EQ(fx.settings.get().utc_offset_min, ok);
         EXPECT_EQ(Settings(fx.backend, "sys").get_int("tz_min", -1), ok);
     }
-    EXPECT_EQ(fx.changed.back().utc_offset_min, 840);
+    EXPECT_EQ(fx.changed().back().at("utc_offset_min"), Value(840));
     for (const wisp::Value& bad :
          {wisp::Value(-721), wisp::Value(841), wisp::Value("480"), wisp::Value(480.5),
           wisp::Value(true), wisp::Value(wisp::List{})}) {
@@ -196,19 +233,21 @@ TEST(SystemSettings, IntegerKeysRejectOtherTypes) {
 TEST(SystemSettings, ReportsEachStoredBatch) {
     Fixture fx;
     ASSERT_TRUE(fx.settings.set({{"language", "ja"}}));
-    ASSERT_EQ(fx.changed.size(), 1u);
-    EXPECT_EQ(fx.changed[0].language, "ja");
-    EXPECT_EQ(fx.changed[0].brightness, 200);
+    auto changed = fx.changed();
+    ASSERT_EQ(changed.size(), 1u);
+    EXPECT_EQ(changed[0].at("language"), Value("ja"));
+    EXPECT_EQ(changed[0].at("brightness"), Value(200));
 
     // Rejected and empty batches change nothing, so report nothing.
     EXPECT_FALSE(fx.settings.set({{"language", "fr"}}));
     EXPECT_TRUE(fx.settings.set({}));
-    EXPECT_EQ(fx.changed.size(), 1u);
+    EXPECT_EQ(fx.changed().size(), 1u);
 
     ASSERT_TRUE(fx.settings.set({{"brightness", 90}}));
-    ASSERT_EQ(fx.changed.size(), 2u);
-    EXPECT_EQ(fx.changed[1].brightness, 90);
-    EXPECT_EQ(fx.changed[1].language, "ja");
+    changed = fx.changed();
+    ASSERT_EQ(changed.size(), 2u);
+    EXPECT_EQ(changed[1].at("brightness"), Value(90));
+    EXPECT_EQ(changed[1].at("language"), Value("ja"));
 }
 
 // revision() lets a poller notice a change without reading storage: it
@@ -294,7 +333,8 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     ASSERT_TRUE(Settings(inner, "audio").set("volume", 40));
     FlakyBackend flaky(inner, /*fail_on_set=*/3);
     std::vector<uint8_t> applied;
-    SystemSettings settings(flaky, [&](uint8_t level) { applied.push_back(level); });
+    EventBus bus;
+    SystemSettings settings(flaky, bus, [&](uint8_t level) { applied.push_back(level); });
     uint32_t revision = settings.revision();
 
     // Written in key order: brightness, language, then screen_off_s fails.
@@ -312,6 +352,108 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     // Keys that never existed are removed again, not left at a default.
     EXPECT_EQ(inner.get("display", "brightness").error().code, ErrorCode::NotFound);
     EXPECT_EQ(inner.get("sys", "lang").error().code, ErrorCode::NotFound);
+}
+
+// The cell holds the whole snapshot as the last stored batch left it, and
+// its mirror publishes the event the app used to publish, payload and all.
+TEST(SystemSettings, CellFollowsEveryStoredBatch) {
+    Fixture fx;
+    ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
+    EXPECT_EQ(fx.settings.cell().get().volume, 30);
+    auto events = fx.recorder.all(fx.bus);
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].source, wisp::core::kSystemSettingsSource);
+    EXPECT_EQ(events[0].payload.at("volume"), Value(30));
+    EXPECT_EQ(events[0].payload, wisp::core::to_map(fx.settings.get()));
+
+    ASSERT_TRUE(fx.settings.set({{"language", "en"}, {"time_24h", false}}));
+    const SystemSettingsValues now = fx.settings.cell().get();
+    EXPECT_EQ(now.language, "en");
+    EXPECT_FALSE(now.time_24h);
+    EXPECT_EQ(now.volume, 30);
+    EXPECT_TRUE(now == fx.settings.get());
+    events = fx.recorder.all(fx.bus);
+    ASSERT_EQ(events.size(), 2u);
+    EXPECT_EQ(events[1].payload, wisp::core::to_map(now));
+}
+
+// A batch that stores what is already there still publishes system.settings
+// (one event per stored batch, as before the cell) and still moves
+// revision(); only the cell stays put.
+TEST(SystemSettings, UnchangedBatchPublishesButLeavesTheCell) {
+    Fixture fx;
+    ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
+    const uint32_t cell_revision = fx.settings.cell().revision();
+    const uint32_t revision = fx.settings.revision();
+    ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
+    EXPECT_EQ(fx.settings.cell().revision(), cell_revision);
+    EXPECT_NE(fx.settings.revision(), revision);
+    const auto changed = fx.changed();
+    ASSERT_EQ(changed.size(), 2u);
+    EXPECT_EQ(changed[0], changed[1]);
+    EXPECT_EQ(changed[1].at("volume"), Value(30));
+}
+
+// Brightness reaches the panel before the cell moves (and so before the
+// event goes out), as it did before the event's publish.
+TEST(SystemSettings, BrightnessIsAppliedBeforeTheCellMoves) {
+    JsonFileSettingsBackend backend((wisp::test::temp_dir() / "settings.json").string());
+    EventBus bus;
+    std::vector<int> cell_at_apply;
+    std::unique_ptr<SystemSettings> settings;
+    settings = std::make_unique<SystemSettings>(
+        backend, bus, [&](uint8_t) { cell_at_apply.push_back(settings->cell().get().brightness); });
+    ASSERT_TRUE(settings->set({{"brightness", 100}}));
+    EXPECT_EQ(cell_at_apply, (std::vector<int>{200}));
+    EXPECT_EQ(settings->cell().get().brightness, 100);
+}
+
+TEST(SystemSettings, RejectedOrFailedBatchLeavesTheCell) {
+    {
+        Fixture fx;
+        const uint32_t cell_revision = fx.settings.cell().revision();
+        EXPECT_FALSE(fx.settings.set({{"volume", 101}}));
+        EXPECT_FALSE(fx.settings.set({{"brightness", 100}, {"contrast", 5}}));
+        EXPECT_EQ(fx.settings.cell().revision(), cell_revision);
+        EXPECT_TRUE(fx.settings.cell().get() == SystemSettingsValues{});
+        EXPECT_TRUE(fx.changed().empty());
+    }
+
+    JsonFileSettingsBackend inner((wisp::test::temp_dir() / "settings.json").string());
+    FlakyBackend flaky(inner, /*fail_on_set=*/2);
+    Recorder recorder;
+    EventBus bus;
+    SystemSettings settings(flaky, bus, nullptr);
+    recorder.attach(bus);
+    const uint32_t cell_revision = settings.cell().revision();
+    // brightness is written, volume fails, brightness is rolled back.
+    auto r = settings.set({{"brightness", 100}, {"volume", 10}});
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::IoError);
+    EXPECT_EQ(settings.cell().revision(), cell_revision);
+    EXPECT_TRUE(settings.cell().get() == SystemSettingsValues{});
+    EXPECT_TRUE(recorder.all(bus).empty());
+}
+
+// The seed takes what is stored without announcing it: at boot nothing has
+// changed.
+TEST(SystemSettings, SeedPublishesNothing) {
+    Fixture fx;
+    ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "ja"));
+    EXPECT_EQ(fx.settings.cell().get().language, "zh");
+    fx.settings.seed_cell();
+    EXPECT_EQ(fx.settings.cell().get().language, "ja");
+    EXPECT_TRUE(fx.settings.cell().get() == fx.settings.get());
+    EXPECT_TRUE(fx.changed().empty());
+}
+
+// The snapshot's default member values are the keys' defaults, so a cell
+// that has never been seeded already holds what an empty store reads as.
+TEST(SystemSettings, DefaultsMatchAnEmptyBackend) {
+    Fixture fx;
+    EXPECT_TRUE(SystemSettingsValues{} == fx.settings.get());
+    EXPECT_TRUE(fx.settings.cell().get() == SystemSettingsValues{});
+    EXPECT_EQ(wisp::core::to_map(SystemSettingsValues{}), wisp::core::to_map(fx.settings.get()));
 }
 
 // spec 4.1 and 5.4: power/deep_after_s (0 never, else 60-3600, default
@@ -402,9 +544,10 @@ TEST(SystemSettings, Time24hStoredUnderSys) {
     ASSERT_TRUE(fx.settings.set({{"time_24h", false}}));
     EXPECT_FALSE(fx.settings.get().time_24h);
     EXPECT_FALSE(Settings(fx.backend, "sys").get_bool("time_24h", true));
-    ASSERT_FALSE(fx.changed.empty());
-    EXPECT_FALSE(fx.changed.back().time_24h);
-    EXPECT_EQ(wisp::core::to_map(fx.changed.back()).at("time_24h"), wisp::Value(false));
+    const auto changed = fx.changed();
+    ASSERT_FALSE(changed.empty());
+    EXPECT_FALSE(changed.back().at("time_24h").as_bool());
+    EXPECT_EQ(changed.back().at("time_24h"), wisp::Value(false));
 
     for (const wisp::Value& bad : {wisp::Value("12"), wisp::Value(12), wisp::Value(0)}) {
         auto r = fx.settings.set({{"time_24h", bad}});
