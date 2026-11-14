@@ -182,6 +182,8 @@ TEST(Loopback, UsesTheRoleMicAndSpeaker) {
     auto s = h.statuses_so_far();
     ASSERT_EQ(s.size(), 3u);
     EXPECT_EQ(s[1].id, StrId::LoopPlaying);
+    EXPECT_EQ(s[2].id, StrId::LoopDone);
+    EXPECT_EQ(s[2].error, wisp::ErrorCode::Ok);
     EXPECT_EQ(h.audio_out->set_volume_calls(), 1);
 
     h.app->stop();

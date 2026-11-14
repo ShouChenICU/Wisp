@@ -322,9 +322,6 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 
 }  // namespace
 
-// What the voice reads before waiting for recognition: a connection is
-// on its way exactly while one is being made (WifiService::
-// connection_expected()), the radio being off in deep standby included.
 // Spec 2.3: the radio and the RTC are found by role, whatever their ids.
 TEST(NetWiring, FindsTheRadioAndClockByRole) {
     auto rtc = std::make_shared<wisp::test::FakeClock>("clock.rtc");
@@ -338,6 +335,9 @@ TEST(NetWiring, FindsTheRadioAndClockByRole) {
     EXPECT_TRUE(wait_until([&] { return rtc->get_unix().value() == 1767225600; }, 5000));
 }
 
+// What the voice reads before waiting for recognition: a connection is
+// on its way exactly while one is being made (WifiService::
+// connection_expected()), the radio being off in deep standby included.
 TEST(NetWiring, NetworkExpectedFollowsEnabledAndSavedNetworks) {
     Rig r;
     EXPECT_FALSE(r.net->network_expected());

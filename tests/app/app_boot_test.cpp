@@ -227,8 +227,6 @@ TEST(AppBoot, StartsUiWhenDisplayPresent) {
     EXPECT_EQ(h.display->brightness(), 200);
 }
 
-// vector-font spec 3.6: without a font image the UI still starts, on
-// bitmap fonts, and the boot report is printed as usual.
 // Spec 2.3: the app asks for "the main display", "the main IMU", "the
 // internal medium" and "the power key", never for an id.
 TEST(AppBoot, DevicesAreFoundByRoleNotById) {
@@ -293,6 +291,8 @@ TEST(AppBoot, ADisplayWithoutTheRoleIsLikeNoDisplay) {
     EXPECT_EQ(h.app.ui(), nullptr);
 }
 
+// vector-font spec 3.6: without a font image the UI still starts, on
+// bitmap fonts, and the boot report is printed as usual.
 TEST(App, BootsWithoutFontImage) {
     auto h = make_app({.with_display = true, .font_image = {}});
     // The log ring is shared by the whole process, so only lines logged by

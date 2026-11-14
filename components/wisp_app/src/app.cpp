@@ -389,14 +389,12 @@ Result<void> App::start() {
     // self-check screen is built below, since that screen's power-key
     // handling calls into it.
 
-    // PowerMonitor is constructed here too -- before
-    // PowerManager, which holds a non-owning pointer into it -- and, like
-    // PowerManager itself, regardless of headless mode: polling
-    // the main power device and publishing
-    // power.charging.changed/power.battery.low has nothing to do with
-    // whether there's a screen. It's completely inert if no Power device
-    // has role main (see
-    // power_monitor.hpp).
+    // PowerMonitor is constructed here too -- before PowerManager, which
+    // holds a non-owning pointer into it -- and, like PowerManager itself,
+    // regardless of headless mode: polling the main power device and
+    // publishing power.charging.changed/power.battery.low has nothing to do
+    // with whether there's a screen. It's completely inert if no Power
+    // device has role main (see power_monitor.hpp).
     auto power_dev = impl_->registry.by_role<hal::Power>(hal::role::kMain);
     impl_->power_monitor = std::make_unique<core::PowerMonitor>(
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));

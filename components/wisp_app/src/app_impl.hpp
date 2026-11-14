@@ -110,10 +110,8 @@ struct App::Impl {
 
     // Constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
-    // exit_standby()'s PowerMonitor::set_standby() hook), via its own new
-    // main-power-device lookup in App::start() -- separate from, and
-    // parallel to, the main-IMU lookup that App::start()
-    // already did for power_manager's own `imu` parameter. Owns its own
+    // exit_standby()'s PowerMonitor::set_standby() hook), via its own
+    // main-power-device lookup in App::start(). Owns its own
     // internal sample Timer (see power_monitor.hpp), so -- unlike
     // storage_timer below -- there is no separate App-owned Timer object
     // for it. Torn down in App::stop() right after power_manager (which

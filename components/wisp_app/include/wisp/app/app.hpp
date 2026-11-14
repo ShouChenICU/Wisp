@@ -343,8 +343,8 @@ public:
     core::SceneRepository* scene_repository();
 
     // Networking services (step 4b). wifi() is nullptr without a Wi-Fi
-    // device with role main; both are nullptr without Platform::random, and before start()
-    // or after stop().
+    // device with role main; both are nullptr without Platform::random,
+    // and before start() or after stop().
     net::WifiService* wifi();
     net::PairingService* pairing();
     // Network time: nullptr without Platform::sntp or a WifiService.
