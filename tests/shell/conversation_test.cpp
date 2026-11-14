@@ -1041,6 +1041,29 @@ TEST_F(ConversationTest, PressThenHoldDoesNotUnprime) {
     EXPECT_EQ(begins().at(0).text, "你好");
 }
 
+// A hold whose capture the voice refuses (its command queue full) has not
+// taken the primed mic: the press's end still closes it, well before the
+// priming would time out.
+TEST_F(ConversationTest, RefusedHoldCaptureStillUnprimes) {
+    voice_config.queue_depth = 1;
+    start();
+    mic->set_script({});
+    conv->press_begin();
+    ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
+    // The voice task stalls in a mic read; one wake-up fills its queue.
+    mic->close_reads();
+    ASSERT_TRUE(wait_until([&] { return mic->read_waiting(); }, 1000));
+    voice->end_capture();
+    conv->hold_begin();
+    EXPECT_FALSE(voice->capturing());
+    conv->press_end();
+    mic->open_reads();
+    EXPECT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
+    conv->hold_end();
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
 TEST_F(ConversationTest, PressWhenNotReadyDoesNotPrime) {
     start();
     ready = Readiness::NoWifi;

@@ -186,10 +186,10 @@ void ConversationController::hold_begin() {
         std::lock_guard<os::Mutex> lock(mu_);
         if (holding_ || !ready()) return;
         holding_ = true;
-        press_held_ = true;
         switch (phase()) {
             case Phase::Listening:
                 // Already recording: that capture becomes the hold's.
+                press_held_ = true;
                 break;
             case Phase::Transcribing:
                 // Busy until the cancelled capture is over; on_voice_state()
@@ -197,6 +197,7 @@ void ConversationController::hold_begin() {
                 deps_.voice.cancel_capture();
                 cancelled_capture_ = captures_;
                 deferred_hold_ = true;
+                press_held_ = true;
                 break;
             default:
                 // Ends the speech's round, or hands its locks to the new
@@ -205,7 +206,8 @@ void ConversationController::hold_begin() {
                 // or unheard hold leaves it be.
                 deps_.voice.stop_speaking();
                 speaking_ = false;
-                start_capture(voice::CaptureMode::Hold);
+                // A refused capture leaves the primed mic to press_end().
+                press_held_ = start_capture(voice::CaptureMode::Hold);
                 break;
         }
     }

@@ -84,6 +84,7 @@ protected:
 
     void TearDown() override {
         out->open_gate();
+        mic->open_reads();
         server.release();
         if (h && voice_sub != 0) h->bus.unsubscribe(voice_sub);
         if (conv) conv->stop();
@@ -141,19 +142,21 @@ protected:
         });
         ASSERT_TRUE(agent->start());
 
-        voice = std::make_unique<voice::VoiceService>(voice::VoiceDeps{
-            .bus = h->bus,
-            .mic = mic,
-            .player = player,
-            .asr = *asr,
-            .tts = *tts,
-            .models = *h->models,
-            .tones = &tones,
-            .locks = h->locks.get(),
-            .network_up = [] { return true; },
-            .volume = [] { return uint8_t{100}; },
-            .now_ms = [this] { return os::now_ms() + virtual_ms.load(); },
-        });
+        voice = std::make_unique<voice::VoiceService>(
+            voice::VoiceDeps{
+                .bus = h->bus,
+                .mic = mic,
+                .player = player,
+                .asr = *asr,
+                .tts = *tts,
+                .models = *h->models,
+                .tones = &tones,
+                .locks = h->locks.get(),
+                .network_up = [] { return true; },
+                .volume = [] { return uint8_t{100}; },
+                .now_ms = [this] { return os::now_ms() + virtual_ms.load(); },
+            },
+            voice_config);
         ASSERT_TRUE(voice->start());
         tones.set_output_guard([v = voice.get()](core::ToneKind k) { return v->may_play_tone(k); });
 
@@ -251,6 +254,8 @@ protected:
     core::TonePlayer tones{out, nullptr};
     std::unique_ptr<agent::AgentService> agent;
     uint32_t agent_listener = 0;
+    // Set before start().
+    voice::VoiceConfig voice_config;
     std::unique_ptr<voice::VoiceService> voice;
     std::unique_ptr<shell::ConversationController> conv;
     std::atomic<bool> mute{false};

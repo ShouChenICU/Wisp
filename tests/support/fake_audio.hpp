@@ -9,6 +9,8 @@
 // capture that waits for a key release does not run away to its cap.
 // hold_at() makes it read live silence the same way from a point in the
 // script until release(), so a test can act at that point of the audio.
+// close_reads() holds every read() at a gate until open_reads(), so a
+// test can stall the task that reads.
 //
 // FakeAudioOut records the formats it was opened with and every sample
 // written; writes can be made to take time (write_ms) or be held at a
@@ -115,6 +117,11 @@ public:
     }
 
     void set_fail_open(bool fail) { fail_open_ = fail; }
+    // While closed, read() waits at the gate (polling, so open_reads()
+    // always lets it through); read_waiting(): one waits there now.
+    void close_reads() { reads_gated_ = true; }
+    void open_reads() { reads_gated_ = false; }
+    bool read_waiting() const { return read_waiting_.load(); }
 
     Result<void> open(const hal::AudioFormat& format) override {
         if (order_) order_->add("in.open");
@@ -128,6 +135,11 @@ public:
     }
 
     Result<size_t> read(int16_t* frames, size_t count) override {
+        while (reads_gated_.load()) {
+            read_waiting_ = true;
+            os::sleep_ms(1);
+        }
+        read_waiting_ = false;
         size_t scripted = 0;
         {
             std::lock_guard<std::mutex> lock(mu_);
@@ -215,6 +227,8 @@ private:
     std::shared_ptr<OrderLog> order_;
     std::atomic<uint64_t>* virtual_ms_;
     std::atomic<bool> fail_open_{false};
+    std::atomic<bool> reads_gated_{false};
+    std::atomic<bool> read_waiting_{false};
     mutable std::mutex mu_;
     std::vector<Segment> script_;
     uint64_t total_ = 0;

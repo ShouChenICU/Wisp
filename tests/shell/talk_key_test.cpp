@@ -135,10 +135,12 @@ TEST_F(TalkKeyTest, HoldFromAScreenOffPressStartsTheCapture) {
     make_key();
     screen = false;
     press("down");
-    screen = true;  // the press woke it
+    // Still dark at the hold's tick: the screen may take longer to light
+    // than the hold to begin.
     key_ms += wisp::voice::kHoldStartMs;
     ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 1000));
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    screen = true;  // the press woke it
     ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
     server.push_asr(wisp::test::asr_text("你好"));
     server.llm().push(wisp::test::llm_text("<say>好。</say>"));

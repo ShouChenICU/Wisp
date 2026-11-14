@@ -249,8 +249,9 @@ private:
     TurnView view_;
     voice::SayParser parser_;
     bool holding_ = false;
-    // hold_begin() started a hold since the last press_begin(): its
-    // capture took the primed mic.
+    // hold_begin() started a hold since the last press_begin() whose
+    // capture took (or, deferred, will take) the primed mic; not when the
+    // voice refused the capture.
     bool press_held_ = false;
     // A hold waits for the capture it cancelled to end before its own.
     bool deferred_hold_ = false;
