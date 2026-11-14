@@ -239,9 +239,10 @@
 // call_tool() hands the call to the scene task, which runs the function
 // the scene bound with wisp.tools.register as a task (lua_task.hpp) in the
 // scene's own VM, with the scene's own 200 ms slices, whether the scene is
-// in front, in the background or headless (above). Each slice and each
-// result it waits for is a message of the scene's own, run and flushed as
-// any other. One call per scene at a time. The call ends with the task;
+// in front, in the background or headless (above). Each slice, each result
+// it waits for (from the scene's own box) and each of its wisp.sleep
+// timers is a step of its own, run and flushed as any other of the scene's.
+// One call per scene at a time. The call ends with the task;
 // at its timeout_ms, or when its caller cancels, the task alone is
 // cancelled (cancel_task(), so the script can never resume it) and the
 // scene runs on; a fault in a slice (its 200 ms, its memory) faults the

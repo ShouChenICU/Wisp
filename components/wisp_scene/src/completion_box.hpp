@@ -17,9 +17,12 @@
 // Locking: `mu_` is a leaf lock. Nothing else is locked, and nothing that
 // could block or allocate is called, while it is held; payloads are made
 // before it is taken and freed after it is let go. So a producer never
-// waits for Lua running, and it may put while holding nothing or before it
-// takes SceneRuntime::Link::mu (lock order: Link::mu, then the scene
-// queue's own lock; `mu_` is never held with either).
+// waits for Lua running. A producer may put while holding any lock that
+// the box's owner (the scene task draining it) never takes while holding
+// `mu_`: a download's done() can put from inside SceneHttp::submit() with
+// FilesGate::mu held, and Link::complete() puts before it takes Link::mu
+// (lock order: Link::mu, then the scene queue's own lock; `mu_` is never
+// held with either).
 
 #include <array>
 #include <cstddef>
