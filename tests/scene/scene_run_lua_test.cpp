@@ -271,6 +271,21 @@ TEST_F(RunLua, CallsPastTheCapRaise) {
     EXPECT_NE(r.json.find("too many calls waiting"), std::string::npos) << r.json;
 }
 
+// The run's results wait in its box, not in the scene queue: all six
+// refusals arrive past a queue with room for two messages.
+TEST_F(RunLua, RefusalsPastAFullQueueAllArrive) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 2; };
+    start();
+    LuaRunOptions opts;
+    opts.timeout_ms = 3000;
+    LuaRunResult r = run(
+        "local n = 0 for i = 1, 6 do wisp.http.request({url = 'bad'}, function() n = n + 1 end) "
+        "end while n < 6 do wisp.sleep(10) end return n",
+        opts);
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(r.json, "6");
+}
+
 TEST_F(RunLua, MemoryLimit) {
     start();
     LuaRunOptions opts;

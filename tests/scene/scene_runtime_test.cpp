@@ -353,7 +353,7 @@ TEST_F(SceneRuntimeTest, StaleMessagesAreDropped) {
         msg->scene_id = "counter";
         msg->instance = first;
         if (i == 0)
-            msg->body = wisp::scene::msg::HttpDone{};
+            msg->body = wisp::scene::msg::Completed{};
         else
             msg->body = wisp::scene::msg::StoreDone{};
         ASSERT_TRUE(wisp::scene::post_scene_message(*rt, std::move(msg)));

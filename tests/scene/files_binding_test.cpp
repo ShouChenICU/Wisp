@@ -196,6 +196,21 @@ print(pcall(wisp.files.list, show("list")))
     EXPECT_EQ(client.calls(), 0u);
 }
 
+// Results wait in the scene's box, not in its queue: refusals all arrive,
+// in order, even past a queue with room for two messages.
+TEST_F(FilesBinding, BadNamesPastAFullQueueAllArrive) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 2; };
+    start();
+    install_scene("h", R"(
+for i = 1, 6 do wisp.files.read("../x", 0, 1, function(err) print(i, err) end) end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 6);
+    EXPECT_EQ(lines, (std::vector<std::string>{"1\tbad_name", "2\tbad_name", "3\tbad_name",
+                                               "4\tbad_name", "5\tbad_name", "6\tbad_name"}));
+    EXPECT_FALSE(log_has("scene.h", "dropped"));
+}
+
 // Leaving the callback out only waits in a task (agent-tools spec 6); a
 // scene's own code still gets the argument error it always got.
 TEST_F(FilesBinding, MissingCallbackOutsideTaskIsError) {

@@ -604,7 +604,7 @@ return ui.screen {
     auto msg = wisp::os::make_large<wisp::scene::SceneMessage>();
     msg->scene_id = "h";
     msg->instance = instance;
-    msg->body = wisp::scene::msg::HttpDone{2, {}};
+    msg->body = wisp::scene::msg::Completed{};
     ASSERT_TRUE(wisp::scene::post_scene_message(*rt, std::move(msg)));
     EXPECT_TRUE(wait_until([&] { return rt->stale_dropped() == stale + 1; }, 1000));
     EXPECT_EQ(rt->status("h").state, SceneState::Stopped);

@@ -203,6 +203,11 @@ void SceneRuntime::lua_start(const std::shared_ptr<LuaRunJob>& job) {
         return;
     }
     AgentRun& a = *run;
+    a.box = CompletionBox::make();
+    if (!a.box) {
+        no_memory();
+        return;
+    }
     a.job = job;
     a.instance = next_instance_++;
     if (next_instance_ == 0) next_instance_ = 1;
@@ -224,10 +229,10 @@ void SceneRuntime::lua_start(const std::shared_ptr<LuaRunJob>& job) {
         a.ended = true;
         a.outcome = std::move(outcome);
     };
-    if (deps_.http != nullptr) wire_http_api(api, net::kAgentHttpId, a.instance);
+    if (deps_.http != nullptr) wire_http_api(api, net::kAgentHttpId, a.instance, a.box);
     if (deps_.files != nullptr) {
         a.files_gate = std::allocate_shared<FilesGate>(os::LargeAllocator<FilesGate>());
-        wire_files_api(api, core::kAgentFilesId, a.instance, a.files_gate, nullptr);
+        wire_files_api(api, core::kAgentFilesId, a.instance, a.box, a.files_gate, nullptr);
     }
     VmLimits limits = config_.vm;
     limits.memory_bytes = limit;
@@ -273,19 +278,6 @@ void SceneRuntime::lua_stop(const LuaRunJob* job, const char* error, std::string
     lua_end(failure(error, std::move(message)));
 }
 
-bool SceneRuntime::lua_message(SceneMessage& m) {
-    if (!agent_ || m.instance == 0 || m.instance != agent_->instance) return false;
-    if (auto* b = std::get_if<msg::HttpDone>(&m.body)) {
-        lua_settle(run_http_callback(*agent_->vm, b->id, b->result));
-        return true;
-    }
-    if (auto* b = std::get_if<msg::FilesDone>(&m.body)) {
-        lua_settle(run_files_callback(*agent_->vm, b->id, b->result));
-        return true;
-    }
-    return false;
-}
-
 void SceneRuntime::lua_settle(const std::optional<ScriptError>& err) {
     if (!agent_) return;
     AgentRun& a = *agent_;
@@ -319,6 +311,8 @@ void SceneRuntime::lua_end(LuaRunResult r) {
     r.memory_peak = a.vm->peak_bytes();
     r.output = a.output.take();
     cancel_tasks(*a.vm);
+    // No callback of the VM may run any more: the waiting results are stale.
+    stale_dropped_ += a.box->close();
     if (deps_.http != nullptr) deps_.http->cancel_scene(net::kAgentHttpId);
     close_gate(a.files_gate);
     std::shared_ptr<LuaRunJob> job = a.job;

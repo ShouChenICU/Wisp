@@ -368,6 +368,81 @@ print("first", started, refused)
     EXPECT_EQ(rt->status("h").state, SceneState::Running);
 }
 
+// Results wait in the scene's box, not in its queue: refusals answered
+// inside submit() on the scene task itself all arrive, in order, even
+// past a queue with room for two messages.
+TEST_F(HttpBinding, RefusalsPastAFullQueueAllArrive) {
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 2; };
+    start();
+    install_http("h", R"(
+for i = 1, 6 do
+  wisp.http.get("https://other.example.com/" .. i, function(err) print(i, err) end)
+end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    auto lines = wait_log("h", 6);
+    EXPECT_EQ(lines, (std::vector<std::string>{"1\tpermission_denied", "2\tpermission_denied",
+                                               "3\tpermission_denied", "4\tpermission_denied",
+                                               "5\tpermission_denied", "6\tpermission_denied"}));
+    EXPECT_FALSE(log_has("scene.h", "dropped"));
+    EXPECT_EQ(rt->status("h").state, SceneState::Running);
+}
+
+// A scene that exits while results wait in its box runs none of their
+// callbacks: they are freed and counted stale.
+TEST_F(HttpBinding, ExitDropsWaitingResults) {
+    wisp::test::StallGate gate;
+    configure_deps = [this, &gate](wisp::scene::SceneRuntimeDeps& d) {
+        d.http = http.get();
+        d.device_status = [&gate] { return gate.device_status(); };
+    };
+    start();
+    install("h", R"(
+return ui.screen {
+  ui.button { ref = "stall", text = "stall", on_click = function()
+    for i = 1, 3 do
+      wisp.http.get("https://other.example.com/" .. i, function(err) print("late", i, err) end)
+    end
+    wisp.device.info()
+  end },
+}
+)",
+            {{"scene.json", manifest_with_hosts("h")}});
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_label("stall"));
+    const uint64_t stale = rt->stale_dropped();
+    gate.arm();
+    ASSERT_TRUE(rt->click_ref("stall"));
+    ASSERT_TRUE(gate.wait_entered());
+    rt->close_async("h", {});
+    gate.release();
+    EXPECT_TRUE(wait_until([&] { return rt->status("h").state == SceneState::Stopped; }, 2000));
+    EXPECT_TRUE(wait_until([&] { return rt->stale_dropped() == stale + 3; }, 1000))
+        << rt->stale_dropped() - stale;
+    wisp::os::sleep_ms(50);
+    EXPECT_FALSE(log_has("scene.h", "late")) << ::testing::PrintToString(scene_log("h"));
+    EXPECT_EQ(rt->stale_dropped(), stale + 3);
+}
+
+// A callback that faults the scene: the results still in its box run no
+// callback.
+TEST_F(HttpBinding, FaultDropsWaitingResults) {
+    start();
+    install_http("h", R"(
+for i = 1, 3 do
+  wisp.http.get("https://other.example.com/" .. i, function(err)
+    if i == 1 then error("boom") end
+    print("late", i, err)
+  end)
+end
+)");
+    ASSERT_TRUE(rt->open("h"));
+    ASSERT_TRUE(wait_until([&] { return rt->status("h").state == SceneState::Error; }, 3000));
+    EXPECT_NE(rt->status("h").error.find("boom"), std::string::npos) << rt->status("h").error;
+    wisp::os::sleep_ms(50);
+    EXPECT_FALSE(log_has("scene.h", "late")) << ::testing::PrintToString(scene_log("h"));
+}
+
 TEST_F(HttpBinding, UnavailableWithoutAProxy) {
     configure_deps = {};
     start();

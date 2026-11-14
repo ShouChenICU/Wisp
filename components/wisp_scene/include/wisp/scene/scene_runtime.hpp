@@ -180,18 +180,38 @@
 // event's time_24h, else the seed_time_24h() value, else true; a change
 // fires "minute" the same way.
 //
+// Results: every VM (a scene's, the agent's run) has a CompletionBox
+// (completion_box.hpp), made with the VM. A finished wisp.http or
+// wisp.files call is put there, from the proxy's task, the wisp.fs worker
+// or the scene task itself (a refusal answered inside the call), and the
+// queue carries only a Completed wake-up. A VM never has more than
+// kMaxCallsInFlight calls waiting (scene_api.hpp), so the box never fills
+// and no result is dropped for want of room, however full the queue is.
+// Results go to the box of the instance that made the call, so none ever
+// reaches a later instance of the same scene. The scene task runs them
+// oldest first, one per box in turn (the scene in front, the other
+// scenes, the agent's run), each with its own 200 ms budget and the slow
+// message log ("slow message http|files"), and only when no message is
+// waiting, so a close or exit already queued comes first. When a VM goes
+// (a close, a fault, the end of a run) its box closes: the results still
+// in it are freed with no callback run and counted in stale_dropped(),
+// and any that arrive later are freed unseen. A result with no memory to
+// keep it still runs its callback, with "other" (wisp.http) or "no_memory"
+// (wisp.files). The box's lock is a leaf: producers put without waiting
+// for Lua, and take Link::mu only after it, to post the wake-up.
+//
 // HTTP (scene-runtime-core spec 5.3): opening a scene gives the proxy
-// (SceneRuntimeDeps::http) its declared hosts; each wisp.http result is an
-// HttpDone message whose callback runs with its own 200 ms budget, in
+// (SceneRuntimeDeps::http) its declared hosts; each wisp.http result
+// waits in the scene's box (Results, above) until its callback runs, in
 // front or in the background. Closing, reloading or faulting cancels the
 // scene's requests (SceneHttp::cancel_scene): queued ones are dropped, the
-// one in flight is stopped, and no callback runs for them; a result
-// already queued for the old instance is dropped as stale.
+// one in flight is stopped, and no callback runs for them; results
+// already in the box are freed with it and counted stale.
 //
 // Files (scene-device spec 7.1): each wisp.files call is a job on the
-// wisp.fs worker (SceneRuntimeDeps::files) whose result is a FilesDone
-// message with its own 200 ms; a job already queued when the scene closes
-// still runs, and its result is dropped as stale. wisp.http.download
+// wisp.fs worker (SceneRuntimeDeps::files) whose result waits in the
+// scene's box like an HTTP result; a job already queued when the scene
+// closes still runs, and its result is freed unseen. wisp.http.download
 // begins the file on the worker, then sends the request through the proxy
 // with the body streamed into it (core::FileDownload, fed on the proxy's
 // task) and finishes it on the worker. Closing or faulting cancels the
@@ -207,12 +227,13 @@
 // wisp.device, wisp.log, wisp.json and wisp.sleep). It draws on the
 // scenes' VmPool, never more than is left there (no scene is evicted for
 // it), and runs the script as a task (lua_task.hpp) with
-// kLuaRunSliceMs slices. Each slice, each result the script waits for and
-// each of its wisp.sleep timers is a message of its own, between the
-// scenes' messages, so the scenes keep running while the script waits.
+// kLuaRunSliceMs slices. Each slice, each result the script waits for (from
+// the run's own box) and each of its wisp.sleep timers is a step of its
+// own, between the scenes' messages, so the scenes keep running while the
+// script waits.
 // print and wisp.log go to the log (tag "agent.lua") and into the
-// result's output. The VM gets a new instance number, so a result that
-// arrives after it is gone is dropped as stale.
+// result's output. The VM gets a new instance number and a box of its own,
+// so a result that arrives after it is gone is freed unseen.
 //
 // Scene tools (agent-tools spec 5.2, 5.4; scene_runtime_tools.cpp):
 // call_tool() hands the call to the scene task, which runs the function
@@ -298,6 +319,7 @@ struct SceneQuery;
 struct LuaRunJob;
 struct ToolCallJob;
 struct SceneApi;
+class CompletionBox;
 class SceneView;
 struct DeviceInfo;
 enum class DeviceEvent : uint8_t;
@@ -788,13 +810,16 @@ private:
     Slot* add_slot(SceneMessage& m, LaunchReason reason, const VmLimits* limits = nullptr,
                    bool headless = false);
     // Gives the scene's wisp.http its proxy: the declared hosts, and
-    // results that come back as HttpDone messages for this instance.
+    // results that come back into the slot's box.
     void wire_http(Slot& s);
     // wire_http()'s and wire_files()'s work on `api`, for scene `id`'s
-    // `instance`. `hosts`: what a download is checked against; null for
-    // the Agent principal, whose URLs SceneHttp checks its own way.
-    void wire_http_api(SceneApi& api, const std::string& id, uint32_t instance);
+    // `instance`, whose results go into `box`. `hosts`: what a download is
+    // checked against; null for the Agent principal, whose URLs SceneHttp
+    // checks its own way.
+    void wire_http_api(SceneApi& api, const std::string& id, uint32_t instance,
+                       const std::shared_ptr<CompletionBox>& box);
     void wire_files_api(SceneApi& api, const std::string& id, uint32_t instance,
+                        const std::shared_ptr<CompletionBox>& box,
                         const std::shared_ptr<FilesGate>& gate,
                         const std::vector<std::string>* hosts);
     // cancel_files()'s work on a gate.
@@ -803,7 +828,7 @@ private:
     // back as Sensor messages for this instance.
     void wire_sensors(Slot& s);
     // Gives the scene's wisp.files its jobs on the worker and its
-    // downloads, whose results come back as FilesDone messages.
+    // downloads, whose results come back into the slot's box.
     void wire_files(Slot& s);
     // The scene is closing or faulted: its downloads stop (each .dl is
     // removed on the worker) and none starts after this.
@@ -852,6 +877,12 @@ private:
     // Hides or shows to match want_visible_ if visible_ differs.
     void follow_visibility();
     void run_delayed();
+    // Some VM's box holds results.
+    bool completions_waiting() const;
+    // Runs one result of every non-empty box: the scene in front first,
+    // then the other scenes, then the agent's run (file header,
+    // "Results"); true if any ran.
+    bool run_completions();
     void drain_queue();
     // How long the task may wait for the scenes' timers and minute tickers.
     uint32_t scene_wait_ms();
@@ -877,9 +908,6 @@ private:
     void lua_start(const std::shared_ptr<LuaRunJob>& job);
     // The caller stopped waiting (`cancelled`) or the runtime stops.
     void lua_stop(const LuaRunJob* job, const char* error, std::string message);
-    // A result for the run's VM (HttpDone, FilesDone); false if `m` is not
-    // for it.
-    bool lua_message(SceneMessage& m);
     // After each step of the run: ends it once its task has ended or `err`
     // (what the step returned) stopped it.
     void lua_settle(const std::optional<ScriptError>& err);

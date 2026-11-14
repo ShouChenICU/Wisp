@@ -85,6 +85,26 @@ os::LargeUnique<SceneMessage> make_message(std::string id, uint32_t instance, ms
 struct SceneRuntime::Link {
     os::Mutex mu;
     SceneRuntime* rt = nullptr;
+
+    // A finished wisp.http / wisp.files call of scene `id`'s `instance`
+    // (any thread): into its box, then a wake-up if the box asks for one.
+    // A closed box means the instance is gone: the result goes unseen.
+    // A wake-up the queue refuses is asked for again by the next put();
+    // none is needed meanwhile, as the queue refuses only while it holds
+    // messages, and run() looks at every box before it waits.
+    void complete(CompletionBox& box, const std::string& id, uint32_t instance, uint32_t cb,
+                  bool files, CompletionBox::Payload p) {
+        bool wake = false;
+        if (!box.put(cb, files, std::move(p), &wake)) {
+            // Only a broken count (kMaxCallsInFlight) fills the box.
+            if (!box.closed()) WLOG_E(scene_tag(id).c_str(), "a result was refused: box full");
+            return;
+        }
+        if (!wake) return;
+        std::lock_guard<os::Mutex> lock(mu);
+        if (rt == nullptr || !post_scene_message(*rt, make_message(id, instance, msg::Completed{})))
+            box.wake_failed();
+    }
 };
 
 const char* to_string(LaunchReason r) {
@@ -670,8 +690,12 @@ void SceneRuntime::run() {
                 timeout = static_cast<uint32_t>(std::min<uint64_t>(timeout, wait));
             }
         }
+        // Results waiting: look at the queue without waiting, and run them
+        // only when it is empty, so a close or exit already queued comes
+        // before the results of the scene it closes.
+        const bool results = completions_waiting();
         SceneMessage* raw = nullptr;
-        if (queue_.pop(raw, timeout)) {
+        if (queue_.pop(raw, results ? 0 : timeout)) {
             os::LargeUnique<SceneMessage> m(raw);
             const uint64_t t0 = os::now_ms();
             // Spec 3.5: before each message while a scene is in front.
@@ -685,6 +709,9 @@ void SceneRuntime::run() {
                 std::string tag = id.empty() ? std::string(kTag) : scene_tag(id);
                 WLOG_W(tag.c_str(), "slow message %s %" PRIu64 " ms", message_kind(m->body), ms);
             }
+        } else if (results) {
+            if (front_ != nullptr) enforce_limits(false);
+            run_completions();
         }
         follow_visibility();
         run_delayed();
@@ -694,6 +721,71 @@ void SceneRuntime::run() {
         tool_settle();
         persist_background();
     }
+}
+
+bool SceneRuntime::completions_waiting() const {
+    for (const auto& s : slots_)
+        if (s->box && !s->box->empty()) return true;
+    return agent_ && agent_->box && !agent_->box->empty();
+}
+
+bool SceneRuntime::run_completions() {
+    // One item each, so no VM's burst of results holds up the others; the
+    // instances are copied as a step may close or fault any slot.
+    auto log_slow = [](std::string_view id, const CompletionBox::Item& item, uint64_t t0) {
+        const uint64_t ms = os::now_ms() - t0;
+        if (ms > kSlowMs)
+            WLOG_W(scene_tag(id).c_str(), "slow message %s %" PRIu64 " ms",
+                   item.files ? "files" : "http", ms);
+    };
+    // A null payload: there was no memory to keep the result, and the call
+    // ends with the error a lack of memory gives it elsewhere ("other" is
+    // the proxy's word for it).
+    net::SceneHttpResult http_no_memory;
+    http_no_memory.error = "other";
+    FilesResult files_no_memory;
+    files_no_memory.error = "no_memory";
+    auto http_of = [&](const CompletionBox::Item& item) -> const net::SceneHttpResult& {
+        const auto* r =
+            item.payload ? std::get_if<net::SceneHttpResult>(item.payload.get()) : nullptr;
+        return r != nullptr ? *r : http_no_memory;
+    };
+    auto files_of = [&](const CompletionBox::Item& item) -> const FilesResult& {
+        const auto* r = item.payload ? std::get_if<FilesResult>(item.payload.get()) : nullptr;
+        return r != nullptr ? *r : files_no_memory;
+    };
+
+    bool ran = false;
+    auto run_slot = [&](uint32_t instance) {
+        Slot* s = find(instance);
+        if (s == nullptr || !s->box || !s->scene) return;
+        CompletionBox::Item item;
+        if (!s->box->take(item)) return;
+        ran = true;
+        const uint64_t t0 = os::now_ms();
+        const std::string id = s->id;
+        run_step(*s, item.files ? s->scene->files(item.id, files_of(item))
+                                : s->scene->http(item.id, http_of(item)));
+        close_if_asked();
+        log_slow(id, item, t0);
+    };
+    const uint32_t first = front_ != nullptr ? front_->instance : 0;
+    if (first != 0) run_slot(first);
+    for (uint32_t instance : instances())
+        if (instance != first) run_slot(instance);
+
+    if (agent_ && agent_->box) {
+        CompletionBox::Item item;
+        if (agent_->box->take(item)) {
+            ran = true;
+            const uint64_t t0 = os::now_ms();
+            Vm& vm = *agent_->vm;
+            lua_settle(item.files ? run_files_callback(vm, item.id, files_of(item))
+                                  : run_http_callback(vm, item.id, http_of(item)));
+            log_slow(net::kAgentHttpId, item, t0);
+        }
+    }
+    return ran;
 }
 
 void SceneRuntime::run_delayed() {
@@ -747,7 +839,6 @@ SceneRuntime::Slot* SceneRuntime::target(const SceneMessage& m) {
 
 void SceneRuntime::handle(SceneMessage& m) {
     msg::Body& body = m.body;
-    if (lua_message(m)) return;
     if (auto* b = std::get_if<msg::Load>(&body)) {
         begin_open(m.scene_id, std::move(b->args), b->reason, b->restore, b->done, b->reopen);
     } else if (std::holds_alternative<msg::Open>(body)) {
@@ -815,12 +906,11 @@ void SceneRuntime::handle(SceneMessage& m) {
         device_event(b->kind);
     } else if (std::holds_alternative<msg::ClockSet>(body)) {
         clock_set();
-    } else if (auto* b = std::get_if<msg::HttpDone>(&body)) {
-        Slot* s = target(m);
-        if (s != nullptr && s->scene) run_step(*s, s->scene->http(b->id, b->result));
-    } else if (auto* b = std::get_if<msg::FilesDone>(&body)) {
-        Slot* s = target(m);
-        if (s != nullptr && s->scene) run_step(*s, s->scene->files(b->id, b->result));
+    } else if (std::holds_alternative<msg::Completed>(body)) {
+        // The results themselves are read by run_completions(); a wake-up
+        // for an instance that is gone is stale.
+        if (find(m.instance) == nullptr && !(agent_ && agent_->instance == m.instance))
+            ++stale_dropped_;
     } else if (auto* b = std::get_if<msg::Sensor>(&body)) {
         Slot* s = target(m);
         // Paused in the background: a batch already on its way is dropped.
@@ -1366,6 +1456,8 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     // caller still holds the store and closes it.
     s.scene = os::make_large<SceneInstance>(s.id, s.package, limits ? *limits : config_.vm);
     if (!s.scene) return nullptr;
+    s.box = CompletionBox::make();
+    if (!s.box) return nullptr;
     s.args = std::move(open.args);
     s.store = std::move(open.store);
     s.declares_background = s.package->manifest.background;
@@ -1410,21 +1502,17 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
 
 void SceneRuntime::wire_http(Slot& s) {
     deps_.http->set_hosts(s.id, s.package->manifest.http_hosts);
-    wire_http_api(s.scene->api(), s.id, s.instance);
+    wire_http_api(s.scene->api(), s.id, s.instance, s.box);
 }
 
-void SceneRuntime::wire_http_api(SceneApi& api, const std::string& id, uint32_t instance) {
+void SceneRuntime::wire_http_api(SceneApi& api, const std::string& id, uint32_t instance,
+                                 const std::shared_ptr<CompletionBox>& box) {
     net::SceneHttp& http = *deps_.http;
     // Results come back from the proxy's task (or, for a request refused
-    // at once, from inside submit() on this task) as messages for this
-    // instance; one for an instance that is gone is dropped like any
-    // stale message.
-    auto deliver = [link = link_, id, instance](uint32_t cb, net::SceneHttpResult r) {
-        auto m = make_message(id, instance, msg::HttpDone{cb, std::move(r)});
-        std::lock_guard<os::Mutex> lock(link->mu);
-        if (link->rt == nullptr) return;
-        if (!post_scene_message(*link->rt, std::move(m)))
-            WLOG_W(scene_tag(id).c_str(), "http: a result was dropped: scene queue full");
+    // at once, from inside submit() on this task) into this instance's
+    // box (Link::complete()).
+    auto deliver = [link = link_, box, id, instance](uint32_t cb, net::SceneHttpResult r) {
+        link->complete(*box, id, instance, cb, false, CompletionBox::Payload(std::move(r)));
     };
     api.http_submit = [&http, deliver, id, instance](uint32_t cb, net::SceneHttpRequest req) {
         req.scene_id = id;
@@ -1459,23 +1547,20 @@ void SceneRuntime::wire_sensors(Slot& s) {
 
 void SceneRuntime::wire_files(Slot& s) {
     s.files_gate = std::allocate_shared<FilesGate>(os::LargeAllocator<FilesGate>());
-    wire_files_api(s.scene->api(), s.id, s.instance, s.files_gate, &s.package->manifest.http_hosts);
+    wire_files_api(s.scene->api(), s.id, s.instance, s.box, s.files_gate,
+                   &s.package->manifest.http_hosts);
 }
 
 void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t instance,
+                                  const std::shared_ptr<CompletionBox>& box,
                                   const std::shared_ptr<FilesGate>& gate,
                                   const std::vector<std::string>* hosts) {
     core::SceneFiles& files = *deps_.files;
     core::StorageWorker& worker = deps_.worker;
     // Results come back from the worker (or, for a refusal, from this
-    // task) as messages for this instance; one for an instance that is
-    // gone is dropped like any stale message.
-    auto deliver = [link = link_, id, instance](uint32_t cb, FilesResult r) {
-        auto m = make_message(id, instance, msg::FilesDone{cb, std::move(r)});
-        std::lock_guard<os::Mutex> lock(link->mu);
-        if (link->rt == nullptr) return;
-        if (!post_scene_message(*link->rt, std::move(m)))
-            WLOG_W(scene_tag(id).c_str(), "files: a result was dropped: scene queue full");
+    // task) into this instance's box (Link::complete()).
+    auto deliver = [link = link_, box, id, instance](uint32_t cb, FilesResult r) {
+        link->complete(*box, id, instance, cb, true, CompletionBox::Payload(std::move(r)));
     };
     auto busy = [deliver](uint32_t cb) {
         FilesResult r;
@@ -1690,6 +1775,8 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     release_locks(s);
     if (s.scene) release_sensors(s.scene->api());
     s.scene.reset();  // the VM goes with it, and its timers
+    // No VM is left to run a callback: the waiting results are stale.
+    if (s.box) stale_dropped_ += s.box->close();
     cancel_files(s);
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     s.shown = false;
@@ -1897,6 +1984,8 @@ void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
         s.scene->cancel_tasks();
     }
     s.scene.reset();
+    // No VM is left to run a callback: the waiting results are stale.
+    if (s.box) stale_dropped_ += s.box->close();
     cancel_files(s);
     if (deps_.http != nullptr) deps_.http->cancel_scene(s.id);
     // Before the caller can be answered (from the worker, below): whoever
