@@ -37,6 +37,10 @@ namespace wisp::ui {
 namespace {
 
 constexpr size_t kPostQueueCapacity = 32;
+// The UI loop's pace: the longest the rendering loop sleeps between
+// iterations, and how long the paused loop waits between slot passes
+// while a slot keeps re-arming.
+constexpr uint32_t kLoopPeriodMs = 10;
 constexpr uint64_t kPerfWindowMs = 1000;
 
 int cap_int(const wisp::Properties& caps, const char* key, int fallback) {
@@ -242,14 +246,17 @@ void UiRuntime::Impl::ui_main() {
             //
             // A slot pass precedes every wait. A slot still queued after
             // it (re-armed during the pass, on this task, so with no wake
-            // post) must not sit behind a blocking pop: then this takes at
-            // most one posted job without waiting and goes round again,
-            // alternating one pass and one job. That keeps both moving
-            // and needs no wake post that could take a posted job's place
-            // in the queue. Slots the job schedules run in the next
-            // iteration's pass, right after it.
+            // post) must not sit behind a blocking pop: then the wait is
+            // bounded by the loop's pace instead, and goes round again
+            // after at most one posted job. A post still ends the wait at
+            // once, and no wake is posted that could take a posted job's
+            // place in the queue. Not 0: a slot re-arming in every run
+            // would then spin this task at full speed with the screen off,
+            // starving lower-priority tasks and the idle task's watchdog,
+            // and polling far faster than standby allows. Slots the job
+            // schedules run in the next iteration's pass, right after it.
             run_slots();
-            const uint32_t wait = slots.pending() > 0 ? 0 : os::kForever;
+            const uint32_t wait = slots.pending() > 0 ? kLoopPeriodMs : os::kForever;
             std::function<void()> fn;
             if (post_queue.pop(fn, wait)) {
                 fn();
@@ -297,7 +304,7 @@ void UiRuntime::Impl::ui_main() {
         uint64_t loop_end = os::now_ms();
         record_busy(static_cast<uint32_t>(loop_end - loop_start));
 
-        uint32_t sleep_ms = std::min<uint32_t>(next_ms, 10);
+        uint32_t sleep_ms = std::min<uint32_t>(next_ms, kLoopPeriodMs);
         os::sleep_ms(sleep_ms);
     }
     // stop() may have post()'d a final piece of work (or one may already

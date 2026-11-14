@@ -954,7 +954,10 @@ TEST(UiRuntime, SlotRunsWhenThePostQueueIsFull) {
     while (ui.post([] {})) {
     }
     // The wake post schedule() makes fails here; the queued jobs wake the
-    // task instead.
+    // task instead. This passes even if schedule() posted no wake at all:
+    // the paused loop runs a slot pass before every wait, so the property
+    // checked rests on that loop structure (the gate job's return leads
+    // straight to the next pass), not on the wake post.
     UiSlot a(&ui);
     ui.schedule(a);
     gate.give();
@@ -1091,7 +1094,9 @@ void expect_rearming_slot_shares_the_loop(bool paused) {
     RearmingUiSlot a(&ui);
     a.jobs_to_post = kJobs;
     a.jobs_left = kJobs;
-    ui.schedule(a);
+    // From the UI task, so schedule() posts no wake no-op: one that landed
+    // ahead of job 1 would let the slot run twice before it.
+    ASSERT_TRUE(ui.post([&] { ui.schedule(a); }));
     ASSERT_TRUE(wait_until([&] { return a.jobs_left.load() == 0; }, 5000));
     EXPECT_TRUE(ui.cancel(a));
     std::vector<int> seen;
@@ -1117,7 +1122,7 @@ void expect_rearming_slot_does_not_freeze(bool paused) {
     // No cap: only the test thread's clearing of `rearm` below ends the
     // re-arming, after the run_blocking() verdict.
     a.max_runs = std::numeric_limits<int>::max();
-    ui.schedule(a);
+    ASSERT_TRUE(ui.post([&] { ui.schedule(a); }));
     ASSERT_TRUE(wait_until([&] { return a.runs.load() > 0; }, 1000));
     std::atomic<bool> returned{false};
     std::thread caller([&] {
@@ -1147,4 +1152,36 @@ TEST(UiRuntime, ReArmingSlotDoesNotFreezeTheUiTask) {
 
 TEST(UiRuntime, ReArmingSlotDoesNotFreezeThePausedUiTask) {
     expect_rearming_slot_does_not_freeze(/*paused=*/true);
+}
+
+TEST(UiRuntime, PausedLoopPacesAReArmingSlot) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    ASSERT_TRUE(ui.start());
+    ui.set_paused(true);
+    ui.run_blocking([] {});
+    RearmingUiSlot a(&ui);
+    a.max_runs = std::numeric_limits<int>::max();
+    ASSERT_TRUE(ui.post([&] { ui.schedule(a); }));
+    ASSERT_TRUE(wait_until([&] { return a.runs.load() > 0; }, 1000));
+    int runs_1 = 0, runs_2 = 0;
+    uint64_t t_1 = 0, t_2 = 0;
+    ui.run_blocking([&] {
+        runs_1 = a.runs.load();
+        t_1 = wisp::os::now_ms();
+    });
+    wisp::os::sleep_ms(50);  // the interval measured, not synchronisation
+    ui.run_blocking([&] {
+        runs_2 = a.runs.load();
+        t_2 = wisp::os::now_ms();
+    });
+    a.rearm.store(false);
+    EXPECT_TRUE(ui.cancel(a));
+    // Paced, one pass per 10 ms wait: about (t_2 - t_1) / 10 runs. The bound
+    // allows five times that plus slack (an upper bound only, so load cannot
+    // break it); spinning without a wait runs thousands of times.
+    const uint64_t elapsed = t_2 - t_1;
+    EXPECT_LE(static_cast<uint64_t>(runs_2 - runs_1), elapsed / 2 + 10)
+        << "over " << elapsed << " ms";
+    ui.stop();
 }

@@ -148,9 +148,12 @@ public:
     // post()'d function, or an LVGL event/timer callback it triggered).
     bool on_ui_thread() const;
 
-    // core::Dispatcher. schedule() from another thread also posts a no-op
-    // to wake a paused task blocked on the post queue; when that post fails
-    // the queue is non-empty, which wakes it just the same. Slots run in
+    // core::Dispatcher. schedule() off the UI task also posts a no-op
+    // whenever it makes the ready list non-empty, paused or not: a paused
+    // task may be blocked on the post queue, and gating the post on
+    // paused() would race with a set_paused(true) the task has not yet
+    // acted on. When that post fails the queue is non-empty, which wakes
+    // the task just the same. Slots run in
     // FIFO order, one pass per iteration of the UI loop (see set_paused());
     // a slot scheduled from another thread runs within about one loop
     // sleep (10 ms) while rendering, and one re-armed during a pass runs
@@ -168,8 +171,8 @@ public:
     // whatever is post()'d to it, exactly like the unpaused loop already
     // does on top of its own lv_timer_handler() call, and runs a pass of
     // the queued dispatch slots before each such wait (while slots stay
-    // queued it takes posted jobs one at a time without waiting, between
-    // passes). This is purely an
+    // queued, each wait lasts at most the loop's 10 ms pace and takes at
+    // most one posted job). This is purely an
     // atomic flag: pausing never blocks, and never fights stop() for the
     // UI task (ui_main() keeps checking `running` -- see
     // ui_runtime.cpp -- even while the paused branch is blocked waiting
