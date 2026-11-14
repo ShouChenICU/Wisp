@@ -1143,6 +1143,31 @@ TEST(PowerManager, StandbyWalksDevicesByPolicy) {
     EXPECT_TRUE(warns.lines().empty());
 }
 
+// A device the portable code knows nothing about (a self-describing one,
+// interface None) goes down with the others, ahead of the audio input.
+TEST(PowerManager, GenericDevicesGoDownWithTheOthers) {
+    Headless h;
+    auto generic =
+        std::make_shared<wisp::test::FakeGeneric>("haptic.main", &wisp::test::kFakeGenericSchema,
+                                                  wisp::Properties{}, "main", /*standby_off=*/true);
+    ASSERT_TRUE(h.registry.add(generic));
+    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
+    int generic_calls_at_audio_in = -1;
+    in->on_set_power = [&](PowerLevel level) {
+        if (level == PowerLevel::Standby) generic_calls_at_audio_in = generic->set_power_calls();
+    };
+
+    h.pm->enter_standby();
+    EXPECT_EQ(generic->set_power_calls(), 1);
+    EXPECT_FALSE(generic->powered());
+    EXPECT_EQ(generic_calls_at_audio_in, 1);  // already powered down when the input was reached
+    EXPECT_FALSE(in->powered());
+
+    h.pm->exit_standby();
+    EXPECT_EQ(generic->set_power_calls(), 2);
+    EXPECT_TRUE(generic->powered());
+}
+
 // The audio pair goes down input first and comes back output first,
 // wherever the two sit in the registry: in a duplex pair the output
 // clocks the input (wisp/port/esp/i2s_power.hpp).

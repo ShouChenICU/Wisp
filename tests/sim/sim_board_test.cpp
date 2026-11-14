@@ -28,6 +28,7 @@
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/hal/clock.hpp"
+#include "wisp/hal/device_schema.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
@@ -35,6 +36,7 @@
 #include "wisp/hal/storage.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/hal/wifi.hpp"
+#include "wisp/port/sim/sim_haptic.hpp"
 #include "wisp/port/sim/sim_input.hpp"
 #include "wisp/shell/conversation.hpp"
 
@@ -395,4 +397,182 @@ TEST(SimButton, PairedEdgesBeforeDrainProduceShortWithoutPolling) {
                                                 "button.vol_down.short"}));
     service.stop();
     bus.stop();
+}
+
+namespace {
+
+// A haptic on a clock the test moves by hand.
+struct HapticFixture {
+    HapticFixture() : haptic("haptic.main", "main", [this] { return now; }) {}
+
+    bool active() {
+        auto v = haptic.get("active");
+        EXPECT_TRUE(v);
+        return v && v.value().as_bool();
+    }
+    wisp::Result<wisp::Value> pulse(int64_t ms, int64_t strength) {
+        return haptic.invoke("pulse", {{"ms", ms}, {"strength", strength}});
+    }
+
+    uint64_t now = 1000;
+    wisp::port::sim::SimHaptic haptic;
+};
+
+}  // namespace
+
+TEST(SimHaptic, PulseRunsForItsDurationThenStops) {
+    HapticFixture f;
+    EXPECT_FALSE(f.active());
+    ASSERT_TRUE(f.pulse(150, 80));
+    f.now = 1000 + 149;
+    EXPECT_TRUE(f.active());
+    f.now = 1000 + 150;
+    EXPECT_FALSE(f.active());
+}
+
+TEST(SimHaptic, EffectRunsForAShortFixedTime) {
+    HapticFixture f;
+    ASSERT_TRUE(f.haptic.invoke("effect", {{"id", 7}}));
+    f.now = 1099;
+    EXPECT_TRUE(f.active());
+    f.now = 1100;
+    EXPECT_FALSE(f.active());
+}
+
+TEST(SimHaptic, ClampsWhenCalledDirectly) {
+    HapticFixture f;
+    ASSERT_TRUE(f.pulse(999999, 500));
+    f.now = 1000 + 1999;
+    EXPECT_TRUE(f.active());
+    f.now = 1000 + 2000;
+    EXPECT_FALSE(f.active());
+    // Too short and a missing strength are clamped / defaulted, not refused.
+    ASSERT_TRUE(f.haptic.invoke("pulse", {{"ms", 1}}));
+    f.now += 9;
+    EXPECT_TRUE(f.active());
+    f.now += 1;
+    EXPECT_FALSE(f.active());
+    ASSERT_TRUE(f.haptic.invoke("effect", {{"id", 99999}}));
+}
+
+TEST(SimHaptic, StandbyStopsItAndRefusesCalls) {
+    HapticFixture f;
+    namespace hal = wisp::hal;
+    ASSERT_TRUE(f.pulse(500, 80));
+    EXPECT_TRUE(f.active());
+    ASSERT_TRUE(f.haptic.set_power(hal::PowerLevel::Standby));
+    auto refused = f.pulse(500, 80);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, wisp::ErrorCode::Busy);
+    auto get = f.haptic.get("active");
+    ASSERT_FALSE(get);
+    EXPECT_EQ(get.error().code, wisp::ErrorCode::Busy);
+    ASSERT_FALSE(f.haptic.invoke("effect", {{"id", 3}}));
+    ASSERT_TRUE(f.haptic.set_power(hal::PowerLevel::DeepStandby));
+    // Dim keeps the screen on, so the motor comes back; the pulse that was
+    // running when it went down does not.
+    ASSERT_TRUE(f.haptic.set_power(hal::PowerLevel::Dim));
+    EXPECT_FALSE(f.active());
+    ASSERT_TRUE(f.pulse(500, 80));
+    EXPECT_TRUE(f.active());
+    ASSERT_TRUE(f.haptic.set_power(hal::PowerLevel::Active));
+    EXPECT_TRUE(f.active());
+}
+
+TEST(SimHaptic, SchemaPassesTheChecks) {
+    HapticFixture f;
+    const wisp::hal::DeviceSchema* schema = f.haptic.describe();
+    ASSERT_NE(schema, nullptr);
+    EXPECT_TRUE(wisp::hal::check_schema(*schema));
+    EXPECT_EQ(f.haptic.describe(), schema);
+    EXPECT_EQ(f.haptic.interface(), wisp::hal::Interface::None);
+    EXPECT_EQ(f.haptic.info().cls, wisp::hal::DeviceClass::Other);
+    EXPECT_EQ(f.haptic.info().model, "sim-haptic");
+
+    ASSERT_EQ(schema->props.size(), 1u);
+    EXPECT_STREQ(schema->props[0].name, "active");
+    EXPECT_EQ(schema->props[0].type, wisp::hal::ParamType::Bool);
+
+    ASSERT_EQ(schema->cmds.size(), 2u);
+    const auto& pulse = schema->cmds[0];
+    EXPECT_STREQ(pulse.name, "pulse");
+    EXPECT_EQ(pulse.min_interval_ms, 100u);
+    ASSERT_EQ(pulse.args.size(), 2u);
+    EXPECT_STREQ(pulse.args[0].name, "ms");
+    EXPECT_EQ(pulse.args[0].min, 10);
+    EXPECT_EQ(pulse.args[0].max, 2000);
+    EXPECT_STREQ(pulse.args[0].unit, "ms");
+    EXPECT_FALSE(pulse.args[0].optional);
+    EXPECT_STREQ(pulse.args[1].name, "strength");
+    EXPECT_EQ(pulse.args[1].min, 0);
+    EXPECT_EQ(pulse.args[1].max, 100);
+    EXPECT_STREQ(pulse.args[1].unit, "%");
+    EXPECT_TRUE(pulse.args[1].optional);
+    EXPECT_EQ(pulse.args[1].def.as_int(), 80);
+
+    const auto& effect = schema->cmds[1];
+    EXPECT_STREQ(effect.name, "effect");
+    ASSERT_EQ(effect.args.size(), 1u);
+    EXPECT_STREQ(effect.args[0].name, "id");
+    EXPECT_EQ(effect.args[0].min, 1);
+    EXPECT_EQ(effect.args[0].max, 123);
+}
+
+TEST(SimHaptic, ConcurrentCallsAndStandbyAreSafe) {
+    std::atomic<uint64_t> now{1000};
+    wisp::port::sim::SimHaptic haptic("haptic.main", "main", [&] { return now.load(); });
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 3; ++i) {
+        threads.emplace_back([&] {
+            while (!stop) {
+                (void)haptic.invoke("pulse", {{"ms", 50}, {"strength", 80}});
+                (void)haptic.get("active");
+            }
+        });
+    }
+    for (int i = 0; i < 200; ++i) {
+        (void)haptic.set_power(i % 2 ? wisp::hal::PowerLevel::Active
+                                     : wisp::hal::PowerLevel::Standby);
+        now += 7;
+    }
+    stop = true;
+    for (auto& t : threads) t.join();
+    // The last transition was Active; after standby nothing may be running.
+    ASSERT_TRUE(haptic.set_power(wisp::hal::PowerLevel::Standby));
+    ASSERT_TRUE(haptic.set_power(wisp::hal::PowerLevel::Active));
+    EXPECT_FALSE(haptic.get("active").value().as_bool());
+}
+
+TEST_F(SimBoard, RegistersTheHaptic) {
+    auto device = registry_->find("haptic.main");
+    ASSERT_NE(device, nullptr);
+    EXPECT_EQ(device->info().cls, wisp::hal::DeviceClass::Other);
+    EXPECT_EQ(standby_of("haptic.main"), "off");
+    const auto caps = wisp::hal::caps_of(*device);
+    EXPECT_TRUE(caps.count("schema"));
+    EXPECT_EQ(caps.at("role").as_string(), "main");
+}
+
+TEST(SimBoardTest, HapticCanBeDisabledByIdOrClass) {
+    for (const char* what : {"haptic.main", "other"}) {
+        auto input = std::make_shared<wisp::port::sim::SimInput>(true);
+        wisp::port::sim::SimBoardConfig config;
+        config.data_dir =
+            (std::filesystem::temp_directory_path() / "wisp_sim_board_haptic").string();
+        config.disabled = {what};
+        wisp::port::sim::SimBoard board(config, input, [] {});
+        wisp::core::DeviceRegistry registry;
+        wisp::core::BootReport report;
+        board.init(registry, report);
+        EXPECT_EQ(registry.find("haptic.main"), nullptr) << what;
+        bool recorded = false;
+        for (const auto& e : report.entries()) {
+            if (e.id == "haptic.main") {
+                recorded = true;
+                EXPECT_EQ(e.state, wisp::core::DeviceState::Failed);
+            }
+        }
+        EXPECT_TRUE(recorded) << what;
+    }
 }

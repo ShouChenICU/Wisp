@@ -8,6 +8,7 @@
 #include "dev/sim_devices.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/roles.hpp"
+#include "wisp/port/sim/sim_haptic.hpp"
 #include "wisp/port/sim/sim_wifi.hpp"
 
 namespace wisp::port::sim {
@@ -118,6 +119,8 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_,
                                            role::kTalk);
     });
+    make_or_fail("haptic.main", wisp::hal::DeviceClass::Other,
+                 [&] { return std::make_shared<SimHaptic>("haptic.main", role::kMain); });
     make_or_fail("net.wifi", wisp::hal::DeviceClass::Network, [&] {
         return std::make_shared<SimWifi>("net.wifi", config_.wifi_fail, role::kMain);
     });

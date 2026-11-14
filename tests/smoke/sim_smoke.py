@@ -82,6 +82,7 @@ EXPECTED_ROLES = {
     "button.vol_down": "talk",
     "clock.main": "main",
     "display.main": "main",
+    "haptic.main": "main",
     "imu.main": "main",
     "net.wifi": "main",
     "power.main": "main",
@@ -90,7 +91,7 @@ EXPECTED_ROLES = {
     "touch.main": "main",
 }
 
-# The 13 devices SimBoard::init() registers by default (see
+# The 14 devices SimBoard::init() registers by default (see
 # components/wisp_port_sim/sim_board.cpp).
 EXPECTED_DEVICE_IDS = {
     "audio_in.main",
@@ -100,6 +101,7 @@ EXPECTED_DEVICE_IDS = {
     "button.vol_up",
     "clock.main",
     "display.main",
+    "haptic.main",
     "imu.main",
     "net.wifi",
     "power.main",
@@ -352,6 +354,18 @@ def case_default(sim_path, tmp_root):
         imu_caps.get("magnetometer") is False,
         f"imu.main.caps.magnetometer == {imu_caps.get('magnetometer')!r}, expected false",
     )
+
+    # A self-describing device carries its schema in caps (device model
+    # spec 3), and the manifest stays one JSON line with it.
+    haptic = manifest_devices["haptic.main"]
+    expect(haptic["class"] == "other", f"haptic.main class == {haptic['class']!r}")
+    haptic_cmds = haptic["caps"]["schema"]["cmds"]
+    expect(
+        haptic_cmds[0]["name"] == "pulse",
+        f"haptic.main schema cmds[0].name == {haptic_cmds[0]['name']!r}, expected 'pulse'",
+    )
+    manifest_lines = [l for l in result.stdout.splitlines() if l.startswith("WISP_MANIFEST ")]
+    expect(len(manifest_lines) == 1, f"{len(manifest_lines)} WISP_MANIFEST lines, expected 1")
 
     display_safe_area = manifest_devices["display.main"]["safe_area"]
     expect(
