@@ -20,8 +20,9 @@
 // first drop and every 64th after it. Overflow needs the consumer's
 // dispatcher to stall for N edges; it is never silent.
 //
-// Threads and locks. push() may be called from any thread, including hot
-// paths and code holding its own locks: it never allocates and blocks only
+// Threads and locks. push() may be called from any thread (not from an
+// ISR: it takes an os::Mutex), including hot paths and code holding its
+// own locks: it never allocates and blocks only
 // on the inbox's own lock and inside the dispatcher's schedule(). The
 // order is inbox -> the dispatcher's schedule() (its ready list and its
 // wake: the bus's ready semaphore, the UI runtime's no-op post); both are
@@ -150,7 +151,8 @@ public:
     EdgeInbox(const EdgeInbox&) = delete;
     EdgeInbox& operator=(const EdgeInbox&) = delete;
 
-    // Any thread; see the file comment.
+    // Any thread, but not from an ISR: it takes the inbox's os::Mutex. See
+    // the file comment.
     void push(const E& e) { push_bytes(&e); }
 
     using InboxCore::name;

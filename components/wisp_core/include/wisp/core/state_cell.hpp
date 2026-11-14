@@ -25,17 +25,24 @@
 // value, the intrusive list of subscriptions, read()'s body. While it is
 // held a cell calls out only to (a) its mirror, which may only call
 // EventBus::publish() (publish_mutex_ and a non-blocking push), and (b)
-// Dispatcher::schedule(), which only takes the ready list's lock. The
-// order is therefore cell -> bus publish_mutex_ and cell -> ready list,
-// and no path takes them the other way: a dispatcher runs a slot, and
-// calls finish(), with its ready-list lock released. No callback runs
-// while any cell's lock is held. set() itself allocates nothing; it
-// copies T, so it allocates only when copying T does (a snapshot holding
-// std::string). Releasing a subscription off its dispatcher's thread
-// waits for its run in progress: a callback that releases a subscription
-// running on another dispatcher blocks its own dispatcher until that run
-// returns, so two callbacks (say one on wisp.bus, one on the UI) that each
-// release the other's subscription deadlock.
+// the dispatcher's schedule() (its ready list and its wake: the bus's
+// ready semaphore, the UI runtime's no-op post); both are leaf and
+// non-blocking. The order is therefore cell -> bus publish_mutex_ and
+// cell -> the dispatcher's schedule(), and no path takes them the other
+// way: a dispatcher runs a slot, and calls finish(), with its ready-list
+// lock released. No callback runs while any cell's lock is held. set()
+// itself allocates nothing; it copies T, so it allocates only when
+// copying T does (a snapshot holding std::string).
+//
+// Waiting. A callback must never wait for another dispatcher: no
+// UiRuntime::run_blocking(), no EventBus::unsubscribe() or wait_idle()
+// from a callback. Releasing a subscription or destroying an inbox from
+// another dispatcher's thread waits for its run in progress, so a wait
+// in a callback can close a cycle -- a bus-dispatched callback inside
+// run_blocking() waits for the UI thread while the UI thread, releasing
+// that callback's subscription, waits for the callback. Two callbacks
+// that each release the other's subscription across dispatchers deadlock
+// the same way.
 //
 // Re-entry. From a callback a subscriber may get()/read() any cell, set()
 // any cell (its own included: the subscription runs again, so a callback
@@ -226,7 +233,9 @@ public:
     using Mirror = void (*)(EventBus& bus, const T& before, const T& after);
 
     // `bus` runs the subscriptions that name no dispatcher and counts them
-    // all; it must outlive the cell.
+    // all; it must outlive the cell. Owner order: release UI-dispatched
+    // subscriptions before the UI runtime is destroyed, and destroy cells
+    // and inboxes before the bus (in App::Impl, declare them after `bus`).
     StateCell(EventBus& bus, T initial, Mirror mirror = nullptr)
         : CellCore(bus), value_(std::move(initial)), mirror_(mirror) {}
     // Every subscription must be released first; a live one is misuse
@@ -269,6 +278,7 @@ public:
     }
 
     // --- owner only ------------------------------------------------------
+    // Any thread, but not from an ISR: they take the cell's os::Mutex.
     // false, and nothing happens, when v == the current value.
     bool set(const T& v) {
         Hold hold(*this);

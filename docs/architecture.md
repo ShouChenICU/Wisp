@@ -147,10 +147,11 @@ A component that others follow keeps its state in a `core::StateCell<T>` (`wisp/
 
 Delivery rules:
 
-- A subscription's callback runs on the dispatcher it was given, never inside `set()` and never on the setter's thread. Its first call delivers the current value; a later call means "changed since the last call", and the callback reads whatever is current then. A -> B -> A between two calls delivers A again, so callbacks are idempotent. Calls of one subscription never overlap.
+- A subscription's callback runs on the dispatcher it was given, never inside `set()` and never on the setter's thread unless that thread is the dispatcher. Its first call delivers the current value; a later call means "changed since the last call", and the callback reads whatever is current then. A -> B -> A between two calls delivers A again, so callbacks are idempotent. Calls of one subscription never overlap.
 - An inbox run delivers only the edges waiting when it started and re-schedules itself if more remain; edges pushed by the handler are delivered in the next run.
 - `set()` allocates only when copying `T` does.
 - Lock order: cell -> the dispatcher's `schedule()` (and, for a mirror, the bus's publish lock); inbox -> `schedule()`. Callbacks run with no cell or inbox lock held. A callback may release any subscription, but releasing one that runs on another dispatcher blocks until that run returns.
+- A callback never waits for another dispatcher: no `UiRuntime::run_blocking()`, no `EventBus::unsubscribe()` or `wait_idle()` from a callback. Releasing a subscription or destroying an inbox from another dispatcher's thread waits for its run, so such a wait can deadlock (a bus-dispatched callback inside `run_blocking()` while the UI thread releases that callback's subscription).
 - Misuse (a cell destroyed with live subscriptions, an in-run cancel without a `finish`) aborts on the host and is logged on the device; after a reported misuse a cell's teardown waits at most 3 s, then aborts with a log line. An inbox destroyed from its own handler aborts on every build.
 
 Dispatchers: `wisp.bus` by default. The UI runtime (`ui::UiRuntime`) is one too, for UI code. Its loop runs, in every iteration, the slots that were queued when the pass started (a slot re-armed during a pass runs in the next iteration). While the UI is paused it blocks indefinitely when no slot is queued, and paces itself with the loop period (10 ms) while one stays queued, so standby has no periodic UI timer.

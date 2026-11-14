@@ -1090,6 +1090,10 @@ void App::stop() {
     // own stop() tears down its internal Timer; see power_monitor.hpp.
     impl_->power_monitor.reset();
 
+    // State-cell and inbox owners rely on this order: shell -> duties ->
+    // power manager -> ui -> bus, so UI-dispatched subscriptions are
+    // released before the UI runtime goes and cells and inboxes before
+    // the bus (state_cell.hpp).
     impl_->buttons.stop();
     if (impl_->ui) {
         impl_->ui->stop();

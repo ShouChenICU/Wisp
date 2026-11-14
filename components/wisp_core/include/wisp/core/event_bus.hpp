@@ -175,7 +175,10 @@ public:
     // bus lock; unsubscribe() does not wait for slot runs, and cancel()
     // waits only for a run of the slot it is given. schedule() before
     // start() or after stop() queues the slot; it runs once the
-    // dispatcher (re)starts, as events do.
+    // dispatcher (re)starts, as events do. A slot that re-arms itself in
+    // every run keeps wisp.bus running without pause (events still
+    // alternate with it); that is a bug in its owner, and the task
+    // watchdog is the failure signal.
     void schedule(DispatchSlot& slot) override;
     [[nodiscard]] bool cancel(DispatchSlot& slot) override;
     bool on_dispatch_thread() const override;
