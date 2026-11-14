@@ -1,6 +1,5 @@
 #include "wisp/core/storage_router.hpp"
 
-#include <memory>
 #include <utility>
 
 namespace wisp::core {
@@ -23,20 +22,16 @@ bool StorageRouter::submit(Medium m, std::function<void()> job, IoLane lane) {
         return false;
     }
     StorageWorker& w = worker_for(m);
-    if (&w == &flash_) {
-        return flash_.submit(std::move(job), lane);
-    }
-    // StorageWorker::submit() consumes the job even when it refuses it, so
-    // hold it here to have it for the flash worker if the SD I/O worker
-    // began stopping since worker_for() looked.
-    auto held = std::make_shared<std::function<void()>>(std::move(job));
-    if (w.submit([held] { (*held)(); }, lane)) {
+    if (w.try_submit(job, lane)) {
         return true;
     }
-    if (w.running()) {
-        return false;  // full: not moved, or the lane's order would break
+    // Refused by the SD I/O worker because it began stopping since
+    // worker_for() looked: the job is still here, so the flash worker
+    // takes it. A full lane is not moved, or the lane's order would break.
+    if (&w == &flash_ || w.running()) {
+        return false;
     }
-    return flash_.submit(std::move(*held), lane);
+    return flash_.try_submit(job, lane);
 }
 
 Result<void> StorageRouter::run_sync(Medium m, std::function<void()> job, uint32_t timeout_ms,
@@ -56,28 +51,12 @@ Result<void> StorageRouter::run_sync(Medium m, std::function<void()> job, uint32
     }
     // Not w.run_sync(): once the SD I/O worker has stopped it would run the
     // job inline on this thread, which need not be allowed to touch the
-    // card. Same wait as StorageWorker::run_sync(), with the job held so
-    // that a refusal because it stopped can go to the flash worker.
-    auto held = std::make_shared<std::function<void()>>(std::move(job));
-    auto done = std::make_shared<os::Semaphore>(1, 0);
-    // The job's captures are released before done is given, so a caller
-    // that waited may free whatever they referenced as soon as it wakes.
-    if (w.submit(
-            [held, done] {
-                (*held)();
-                *held = nullptr;
-                done->give();
-            },
-            lane)) {
-        if (!done->take(timeout_ms)) {
-            return Result<void>::err(ErrorCode::Timeout, "storage job did not finish in time");
-        }
-        return Result<void>::ok();
+    // card. run_queued() never runs inline and leaves a refused job here.
+    Result<void> r = w.run_queued(job, timeout_ms, lane);
+    if (r || r.error().code != ErrorCode::Busy || w.running()) {
+        return r;
     }
-    if (w.running()) {
-        return Result<void>::err(ErrorCode::Busy, "storage worker queue full");
-    }
-    return flash_.run_sync(std::move(*held), timeout_ms, lane);
+    return flash_.run_sync(std::move(job), timeout_ms, lane);
 }
 
 bool StorageRouter::drain(uint32_t timeout_ms) {

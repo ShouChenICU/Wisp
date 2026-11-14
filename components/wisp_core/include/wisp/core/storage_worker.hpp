@@ -163,6 +163,20 @@ public:
     // lane is full, the worker is not running, or `job` is empty.
     bool submit(std::function<void()> job, IoLane lane = IoLane::Normal);
 
+    // submit(), but moves from `job` only when it is queued: a refused job
+    // stays with the caller, who may send it to another worker.
+    bool try_submit(std::function<void()>& job, IoLane lane = IoLane::Normal);
+
+    // The waiting half of run_sync() alone: runs `job` on the worker and
+    // waits as run_sync() does, but never inline. Moves from `job` only
+    // when it is queued. ErrorCode::Busy if the lane is full or the worker
+    // is not running (the job is then left with the caller),
+    // InvalidArgument for an empty job, a call from this worker's own job
+    // (it would wait for itself) or a Flash-role worker on the SD I/O
+    // thread; Timeout as run_sync().
+    Result<void> run_queued(std::function<void()>& job, uint32_t timeout_ms,
+                            IoLane lane = IoLane::Normal);
+
     // Runs `job` on the worker and waits up to `timeout_ms` (or
     // os::kForever) for it to finish. Runs it inline, on the caller, when
     // called from a job, or before start() / after stop() (the

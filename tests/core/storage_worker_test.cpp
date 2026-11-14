@@ -625,3 +625,53 @@ TEST(StorageWorker, StopOfTheFlashWorkerFromTheSdIoThreadIsRefused) {
     f.stop();
     EXPECT_FALSE(f.running());
 }
+
+TEST(StorageWorker, TrySubmitKeepsARefusedJob) {
+    std::atomic<int> ran{0};
+    std::function<void()> job = [&] { ++ran; };
+    StorageWorker w(StorageWorkerConfig{.queue_capacity = 1});
+    EXPECT_FALSE(w.try_submit(job));  // not running
+    ASSERT_TRUE(job);
+
+    wisp::os::Semaphore release(1, 0);
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+    std::function<void()> first = [&] { ++ran; };
+    EXPECT_TRUE(w.try_submit(first));
+    EXPECT_FALSE(w.try_submit(job));  // lane full
+    ASSERT_TRUE(job);
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    EXPECT_EQ(ran.load(), 1);
+    job();
+    EXPECT_EQ(ran.load(), 2);
+}
+
+TEST(StorageWorker, RunQueuedNeverRunsInline) {
+    std::atomic<int> ran{0};
+    std::function<void()> job = [&] { ++ran; };
+    StorageWorker w;
+    auto before = w.run_queued(job, 1000);
+    ASSERT_FALSE(before);
+    EXPECT_EQ(before.error().code, wisp::ErrorCode::Busy);
+    ASSERT_TRUE(job);
+
+    ASSERT_TRUE(w.start());
+    std::atomic<int> nested_code{-1};
+    std::function<void()> outer = [&] {
+        auto r = w.run_queued(job, 1000);
+        nested_code = r ? 0 : static_cast<int>(r.error().code);
+    };
+    ASSERT_TRUE(w.run_queued(outer, 5000));
+    EXPECT_EQ(nested_code.load(), static_cast<int>(wisp::ErrorCode::InvalidArgument));
+    EXPECT_EQ(ran.load(), 0);
+
+    ASSERT_TRUE(w.run_queued(job, 5000));
+    EXPECT_EQ(ran.load(), 1);
+    w.stop();
+    std::function<void()> after = [&] { ++ran; };
+    EXPECT_FALSE(w.run_queued(after, 1000));
+    EXPECT_TRUE(after);
+    EXPECT_EQ(ran.load(), 1);
+}

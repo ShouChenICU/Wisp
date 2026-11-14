@@ -136,17 +136,21 @@ bool StorageWorker::running() const {
     return accepting_;
 }
 
-bool StorageWorker::submit(std::function<void()> job, IoLane lane) {
+bool StorageWorker::submit(std::function<void()> job, IoLane lane) { return try_submit(job, lane); }
+
+bool StorageWorker::try_submit(std::function<void()>& job, IoLane lane) {
     if (!job) {
         return false;
     }
-    Item item{std::move(job), now()};
+    const uint64_t queued_us = now();
     std::lock_guard<os::Mutex> lock(mutex_);
     if (!accepting_) {
         return false;
     }
     ++pending_;
-    if (!lanes_[lane_index(lane)].push(std::move(item), 0)) {
+    Item item{std::move(job), queued_us};
+    if (!lanes_[lane_index(lane)].try_push(item, 0)) {
+        job = std::move(item.fn);
         --pending_;
         return false;
     }
@@ -175,19 +179,42 @@ Result<void> StorageWorker::run_sync(std::function<void()> job, uint32_t timeout
         job();
         return Result<void>::ok();
     }
-    auto done = std::make_shared<os::Semaphore>(1, 0);
+    return run_queued(job, timeout_ms, lane);
+}
+
+Result<void> StorageWorker::run_queued(std::function<void()>& job, uint32_t timeout_ms,
+                                       IoLane lane) {
+    if (!job) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "empty storage job");
+    }
+    if (sd_thread_waits_for_flash(config_.role)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "the sd worker must not wait for the flash worker");
+    }
+    if (on_worker()) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "a storage job must not wait for its own worker");
+    }
+    // Shared with the queued wrapper, which owns it once queued: after a
+    // timeout the job may still run, so it must not live on this stack.
+    struct Waited {
+        os::Semaphore done{1, 0};
+        std::function<void()> fn;
+    };
+    auto waited = std::make_shared<Waited>();
+    waited->fn = std::move(job);
     // The job's captures are released before done is given, so a caller
     // that waited may free whatever they referenced as soon as it wakes.
-    if (!submit(
-            [job = std::move(job), done]() mutable {
-                job();
-                job = nullptr;
-                done->give();
-            },
-            lane)) {
+    std::function<void()> wrapper = [waited] {
+        waited->fn();
+        waited->fn = nullptr;
+        waited->done.give();
+    };
+    if (!try_submit(wrapper, lane)) {
+        job = std::move(waited->fn);
         return Result<void>::err(ErrorCode::Busy, "storage worker queue full or stopping");
     }
-    if (!done->take(timeout_ms)) {
+    if (!waited->done.take(timeout_ms)) {
         return Result<void>::err(ErrorCode::Timeout, "storage job did not finish in time");
     }
     return Result<void>::ok();

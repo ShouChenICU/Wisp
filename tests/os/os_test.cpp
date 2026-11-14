@@ -94,6 +94,17 @@ TEST(Queue, FifoAndTimeout) {
     EXPECT_TRUE(q.pop(s, 0));
     EXPECT_EQ(s, "a");
 }
+TEST(Queue, TryPushKeepsTheItemWhenFull) {
+    Queue<std::string> q(1);
+    std::string a = "a";
+    EXPECT_TRUE(q.try_push(a, 0));
+    std::string b = "b";
+    EXPECT_FALSE(q.try_push(b, 0));
+    EXPECT_EQ(b, "b");
+    std::string s;
+    EXPECT_TRUE(q.pop(s, 0));
+    EXPECT_EQ(s, "a");
+}
 TEST(Queue, DropOldestWhenFull) {
     Queue<int> q(2);
     q.push(1, 0);
