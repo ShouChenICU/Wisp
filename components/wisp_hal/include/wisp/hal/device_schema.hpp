@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -58,6 +59,11 @@ public:
         : kind_(Kind::Number), d_(static_cast<double>(d)) {}
     constexpr ParamDefault(const char* s)  // NOLINT(google-explicit-constructor)
         : kind_(Kind::String), s_(s) {}
+    // An unscoped enum would otherwise reach the bool constructor through
+    // a boolean conversion; a schema default is never an enum constant.
+    template <typename T>
+        requires std::is_enum_v<T>
+    ParamDefault(T) = delete;
     // nullptr would otherwise become a String default that points nowhere.
     ParamDefault(std::nullptr_t) = delete;
 
@@ -142,10 +148,11 @@ Value render_schema(const DeviceSchema& schema);
 
 // Checks `args` (null means {}; anything else but a Map is refused) against
 // `cmd` and returns the complete argument map, optional args that are
-// missing filled with their default as a Value of the arg's type (an Int
-// default stays Int). Int accepts an Int or an
-// integral Double (stored as Int); Number accepts Int or Double (stored as
-// given). Every failure is InvalidArgument naming the argument and the
+// missing filled with their default as the Value of the default's own
+// kind: an Int default is an Int Value also for a Number arg, so a driver
+// reads a Number arg with as_double(), which accepts both. Int accepts an
+// Int or an integral Double (stored as Int); Number accepts Int or Double
+// (stored as given). Every failure is InvalidArgument naming the argument and the
 // rule: "unknown argument 'n'" (a key longer than 32 bytes is cut at a
 // character boundary and marked "..."), "missing argument 'n'", "'n' must be int",
 // "'n' must be between 10 and 2000", "'n' must be one of: a, b",

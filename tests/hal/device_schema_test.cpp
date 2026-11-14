@@ -212,7 +212,9 @@ constexpr CmdSpec kConstCmds[] = {{.name = "set", .desc = "Set all", .args = kCo
 constinit const DeviceSchema kConstSchema{.props = {}, .cmds = kConstCmds};
 
 static_assert(ParamDefault(80).kind() == ParamDefault::Kind::Int);
+static_assert(ParamDefault(0).kind() == ParamDefault::Kind::Int);
 static_assert(ParamDefault(80u).kind() == ParamDefault::Kind::Int);
+static_assert(ParamDefault('a').kind() == ParamDefault::Kind::Int);
 static_assert(ParamDefault(int64_t{-3}).as_int() == -3);
 static_assert(ParamDefault(80.0).kind() == ParamDefault::Kind::Number);
 static_assert(ParamDefault(80.0f).kind() == ParamDefault::Kind::Number);
@@ -222,6 +224,11 @@ static_assert(ParamDefault("soft").kind() == ParamDefault::Kind::String);
 static_assert(ParamDefault().kind() == ParamDefault::Kind::None);
 static_assert(ParamDefault().is_none());
 static_assert(!std::is_constructible_v<ParamDefault, std::nullptr_t>);
+enum UnscopedLevel { kLow, kHigh };
+enum class ScopedLevel { Low };
+static_assert(!std::is_constructible_v<ParamDefault, UnscopedLevel>);
+static_assert(!std::is_constructible_v<ParamDefault, ScopedLevel>);
+static_assert(ParamSpec{.name = "x", .type = ParamType::Int, .def = {}}.def.is_none());
 static_assert(std::is_trivially_destructible_v<ParamSpec>);
 static_assert(std::is_trivially_destructible_v<CmdSpec>);
 static_assert(std::is_trivially_destructible_v<DeviceSchema>);
@@ -257,6 +264,19 @@ TEST(DeviceSchema, DefaultsOfEveryKindRoundTrip) {
     ASSERT_TRUE(pulse_args);
     EXPECT_EQ(pulse_args.value().at("strength").type(), Value::Type::Int);
     EXPECT_EQ(pulse_args.value().at("strength").as_int(), 80);
+}
+
+TEST(DeviceSchema, AnIntDefaultOfANumberArgStaysInt) {
+    constexpr ParamSpec args[] = {
+        {.name = "gain", .type = ParamType::Number, .min = 0, .max = 4, .optional = true, .def = 2},
+    };
+    const CmdSpec c{.name = "set", .desc = "", .args = args};
+    ASSERT_TRUE(wisp::hal::check_schema(DeviceSchema{.props = {}, .cmds = {&c, 1}}));
+
+    auto filled = wisp::hal::validate_args(c, Value());
+    ASSERT_TRUE(filled) << message_of(filled);
+    EXPECT_EQ(filled.value().at("gain").type(), Value::Type::Int);
+    EXPECT_EQ(filled.value().at("gain").as_double(), 2.0);
 }
 
 TEST(DeviceSchema, FakeSchemaPassesTheChecks) {
