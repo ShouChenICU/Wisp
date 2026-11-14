@@ -40,7 +40,7 @@ struct Recorder {
     }
     // The events so far, once the bus has delivered everything queued.
     std::vector<Event> all(EventBus& bus) {
-        bus.wait_idle(2000);
+        EXPECT_TRUE(bus.wait_idle(2000));
         std::lock_guard<std::mutex> lock(mutex);
         return events;
     }
@@ -382,8 +382,10 @@ TEST(SystemSettings, CellFollowsEveryStoredBatch) {
 // revision(); only the cell stays put.
 TEST(SystemSettings, UnchangedBatchPublishesButLeavesTheCell) {
     Fixture fx;
+    const uint32_t before = fx.settings.cell().revision();
     ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
     const uint32_t cell_revision = fx.settings.cell().revision();
+    EXPECT_NE(cell_revision, before);
     const uint32_t revision = fx.settings.revision();
     ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
     EXPECT_EQ(fx.settings.cell().revision(), cell_revision);

@@ -297,6 +297,7 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulat
 - Parked: LeakSanitizer reports the glyph slot table in `a8_font.cpp` (kept for the whole process) in every UI test binary, so ASan runs of `ui_runtime_test` and `ui_cells_test` need `detect_leaks=0` or a suppression file.
 - Parked: `tools/check_topics.py` would report a dotted code identifier or file name (`` `wisp.fs` ``) in the first column of another table inside the "Event topics" section as a topic row; no such table exists there today.
 - Parked: no test fails if `UiRuntime`'s final drain after `stop()` were to run dispatch slots.
+- For the plan that moves subscribers onto the cells: a factory reset erases the settings without `SystemSettings::set()`, and a batch whose rollback fails leaves storage ahead of the cell, so the settings cell can lag storage until the next stored batch or the reboot (no event is published in either case); the first follower of the settings cell needs a `seed_cell()` after the erase.
 - For the plan that moves subscribers onto the cells: the power supply cell changes on every battery-percent step (up to once a second), so a subscriber that only follows charging or low filters in its callback, or the cell gets a coarser twin; after a failed read the cell keeps the last good supply while `PowerMonitor::last_status()` is empty, so the cell alone does not show that the reading is stale; on a boot that is already low a subscriber may briefly see the first percent with `low` still false before the next delivery.
 
 ## CI speed

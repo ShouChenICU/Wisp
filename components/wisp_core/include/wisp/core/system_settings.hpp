@@ -166,8 +166,9 @@ private:
     std::function<void(uint8_t)> apply_brightness_;
     os::Mutex mutex_;
     std::atomic<uint32_t> revision_{0};
-    // Declared after bus_ because its constructor takes it; this object is
-    // destroyed before the bus stops (App::stop() order).
+    // Declared after bus_ because its constructor takes it. Its owner
+    // declares this object after the bus, so the cell is destroyed before
+    // the bus object is (owner order, wisp/core/state_cell.hpp).
     StateCell<SystemSettingsValues> cell_;
 };
 
