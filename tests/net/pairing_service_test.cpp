@@ -958,6 +958,8 @@ TEST(PairingService, ReissueMovesTheDeadline) {
     // tick() notices a lapse too, and a second tick announces nothing more.
     svc.tick(second);
     EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+    // Nothing is active any more, so a cancel announces nothing either.
+    svc.cancel_code();
     svc.tick(second + 1);
 
     // Issued again after the lapse, a code gets a fresh deadline.
@@ -1000,5 +1002,19 @@ TEST(PairingService, LockDropsTheCodeBeforeTheFailedEvent) {
     EXPECT_EQ(f.pairing_frames(),
               (std::vector<std::string>{"code:1:" + std::to_string(1000 + 120000), "failed:1:0",
                                         "failed:2:0", "failed:3:0", "failed:4:0", "code:0:0",
+                                        "failed:5:1"}));
+}
+
+// With no code active, the lock-out has no code to drop: only the failed
+// frames go out, and the cell stays inactive throughout.
+TEST(PairingService, LockWithoutACodePublishesOnlyFailures) {
+    Fixture f;
+    auto& svc = f.make();
+    for (int i = 1; i <= 5; ++i) {
+        ASSERT_FALSE(svc.confirm("123456", browser(), 1000 + i));
+    }
+    EXPECT_EQ(svc.pairing_cell().get(), (PairingSnapshot{false, 0}));
+    EXPECT_EQ(f.pairing_frames(),
+              (std::vector<std::string>{"failed:1:0", "failed:2:0", "failed:3:0", "failed:4:0",
                                         "failed:5:1"}));
 }

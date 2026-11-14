@@ -166,9 +166,10 @@ public:
     bool enabled() const;
     // The station as net.wifi.state and net.wifi.enabled announced it: moves
     // exactly when one of them is published (and when init() loads the saved
-    // flag or forget_all() turns Wi-Fi back on, neither announced). Its rssi is the one of that
-    // moment; status() has the live one. A subscriber releases its subscription before WifiService
-    // is destroyed (App::stop() order; wisp/core/state_cell.hpp).
+    // flag or forget_all() turns Wi-Fi back on, neither announced). Its rssi
+    // is the one of that moment; status() has the live one. A subscriber
+    // releases its subscription before WifiService is destroyed (App::stop()
+    // order; wisp/core/state_cell.hpp).
     const core::StateCell<WifiSnapshot>& wifi_cell() const { return wifi_cell_; }
     // The hotspot as net.ap.state announced it; same lifetime rule.
     const core::StateCell<ApSnapshot>& ap_cell() const { return ap_cell_; }
