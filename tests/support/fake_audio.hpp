@@ -85,6 +85,7 @@ public:
         info_.id = "audio_in.main";
         info_.cls = kClass;
         info_.model = "FAKE";
+        info_.caps["role"] = wisp::Value("main");
         set_script(std::move(script));
     }
 
@@ -247,6 +248,7 @@ public:
         info_.id = "audio_out.main";
         info_.cls = kClass;
         info_.model = "FAKE";
+        info_.caps["role"] = wisp::Value("main");
     }
 
     const hal::DeviceInfo& info() const override { return info_; }

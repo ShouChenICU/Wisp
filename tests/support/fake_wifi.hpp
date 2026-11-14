@@ -41,7 +41,7 @@ namespace wisp::test {
 
 class FakeWifi : public wisp::hal::Wifi {
 public:
-    explicit FakeWifi(std::string id) {
+    explicit FakeWifi(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -49,6 +49,7 @@ public:
             {"ap", true},
             {"bands", wisp::List{wisp::Value("2.4GHz")}},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }

@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wisp/base/result.hpp"
@@ -33,7 +34,12 @@ public:
     //     caught here at boot rather than at a cast), and for a generic
     //     device (interface None) whose id is not "<kind>.<name>"
     //     ([a-z][a-z0-9_]*\.[a-z0-9_]+) of at most 32 bytes;
-    //   - AlreadyExists if a device with the same id is registered.
+    //   - AlreadyExists if a device with the same id is registered, or
+    //     ("role <role> already taken by <other id>") if one of its caps
+    //     roles is already held by a registered device of the same
+    //     interface -- for a generic device, of the same kind (the id's
+    //     prefix before the dot), so haptic.main and led.main can both be
+    //     "main". Uniqueness is what lets by_role() return the one match.
     // Boards record a failure as a failed device; it never blocks boot.
     Result<void> add(std::shared_ptr<hal::Device> device);
 
@@ -74,6 +80,15 @@ public:
         return result;
     }
 
+    // Returns the device of interface T that has `role` in its caps (see
+    // wisp/hal/roles.hpp), or nullptr. add() keeps (interface, role)
+    // unique, so there is at most one.
+    template <hal::TypedInterface T>
+    std::shared_ptr<T> by_role(std::string_view role) const {
+        auto device = find_by_role(T::kInterface, role);
+        return device ? std::static_pointer_cast<T>(device) : nullptr;
+    }
+
     // Returns every registered device, sorted by id.
     std::vector<std::shared_ptr<hal::Device>> all() const;
 
@@ -90,6 +105,8 @@ public:
     Value manifest(const std::string& board) const;
 
 private:
+    std::shared_ptr<hal::Device> find_by_role(hal::Interface iface, std::string_view role) const;
+
     mutable os::Mutex mutex_;
     std::vector<std::shared_ptr<hal::Device>> devices_;
 };

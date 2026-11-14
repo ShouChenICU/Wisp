@@ -46,7 +46,7 @@ namespace wisp::test {
 class FakeDisplay : public wisp::hal::Display {
 public:
     explicit FakeDisplay(std::string id, int width, int height, int area_align = 1,
-                         std::string shape = "rounded_rect") {
+                         std::string shape = "rounded_rect", std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -56,6 +56,7 @@ public:
             {"corner_radius", 40},      {"panel", wisp::Value("amoled")},
             {"brightness", true},       {"standby", wisp::Value("off")},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -128,11 +129,12 @@ private:
 // wisp::hal::Device::set_power()'s default) by setting `unsupported`.
 class FakeTouch : public wisp::hal::Touch {
 public:
-    explicit FakeTouch(std::string id, int max_points = 1) {
+    explicit FakeTouch(std::string id, int max_points = 1, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
         info_.caps = wisp::Properties{{"max_points", max_points}, {"standby", wisp::Value("off")}};
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -178,7 +180,7 @@ private:
 // (defaulting to an all-zero sample), repeatedly, until changed again.
 class FakeImu : public wisp::hal::Imu {
 public:
-    explicit FakeImu(std::string id) {
+    explicit FakeImu(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -189,6 +191,7 @@ public:
             {"max_rate_hz", 1000},
             {"standby", wisp::Value("off")},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -303,6 +306,7 @@ public:
         info_.caps = wisp::Properties{
             {"removable", removable},
             {"fs", wisp::Value("fake")},
+            {"role", wisp::Value(removable ? "removable" : "internal")},
         };
     }
 
@@ -378,7 +382,7 @@ private:
 
 class FakePower : public wisp::hal::Power {
 public:
-    explicit FakePower(std::string id) {
+    explicit FakePower(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -386,6 +390,7 @@ public:
             {"battery", true},
             {"charging_status", true},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -443,10 +448,11 @@ private:
 
 class FakeClock : public wisp::hal::Clock {
 public:
-    explicit FakeClock(std::string id) {
+    explicit FakeClock(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -471,10 +477,11 @@ private:
 // completes in one call instead of real-time.
 class FakeAudioIn : public wisp::hal::AudioIn {
 public:
-    explicit FakeAudioIn(std::string id) {
+    explicit FakeAudioIn(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -501,10 +508,11 @@ private:
 // volume loopback.cpp's record_and_play() applied.
 class FakeAudioOut : public wisp::hal::AudioOut {
 public:
-    explicit FakeAudioOut(std::string id) {
+    explicit FakeAudioOut(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
