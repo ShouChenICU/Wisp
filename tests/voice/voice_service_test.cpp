@@ -182,6 +182,7 @@ struct VoiceServiceTest : ::testing::Test {
                 .tones = &tones,
                 .locks = &locks,
                 .network_up = [this] { return net_up.load(); },
+                .network_expected = [this] { return net_expected.load(); },
                 .volume = [] { return uint8_t{100}; },
                 .now_ms = [this] { return wisp::os::now_ms() + virtual_ms.load(); },
             },
@@ -297,6 +298,7 @@ struct VoiceServiceTest : ::testing::Test {
     wisp::core::WakeLockRegistry locks{bus};
     wisp::core::TonePlayer tones{out, nullptr};
     std::atomic<bool> net_up{true};
+    std::atomic<bool> net_expected{false};
     std::unique_ptr<VoiceService> voice;
 
     mutable std::mutex mu;
@@ -1425,4 +1427,118 @@ TEST_F(VoiceServiceTest, PrerollZeroDisablesPriming) {
     EXPECT_EQ(mic->opens(), 1);
     voice->cancel_capture();
     ASSERT_TRUE(wait_idle());
+}
+
+// --- A network on its way (Wi-Fi reconnecting after deep standby) ---
+
+TEST_F(VoiceServiceTest, OfflineAndNotExpectedIsRefusedAtOnce) {
+    add_asr();
+    net_up = false;
+    net_expected = false;
+    make();
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(reasons(), std::vector<std::string>{"offline"});
+    EXPECT_EQ(mic->opens(), 0);
+    EXPECT_EQ(voice_locks(), 0u);
+
+    // A primed mic is closed once by the refusal.
+    clear_events();
+    mic->set_script({audio::ramp(kMicSettleMs + 300)});
+    voice->prime();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(reasons(), std::vector<std::string>{"offline"});
+    EXPECT_FALSE(mic->is_open());
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_EQ(mic->closes(), 1);
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, RecordsWhileTheNetworkIsOnItsWay) {
+    add_asr();
+    net_up = false;
+    net_expected = true;
+    make();
+    server.push_asr(asr_text("你好"));
+    mic->set_script({sine(kMicSettleMs + 500)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Transcribing; }, 2000));
+    // Waiting for the network, not failing and not sending.
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(voice->state(), VoiceState::Transcribing);
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_TRUE(reasons().empty());
+
+    virtual_ms += 2000;
+    net_up = true;
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(got_transcripts(), std::vector<std::string>{"你好"});
+    EXPECT_EQ(count(kAsrPath), 1u);
+    EXPECT_EQ(states(), (std::vector<std::string>{"listening", "transcribing", "idle"}));
+    EXPECT_TRUE(reasons().empty());
+    voice->end_speech();
+    EXPECT_TRUE(wait_until([&] { return voice_locks() == 0; }, 1000));
+}
+
+TEST_F(VoiceServiceTest, GivesUpWhenTheNetworkNeverComes) {
+    add_asr();
+    net_up = false;
+    net_expected = true;
+    make();
+    mic->set_script({sine(kMicSettleMs + 500)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Transcribing; }, 2000));
+    wisp::os::sleep_ms(200);
+    EXPECT_TRUE(reasons().empty());
+    EXPECT_EQ(voice_locks(), 3u);
+
+    virtual_ms += wisp::voice::kNetWaitMs;
+    ASSERT_TRUE(wait_until([&] { return !reasons().empty(); }, 2000));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(reasons(), std::vector<std::string>{"offline"});
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_TRUE(got_transcripts().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+}
+
+TEST_F(VoiceServiceTest, CancelDuringTheNetworkWaitEndsTheRound) {
+    add_asr();
+    net_up = false;
+    net_expected = true;
+    make();
+    auto wait_for_network = [&] {
+        mic->set_script({sine(kMicSettleMs + 500)});
+        ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+        ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+        voice->end_capture();
+        ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Transcribing; }, 2000));
+    };
+    wait_for_network();
+    virtual_ms += 1000;
+    wisp::os::sleep_ms(150);
+    const uint64_t t0 = wisp::os::now_ms();
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Idle; }, 1000));
+    EXPECT_LT(wisp::os::now_ms() - t0, 200u);
+    ASSERT_TRUE(wait_idle());
+    EXPECT_TRUE(reasons().empty());
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_TRUE(got_transcripts().empty());
+    EXPECT_EQ(voice_locks(), 0u);
+
+    // stop() ends the wait as promptly.
+    wait_for_network();
+    const uint64_t t1 = wisp::os::now_ms();
+    voice->stop();
+    EXPECT_LT(wisp::os::now_ms() - t1, 500u);
+    EXPECT_EQ(count(kAsrPath), 0u);
+    EXPECT_EQ(voice_locks(), 0u);
 }

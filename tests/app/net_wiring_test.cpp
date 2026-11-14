@@ -298,6 +298,39 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 
 }  // namespace
 
+// What the voice reads before waiting for recognition: a connection is
+// on its way exactly while Wi-Fi is enabled and a network is saved, the
+// radio being off in deep standby included.
+TEST(NetWiring, NetworkExpectedFollowsEnabledAndSavedNetworks) {
+    Rig r;
+    EXPECT_FALSE(r.net->network_expected());
+    r.net->start();
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    EXPECT_TRUE(r.net->network_expected());
+    // The time sync's lock would keep the device out of deep standby.
+    ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.ntp"); }, 5000));
+
+    r.pm->enter_standby();
+    r.pm->tick(wisp::os::now_ms() + 3'600'000);
+    ASSERT_EQ(r.pm->level(), PowerLevel::DeepStandby);
+    ASSERT_TRUE(wait_until([&] { return !r.wifi->radio_on.load(); }, 5000));
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() != wisp::net::WifiState::Connected; }, 5000));
+    EXPECT_TRUE(r.net->network_expected());
+
+    ASSERT_TRUE(r.net->wifi()->set_enabled(false, wisp::os::now_ms()));
+    EXPECT_TRUE(wait_until([&] { return !r.net->network_expected(); }, 5000));
+    ASSERT_TRUE(r.net->wifi()->set_enabled(true, wisp::os::now_ms()));
+    EXPECT_TRUE(wait_until([&] { return r.net->network_expected(); }, 5000));
+
+    ASSERT_TRUE(r.net->wifi()->forget_network("Home"));
+    EXPECT_TRUE(wait_until([&] { return !r.net->network_expected(); }, 5000));
+
+    r.net->stop();
+    EXPECT_FALSE(r.net->network_expected());
+}
+
 TEST(NetWiring, ExternalPowerKeepsNetworkWithoutWakingScreenAndUserOffWins) {
     Rig r(true);
     // Full battery still counts as plugged in; the baseline emits no event.

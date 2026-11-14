@@ -194,6 +194,11 @@ public:
     // without a WifiService): one atomic load, never a lock, for readers
     // that must not wait (the scene task's wisp.device.info()).
     std::optional<net::WifiState> wifi_state() const;
+    // Wi-Fi is enabled by the user and at least one network is saved, so
+    // a connection is being made or will be (deep standby only holds the
+    // radio off until a network wake lock): as of the same tick, one
+    // atomic load. False without a WifiService.
+    bool network_expected() const { return network_expected_.load(); }
     net::PairingService* pairing() const { return pairing_.get(); }
     // The admin WebSocket's hub (the agent's frames go there); null without
     // an admin server. Lives until stop().
@@ -238,6 +243,7 @@ private:
     std::vector<core::SubscriptionId> subscriptions_;
     // static_cast<int>(net::WifiState), or -1 without a WifiService.
     std::atomic<int> wifi_state_{-1};
+    std::atomic<bool> network_expected_{false};
     std::atomic<bool> sta_up_{false};
     std::atomic<bool> ap_up_{false};
 

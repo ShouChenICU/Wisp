@@ -64,6 +64,7 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .tones = deps_.tones,
         .locks = deps_.locks,
         .network_up = deps_.network_up,
+        .network_expected = deps_.network_expected,
         .volume = [this] { return volume_.load(); },
     });
     core::ModelProfileService* models = &deps_.models;

@@ -33,7 +33,10 @@ inline constexpr size_t kFrameSamples = kSampleRate / 1000 * kFrameMs;
 
 // Recognition and speech (spec 4.2, 4.4).
 inline constexpr uint32_t kAsrTimeoutMs = 15000;
-inline constexpr uint32_t kAsrRetries = 1;   // on a 429 or 5xx
+inline constexpr uint32_t kAsrRetries = 1;  // on a 429 or 5xx
+// How long a recording waits for a network that is on its way (Wi-Fi
+// reconnecting after deep standby) before recognition gives up offline.
+inline constexpr uint32_t kNetWaitMs = 8000;
 inline constexpr size_t kTtsMaxChars = 200;  // code points spoken per turn
 inline constexpr uint32_t kTtsDefaultRate = 24000;
 // spec 2: the 15 s budget is how long a TTS request may go without any

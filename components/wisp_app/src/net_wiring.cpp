@@ -68,6 +68,7 @@ void NetWiring::start() {
         }
         const net::WifiState state = wifi_->status().state;
         wifi_state_.store(static_cast<int>(state));
+        network_expected_.store(wifi_->enabled() && !wifi_->saved_ssids().empty());
         deps_.report.set_note("net", state == net::WifiState::Connecting ? "connecting" : "off");
 
         if (deps_.scene_http != nullptr && deps_.wakelocks != nullptr) {
@@ -236,6 +237,7 @@ void NetWiring::stop() {
     sta_up_.store(false);
     ap_up_.store(false);
     wifi_state_.store(-1);
+    network_expected_.store(false);
     admin_.reset();
     time_sync_.reset();
     wifi_.reset();
@@ -267,6 +269,7 @@ void NetWiring::run() {
             wifi_->tick(now);
             const net::WifiState state = wifi_->status().state;
             wifi_state_.store(static_cast<int>(state));
+            network_expected_.store(wifi_->enabled() && !wifi_->saved_ssids().empty());
             sta_up_.store(state == net::WifiState::Connected);
             ap_up_.store(wifi_->ap_status().active);
             hold_hotspot_lock(ap_up_.load());

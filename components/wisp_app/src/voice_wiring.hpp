@@ -54,6 +54,8 @@ struct VoiceWiringDeps {
     // Read on wisp.voice and the callers of the triggers: cached values
     // only.
     std::function<bool()> network_up;
+    // voice::VoiceDeps::network_expected.
+    std::function<bool()> network_expected;
     std::function<bool()> screen_on;
 };
 

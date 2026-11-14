@@ -607,6 +607,9 @@ Result<void> App::start() {
                         impl->net ? impl->net->wifi_state() : std::nullopt;
                     return !st || *st == net::WifiState::Connected;
                 },
+            // Cached like network_up (the "wisp.net" task's last tick):
+            // wisp.voice never calls into the WifiService.
+            .network_expected = [impl] { return impl->net && impl->net->network_expected(); },
             .screen_on = [impl] { return impl->power_manager && !impl->power_manager->standby(); },
         });
         if (!impl_->voice) WLOG_E("app", "no memory for the voice; voice is off");

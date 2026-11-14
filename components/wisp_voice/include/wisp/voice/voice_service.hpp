@@ -17,7 +17,12 @@
 // hold, a tap capture the Vad does not call Done, or an empty transcript
 // is "not heard" (not an error): voice.state goes back to idle with
 // result "not_heard". Otherwise the recording goes to AsrClient and the
-// text to the on_transcript callback. cancel_capture() drops the
+// text to the on_transcript callback. Offline with network_expected()
+// (Wi-Fi coming back from deep standby, which the round's network lock
+// asks for), the capture records anyway and recognition stays in
+// transcribing for up to kNetWaitMs until network_up(): still offline is
+// the "offline" error, a cancel or stop() ends the round without one.
+// Offline and not expected is refused at once. cancel_capture() drops the
 // recording, or aborts the ASR request already sent. The start tone goes
 // through TonePlayer, which plays the newest sound only: starting a
 // capture silences an alarm that is ringing.
@@ -165,6 +170,10 @@ struct VoiceDeps {
     core::TonePlayer* tones = nullptr;
     core::WakeLockRegistry* locks = nullptr;
     std::function<bool()> network_up;
+    // A connection is being made or will be (Wi-Fi enabled by the user,
+    // a network saved): a capture that starts offline records anyway and
+    // its recognition waits for the network. Empty: false.
+    std::function<bool()> network_expected;
     std::function<uint8_t()> volume;  // cached audio/volume
     std::function<uint64_t()> now_ms = os::now_ms;
 };

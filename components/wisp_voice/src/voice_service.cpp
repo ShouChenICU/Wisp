@@ -22,6 +22,9 @@ constexpr uint32_t kPushSliceMs = 50;
 // How long the idle task sleeps between looks at its flags (quit, a lost
 // wake-up, the round backstop).
 constexpr uint32_t kIdleWaitMs = 200;
+// How often recognition looks at the network, and at a cancel, while it
+// waits for a network that is on its way.
+constexpr uint32_t kNetPollMs = 100;
 
 bool blank(std::string_view s) {
     return std::all_of(s.begin(), s.end(),
@@ -563,7 +566,11 @@ void VoiceService::capture(const Command& c, bool primed) {
         refused = VoiceError::MicUnavailable;
     } else if (deps_.models.get().active_for(core::ModelKind::Asr).empty()) {
         refused = VoiceError::NoAsrProfile;
-    } else if (deps_.network_up && !deps_.network_up()) {
+    } else if (deps_.network_up && !deps_.network_up() &&
+               !(deps_.network_expected && deps_.network_expected())) {
+        // Offline with a connection on its way (Wi-Fi coming back from
+        // deep standby, which this round's network lock asked for): record
+        // now, and recognition waits for it below.
         refused = VoiceError::Offline;
     }
     if (primed && (cancelled_early || refused)) {
@@ -677,8 +684,17 @@ void VoiceService::capture(const Command& c, bool primed) {
     if (!send) return finish("not_heard");
 
     publish(VoiceState::Transcribing);
-    if (deps_.network_up && !deps_.network_up()) return failed(VoiceError::Offline);
     const uint32_t seq = c.capture;
+    if (deps_.network_up && !deps_.network_up()) {
+        // Up to kNetWaitMs for a network on its way, on the injected
+        // clock; a cancel or stop() ends the wait within one poll.
+        const uint64_t deadline = deps_.now_ms() + kNetWaitMs;
+        while (!deps_.network_up()) {
+            if (capture_cancelled(seq)) return finish(nullptr);
+            if (deps_.now_ms() >= deadline) return failed(VoiceError::Offline);
+            os::sleep_ms(kNetPollMs);
+        }
+    }
     AsrResult r = deps_.asr.transcribe(
         buf, [this, seq] { return capture_cancelled(seq); }, watch_.get(),
         [this, seq](uint32_t ticket) {
