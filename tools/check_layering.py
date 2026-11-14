@@ -54,6 +54,11 @@ docs/architecture.md):
     access; every other task relies on os::TaskConfig::flash_access's
     (and EspHttpServerConfig::flash_access's) false default. Scanned over
     the same roots as the flash-API rule above.
+  - Device ids (AGENTS.md section 3): the literals "<class>.main",
+    "net.wifi", "button.power", "storage.int" and "storage.sd" may not
+    appear in the portable components or simulator/*.cpp; devices are
+    found by role (wisp/hal/roles.hpp). Event topics that merely start
+    with an id ("storage.sd.inserted") are different literals and pass.
 
 Prints one "path:line: <message>" line per violation and exits 1 if
 any were found, else exits 0 with no output.
@@ -415,6 +420,33 @@ def check_flash_access_true(root, path, errors):
             )
 
 
+# A whole string literal that is one of the ids the portable code used to
+# look devices up by. The closing quote makes "storage.sd.inserted" (a
+# topic) a different literal.
+DEVICE_ID_LITERAL_RE = re.compile(
+    r'"(?:[a-z_]+\.main|net\.wifi|button\.power|storage\.int|storage\.sd)"'
+)
+
+
+def check_device_id_literals(root, errors):
+    """Portable code (every wisp_* component but the two ports) and the
+    simulator's own sources find devices by role, never by id literal."""
+    paths = []
+    for component in COMPONENTS:
+        paths.extend(iter_source_files(root, component))
+    sim_dir = root / "simulator"
+    if sim_dir.is_dir():
+        paths.extend(sorted(sim_dir.glob("*.cpp")))
+    for path in paths:
+        text = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for match in DEVICE_ID_LITERAL_RE.finditer(line):
+                errors.append(
+                    f"{path}:{lineno}: device id literal {match.group(0)}: "
+                    "look the device up by role (AGENTS.md section 3)"
+                )
+
+
 def run(root):
     """Runs every check against `root` and returns the list of error
     strings found (empty if clean). Importable so tools/check_layering_
@@ -430,6 +462,7 @@ def run(root):
     for path in iter_flash_api_files(root):
         check_flash_api(root, path, errors)
         check_flash_access_true(root, path, errors)
+    check_device_id_literals(root, errors)
     return errors
 
 
