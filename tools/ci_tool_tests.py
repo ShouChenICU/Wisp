@@ -13,6 +13,7 @@ FONT_INPUTS = ("components/wisp_ui/src/strings_*.cpp", "components/wisp_ui/fonts
 
 TESTS = {
     "check_layering_test": (),
+    "check_topics_test": (),
     "pack_assets_test": ("web/*", "tests/net/fixtures/*"),
     "wisp_scene_test": ("tests/smoke/*",),
     "check_i18n_test": ("web/app/i18n/*",),
