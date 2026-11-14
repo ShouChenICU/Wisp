@@ -12,6 +12,7 @@
 
 #include "dev/sim_devices.hpp"
 #include "support/fake_devices.hpp"
+#include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_key_controller.hpp"
@@ -20,6 +21,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
@@ -1297,6 +1299,45 @@ TEST(PowerManager, StateEventCarriesEveryLevel) {
     h.pm->tick(t0 + 60050 + 300000);
     h.pm->exit_standby();
     EXPECT_EQ(h.states(), (Strings{"dim", "standby", "deep_standby", "active"}));
+}
+
+// The level cell follows every transition; a subscriber sees each level
+// its dispatcher runs after.
+TEST(PowerManager, LevelCellFollowsEveryTransition) {
+    wisp::test::ManualDispatcher md;
+    Headless h;
+    std::vector<PowerLevel> seen;
+    wisp::core::CellSubscription sub =
+        h.pm->level_cell().subscribe([&](const PowerLevel& l) { seen.push_back(l); }, &md);
+
+    md.run_all();
+    EXPECT_EQ(seen, (std::vector<PowerLevel>{PowerLevel::Active}));
+    h.pm->enter_standby();
+    md.run_all();
+    EXPECT_EQ(seen, (std::vector<PowerLevel>{PowerLevel::Active, PowerLevel::Standby}));
+    h.pm->exit_standby();
+    md.run_all();
+    EXPECT_EQ(seen, (std::vector<PowerLevel>{PowerLevel::Active, PowerLevel::Standby,
+                                             PowerLevel::Active}));
+    EXPECT_EQ(h.pm->level_cell().revision(), 3u);
+    // The mirror still publishes exactly one power.state per change.
+    EXPECT_EQ(h.states(), (Strings{"standby", "active"}));
+}
+
+TEST(PowerManager, LevelReadsTheCell) {
+    Headless h;
+    h.pm->enter_standby();
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+    EXPECT_EQ(h.pm->level_cell().get(), PowerLevel::Standby);
+    EXPECT_TRUE(h.pm->standby());
+}
+
+// Nothing publishes power.state at boot: the cell's initial Active is not
+// a change.
+TEST(PowerManager, NoStateEventAtConstruction) {
+    Headless h;
+    EXPECT_EQ(h.pm->level_cell().revision(), 1u);
+    EXPECT_TRUE(h.states().empty());
 }
 
 // The power keys are read once and again only after a system.settings

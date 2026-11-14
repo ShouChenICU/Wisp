@@ -23,7 +23,8 @@
 // level is DeepStandby, WISP_ENABLE_LIGHT_SLEEP is enabled and no
 // cpu lock is held. A screen lock keeps the screen at Active: no dim, no
 // idle screen-off; enter_standby() still turns it off and leaves the lock.
-// Every level change publishes "power.state" ({"state": to_string(level)})
+// The level lives in level_cell(); every change of it publishes
+// "power.state" ({"state": to_string(level)}) through the cell's mirror
 // and logs "power: <level>".
 //
 // Devices (spec 4.2): on the way down every device with a standby policy
@@ -80,6 +81,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
@@ -144,6 +146,8 @@ public:
     void exit_standby();
 
     hal::PowerLevel level() const;
+    // The level, for components that follow it. Only transitions change it.
+    const core::StateCell<hal::PowerLevel>& level_cell() const { return level_cell_; }
     // level() >= Standby: the screen is off.
     bool standby() const;
     // What set_light_sleep was last told (false before the first call).
@@ -237,8 +241,6 @@ private:
     void show_brightness(int level);
     int dim_brightness() const;
 
-    void publish_state(hal::PowerLevel level);
-
     std::atomic<uint8_t> requested_brightness_{0};
     std::atomic<bool> brightness_job_queued_{false};
 
@@ -269,7 +271,10 @@ private:
     // go_to() calls so far, guarded by transition_mutex_: a transition that
     // released the lock can tell another one ran meanwhile.
     uint64_t transitions_ = 0;
-    std::atomic<hal::PowerLevel> level_{hal::PowerLevel::Active};
+    // Set only under transition_mutex_. Declared after bus_, so it is
+    // destroyed while the bus is still there. Starts at Active without an
+    // event: nothing announced a level at boot before the cell either.
+    core::StateCell<hal::PowerLevel> level_cell_;
     std::atomic<uint64_t> last_activity_ms_;
     std::atomic<bool> power_key_owned_{false};
     std::atomic<bool> light_sleep_on_{false};

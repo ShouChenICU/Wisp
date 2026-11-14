@@ -27,6 +27,16 @@ int64_t valid_or(int64_t value, bool (*valid)(int64_t), int64_t def) {
     return valid(value) ? value : def;
 }
 
+// The level cell's mirror: the power.state event subscribers had before
+// the cell, published under the cell's lock (so in change order).
+void power_state_mirror(core::EventBus& bus, const hal::PowerLevel&, const hal::PowerLevel& after) {
+    core::Event e;
+    e.topic = core::topics::kPowerState;
+    e.source = "app.power";
+    e.payload = wisp::Properties{{"state", wisp::Value(std::string(hal::to_string(after)))}};
+    bus.publish(std::move(e));
+}
+
 }  // namespace
 
 PowerManager::PowerManager(PowerManagerDeps deps)
@@ -42,6 +52,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       set_light_sleep_(std::move(deps.set_light_sleep)),
       before_deep_standby_(std::move(deps.before_deep_standby)),
       on_activity_(std::move(deps.on_activity)),
+      level_cell_(bus_, hal::PowerLevel::Active, &power_state_mirror),
       last_activity_ms_(os::now_ms()) {
     read_settings();
 
@@ -122,9 +133,9 @@ void PowerManager::run_on_ui(const char* what, std::function<void()> fn) {
     }
 }
 
-hal::PowerLevel PowerManager::level() const { return level_.load(); }
+hal::PowerLevel PowerManager::level() const { return level_cell_.get(); }
 
-bool PowerManager::standby() const { return !screen_lit(level_.load()); }
+bool PowerManager::standby() const { return !screen_lit(level_cell_.get()); }
 
 bool PowerManager::light_sleep_on() const { return light_sleep_on_.load(); }
 
@@ -132,7 +143,7 @@ bool PowerManager::light_sleep_supported() const { return static_cast<bool>(set_
 
 void PowerManager::enter_standby() {
     std::unique_lock<os::Mutex> lock(transition_mutex_);
-    if (!screen_lit(level_.load())) {
+    if (!screen_lit(level())) {
         return;  // The screen is already off.
     }
     go_to(hal::PowerLevel::Standby, now_for_eval(), lock);
@@ -141,7 +152,7 @@ void PowerManager::enter_standby() {
 void PowerManager::exit_standby() {
     {
         std::unique_lock<os::Mutex> lock(transition_mutex_);
-        if (level_.load() == hal::PowerLevel::Active) {
+        if (level() == hal::PowerLevel::Active) {
             return;
         }
         go_to(hal::PowerLevel::Active, now_for_eval(), lock);
@@ -151,12 +162,12 @@ void PowerManager::exit_standby() {
 
 void PowerManager::note_activity() {
     last_activity_ms_.store(os::now_ms());
-    if (level_.load() != hal::PowerLevel::Dim) {
+    if (level() != hal::PowerLevel::Dim) {
         return;
     }
     run_on_ui("undim", [this] {
         std::unique_lock<os::Mutex> lock(transition_mutex_);
-        if (level_.load() == hal::PowerLevel::Dim) {
+        if (level() == hal::PowerLevel::Dim) {
             go_to(hal::PowerLevel::Active, now_for_eval(), lock);
         }
     });
@@ -194,7 +205,7 @@ void PowerManager::tick(uint64_t now_ms) {
 
     // deep_due_ is refreshed even while a network lock holds the level,
     // so releasing that lock can go deep without waiting for a tick.
-    const hal::PowerLevel current = level_.load();
+    const hal::PowerLevel current = level();
     const bool work = wanted_level(now_ms) != current || busy_pending_.load() ||
                       wants_light_sleep(current) != light_sleep_on_.load() ||
                       deep_due_at(now_ms) != deep_due_.load();
@@ -258,7 +269,7 @@ uint64_t PowerManager::now_for_eval() const {
 }
 
 bool PowerManager::deep_due_at(uint64_t now_ms) const {
-    if (screen_lit(level_.load())) {
+    if (screen_lit(level())) {
         return false;
     }
     const int64_t deep_ms = deep_after_ms_.load();
@@ -267,7 +278,7 @@ bool PowerManager::deep_due_at(uint64_t now_ms) const {
 }
 
 hal::PowerLevel PowerManager::wanted_level(std::optional<uint64_t> now_ms) const {
-    const hal::PowerLevel current = level_.load();
+    const hal::PowerLevel current = level();
     const bool screen_lock = locks_.held(core::WakeLockKind::Screen);
     switch (current) {
         case hal::PowerLevel::Active:
@@ -315,7 +326,7 @@ void PowerManager::evaluate(std::optional<uint64_t> now_ms) {
         deep_due_.store(deep_due_at(*now_ms));
     }
     const hal::PowerLevel target = wanted_level(now_ms);
-    if (target != level_.load()) {
+    if (target != level()) {
         go_to(target, now_ms.value_or(now_for_eval()), lock);
     } else {
         retry_busy();  // a level change has just asked every device anyway
@@ -326,7 +337,7 @@ void PowerManager::evaluate(std::optional<uint64_t> now_ms) {
 void PowerManager::go_to(hal::PowerLevel target, uint64_t now_ms,
                          std::unique_lock<os::Mutex>& lock) {
     const uint64_t transition = ++transitions_;
-    const hal::PowerLevel current = level_.load();
+    const hal::PowerLevel current = level();
     if (target == current) {
         return;
     }
@@ -426,9 +437,13 @@ void PowerManager::screen_on(std::unique_lock<os::Mutex>& lock) {
 }
 
 void PowerManager::set_level(hal::PowerLevel level) {
-    level_.store(level);
+    // Every caller moves to a different level (go_to() returns when the
+    // target is the current one), so the cell's skipping of an equal set()
+    // drops no power.state. The one exception is headless, where two
+    // transitions can overlap while transition_mutex_ is released (see
+    // there) and both reach the same level: that change is announced once.
+    level_cell_.set(level);
     WLOG_I(kTag, "power: %s", hal::to_string(level));
-    publish_state(level);
 }
 
 std::vector<std::shared_ptr<hal::Device>> PowerManager::ordered_devices(
@@ -508,7 +523,7 @@ void PowerManager::retry_busy() {
 }
 
 void PowerManager::update_light_sleep() {
-    const bool want = wants_light_sleep(level_.load());
+    const bool want = wants_light_sleep(level());
     if (want == light_sleep_on_.load()) {
         return;
     }
@@ -565,7 +580,7 @@ void PowerManager::apply_brightness(uint8_t level) {
     if (panel_asleep_) {
         return;  // applied on wake
     }
-    show_brightness(level_.load() == hal::PowerLevel::Dim ? dim_brightness() : level);
+    show_brightness(level_cell_.get() == hal::PowerLevel::Dim ? dim_brightness() : level);
 }
 
 void PowerManager::show_brightness(int level) {
@@ -586,14 +601,6 @@ int PowerManager::dim_brightness() const {
 
 void PowerManager::set_power_key_owned(bool owned) {
     power_key_owned_.store(owned, std::memory_order_release);
-}
-
-void PowerManager::publish_state(hal::PowerLevel level) {
-    core::Event e;
-    e.topic = core::topics::kPowerState;
-    e.source = "app.power";
-    e.payload = wisp::Properties{{"state", wisp::Value(std::string(hal::to_string(level)))}};
-    bus_.publish(std::move(e));
 }
 
 }  // namespace wisp::app
