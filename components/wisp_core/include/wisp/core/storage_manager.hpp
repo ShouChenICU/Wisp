@@ -322,7 +322,9 @@ public:
     // list_dir() one entry at a time, in directory order (unsorted),
     // without holding the whole listing: `visit` returns false to stop.
     // It runs with the I/O lock of `path`'s medium held, so it must not
-    // call back into this class.
+    // call back into this class at all, on either medium: the same medium
+    // would deadlock on that lock, and the other one could take the I/O
+    // locks against their order (see the lock order below).
     Result<void> visit_dir(const std::string& path,
                            const std::function<bool(const DirEntry&)>& visit);
 
@@ -423,6 +425,13 @@ private:
 
     // medium_of() for a normalized `path` against `v`.
     static Medium medium_in(const View& v, const std::string& path);
+
+    // The medium an entry point checks the thread against and locks for
+    // `raw`. A path that does not normalize is bad input on neither
+    // medium: it fails here, counting `calls_on_error` in calls(), before
+    // any thread check or lock, instead of tripping the flash rule as
+    // medium_of()'s Internal would on the SD I/O thread.
+    Result<Medium> medium_for_call(const std::string& raw, uint64_t calls_on_error = 1) const;
 
     os::Mutex& io_mu(Medium m) const { return m == Medium::Sd ? sd_io_mu_ : int_io_mu_; }
 

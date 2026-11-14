@@ -1043,6 +1043,39 @@ TEST(StorageManager, SdWriteOnTheSdIoThreadIsAllowed) {
     EXPECT_EQ(read_back, "a");
 }
 
+// A path that does not normalize is bad input, not a thread violation:
+// from the SD I/O thread (where the flash rule would fire for an
+// Internal path) every entry point returns InvalidArgument without
+// dying, and still counts in calls().
+TEST(StorageManager, MalformedPathOnTheSdIoThreadIsInvalidArgument) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    const std::string bad = f.sd + "/wisp/../wisp/library/a";
+    const std::string good = f.sd + "/wisp/library/b";
+    ASSERT_TRUE(f.mgr->write_atomic(good, bytes("b")));
+    const uint64_t before = f.mgr->calls();
+    wisp::ErrorCode write_code{}, read_code{}, remove_code{}, rename_to_code{}, rename_from_code{};
+    auto t = wisp::os::Task::spawn({}, [&] {
+        wisp::os::set_sd_io_thread();
+        write_code = f.mgr->write_atomic(bad, bytes("a")).error().code;
+        read_code = f.mgr->read_file(bad).error().code;
+        remove_code = f.mgr->remove_tree(bad).error().code;
+        rename_to_code = f.mgr->rename(good, bad).error().code;
+        rename_from_code = f.mgr->rename(bad, good).error().code;
+        wisp::os::clear_sd_io_thread();
+    });
+    t->join();
+    EXPECT_EQ(write_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(read_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(remove_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(rename_to_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(rename_from_code, wisp::ErrorCode::InvalidArgument);
+    // write, read, remove: one each; rename with a bad target: both of its
+    // paths; rename with a bad source: stops at the first.
+    EXPECT_EQ(f.mgr->calls(), before + 3 + 2 + 1);
+    EXPECT_TRUE(exists(good));
+}
+
 namespace {
 
 // Threads stay registered across these death tests, so they run in the

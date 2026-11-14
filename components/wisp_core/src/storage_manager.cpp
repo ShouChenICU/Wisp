@@ -510,6 +510,16 @@ Medium StorageManager::medium_of(const std::string& raw_path) const {
     return medium_in(view(), normalized.value());
 }
 
+Result<Medium> StorageManager::medium_for_call(const std::string& raw_path,
+                                               uint64_t calls_on_error) const {
+    Result<std::string> normalized = normalize_path(raw_path);
+    if (!normalized) {
+        calls_.fetch_add(calls_on_error, std::memory_order_relaxed);
+        return Result<Medium>::err(normalized.error().code, normalized.error().message);
+    }
+    return Result<Medium>::ok(medium_in(view(), normalized.value()));
+}
+
 bool StorageManager::has_sd() const {
     std::lock_guard<os::Mutex> lock(state_mu_);
     return ready_ && sd_dev_ != nullptr;
@@ -607,7 +617,11 @@ Result<std::string> StorageManager::write_root(Area area) const {
 
 Result<void> StorageManager::write_atomic(const std::string& raw_path,
                                           std::span<const uint8_t> data) {
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::write_atomic");
     std::lock_guard<os::Mutex> io(io_mu(medium));
     const View v = view();
@@ -729,7 +743,11 @@ Result<std::pair<std::string, uint64_t>> StorageManager::open_for_read(const Vie
 
 Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_path) {
     using R = Result<std::vector<uint8_t>>;
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::read_file");
     std::lock_guard<os::Mutex> io(io_mu(medium));
 
@@ -748,7 +766,11 @@ Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_pa
 
 Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_path) {
     using R = Result<os::LargeBuffer>;
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::read_file_large");
     std::lock_guard<os::Mutex> io(io_mu(medium));
 
@@ -771,7 +793,11 @@ Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_p
 Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, uint64_t offset,
                                                    size_t len) {
     using R = Result<os::LargeBuffer>;
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::read_range");
     std::lock_guard<os::Mutex> io(io_mu(medium));
 
@@ -889,7 +915,11 @@ bool StorageManager::in_internal_library(const View& v, const std::string& path)
 }
 
 Result<void> StorageManager::append(const std::string& raw_path, std::span<const uint8_t> data) {
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::append");
     std::lock_guard<os::Mutex> io(io_mu(medium));
     const View v = view();
@@ -922,7 +952,12 @@ Result<void> StorageManager::append(const std::string& raw_path, std::span<const
 }
 
 Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_path) {
-    WISP_ASSERT_MEDIUM_THREAD(medium_of(raw_path) == Medium::Sd, "StorageManager::list_dir");
+    // A malformed path is left to visit_dir(), which rejects (and counts)
+    // it before any thread check.
+    if (Result<std::string> normalized = normalize_path(raw_path); normalized) {
+        WISP_ASSERT_MEDIUM_THREAD(medium_in(view(), normalized.value()) == Medium::Sd,
+                                  "StorageManager::list_dir");
+    }
     std::vector<DirEntry> out;
     Result<void> r = visit_dir(raw_path, [&out](const DirEntry& e) {
         out.push_back(e);
@@ -939,7 +974,11 @@ Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_pa
 Result<void> StorageManager::visit_dir(const std::string& raw_path,
                                        const std::function<bool(const DirEntry&)>& visit) {
     using R = Result<void>;
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::visit_dir");
     std::lock_guard<os::Mutex> io(io_mu(medium));
     const View v = view();
@@ -992,7 +1031,11 @@ Result<void> StorageManager::visit_dir(const std::string& raw_path,
 }
 
 Result<void> StorageManager::remove_tree(const std::string& raw_path) {
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::remove_tree");
     std::lock_guard<os::Mutex> io(io_mu(medium));
     const View v = view();
@@ -1018,7 +1061,16 @@ Result<void> StorageManager::remove_tree(const std::string& raw_path) {
 }
 
 Result<void> StorageManager::rename(const std::string& raw_from, const std::string& raw_to) {
-    const Medium medium = medium_of(raw_from);
+    Result<Medium> picked = medium_for_call(raw_from);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    // A malformed target counts both paths, as a rename that reaches it
+    // always has.
+    if (Result<Medium> to_picked = medium_for_call(raw_to, /*calls_on_error=*/2); !to_picked) {
+        return Result<void>::err(to_picked.error().code, to_picked.error().message);
+    }
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::rename");
     std::lock_guard<os::Mutex> io(io_mu(medium));
     const View v = view();
@@ -1085,7 +1137,11 @@ Result<void> StorageManager::rename(const std::string& raw_from, const std::stri
 }
 
 Result<uint64_t> StorageManager::tree_size(const std::string& raw_path) {
-    const Medium medium = medium_of(raw_path);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<uint64_t>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
     WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::tree_size");
     std::lock_guard<os::Mutex> io(io_mu(medium));
     const View v = view();
