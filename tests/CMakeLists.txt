@@ -442,6 +442,8 @@ wisp_test(NAME notify_binding_test SRCS scene/notify_binding_test.cpp
 target_include_directories(notify_binding_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 wisp_test(NAME sensor_binding_test SRCS scene/sensor_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME device_binding_test SRCS scene/device_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)

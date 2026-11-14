@@ -4,7 +4,8 @@
 //
 //   {"id": "todo", "name": "待办", "version": "1.0.0", "schema_version": 1,
 //    "entry": "main.lua", "icon": "assets/icon.png",
-//    "permissions": {"http": ["api.example.com"]}, "background": true,
+//    "permissions": {"http": ["api.example.com"], "device": ["haptic.main"]},
+//    "background": true,
 //    "files": "auto",
 //    "tools": [
 //      {"name": "today",
@@ -68,6 +69,11 @@ struct SceneManifest {
     // The data's structure version, 1-1000 (scene-device spec 7.3).
     int schema_version = 1;
     std::vector<std::string> http_hosts;  // permissions.http, at most 16
+    // permissions.device (device model spec 4.3): the ids wisp.device.get
+    // and wisp.device.call may use, at most 8, each ^[a-z][a-z0-9_]*\.[a-z0-9_]+$
+    // and at most 32 bytes. Whether such a device exists is decided at
+    // call time; a repeated id is kept and harmless.
+    std::vector<std::string> devices;
     // Going back sends the scene to the background instead of closing it
     // (scene-device spec 3.2).
     bool background = false;

@@ -948,6 +948,17 @@ TEST(Schema, DocIsUpToDate) {
     }
 }
 
+// Device model spec 4.3: scenes learn the generic device calls and the
+// grant they need from the same document.
+TEST(Schema, DocDescribesDeviceCalls) {
+    const std::string md = schema_markdown();
+    for (const char* needle : {"`wisp.device.list()`", "`wisp.device.get(id, prop)`",
+                               "`wisp.device.call(id, cmd, args)`", "`permission_denied`",
+                               "`rate_limited`", "- `permissions.device`: the device ids"}) {
+        EXPECT_NE(md.find(needle), std::string::npos) << needle;
+    }
+}
+
 // docs.read's widget/<name> (agent-core spec 4.4): one widget's properties
 // from the schema itself, so it can never fall behind.
 TEST(Schema, WidgetMarkdownForButton) {

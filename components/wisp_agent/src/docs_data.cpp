@@ -269,6 +269,7 @@ install is refused.
 - `schema_version`: an integer from 1 to 1000, the version of the structure of the
   scene's data (see `scene.migrate` below).
 - `permissions.http`: the hosts `wisp.http` may reach, at most 16.
+- `permissions.device`: the device ids `wisp.device.get` and `wisp.device.call` may use, at most 8.
 - `background` (default `false`): going back sends the scene to the background
   instead of closing it (see Background scenes).
 - `files` (default `"auto"`): where `wisp.files` keeps the scene's files: `"auto"`,
@@ -406,6 +407,20 @@ case insensitively for every external source, including `scene:<id>`.
   it, on each `"battery"` change, each `"minute"` of the clock (and at once
   when the time zone or `time_24h` changes) and each `"lang"` change. Any other
   event name is an error.
+- `wisp.device.list()` returns the peripherals that describe themselves, as an array
+  of `{id, class, model, role, schema}`. `schema.props` are read-only values;
+  `schema.cmds` are commands with their `args` (`type`, inclusive `min`/`max`,
+  `unit`, `choices`, `optional` with its `default`).
+- `wisp.device.get(id, prop)` returns a property's value, or `nil, code`.
+- `wisp.device.call(id, cmd, args)` runs a command (`args` a table, may be left out)
+  and returns its result, `true` when it returns nothing, or `nil, code`.
+- Codes: `not_found`, `invalid_argument` (the argument breaks the schema),
+  `permission_denied` (the id is not in `permissions.device`), `rate_limited`
+  (called again sooner than the command allows), `busy` (in use elsewhere, or off
+  while the screen is off), `device_failure`, `unavailable`.
+- `get` and `call` need the id in `permissions.device` of `scene.json`; `list` does
+  not. A call returns within 50 ms: a longer action (a 2 s vibration) starts and
+  ends by itself.
 )wispdoc"},
     {"lua/files", R"wispdoc(## wisp.files
 

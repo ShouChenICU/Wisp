@@ -24,6 +24,22 @@
 //   wisp.device.on("battery" | "minute" | "lang", fn): fn(info) each time
 //       the runtime calls run_device_handlers() for that event; another
 //       name is an argument error.
+//   wisp.device.list/get/call (device model spec 4.3), over
+//       core::DeviceService (SceneApi::devices):
+//       list() -> { {id =, class =, model =, role =, schema =}, ... }, the
+//       devices that describe themselves, sorted by id, at most
+//       kMaxListedDevices (the rest are left out without a sign); {}
+//       without the service. Needs no grant.
+//       get(id, prop) -> value, or nil, code.
+//       call(id, cmd, args) -> result (true for a null one), or nil, code;
+//       args a table or nil/none, anything else an argument error.
+//       Codes: "unavailable" without the service; "permission_denied" for
+//       an id not in device_grants (unless device_grant_all), decided
+//       before the service is asked, so an ungranted scene neither takes
+//       a rate slot nor learns which ids exist; otherwise the service's
+//       error as its snake_case code. Synchronous on the scene task: a
+//       driver returns within hal::kDeviceCallBudgetMs and touches no
+//       flash. Holder "agent" with device_grant_all, else `holder`.
 //   wisp.log.info/warn/error(...): log_lua_args() at that level, the same
 //   line print makes.
 //   wisp.scene.close(): sets close_requested; once the current message is
@@ -140,6 +156,7 @@
 #include <vector>
 
 #include "wisp/base/value.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_store.hpp"
@@ -199,6 +216,9 @@ struct FilesResult {
 
 // Runs on the wisp.fs worker with the scene's id.
 using FilesJob = std::function<FilesResult(core::SceneFiles& files, const std::string& scene)>;
+
+// The most entries wisp.device.list() returns, as the agent's device.list.
+inline constexpr size_t kMaxListedDevices = 32;
 
 // How many wisp.http and wisp.files calls together may wait for their
 // results in one VM; one more raises at the call.
@@ -306,6 +326,12 @@ struct SceneApi {
     // registry (bind_tools.cpp); this is only the declared set
     // wisp.tools.register checks against.
     std::vector<std::string> tool_names;
+    // wisp.device.get/call: the service (null: "unavailable"), the ids
+    // scene.json's permissions.device grants, and whether every id is
+    // granted (the agent's own lua.run VM, which calls as "agent").
+    core::DeviceService* devices = nullptr;
+    std::vector<std::string> device_grants;
+    bool device_grant_all = false;
 
     bool wants(DeviceEvent ev) const { return has_handlers[static_cast<size_t>(ev)]; }
 };

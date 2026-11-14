@@ -136,7 +136,8 @@ void SceneWiring::start_storage() {
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 const hal::ScreenShape& shape, std::function<Value()> device_status,
                                 std::function<void()> wake, core::WakeLockRegistry* locks,
-                                core::NotificationService* notices, core::SensorService* sensors) {
+                                core::NotificationService* notices, core::SensorService* sensors,
+                                core::DeviceService* devices) {
     if (!repo_) return;
     if (deps_.platform.http_client) {
         http_ = os::make_large<net::SceneHttp>(*deps_.platform.http_client);
@@ -157,7 +158,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .notifications = notices,
                                .background_list_path = {},
                                .sensors = sensors,
-                               .files = files_.get()};
+                               .files = files_.get(),
+                               .devices = devices};
     if (auto system = deps_.storage.write_root(core::Area::System)) {
         rt.background_list_path = system.value() + "/scenes/background.json";
     } else {

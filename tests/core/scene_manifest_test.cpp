@@ -320,3 +320,56 @@ TEST(SceneManifest, SchemaVersionRange) {
         EXPECT_EQ(r.value().schema_version, ok);
     }
 }
+
+// Device model spec 4.3: permissions.device names the devices
+// wisp.device.get/call may use; existence is checked at call time.
+TEST(SceneManifest, ParsesDevicePermissions) {
+    auto r = parse_scene_manifest(
+        manifest("todo", "x", "1.0.0", R"(,"permissions":{"device":["haptic.main"]})"));
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_EQ(r.value().devices, std::vector<std::string>{"haptic.main"});
+
+    // Without the key (an older package): no devices.
+    auto none = parse_scene_manifest(manifest());
+    ASSERT_TRUE(none);
+    EXPECT_TRUE(none.value().devices.empty());
+
+    // Eight, a 32-byte id, an id no device has and a repeated id (harmless)
+    // are all accepted.
+    std::string eight;
+    for (int i = 0; i < 8; ++i)
+        eight += std::string(i ? "," : "") + "\"led.l" + std::to_string(i) + "\"";
+    const std::string longest = "a." + std::string(30, 'b');
+    for (const std::string& list : {eight, "\"" + longest + "\"", std::string("\"x_1.y_2\""),
+                                    std::string(R"("x.y","x.y")")}) {
+        auto ok = parse_scene_manifest(
+            manifest("todo", "x", "1.0.0", R"(,"permissions":{"device":[)" + list + "]}"));
+        EXPECT_TRUE(ok) << list;
+    }
+}
+
+TEST(SceneManifest, RejectsBadDevicePermissions) {
+    auto refused = [](const std::string& value) {
+        auto r = parse_scene_manifest(
+            manifest("todo", "x", "1.0.0", R"(,"permissions":{"device":)" + value + "}"));
+        EXPECT_FALSE(r) << value;
+        if (r) return std::string();
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << value;
+        return r.error().message;
+    };
+    const std::string not_ids = "scene.json: permissions.device must be an array of device ids";
+    std::string nine;
+    for (int i = 0; i < 9; ++i)
+        nine += std::string(i ? "," : "") + "\"led.l" + std::to_string(i) + "\"";
+    EXPECT_EQ(refused("[" + nine + "]"),
+              "scene.json: permissions.device lists more than 8 devices");
+    EXPECT_EQ(refused(R"(["Haptic"])"), not_ids);
+    EXPECT_EQ(refused("[3]"), not_ids);
+    EXPECT_EQ(refused(R"("haptic.main")"), not_ids);
+    EXPECT_EQ(refused(R"(["haptic"])"), not_ids);
+    EXPECT_EQ(refused(R"(["haptic.Main"])"), not_ids);
+    EXPECT_EQ(refused(R"(["1haptic.main"])"), not_ids);
+    EXPECT_EQ(refused(R"(["haptic.main.x"])"), not_ids);
+    EXPECT_EQ(refused(R"(["haptic."])"), not_ids);
+    EXPECT_EQ(refused("[\"a." + std::string(31, 'b') + "\"]"), not_ids);  // 33 bytes
+}

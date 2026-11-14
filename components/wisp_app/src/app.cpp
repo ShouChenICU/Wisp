@@ -575,7 +575,8 @@ Result<void> App::start() {
                     impl->power_manager->exit_standby();
                 }
             },
-            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get());
+            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get(),
+            impl_->devices.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {

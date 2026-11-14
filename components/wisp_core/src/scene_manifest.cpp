@@ -20,6 +20,10 @@ constexpr size_t kMaxNameBytes = 32;
 constexpr size_t kMaxVersionBytes = 64;
 constexpr size_t kMaxHosts = 16;
 constexpr size_t kMaxHostBytes = 253;
+constexpr size_t kMaxDevices = 8;
+// core::DeviceService::kMaxIdBytes; wisp_core's manifest does not pull in
+// the service for one constant.
+constexpr size_t kMaxDeviceIdBytes = 32;
 constexpr int64_t kMaxSchemaVersion = 1000;
 // The manifest needs three levels (permissions.http[]), plus one more for
 // headroom, plus up to four more for a tool's "parameters" JSON-Schema
@@ -206,6 +210,20 @@ bool valid_host(std::string_view h) {
 }
 
 // ^[a-z][a-z0-9_]{0,31}$ (agent-tools spec 5.1).
+// ^[a-z][a-z0-9_]*\.[a-z0-9_]+$, at most kMaxDeviceIdBytes: a registry id
+// (<class>.<name>) as boards name them.
+bool valid_device_id(std::string_view id) {
+    if (id.empty() || id.size() > kMaxDeviceIdBytes || id[0] < 'a' || id[0] > 'z') return false;
+    const size_t dot = id.find('.');
+    if (dot == std::string_view::npos || dot + 1 == id.size()) return false;
+    for (size_t i = 0; i < id.size(); ++i) {
+        const char c = id[i];
+        if (i == dot) continue;
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    }
+    return true;
+}
+
 bool valid_tool_name(std::string_view name) {
     if (name.empty() || name.size() > kMaxToolNameBytes) {
         return false;
@@ -451,6 +469,20 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
                         "'-'), without scheme, port or path");
                 }
                 m.http_hosts.push_back(h.as_string());
+            }
+        }
+        if (const Value* dev = perms->find("device")) {
+            if (dev->type() != Value::Type::List) {
+                return invalid("permissions.device must be an array of device ids");
+            }
+            if (dev->as_list().size() > kMaxDevices) {
+                return invalid("permissions.device lists more than 8 devices");
+            }
+            for (const Value& d : dev->as_list()) {
+                if (d.type() != Value::Type::String || !valid_device_id(d.as_string())) {
+                    return invalid("permissions.device must be an array of device ids");
+                }
+                m.devices.push_back(d.as_string());
             }
         }
     }

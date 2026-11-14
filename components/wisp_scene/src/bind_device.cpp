@@ -1,11 +1,25 @@
 // wisp.device (scene_api.hpp). Every function here follows the longjmp rule
 // (vm.hpp): Lua API calls that can raise happen only while the frame holds
 // trivially destructible locals.
+//
+// list/get/call (device model spec 4.3) are thin adapters over
+// core::DeviceService, which holds every check. Each checks its arguments
+// with raising calls first; the service call, the argument JSON and the
+// result Value live only in a do_*() helper, which pushes its result
+// through protect() (so an out-of-memory error there unwinds no C++
+// frame) and reports plain data back; only once the helper has returned
+// does the binding raise again (a memory error or the VM's limits) or push
+// nil, code.
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include "scene_api.hpp"
+#include "wisp/base/json.hpp"
+#include "wisp/scene/lua_json.hpp"
 
 namespace wisp::scene {
 
@@ -91,6 +105,176 @@ int on(lua_State* L) {
     return 0;
 }
 
+// --- list / get / call ------------------------------------------------------
+
+// A command's arguments are a few scalars (hal::kMaxCmdArgs of them), so
+// their JSON is small; the cap bounds the text (PSRAM) and the Value tree
+// parsed from it (default heap, internal RAM on the device). Past it, or
+// nested at all, the arguments cannot match a schema: "invalid_argument".
+constexpr size_t kMaxArgsBytes = 4096;
+constexpr uint8_t kMaxArgsDepth = 2;
+
+int fail(lua_State* L, const char* code) {
+    lua_pushnil(L);
+    lua_pushstring(L, code);
+    return 2;
+}
+
+bool granted(const SceneApi& api, std::string_view id) {
+    if (api.device_grant_all) return true;
+    return std::find(api.device_grants.begin(), api.device_grants.end(), id) !=
+           api.device_grants.end();
+}
+
+// What a do_*() helper leaves for its binding: nil, code; a VM limit hit
+// while the arguments were encoded; or the protect() status of pushing
+// the result (on failure the error object is on the stack).
+struct Outcome {
+    const char* code = nullptr;
+    bool limits = false;
+    int status = LUA_OK;
+};
+
+struct PushCtx {
+    const Value* value;
+    bool null_is_true;
+};
+
+void push_result(lua_State* L, void* ctx) {
+    const auto* c = static_cast<const PushCtx*>(ctx);
+    if (c->null_is_true && c->value->is_null()) {
+        lua_pushboolean(L, 1);
+        return;
+    }
+    detail::push_value(L, *c->value);
+}
+
+// Finishes a binding after its helper: raises again what must be raised,
+// else returns nil, code or the one value the helper pushed.
+int finish(lua_State* L, const Outcome& o) {
+    if (o.limits) {
+        Vm::of(L)->check_limits(L);
+        return luaL_error(L, "wisp.device: limits reached");
+    }
+    if (o.status != LUA_OK) {
+        Vm::of(L)->check_limits(L);
+        return lua_error(L);
+    }
+    if (o.code != nullptr) return fail(L, o.code);
+    return 1;
+}
+
+void push_with(lua_State* L, const Result<Value>& r, bool null_is_true, Outcome* o) {
+    if (!r) {
+        o->code = wisp::to_string(r.error().code);
+        return;
+    }
+    PushCtx c{&r.value(), null_is_true};
+    o->status = protect(L, push_result, &c);
+}
+
+void do_get(lua_State* L, const core::DeviceService& devices, std::string_view id,
+            std::string_view prop, Outcome* o) {
+    push_with(L, devices.get(std::string(id), std::string(prop)), false, o);
+}
+
+// The arguments at index 3 (a table, or nil for none) as a Value.
+bool read_args(lua_State* L, Value* out, Outcome* o) {
+    if (lua_isnoneornil(L, 3)) return true;
+    os::LargeString json;
+    const char* code = lua_to_json(L, 3, json, kMaxArgsBytes);
+    if (code == kJsonLimits) {
+        o->limits = true;
+        return false;
+    }
+    // Mixed or non-string keys, a cycle, a function, too deep or too large.
+    if (code != nullptr) {
+        o->code = wisp::to_string(ErrorCode::InvalidArgument);
+        return false;
+    }
+    auto v = from_json(std::string_view(json.data(), json.size()), kMaxArgsDepth);
+    if (!v) {
+        o->code = wisp::to_string(ErrorCode::InvalidArgument);
+        return false;
+    }
+    *out = std::move(v.value());
+    return true;
+}
+
+void do_call(lua_State* L, SceneApi& api, std::string_view id, std::string_view cmd, Outcome* o) {
+    Value args;
+    if (!read_args(L, &args, o)) return;
+    const std::string holder = api.device_grant_all ? std::string("agent") : api.holder;
+    push_with(L, api.devices->call(std::string(id), std::string(cmd), args, holder), true, o);
+}
+
+// The service's entries one at a time, each pushed through protect() and
+// set into the table at `table`, which has room for kMaxListedDevices
+// entries already, so setting one allocates nothing and cannot raise.
+void do_list(lua_State* L, const core::DeviceService& devices, int table, Outcome* o) {
+    Vm* vm = Vm::of(L);
+    lua_Integer n = 0;
+    devices.for_each([&](Value entry) {
+        if (static_cast<size_t>(n) == kMaxListedDevices) return false;
+        if (vm != nullptr && vm->past_limits()) {
+            o->limits = true;
+            return false;
+        }
+        PushCtx c{&entry, false};
+        o->status = protect(L, push_result, &c);
+        if (o->status != LUA_OK) return false;
+        lua_rawseti(L, table, ++n);
+        return true;
+    });
+}
+
+// list() -> { {id, class, model, role, schema}, ... }
+int list(lua_State* L) {
+    SceneApi& api = detail::api_of(L);
+    lua_settop(L, 0);
+    luaL_checkstack(L, 4, "wisp.device.list");
+    lua_createtable(L, api.devices != nullptr ? static_cast<int>(kMaxListedDevices) : 0, 0);
+    if (api.devices == nullptr) return 1;
+    Outcome o;
+    do_list(L, *api.devices, 1, &o);
+    if (o.limits || o.status != LUA_OK) return finish(L, o);
+    lua_settop(L, 1);
+    return 1;
+}
+
+// get(id, prop) -> value | nil, code
+int get(lua_State* L) {
+    size_t id_len = 0;
+    size_t prop_len = 0;
+    const char* id = luaL_checklstring(L, 1, &id_len);
+    const char* prop = luaL_checklstring(L, 2, &prop_len);
+    lua_settop(L, 2);
+    SceneApi& api = detail::api_of(L);
+    if (api.devices == nullptr) return fail(L, "unavailable");
+    if (!granted(api, std::string_view(id, id_len))) return fail(L, "permission_denied");
+    luaL_checkstack(L, 4, "wisp.device.get");
+    Outcome o;
+    do_get(L, *api.devices, std::string_view(id, id_len), std::string_view(prop, prop_len), &o);
+    return finish(L, o);
+}
+
+// call(id, cmd, args) -> result | nil, code
+int call(lua_State* L) {
+    size_t id_len = 0;
+    size_t cmd_len = 0;
+    const char* id = luaL_checklstring(L, 1, &id_len);
+    const char* cmd = luaL_checklstring(L, 2, &cmd_len);
+    if (!lua_isnoneornil(L, 3)) luaL_checktype(L, 3, LUA_TTABLE);
+    lua_settop(L, 3);
+    SceneApi& api = detail::api_of(L);
+    if (api.devices == nullptr) return fail(L, "unavailable");
+    if (!granted(api, std::string_view(id, id_len))) return fail(L, "permission_denied");
+    luaL_checkstack(L, kLuaJsonStackSlots + 4, "wisp.device.call");
+    Outcome o;
+    do_call(L, api, std::string_view(id, id_len), std::string_view(cmd, cmd_len), &o);
+    return finish(L, o);
+}
+
 struct RunCtx {
     DeviceEvent ev;
     DeviceInfo info;
@@ -168,13 +352,19 @@ void install_device(lua_State* L, int wisp) {
     }
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kHandlersKey);
 
-    lua_createtable(L, 0, 3);
+    lua_createtable(L, 0, 6);
     lua_pushcfunction(L, info);
     lua_setfield(L, -2, "info");
     lua_pushcfunction(L, row_span);
     lua_setfield(L, -2, "row_span");
     lua_pushcfunction(L, on);
     lua_setfield(L, -2, "on");
+    lua_pushcfunction(L, list);
+    lua_setfield(L, -2, "list");
+    lua_pushcfunction(L, get);
+    lua_setfield(L, -2, "get");
+    lua_pushcfunction(L, call);
+    lua_setfield(L, -2, "call");
     check_c_functions(L, -1);
     lua_setfield(L, wisp, "device");
 }
