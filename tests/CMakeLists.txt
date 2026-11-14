@@ -520,7 +520,7 @@ wisp_test(NAME scene_tool_index_observer_test SRCS app/scene_tool_index_observer
 target_include_directories(scene_tool_index_observer_test PRIVATE
                            ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME app_agent_test SRCS app/app_agent_test.cpp
-          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+          LIBS wisp_app wisp_port_sim_dev wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(app_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME voice_wiring_test SRCS app/voice_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)

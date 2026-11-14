@@ -347,7 +347,10 @@ return ui.screen {}
 }
 
 // list() under a VM memory limit it cannot fit in ends in the VM's memory
-// fault, like any allocation in a binding; the next run is unaffected.
+// fault, like any allocation in a binding; the next run is unaffected. The
+// allocation that fails may be the script's own table growth rather than
+// one inside list(): the test proves the state is clean afterwards, not
+// where the fault came from.
 TEST_F(DeviceBinding, ListOutOfMemoryIsTheVmsMemoryFault) {
     for (int i = 0; i < 31; ++i) {
         char id[16];

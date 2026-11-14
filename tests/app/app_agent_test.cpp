@@ -5,6 +5,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <functional>
+#include <memory>
 #include <span>
 #include <string>
 
@@ -13,10 +16,12 @@
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/tool_registry.hpp"
+#include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/port/sim/sim_haptic.hpp"
 #include "wisp/shell/activity.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -78,6 +83,66 @@ UiNetOptions with_server(bool display) {
     o.with_server = true;
     o.with_display = display;
     return o;
+}
+
+// The clock the haptic and the device service read; the test moves it.
+struct ManualClock {
+    std::atomic<uint64_t> ms{1000};
+    std::function<uint64_t()> fn() {
+        return [this] { return ms.load(); };
+    }
+};
+
+// An App with a screen and the simulator's haptic motor registered as a
+// board would register it (one line, no other wiring), both on `clock`.
+UiNetOptions with_haptic(ManualClock& clock) {
+    UiNetOptions o = with_server(true);
+    o.extra_devices = {
+        std::make_shared<wisp::port::sim::SimHaptic>("haptic.main", "main", clock.fn())};
+    o.device_clock = clock.fn();
+    return o;
+}
+
+// Calls tool `wire` of the App's agent the way a turn does, with the
+// result parsed whether the tool built it as a Value or as JSON text.
+wisp::agent::ToolOutput call_tool(UiNetHarness& h, const char* wire, const Value& args) {
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    ctx.lang = "zh";
+    wisp::agent::ToolOutput out = h.app->agent_tools()->call(wire, wisp::to_json(args), ctx);
+    if (!out.result_json.empty()) {
+        auto parsed =
+            wisp::from_json(std::string_view(out.result_json.data(), out.result_json.size()));
+        EXPECT_TRUE(parsed) << std::string(out.result_json.data(), out.result_json.size());
+        if (parsed) out.result = std::move(parsed.value());
+    }
+    return out;
+}
+
+bool ok_of(const wisp::agent::ToolOutput& out) {
+    const Value* f = out.result.find("ok");
+    return f != nullptr && f->type() == Value::Type::Bool && f->as_bool();
+}
+
+std::string str_of(const Value& v, std::string_view key) {
+    const Value* f = v.find(key);
+    return f != nullptr && f->type() == Value::Type::String ? f->as_string() : std::string();
+}
+
+Value pulse_args() {
+    return Value(wisp::Map{{"id", Value("haptic.main")},
+                           {"op", Value("invoke")},
+                           {"name", Value("pulse")},
+                           {"args", Value(wisp::Map{{"ms", Value(int64_t{150})}})}});
+}
+
+size_t count_of(const std::string& text, const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = text.find(needle); at != std::string::npos;
+         at = text.find(needle, at + needle.size())) {
+        ++n;
+    }
+    return n;
 }
 
 }  // namespace
@@ -161,6 +226,78 @@ TEST(AppAgent, EveryRegisteredToolHasAnActivityLabel) {
         ++checked;
     }
     EXPECT_GT(checked, 30u);
+}
+
+// Device model spec 5: a device no core service knows, added by one board
+// line, reaches the agent's device tools and, through lua.run, the
+// scenes' wisp.device -- one DeviceService behind both, so the command's
+// interval holds across them and both calls leave the same log line.
+TEST(AppAgent, HapticIsReachableFromTheAgentAndFromLua) {
+    wisp::log::reset_for_test();
+    wisp::log::init();
+    ManualClock clock;
+    UiNetHarness h(with_haptic(clock));
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->agent_tools(), nullptr);
+
+    wisp::agent::ToolOutput listed = call_tool(h, "device_list", Value(wisp::Map{}));
+    ASSERT_TRUE(ok_of(listed)) << wisp::to_json(listed.result);
+    const Value* devices = listed.result.find("devices");
+    ASSERT_NE(devices, nullptr);
+    ASSERT_EQ(devices->as_list().size(), 1u) << wisp::to_json(listed.result);
+    EXPECT_EQ(str_of(devices->as_list()[0], "id"), "haptic.main");
+    EXPECT_EQ(str_of(devices->as_list()[0], "class"), "other");
+    EXPECT_EQ(str_of(devices->as_list()[0], "role"), "main");
+
+    wisp::agent::ToolOutput pulsed = call_tool(h, "device_call", pulse_args());
+    ASSERT_TRUE(ok_of(pulsed)) << wisp::to_json(pulsed.result);
+    EXPECT_EQ(pulsed.note, "设备 haptic.main：pulse");
+    wisp::agent::ToolOutput active = call_tool(
+        h, "device_call",
+        Value(wisp::Map{
+            {"id", Value("haptic.main")}, {"op", Value("get")}, {"name", Value("active")}}));
+    ASSERT_TRUE(ok_of(active)) << wisp::to_json(active.result);
+    ASSERT_NE(active.result.find("value"), nullptr);
+    EXPECT_TRUE(active.result.find("value")->as_bool());
+
+    // pulse's min_interval_ms (100) counts every caller; past it, the
+    // agent's Lua VM (which holds every device, as holder "agent") pulses.
+    clock.ms += 150;
+    wisp::agent::ToolOutput ran = call_tool(
+        h, "lua_run",
+        Value(wisp::Map{
+            {"code", Value("return wisp.device.call('haptic.main', 'pulse', {ms = 150})")}}));
+    ASSERT_TRUE(ok_of(ran)) << wisp::to_json(ran.result);
+    EXPECT_EQ(str_of(ran.result, "result"), R"(<data source="lua">true</data>)");
+
+    const std::string log = wisp::log::ring_snapshot();
+    EXPECT_EQ(count_of(log, "device haptic.main.pulse by agent"), 2u) << log;
+    EXPECT_EQ(count_of(log, "haptic pulse 150 ms 80%"), 2u) << log;
+    wisp::log::reset_for_test();
+}
+
+// The haptic declares caps standby "off": with the screen off a command
+// is refused (busy) without waking it, and works again once awake.
+TEST(AppAgent, HapticIsOffWhileTheScreenIsOff) {
+    ManualClock clock;
+    UiNetHarness h(with_haptic(clock));
+    ASSERT_TRUE(h.start());
+    wisp::app::PowerManager* pm = h.app->power_manager();
+    ASSERT_NE(pm, nullptr);
+
+    h.app->ui()->run_blocking([&] { pm->enter_standby(); });
+    ASSERT_TRUE(pm->standby());
+    h.app->bus().wait_idle(2000);
+    wisp::agent::ToolOutput off = call_tool(h, "device_call", pulse_args());
+    EXPECT_FALSE(ok_of(off));
+    EXPECT_EQ(str_of(off.result, "error"), "busy") << wisp::to_json(off.result);
+    EXPECT_TRUE(off.note.empty());
+    EXPECT_TRUE(pm->standby());
+
+    h.app->ui()->run_blocking([&] { pm->exit_standby(); });
+    h.app->bus().wait_idle(2000);
+    wisp::agent::ToolOutput on = call_tool(h, "device_call", pulse_args());
+    EXPECT_TRUE(ok_of(on)) << wisp::to_json(on.result);
 }
 
 TEST(AppAgent, HeadlessHasNoAgent) {
