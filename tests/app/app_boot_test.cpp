@@ -270,9 +270,9 @@ TEST(AppBoot, DispatchReportShowsBusDropsAndCellSubscriptions) {
     }
     EXPECT_TRUE(h.app.bus().wait_idle(2000));
     EXPECT_GT(h.app.bus().dropped(), 0u);
-    EXPECT_EQ(
-        h.app.dispatch_report().rfind("bus dropped=" + std::to_string(h.app.bus().dropped()), 0),
-        0u);
+    EXPECT_EQ(h.app.dispatch_report(),
+              "bus dropped=" + std::to_string(h.app.bus().dropped()) +
+                  " cell_subs=" + std::to_string(h.app.bus().cell_subscriptions()));
 }
 
 // stop() must be safe (and a no-op) even if start() never succeeded --

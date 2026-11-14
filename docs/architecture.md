@@ -137,7 +137,7 @@ The event bus itself (`wisp_core/event_bus.hpp`): prefix subscriptions (the empt
 
 ### State cells and edge inboxes
 
-A component that others follow keeps its state in a `core::StateCell<T>` (`wisp/core/state_cell.hpp`) and its edges, which must all arrive, in a `core::EdgeInbox<E, N>` (`wisp/core/edge_inbox.hpp`). No component uses either yet; the primitives and their tests are what has landed. Each topic in `wisp/core/topics.hpp` has a kind that says which of the three paths a consumer may rely on:
+A component that others follow keeps its state in a `core::StateCell<T>` (`wisp/core/state_cell.hpp`) and its edges, which must all arrive, in a `core::EdgeInbox<E, N>` (`wisp/core/edge_inbox.hpp`). The primitives give three delivery paths; each topic's kind in `wisp/core/topics.hpp` names the delivery promise that topic is documented with:
 
 | Path | Delivery | Lost when |
 |---|---|---|
@@ -151,7 +151,7 @@ Delivery rules:
 - An inbox run delivers only the edges waiting when it started and re-schedules itself if more remain; edges pushed by the handler are delivered in the next run.
 - `set()` allocates only when copying `T` does.
 - Lock order: cell -> the dispatcher's `schedule()` (and, for a mirror, the bus's publish lock); inbox -> `schedule()`. Callbacks run with no cell or inbox lock held. A callback may release any subscription, but releasing one that runs on another dispatcher blocks until that run returns.
-- Misuse (a cell destroyed with live subscriptions, an in-run cancel without a `finish`, an inbox destroyed from its own handler) aborts on the host and is logged on the device; after a reported misuse a cell's teardown waits at most 3 s, then aborts with a log line.
+- Misuse (a cell destroyed with live subscriptions, an in-run cancel without a `finish`) aborts on the host and is logged on the device; after a reported misuse a cell's teardown waits at most 3 s, then aborts with a log line. An inbox destroyed from its own handler aborts on every build.
 
 Dispatchers: `wisp.bus` by default. The UI runtime (`ui::UiRuntime`) is one too, for UI code. Its loop runs, in every iteration, the slots that were queued when the pass started (a slot re-armed during a pass runs in the next iteration). While the UI is paused it blocks indefinitely when no slot is queued, and paces itself with the loop period (10 ms) while one stays queued, so standby has no periodic UI timer.
 
