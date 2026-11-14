@@ -199,6 +199,21 @@ Result<T> fail(const Error& e) {
     return Result<T>::err(e.code, e.message);
 }
 
+// The scene.json bytes of the scene in directory `id`, parsed and checked
+// to name that directory.
+Result<SceneManifest> parse_manifest_of(const os::LargeBuffer& raw, std::string_view id) {
+    Result<SceneManifest> m = parse_scene_manifest(
+        std::string_view(reinterpret_cast<const char*>(raw.data()), raw.size()));
+    if (!m) return m;
+    if (m.value().id != id) {
+        return Result<SceneManifest>::err(ErrorCode::InvalidArgument,
+                                          "scene.json: id '" + m.value().id +
+                                              "' does not match its directory '" + std::string(id) +
+                                              "'");
+    }
+    return m;
+}
+
 }  // namespace
 
 bool valid_package_path(std::string_view path) {
@@ -268,19 +283,7 @@ Result<SceneManifest> SceneRepository::read_manifest_in(const std::string& dir,
         }
         return fail<SceneManifest>(raw.error());
     }
-    const os::LargeBuffer& buf = raw.value();
-    Result<SceneManifest> m = parse_scene_manifest(
-        std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()));
-    if (!m) {
-        return m;
-    }
-    if (m.value().id != id) {
-        return Result<SceneManifest>::err(ErrorCode::InvalidArgument,
-                                          "scene.json: id '" + m.value().id +
-                                              "' does not match its directory '" + std::string(id) +
-                                              "'");
-    }
-    return m;
+    return parse_manifest_of(raw.value(), id);
 }
 
 template <class T, class Parse>
@@ -347,14 +350,15 @@ Result<SceneRepository::SceneScan> SceneRepository::scan_locked(std::string_view
     // The entry is not known until the manifest is parsed, so every
     // top-level .lua file is kept; info_of() counts only the entry. Under
     // lib/ and assets/ what a package may hold does not depend on it.
+    // No cap here: list_dir() has already read every entry, and stopping
+    // early could drop the entry from a dev working directory full of
+    // stray files.
     Result<std::vector<DirEntry>> top = storage_.list_dir(dir);
     if (!top) return fail<SceneScan>(top.error());
-    size_t top_files = 0;
     for (const DirEntry& e : top.value()) {
-        if (e.kind != EntryKind::File || top_files > kMaxFiles) continue;
+        if (e.kind != EntryKind::File) continue;
         if (e.name == kManifest || (is_lua(e.name) && e.name.size() > 4)) {
             out.files.emplace_back(e.name, e.size);
-            ++top_files;
         }
     }
     size_t nested = 0;
@@ -396,15 +400,7 @@ Result<std::vector<std::string>> SceneRepository::ids_here() {
 }
 
 Result<SceneManifest> SceneRepository::parse_scan(const SceneScan& scan) {
-    Result<SceneManifest> m = parse_scene_manifest(std::string_view(
-        reinterpret_cast<const char*>(scan.manifest.data()), scan.manifest.size()));
-    if (!m) return m;
-    if (m.value().id != scan.id) {
-        return Result<SceneManifest>::err(
-            ErrorCode::InvalidArgument,
-            "scene.json: id '" + m.value().id + "' does not match its directory '" + scan.id + "'");
-    }
-    return m;
+    return parse_manifest_of(scan.manifest, scan.id);
 }
 
 Result<SceneInfo> SceneRepository::info_of(const SceneScan& scan) {

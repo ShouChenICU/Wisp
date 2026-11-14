@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -1433,6 +1435,45 @@ TEST(SceneRepository, InfoIgnoresStrayTopLevelFiles) {
     auto after = w.f.repo->info("a");
     ASSERT_TRUE(after) << after.error().message;
     EXPECT_EQ(after.value().code_bytes, before.value().code_bytes);
+}
+
+// A development directory may hold any number of stray top-level files;
+// the entry and scene.json still count, wherever they sort among them.
+TEST(SceneRepository, ManyStrayTopLevelFilesStillFindTheEntry) {
+    WorkerFixture w;
+    for (int i = 0; i < 300; ++i) {
+        char name[16];
+        std::snprintf(name, sizeof(name), "a%03d.lua", i);
+        write_raw(w.f.root() / "a" / name, "x");
+    }
+    auto info = w.f.repo->info("a");
+    ASSERT_TRUE(info) << info.error().message;
+    EXPECT_EQ(info.value().code_bytes, total_size(files_for("a")));
+}
+
+// A worker that refuses a scene's job partway through a listing (it is
+// stopping) fails the listing: it neither leaves the scene out nor waits
+// for ever.
+TEST(SceneRepository, ListFailsWhenTheWorkerRefusesAScene) {
+    WorkerFixture w;
+    std::promise<void> gate;
+    std::shared_future<void> parked = gate.get_future().share();
+    std::thread stopper;
+    w.f.reconfigure([&](SceneRepoConfig& c) {
+        c.on_read = [&](std::string_view id) {
+            if (id != "a") return;
+            // Once this job ends the worker runs the parked job, and the
+            // stop below keeps it from taking the next scene's.
+            EXPECT_TRUE(w.worker.submit([parked] { parked.wait(); }, wisp::core::IoLane::Bulk));
+            stopper = std::thread([&] { w.worker.stop(); });
+            while (w.worker.running()) std::this_thread::yield();
+        };
+    });
+    auto listed = w.f.repo->list();
+    ASSERT_FALSE(listed);
+    EXPECT_EQ(listed.error().code, ErrorCode::Busy);
+    gate.set_value();
+    stopper.join();
 }
 
 TEST(SceneRepository, TooManyFilesStillRefused) {

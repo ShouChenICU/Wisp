@@ -278,8 +278,9 @@ public:
 private:
     // What a read path reads on the worker, parsed by the caller. The
     // file list holds every top-level scene.json or *.lua file and every
-    // regular file under lib/ and assets/ that a package may hold, at most
-    // kMaxFiles + 1 of each kind (one more tells a package past the limit).
+    // regular file under lib/ and assets/ that a package may hold, of the
+    // latter at most kMaxFiles + 1 (one more tells a package past the
+    // limit).
     struct SceneScan {
         std::string id;
         os::LargeBuffer manifest;
