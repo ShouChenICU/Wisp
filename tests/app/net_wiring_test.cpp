@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -261,6 +262,9 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
     r.net->start();
     ASSERT_TRUE(
         wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    // The time sync starts on a later turn of the "wisp.net" loop than the
+    // connection: wait for it to have run before waiting for its lock to go.
+    ASSERT_TRUE(wait_until([&] { return r.ntp_queries.load() > 0; }, 5000));
     ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.ntp"); }, 5000));
 
     r.pm->enter_standby();
@@ -277,10 +281,22 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 
     // 15 minutes on: the window opens, its lock takes the device back to
     // standby and Wi-Fi comes on.
+    // With a fast fake link the window can open, deliver and close between
+    // two polls of its lock, so the result is waited for and the steps
+    // are read back from the log in order.
     r.skew = wisp::net::NetworkWindow::kIntervalMs + 1000;
-    ASSERT_TRUE(wait_until([&] { return holds(r.locks, "system.netwindow"); }, 5000));
-    EXPECT_TRUE(wait_until([&] { return r.pm->level() == PowerLevel::Standby; }, 5000));
     ASSERT_TRUE(wait_until([&] { return r.result_count() == 1; }, 10000));
+    {
+        std::vector<std::string> steps;
+        for (const auto& e : wisp::log::ring_entries())
+            if (e.msg == "netwindow: open" || e.msg.rfind("power: ", 0) == 0)
+                steps.push_back(e.msg);
+        const auto open = std::find(steps.begin(), steps.end(), "netwindow: open");
+        ASSERT_NE(open, steps.end());
+        const auto deep = std::find(steps.begin(), steps.end(), "power: deep_standby");
+        ASSERT_LT(deep, open);
+        EXPECT_NE(std::find(deep, steps.end(), "power: standby"), steps.end());
+    }
     {
         std::lock_guard<std::mutex> lock(r.results_mutex);
         EXPECT_EQ(r.results[0].error, "");
@@ -291,8 +307,13 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 
     // Sent and the clock synced: the window closes and its lock goes.
     EXPECT_TRUE(wait_until([&] { return !holds(r.locks, "system.netwindow"); }, 10000));
-    r.pm->tick(wisp::os::now_ms() + 3'600'000);
-    EXPECT_EQ(r.pm->level(), PowerLevel::DeepStandby);
+    // The time sync's own lock may still be on its way out.
+    EXPECT_TRUE(wait_until(
+        [&] {
+            r.pm->tick(wisp::os::now_ms() + 3'600'000);
+            return r.pm->level() == PowerLevel::DeepStandby;
+        },
+        5000));
     EXPECT_TRUE(wait_until([&] { return !r.wifi->radio_on.load(); }, 5000));
 }
 
@@ -308,7 +329,10 @@ TEST(NetWiring, NetworkExpectedFollowsEnabledAndSavedNetworks) {
     ASSERT_TRUE(
         wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
     EXPECT_TRUE(r.net->network_expected());
-    // The time sync's lock would keep the device out of deep standby.
+    // The time sync's lock would keep the device out of deep standby. The
+    // sync starts on a later turn of the "wisp.net" loop than the
+    // connection: wait for it to have run before waiting for its lock to go.
+    ASSERT_TRUE(wait_until([&] { return r.ntp_queries.load() > 0; }, 5000));
     ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.ntp"); }, 5000));
 
     r.pm->enter_standby();
