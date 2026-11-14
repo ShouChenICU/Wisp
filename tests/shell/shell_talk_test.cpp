@@ -338,9 +338,10 @@ TEST_F(ShellTalkTest, SceneHoldGoesListeningThinkingSaying) {
     drop_scene();
 }
 
-// scene.state hides the overlay at once, mid-capture, regardless of what
-// VoiceState/the conversation are doing.
-TEST_F(ShellTalkTest, SceneStateHidesTheOverlay) {
+// A scene.state event only has the overlay look again: while a screen but
+// Home is still in front it keeps showing; once the scene's going brings
+// Home in front, Home's loading hides it.
+TEST_F(ShellTalkTest, SceneStateReevaluatesTheOverlay) {
     make_shell();
     open_scene();
     say_into_mic();
@@ -349,11 +350,42 @@ TEST_F(ShellTalkTest, SceneStateHidesTheOverlay) {
     ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
 
     h->bus.publish({"scene.state", "test", 0, {{"id", "demo"}, {"state", "background"}}});
-    ASSERT_TRUE(wait_phase(Phase::Hidden, 2000));
+    h->bus.wait_idle(500);
+    // Two round-trips: the bus handler's post, then request_talk()'s own.
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Listening);
+    EXPECT_TRUE(overlay_shown());
+
+    on_ui([&] { lv_screen_load(shell_->home_screen()); });
+    EXPECT_EQ(phase(), Phase::Hidden);
+    EXPECT_FALSE(overlay_shown());
 
     conv->hold_cancel();
     ASSERT_TRUE(settled());
     drop_scene();
+}
+
+// A scene.state event that arrives while a turn's failure note shows over
+// a sub-page (a scene closing as the user goes back to the Scenes page)
+// keeps the note: the overlay records a note as seen when it takes it, so
+// hiding it here would lose it for good.
+TEST_F(ShellTalkTest, SceneStateKeepsAFailureNote) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Scenes); });
+    for (int i = 0; i < 3; ++i)
+        server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+
+    ASSERT_TRUE(conv->voice_text("提醒我喝水"));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_TRUE(wait_phase(Phase::Note, 3000));
+
+    h->bus.publish({"scene.state", "test", 0, {{"id", "demo"}, {"state", "closed"}}});
+    h->bus.wait_idle(500);
+    on_ui([] {});
+    EXPECT_EQ(phase(), Phase::Note);
+    EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
+    EXPECT_TRUE(overlay_shown());
 }
 
 // A tap sends the foreground scene back through the existing leave_scene()

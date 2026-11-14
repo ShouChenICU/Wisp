@@ -80,8 +80,9 @@
 // moment Home leaves the front; the moment Home comes in front it hides,
 // since Home shows the same itself. Its own tap is show(Home): a scene is
 // sent back as leave_scene() does, a page or the diagnostics close as
-// their own way back closes them. Any "scene.state" event hides it at
-// once, since the scene that was in front may no longer be.
+// their own way back closes them. Any "scene.state" event has it look
+// again, since the scene that was in front may no longer be; it does not
+// hide it, which would drop a say or note the overlay has already taken.
 //
 // Threading: every member is UI thread only, like every lv_* call. A back
 // swipe's work is posted (it arrives from inside the pointer's read

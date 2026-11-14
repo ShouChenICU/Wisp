@@ -11,8 +11,9 @@
 //
 // Shell owns the one instance and decides when to drive it: on_turn()/
 // tick() while Home is not in front, on_home() while it is (and the
-// moment it comes in front), hide() on every "scene.state" event (the
-// scene that was in front may no longer be).
+// moment it comes in front); a "scene.state" event (the scene that was in
+// front may no longer be) only has Shell look again, since a hide would
+// drop a say or note already taken.
 //
 // Phase, from on_turn()'s VoiceState and TurnView: Listening while
 // recording (a pulsing dot and the level bar), Thinking while

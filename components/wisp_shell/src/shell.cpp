@@ -114,15 +114,19 @@ void Shell::start() {
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
     icons_ = std::make_shared<IconCache>();
-    // Always subscribed: a scene.state event hides the talk overlay (the
-    // scene that was in front may no longer be) whether or not the scene
-    // list is also listening for it.
+    // Always subscribed: a scene.state event has the talk overlay look
+    // again (the scene that was in front may no longer be) whether or not
+    // the scene list is also listening for it. Not a hide: the overlay
+    // records a say or note as seen when it takes one, so a hide here would
+    // lose it for good; Home coming in front hides it on its own.
     scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
         // On the bus's thread: the list is read again from the UI
         // thread, which knows whether it is open.
         deps_.ui.post([this, alive] {
             if (!*alive) return;
-            if (talk_) talk_->hide();
+            // Posted again: the screen that replaces a closing scene may
+            // still be loading.
+            request_talk();
             if (scenes_) list_scenes();
         });
     });
