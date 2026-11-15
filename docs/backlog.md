@@ -333,6 +333,10 @@ Notes for the next state-cell plan (removing the periodic compensations).
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
 - A standby and a wake handled inside one UI loop iteration coalesce to `Active` for the status shell, which then leaves the pull-down panel open across the blink. Power key presses are seconds apart, so this needs two posted jobs drained together.
 
+## State cell edges and cleanup parked review findings
+
+- After a settings batch whose rollback failed, the reseeded settings cell follows storage, but a brightness that reached storage that way is not applied to the panel and no `system.settings` event goes out, until the next stored batch or the reboot.
+
 ## Storage worker lanes: device checks not run
 
 Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator and unit tests only so far; the ESP-only branches of `WISP_ASSERT_SD_IO_THREAD`/`WISP_ASSERT_MEDIUM_THREAD` and of `storage_manager.cpp` were not compiled in that environment, so the firmware build itself is the first check: build the firmware for both boards first.

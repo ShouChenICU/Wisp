@@ -97,8 +97,8 @@ class PowerMonitor {
 public:
     // `power` may be null (no Power device with role main -- see file
     // header's "device-optional" note). `settings` should already be
-    // bound to the "power" namespace (the same namespace wisp::app::
-    // PowerManager binds its own Settings to for "screen_off_s"); this
+    // bound to the "power" namespace (the namespace whose "screen_off_s"
+    // wisp::app::PowerManager follows through the settings cell); this
     // class reads "low_batt_pct" (default 15) lazily, on the first
     // successful sample() (not here in the constructor), caches it, and
     // re-reads it at most once every kThresholdRefreshSamples samples
