@@ -247,14 +247,22 @@ protected:
     }
     // A hold released as soon as the mic opens: far shorter than
     // kMinSpeechMs, so the voice ends it "not heard" without asking the
-    // recognizer. Returns once the capture is over.
+    // recognizer. Returns once the capture is over and the status cell
+    // holds its outcome: the voice task clears capturing() before it
+    // publishes that final idle (end_round() needs it clear), so
+    // !capturing() alone can be seen while the cell still says listening.
     void silent_hold() {
         mic->set_script({});
         conv->hold_begin();
         ASSERT_TRUE(conv->holding());
         ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 3000));
         conv->hold_end();
-        ASSERT_TRUE(wait_until([&] { return !voice->capturing(); }, 3000));
+        ASSERT_TRUE(wait_until(
+            [&] {
+                return !voice->capturing() &&
+                       voice->status_cell().get().state == voice::VoiceState::Idle;
+            },
+            3000));
     }
 
     // A spoken utterance on the mic: noise floor, speech, then silence
