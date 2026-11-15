@@ -307,7 +307,7 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator an
 ## State cells beside the events parked review findings
 
 - Parked: `exit()`/`close()` of a scene can return before its slot leaves the background list: `close_slot()` answers `done` on the worker before the scene task erases the slot (`erase_slot()`), so a caller that reads `background_scenes()` or the scenes overview right after can still see the scene. Likely cause of the load-flaky `SceneBackground.ExitClosesFromAnyState`.
-- The reseed after a factory-reset wipe moves the settings cell to the defaults just before the reboot, so PowerManager adopts the default timeouts in those moments (the system duties keep the screen language: they ignore the language once the reset is confirmed or `done`).
+- The reseed after a factory-reset wipe moves the settings cell to the defaults just before the reboot, so PowerManager adopts the default timeouts in those moments (the system duties keep the screen language: they ignore the language once the reset is confirmed or `done`). It also moves the panel to the default brightness and redraws an open settings page with the defaults just before the reboot; harmless.
 - No test pins the `agent.state` payload for `waiting_confirm`.
 
 ## State cell subscribers: device checks not run
@@ -428,14 +428,15 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 - Brightness at boot equals the stored value; at 10 the panel is still readable; dim (30 % of the setting) and wake behave as before; a burst of slider moves on the settings page ends at the last value.
 - The Shell settings page on the 2.16 and the round 1.75 boards: rows, sliders, the longer screen-off and deep-standby choice pages; values following a change made on the web page or by voice while the page is open; a row put back when its write fails.
 - The web System page against the device: every card loads its ranges from `/settings/schema`; saving each card works.
-- `mem` at idle: internal free and largest block against `ram_budget.hpp`. Expected: the settings cell grows by about 60 bytes; one more UI-dispatcher subscription while the settings page is open and one for PowerManager's brightness follower (in PSRAM); nothing else in internal RAM.
+- `mem` at idle: internal free and largest block against `ram_budget.hpp`. Expected: the settings cell grows by about 60 bytes; while the settings page is open its object is about 200 bytes larger (its settings snapshot and per-setting write counts) and it holds one small shared block (the finished-write counts); one more UI-dispatcher subscription while the page is open and one for PowerManager's brightness follower (in PSRAM).
 - The `wisp.scene` stack high-water mark: `DeviceInfo` now carries the whole settings snapshot (about 170 bytes) on that stack.
+- `mem` high-water marks of `wisp_ui` (the settings page open while a setting is changed from the web page), `wisp.fs` (after agent and Shell settings writes), `wisp.net` (after a time sync: it reads the time servers from a snapshot of the settings cell) and the httpd tasks (after `PUT /settings`): each now holds one or more settings snapshots of about 170 bytes on its stack, and `wisp_ui` had the smallest margin measured (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`). The settings page follows the cell with no snapshot copy of its own; the cell's delivery copy remains.
 - A factory reset ends with the defaults and the performance overlay off.
 - The agent mutes spoken replies, changes the deep-standby delay and sets the time zone when asked by voice, and the settings page shows each change.
 
 ## Settings schema parked review findings
 
-- The agent's settings notes show raw numbers: `时区 480 → 540` for the time zone and `0` for "never" on the screen-off and deep-standby delays. The Shell already formats these by unit (`duration_text()`, `time_zone_text()`); the note could use the same formatting.
+- The agent's settings notes show raw numbers: `时区 480 → 540` for the time zone and `0` for "never" on the screen-off and deep-standby delays. The Shell already formats these by unit (`duration_text()`, `time_zone_text()`); the note could use the same formatting. The note also shows unlocalised words in zh and ja (`on`/`off`, `24h`/`12h`).
 - A settings-page slider hold that ends without `LV_EVENT_RELEASED` (`LV_EVENT_PRESS_LOST` is not handled) keeps showing the finger's value until that setting changes again.
 - A settings-page write still in flight across a language rebuild of the page shows the old value briefly, until the write completes.
 - The web page's "More settings" card shows an Enum key's raw codes as its choices, and gives an Int key that has choices a number field. No such key exists today.

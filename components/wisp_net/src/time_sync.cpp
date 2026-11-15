@@ -102,7 +102,8 @@ bool TimeSyncService::tick(bool online) {
         in_flight_ = true;
         next_attempt_ms_.reset();
     }
-    // Outside the lock: a Settings read can wait on flash.
+    // Outside the lock: deps_.servers() is the owner's code (App's reads
+    // the settings cell).
     std::vector<std::string> servers = split_servers(deps_.servers ? deps_.servers() : "");
     std::lock_guard<os::Mutex> lock(mutex_);
     job_ = std::move(servers);

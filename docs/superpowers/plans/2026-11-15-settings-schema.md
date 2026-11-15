@@ -856,7 +856,7 @@ Copied into `docs/backlog.md` by Task 18.
 3. Brightness at boot equals the stored value; at 10 the panel is still readable; dim (30 % of the setting) and wake behave as before; a burst of slider moves on the settings page ends at the last value.
 4. The Shell settings page on the 2.16 and the round 1.75 boards: rows, sliders, the longer screen-off and deep-standby choice pages, and values following a change made on the web page while the page is open.
 5. The web System page against the device: every card loads its ranges from `/settings/schema`; saving each card works.
-6. `mem` at idle: internal free and largest block against `ram_budget.hpp` (the settings cell grows by about 60 bytes; nothing else in internal RAM is expected to change).
+6. `mem` at idle: internal free and largest block against `ram_budget.hpp` (the settings cell grows by about 60 bytes; while the settings page is open its object is about 200 bytes larger and it holds one small shared block).
 7. A factory reset ends with the defaults and the performance overlay off.
 8. The firmware builds for both boards (if a task recorded "firmware build not run").
 
@@ -877,3 +877,9 @@ Rulings made during execution; each is narrower than or equal to the task text i
 11. **Loopback** plays back only the frames it recorded; before, a short recording also played the uninitialised tail of its buffer.
 12. **Tests of the consumers.** PowerManager's out-of-range test fills its cell through `SystemSettings::get()` and is renamed `StoredOutOfRangeTimeoutsReachPowerManagerAsDefaults`; AgentWiring reads its first turn limits from the cell.
 13. **The guard** (`tools/check_settings.py`): a comment line also counts as next to the code line it documents; every server of the NTP default is matched, not only the whole default text; JavaScript `|| 'zh'` is caught as well as `?? 'zh'`; the raw-store rule also catches a `set(` whose first argument is a row's key, but only with a second argument; `firmware/main/` is scanned too. Three markers remain, the ones "Decisions" item 5 expected. A row of the list the guard cannot parse fails the check instead of being skipped.
+14. **Test hygiene.** Tests that register a log sink or set the process-wide UI language release them through a scope guard, so a failed assertion cannot leave a destroyed sink registered or later tests in another language.
+15. **Neutral initializers.** The scene runtime's local settings struct beside its settings follower starts from neutral values (`false`, `{}`), not restated setting defaults; it is always fully assigned before use.
+16. **The Shell page's fallback snapshot is gone.** The hard-coded values the page filled in without a settings source were deleted: its snapshot member already holds the table's defaults.
+17. **Two cases pinned by tests.** A refused batch leaves the settings cell where it was (`SystemSettings.ValidatesWholeBatchAtomically`), and with a UI a `PowerManager::set_brightness()` call from another thread is ignored (`PowerManager.OffThreadSetBrightnessIsIgnored`).
+18. **Two store readers moved to the cell.** The boot language (`App::start()`, right after the cell is seeded) and the time servers of the time sync read the settings cell, not the store; pinned by `AppBoot.BootLanguageIsTheCells` and `NetWiring.TimeSyncAsksTheServersOfTheSettingsCell`.
+19. **Follow-ups.** The Shell page follows the cell field by field into its own snapshot, with no snapshot copy on the UI stack beyond the cell's delivery copy; a direct `PowerManager::set_brightness()` (no production caller) also moves the follower's last applied level; `valid_host_list()` went, `valid_setting()` calls `host_list_syntax_ok()` directly.
