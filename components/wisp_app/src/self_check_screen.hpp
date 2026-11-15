@@ -109,9 +109,6 @@ private:
     // UI thread: re-reads the Wi-Fi state into the network section, for
     // the cells' callbacks and the live values (see kNetLiveReadMs).
     void sync_net();
-    // UI thread: the time sync row follows the stored time zone. One
-    // atomic load while nothing changed.
-    void sync_settings();
 
     void start_loopback();
     void toggle_perf_overlay();
@@ -185,11 +182,8 @@ private:
     // The last loopback status shown, re-rendered by set_page_lang(). UI
     // thread only.
     LoopbackStatus loop_status_;
-    // SystemSettings::revision() as of the last sync_settings(); empty
-    // until the first one. UI thread only.
-    std::optional<uint32_t> settings_revision_;
-    // The utc_offset_min setting as of that sync, for the time sync row.
-    // UI thread only.
+    // The settings cell's utc_offset_min and time_24h as last delivered (or
+    // read at build), for the time sync row. UI thread only.
     int utc_offset_min_ = 480;
     bool time_24h_ = true;
     // os::now_ms() of the last read of the live network values (see
@@ -240,7 +234,7 @@ private:
     // catalog move, follow_foreground() on a foreground change. None
     // without a scene runtime.
     core::CellSubscription scene_sub_;
-    // SystemSettings::cell(), on the UI thread: sync_settings().
+    // SystemSettings::cell(), on the UI thread: the time sync row.
     core::CellSubscription settings_sub_;
 };
 

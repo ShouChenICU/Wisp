@@ -137,7 +137,13 @@ void SelfCheck::build() {
     follow_foreground();
     request_scene_list();
     request_storage();
-    sync_settings();
+    // The time zone and clock format the settings cell holds now, so the
+    // first frame shows them; its subscription follows every change.
+    app_.system_settings().cell().read([this](const core::SystemSettingsValues& v) {
+        utc_offset_min_ = v.utc_offset_min;
+        time_24h_ = v.time_24h;
+    });
+    refresh_time_sync();
     // The network section read the network when it was built, and the
     // Wi-Fi and hotspot cells' first deliveries read it again.
     last_net_read_ms_ = os::now_ms();
@@ -329,8 +335,7 @@ void SelfCheck::subscribe_cells() {
     // what the callback reads before it moves its cell: WifiService its
     // status under the lock it sets the cells under, SceneRuntime
     // foreground() under the lock it updates the overview under (the
-    // catalog after the packages are stored), SystemSettings the stored
-    // values and revision() before the cell.
+    // catalog after the packages are stored).
     if (net::WifiService* wifi = app_.wifi()) {
         wifi_sub_ =
             wifi->wifi_cell().subscribe([this](const net::WifiSnapshot&) { sync_net(); }, ui_);
@@ -357,23 +362,19 @@ void SelfCheck::subscribe_cells() {
             },
             ui_);
     }
+    // The time sync row's time zone and clock format, from the value
+    // delivered: the only writer of utc_offset_min_ and time_24h_ after
+    // build().
     settings_sub_ = app_.system_settings().cell().subscribe(
-        [this](const core::SystemSettingsValues&) { sync_settings(); }, ui_);
+        [this](const core::SystemSettingsValues& v) {
+            utc_offset_min_ = v.utc_offset_min;
+            time_24h_ = v.time_24h;
+            refresh_time_sync();
+        },
+        ui_);
 }
 
 void SelfCheck::sync_net() { net_section_.refresh(os::now_ms()); }
-
-void SelfCheck::sync_settings() {
-    // The revision is read before the value: a change stored in between
-    // moves it again, so the next sync reads the value once more.
-    uint32_t revision = app_.system_settings().revision();
-    if (settings_revision_ == revision) return;
-    settings_revision_ = revision;
-    const core::SystemSettingsValues now = app_.system_settings().get();
-    utc_offset_min_ = now.utc_offset_min;
-    time_24h_ = now.time_24h;
-    refresh_time_sync();
-}
 
 void SelfCheck::set_page_lang(ui::Lang lang) {
     if (!text_.set_lang(lang)) {
@@ -428,7 +429,6 @@ void SelfCheck::toggle_perf_overlay() {
 
 void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     auto* self = static_cast<SelfCheck*>(lv_timer_get_user_data(timer));
-    self->sync_settings();
     self->refresh_ui();
     const uint64_t now = os::now_ms();
     if (now - self->last_net_read_ms_ >= kNetLiveReadMs) {

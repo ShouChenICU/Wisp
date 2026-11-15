@@ -30,6 +30,7 @@
 #include "support/bus_flood.hpp"
 #include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
+#include "support/fake_settings_backend.hpp"
 #include "support/font_image.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
@@ -2123,8 +2124,8 @@ TEST(SelfCheckScreen, ClosingAFaultedPanelIsFollowedAtOnce) {
     h.app->ui()->set_paused(false);
 }
 
-// The time sync row follows the settings cell's time zone, with the
-// 100 ms settings poll stopped.
+// The time sync row follows the settings cell's time zone, with the LVGL
+// timers stopped.
 TEST(SelfCheckScreen, TimeZoneFollowsTheCell) {
     UiNetOptions opts;
     opts.with_sntp = true;
@@ -2138,5 +2139,100 @@ TEST(SelfCheckScreen, TimeZoneFollowsTheCell) {
 
     ASSERT_TRUE(h.app->system_settings().set({{"utc_offset_min", -210}}));
     EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Synced 20:30"); }, 3000));
+    h.app->ui()->set_paused(false);
+}
+
+// Ten time zones stored while the UI task is held (system.settings
+// dropped, the LVGL timers stopped): the row ends at the last.
+TEST(SelfCheckScreen, TimeZoneEndsAtTheLastOfTenChangesWithTheUiHeld) {
+    UiNetOptions opts;
+    opts.with_sntp = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.open_diagnostics());
+    ASSERT_TRUE(h.app->wifi()->add_network("Home", "password1", wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return on_diagnostics(h, "Synced 08:00"); }, 5000));
+    stop_lvgl_timers(*h.app);
+    wisp::test::BusFlood flood(h.app->bus());
+    flood.hold();
+    {
+        wisp::test::UiHold hold(h.app->ui());
+        // UTC+1:00 ... UTC+10:00; the last, +600, shows 10:00.
+        for (int hours = 1; hours <= 10; ++hours) {
+            ASSERT_TRUE(h.app->system_settings().set({{"utc_offset_min", hours * 60}}));
+        }
+        flood.flood(256);
+    }
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Synced 10:00"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(h.app->system_settings().cell(), h.app->ui()));
+    EXPECT_TRUE(on_diagnostics(h, "Synced 10:00"));
+    flood.release();
+    h.app->ui()->set_paused(false);
+}
+
+// A time zone stored before the diagnostics open is shown on them: the
+// screen takes it from the settings cell when it is built.
+TEST(SelfCheckScreen, TimeZoneSetBeforeOpeningIsShown) {
+    UiNetOptions opts;
+    opts.with_sntp = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.app->system_settings().set({{"utc_offset_min", -210}}));
+    ASSERT_TRUE(h.app->wifi()->add_network("Home", "password1", wisp::os::now_ms()));
+    ASSERT_TRUE(wait_until([&] { return h.app->time_sync()->status().synced; }, 5000));
+
+    ASSERT_TRUE(h.open_diagnostics());
+    stop_lvgl_timers(*h.app);
+    // 00:00 UTC is 20:30 the day before at UTC-3:30.
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Synced 20:30"); }, 3000));
+    h.app->ui()->set_paused(false);
+}
+
+// The screen's 100 ms refresh reads no setting. With the settings cache
+// unavailable every SystemSettings read reaches the backend; fifty runs of
+// every LVGL timer with the diagnostics open reach it zero times.
+TEST(SelfCheckScreen, NoSettingsReadOnTimerTicks) {
+    auto backend = std::make_shared<wisp::test::FakePlatformBackend*>(nullptr);
+    UiNetOptions opts;
+    opts.settings_backend = [backend] {
+        auto b = std::make_unique<wisp::test::FakePlatformBackend>();
+        b->fail_load = true;
+        *backend = b.get();
+        return b;
+    };
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(*backend, nullptr);
+    ASSERT_TRUE(h.open_diagnostics());
+    wisp::test::FakePlatformBackend& counting = **backend;
+    stop_lvgl_timers(*h.app);
+    {
+        std::lock_guard<std::mutex> lock(counting.m);
+        counting.gets = 0;
+    }
+    // A read does reach the backend.
+    (void)h.app->system_settings().get();
+    {
+        std::lock_guard<std::mutex> lock(counting.m);
+        ASSERT_GT(counting.gets, 0);
+        counting.gets = 0;
+    }
+
+    int runs = 0;
+    run_on_ui_blocking(h.app->ui(), [&] {
+        for (int i = 0; i < 50; ++i) {
+            for (lv_timer_t* t = lv_timer_get_next(nullptr); t != nullptr;
+                 t = lv_timer_get_next(t)) {
+                lv_timer_ready(t);
+            }
+            lv_timer_handler();
+            ++runs;
+        }
+    });
+    EXPECT_EQ(runs, 50);
+    {
+        std::lock_guard<std::mutex> lock(counting.m);
+        EXPECT_EQ(counting.gets, 0);
+    }
     h.app->ui()->set_paused(false);
 }
