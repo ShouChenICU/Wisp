@@ -667,8 +667,12 @@ Result<void> App::start() {
         }
     }
     // Once the router and the banners are up: what came due while the
-    // device was off is reported now.
-    if (impl_->reminders) impl_->reminders->start();
+    // device was off is reported now. reminders->stop() releases the
+    // time-sync subscription before net.reset().
+    if (impl_->reminders) {
+        net::TimeSyncService* time = impl_->net->time_sync();
+        impl_->reminders->start(time != nullptr ? &time->result_cell() : nullptr);
+    }
 
     if (impl_->ui) {
         // The system duties, then the home screen (mvp spec 6.6), on the

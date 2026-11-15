@@ -159,7 +159,7 @@ int ReminderScheduler::utc_offset_min() const {
     return deps_.utc_offset_min ? deps_.utc_offset_min() : kDefaultOffsetMin;
 }
 
-void ReminderScheduler::start() {
+void ReminderScheduler::start(const StateCell<TimeSyncResult>* time) {
     if (started_) return;
     started_ = true;
     {
@@ -169,15 +169,20 @@ void ReminderScheduler::start() {
     alive_->store(true);
     std::shared_ptr<std::atomic<bool>> alive = alive_;
     // A set clock, or one that jumped: whatever came due meanwhile is
-    // reported, and the timer follows the new time.
-    time_sub_ = deps_.bus.subscribe(topics::kSystemTime, [this, alive](const Event& e) {
-        if (!alive->load()) return;
-        auto it = e.payload.find("state");
-        if (it != e.payload.end() && it->second.type() == Value::Type::String &&
-            it->second.as_string() == "synced") {
-            queue_pass(false);
-        }
-    });
+    // reported, and the timer follows the new time. `last` starts at the
+    // current count, so a sync before start() is left to the pass below.
+    // queue_pass() only hands the pass to the worker.
+    if (time != nullptr) {
+        time_sub_ = time->subscribe(
+            [this, alive, last = time->get().attempts](const TimeSyncResult& now) mutable {
+                if (!alive->load() || now.attempts == last) return;
+                const uint32_t moved = now.attempts - last;
+                last = now.attempts;
+                if (now.outcome == TimeSyncResult::Outcome::Synced || moved > 1) {
+                    queue_pass(false);
+                }
+            });
+    }
     queue_pass(false);
 }
 
@@ -189,8 +194,7 @@ void ReminderScheduler::stop() {
         return;
     }
     started_ = false;
-    deps_.bus.unsubscribe(time_sub_);
-    time_sub_ = 0;
+    time_sub_.reset();
     if (timer_.cancel) timer_.cancel();
     if (retry_.cancel) retry_.cancel();
     // A pass queued before this may still be running on the worker; the

@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
@@ -25,8 +26,10 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/time_sync_result.hpp"
 
 using wisp::ErrorCode;
 using wisp::Value;
@@ -41,6 +44,7 @@ using wisp::core::ReminderScheduler;
 using wisp::core::ReminderTimer;
 using wisp::core::Repeat;
 using wisp::core::RepeatRule;
+using wisp::core::TimeSyncResult;
 using wisp::core::Todo;
 using wisp::core::TodoFields;
 using wisp::core::TodoFilter;
@@ -150,8 +154,19 @@ protected:
         sched = std::make_unique<ReminderScheduler>(deps(), path);
         auto r = sched->load();
         EXPECT_TRUE(r) << r.error().message;
-        sched->start();
+        sched->start(&time);
         return *sched;
+    }
+
+    // A finished time-sync attempt, as TimeSyncService records it in its
+    // cell: every attempt moves `attempts`.
+    void sync(TimeSyncResult::Outcome outcome = TimeSyncResult::Outcome::Synced) {
+        time.update([&](TimeSyncResult& t) {
+            t.outcome = outcome;
+            t.server.assign("pool");
+            t.time = outcome == TimeSyncResult::Outcome::Synced ? now.load() : 0;
+            ++t.attempts;
+        });
     }
 
     uint32_t add(const std::string& title, std::optional<int64_t> due, RepeatRule r = {}) {
@@ -197,10 +212,15 @@ protected:
     std::string root, path;
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
+    // TimeSyncService's cell: after the bus, before the scheduler.
+    wisp::core::StateCell<TimeSyncResult> time{bus, TimeSyncResult{}};
     std::unique_ptr<wisp::core::StorageManager> storage;
     std::unique_ptr<NotificationService> notes;
     std::unique_ptr<ReminderScheduler> sched;
-    std::function<bool(std::function<void()>)> submit_io = [](std::function<void()> job) {
+    // Jobs handed to the worker: passes, and stop()'s wait.
+    std::atomic<int> submits{0};
+    std::function<bool(std::function<void()>)> submit_io = [this](std::function<void()> job) {
+        ++submits;
         job();
         return true;
     };
@@ -483,11 +503,7 @@ TEST_F(Reminders, FirstClockSetReportsMissed) {
     EXPECT_FALSE(armed);
 
     now = kT + 3600;
-    bus.publish(Event{
-        "system.time",
-        "net",
-        0,
-        {{"state", Value("synced")}, {"server", Value("pool")}, {"time", Value(now.load())}}});
+    sync();
     bus.wait_idle(2000);
     std::vector<Notification> p = posts();
     ASSERT_EQ(p.size(), 1u);
@@ -508,7 +524,7 @@ TEST_F(Reminders, ClockJumpForwardReportsMissedOnce) {
     EXPECT_EQ(p[0].body, "a、b");
     EXPECT_FALSE(notes->find(kReminderSource, "todo-1"));
     ring();
-    bus.publish(Event{"system.time", "net", 0, {{"state", Value("synced")}}});
+    sync();
     bus.wait_idle(2000);
     EXPECT_EQ(posts().size(), 1u);
 }
@@ -520,7 +536,7 @@ TEST_F(Reminders, ClockJumpBackDoesNotRefire) {
     ring();
     ASSERT_EQ(posts().size(), 1u);
     now = kT - 3600;
-    bus.publish(Event{"system.time", "net", 0, {{"state", Value("synced")}}});
+    sync();
     bus.wait_idle(2000);
     EXPECT_FALSE(armed);
     now = kT + 60;
@@ -528,6 +544,82 @@ TEST_F(Reminders, ClockJumpBackDoesNotRefire) {
     now = kT + 7200;
     ring();
     EXPECT_EQ(posts().size(), 1u);
+}
+
+// Ten attempts while wisp.bus is held reach the scheduler as one update:
+// one pass, which reports both missed todos once.
+TEST_F(Reminders, SyncedTimeQueuesAPassFlooded) {
+    open();
+    add("a", kT + 10);
+    add("b", kT + 20);
+    sched.reset();
+    now = 0;
+    open();
+    ASSERT_TRUE(bus.wait_idle(2000));
+    EXPECT_TRUE(posts().empty());
+
+    now = kT + 3600;
+    const int before = submits.load();
+    {
+        wisp::test::BusFlood flood(bus);
+        flood.hold();
+        for (int i = 0; i < 9; ++i) sync(TimeSyncResult::Outcome::Failed);
+        sync();
+        EXPECT_EQ(submits.load(), before);
+        flood.release();
+    }
+    ASSERT_TRUE(bus.wait_idle(2000));
+    EXPECT_EQ(submits.load(), before + 1);
+    std::vector<Notification> p = posts();
+    ASSERT_EQ(p.size(), 1u);
+    EXPECT_EQ(p[0].id, "missed");
+    EXPECT_EQ(p[0].title, "missed 2");
+}
+
+// A failed attempt leaves the clock as it was: no pass.
+TEST_F(Reminders, FailedSyncQueuesNothing) {
+    open();
+    add("a", kT + 10);
+    ASSERT_TRUE(bus.wait_idle(2000));
+    const int before = submits.load();
+    now = kT + 3600;
+    sync(TimeSyncResult::Outcome::Failed);
+    ASSERT_TRUE(bus.wait_idle(2000));
+    EXPECT_EQ(submits.load(), before);
+    EXPECT_TRUE(posts().empty());
+}
+
+// A sync and a later failure seen as one update (the attempt count moved
+// by two, the outcome says failed) may have moved the clock: a pass.
+TEST_F(Reminders, SyncHiddenBehindAFailureStillQueuesAPass) {
+    open();
+    add("a", kT + 10);
+    ASSERT_TRUE(bus.wait_idle(2000));
+    const int before = submits.load();
+    now = kT + 3600;
+    {
+        wisp::test::BusFlood flood(bus);
+        flood.hold();
+        sync();
+        sync(TimeSyncResult::Outcome::Failed);
+        flood.release();
+    }
+    ASSERT_TRUE(bus.wait_idle(2000));
+    EXPECT_EQ(submits.load(), before + 1);
+    std::vector<Notification> p = posts();
+    ASSERT_EQ(p.size(), 1u);
+    EXPECT_EQ(p[0].id, "missed");
+}
+
+// A sync that finished before start() is covered by start()'s own pass;
+// the subscription's first delivery adds none.
+TEST_F(Reminders, SyncBeforeStartDoesNotQueueTwice) {
+    sync();
+    sync();
+    const int before = submits.load();
+    open();
+    ASSERT_TRUE(bus.wait_idle(2000));
+    EXPECT_EQ(submits.load(), before + 1);
 }
 
 TEST_F(Reminders, TimezoneFollowsTheSetting) {
@@ -846,7 +938,7 @@ TEST_F(Reminders, ForgetDropsEverythingAndRefusesWrites) {
     now = kT + 86400 + 60;
     sched->fire_due();
     ring();
-    bus.publish(Event{"system.time", "test", 0, {{"state", Value("synced")}}});
+    sync();
     bus.wait_idle(2000);
     EXPECT_EQ(posts().size(), 1u);
     EXPECT_FALSE(fs::exists(fs::path(path).parent_path()));

@@ -307,13 +307,16 @@ TEST(FactoryReset, ClearsShellDirectory) {
 // them, whatever the scheduler is asked to do before the restart (a
 // timer pass, a todo tool, a reminder action).
 TEST(FactoryReset, ErasesTodosAndTheirNoticesForGood) {
-    UiNetHarness h;
+    UiNetOptions opts;
+    opts.with_sntp = true;
+    UiNetHarness h(opts);
     ASSERT_TRUE(h.start("system."));
     wisp::app::App& app = *h.app;
     wisp::core::ReminderScheduler* reminders = app.reminders();
     wisp::core::NotificationService* notes = app.notifications();
     ASSERT_NE(reminders, nullptr);
     ASSERT_NE(notes, nullptr);
+    ASSERT_NE(app.time_sync(), nullptr);
     const std::string system = app.storage().write_root(wisp::core::Area::System).value();
     const std::string todo = system + "/todo";
     const std::string notices = system + "/notifications.json";
@@ -350,8 +353,8 @@ TEST(FactoryReset, ErasesTodosAndTheirNoticesForGood) {
         EXPECT_FALSE(reminders->snooze(1));
         reminders->fire_due();
     });
-    app.bus().publish(
-        wisp::core::Event{"system.time", "test", 0, {{"state", wisp::Value("synced")}}});
+    // A clock set, which makes the scheduler run a pass.
+    app.time_sync()->note_external_sync("test", std::time(nullptr));
     (void)app.bus().wait_idle(2000);
     (void)notes->flush(5000);
     ASSERT_TRUE(app.storage_worker()->drain(5000));

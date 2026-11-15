@@ -24,7 +24,8 @@
 // due. One timer is armed, for the earliest effective time among the
 // todos that can still ring, at most kMaxArmMs ahead (so a clock change
 // the scheduler missed is caught within that), and it is armed again after
-// every change, every fire and every system.time event. The timer callback
+// every change, every fire and every sync the time-sync cell reports (see
+// start()). The timer callback
 // only queues fire_due() on the storage worker (submit_io): firing writes
 // the file. The timer is one-shot, so a pass the worker refuses (its queue
 // full) would leave nothing armed: a refused pass starts a second timer
@@ -49,7 +50,7 @@
 // while that ring is still the current one (see done()).
 // start() runs the same pass right away, so whatever came due while the
 // device was off is reported at boot; with the clock unset nothing rings
-// and the first system.time event runs it.
+// and the first sync runs it.
 //
 // Threads: load() and every mutating call write the file, so they run on
 // the storage worker only. list() reads memory and may be called from any
@@ -82,7 +83,9 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/time_sync_result.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -200,9 +203,13 @@ public:
     // Reads the file (a missing one is an empty list). Worker; before
     // start().
     Result<void> load();
-    // Follows system.time and queues the first fire_due() pass on the
-    // worker, which also arms the timer. Idempotent.
-    void start();
+    // Follows `time` (TimeSyncService::result_cell(), null: no time sync)
+    // on wisp.bus and queues the first fire_due() pass on the worker, which
+    // also arms the timer. An attempt that synced, or several seen as one
+    // update (a sync may hide behind a later failure), queues one more
+    // pass; one pass covers any number of syncs. `time` must outlive the
+    // subscription, which stop() releases. Idempotent.
+    void start(const StateCell<TimeSyncResult>* time = nullptr);
     // Stops the timer and the subscription, and waits for a pass already
     // queued (unless called on the worker). Idempotent.
     void stop();
@@ -260,10 +267,10 @@ private:
     std::string path_;
     ReminderTimer timer_;
     ReminderTimer retry_;
-    // Read by the timer and bus callbacks before they touch this object:
+    // Read by the timer and cell callbacks before they touch this object:
     // false once stop() ran.
     std::shared_ptr<std::atomic<bool>> alive_;
-    SubscriptionId time_sub_ = 0;
+    CellSubscription time_sub_;
     bool started_ = false;
 
     mutable os::Mutex mutex_;
