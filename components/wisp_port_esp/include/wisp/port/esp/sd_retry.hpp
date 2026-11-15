@@ -59,7 +59,7 @@ public:
     // directly, and does not touch last-attempt bookkeeping: the actual
     // unmount (esp_board_manager_deinit_device_by_name()) is done by
     // EspSdStorage::online() itself, which is always called under
-    // StorageManager's mutex (so no FATFS I/O can be in flight -- see
+    // StorageManager's SD I/O lock (so no FATFS I/O can be in flight -- see
     // esp_storage.hpp's class comment) -- the worker thread must not do
     // that unmount concurrently with a caller that might be mid-way
     // through using the still-"mounted" filesystem. A no-op if not

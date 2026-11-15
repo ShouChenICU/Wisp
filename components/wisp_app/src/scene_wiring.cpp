@@ -39,7 +39,7 @@ const char* notice_code(scene::SceneNoticeKind kind) {
 
 }  // namespace
 
-SceneWiring::SceneWiring(SceneWiringDeps deps) : deps_(deps) {}
+SceneWiring::SceneWiring(SceneWiringDeps deps) : deps_(deps) { router_.emplace(worker_); }
 
 SceneWiring::~SceneWiring() { stop(); }
 
@@ -47,6 +47,16 @@ void SceneWiring::start_storage() {
     if (auto r = worker_.start(); !r) {
         WLOG_E(kTag, "storage worker not started (%s); scenes are off", r.error().message.c_str());
         return;
+    }
+    // After wisp.fs, so card work always has it to fall back to; without
+    // the SD I/O worker it simply stays there (StorageRouter).
+    if (deps_.sd_own_worker && deps_.storage.has_sd()) {
+        if (auto r = sd_worker_.start(); !r) {
+            WLOG_W(kTag, "SD I/O worker not started (%s); card work runs on %s",
+                   r.error().message.c_str(), worker_.name());
+        } else {
+            router_.emplace(worker_, &sd_worker_);
+        }
     }
     core::SceneRepoConfig config;
     const Platform& platform = deps_.platform;
@@ -84,8 +94,9 @@ void SceneWiring::start_storage() {
     if (internal) {
         core::SceneFilesConfig files_config;
         files_config.data_root = internal.value() + "/scenes";
-        files_config.submit_io = [this](std::function<void()> job) {
-            return worker_.submit(std::move(job));
+        files_config.submit_io = [this](core::Medium m, core::IoLane lane,
+                                        std::function<void()> job) {
+            return router_->submit(m, std::move(job), lane);
         };
         // The repository never calls into SceneFiles, so taking its lock
         // under SceneFiles' locks cannot deadlock.
@@ -100,11 +111,12 @@ void SceneWiring::start_storage() {
     }
     core::SceneFiles* files = files_.get();
     if (files != nullptr) {
-        // The card's scenes are counted again on the worker (spec 7.2).
+        // The card's scenes are counted again (spec 7.2), starting on
+        // wisp.fs: their records sit on internal flash.
         for (const char* topic : {"storage.sd.inserted", "storage.sd.removed"}) {
             sd_subs_.push_back(deps_.bus.subscribe(topic, [this, files](const core::Event&) {
                 sd_changes_.fetch_add(1);
-                if (!worker_.submit([files] { files->on_sd_changed(); }))
+                if (!worker_.submit([this, files] { recount_card(*files); }))
                     WLOG_W(kTag, "storage worker busy: scene files on the card not recounted");
             }));
         }
@@ -131,6 +143,23 @@ void SceneWiring::start_storage() {
         !r) {
         WLOG_W(kTag, "storage worker busy: interrupted installs not recovered");
     }
+}
+
+void SceneWiring::recount_card(core::SceneFiles& files) {
+    core::SceneFiles* f = &files;
+    // Only queued, never waited for: the recounts and the orphan log need
+    // no order between them, and a scene not recounted yet is counted by
+    // its next call.
+    for (std::string& id : files.sd_changed_begin()) {
+        if (!router_->submit(core::Medium::Sd, [f, id] {
+                if (auto r = f->recount(id); !r)
+                    WLOG_W(kTag, "%s: not counted: %s", id.c_str(), r.error().message.c_str());
+            })) {
+            WLOG_W(kTag, "%s: card queue full; counted on its next call", id.c_str());
+        }
+    }
+    if (!worker_.submit([f] { f->sd_changed_end(); }))
+        WLOG_W(kTag, "storage worker busy: the card's files without a scene not logged");
 }
 
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
@@ -276,10 +305,14 @@ void SceneWiring::stop() {
     for (core::SubscriptionId id : sd_subs_) deps_.bus.unsubscribe(id);
     sd_subs_.clear();
     if (http_) http_->stop();
-    if (!worker_.drain(kDrainMs)) {
-        WLOG_W(kTag, "storage worker still busy after %u ms; stopping it",
+    // Both together: a job on either may hand work to the other.
+    if (!router_->drain(kDrainMs)) {
+        WLOG_W(kTag, "storage workers still busy after %u ms; stopping them",
                static_cast<unsigned>(kDrainMs));
     }
+    // The card's worker first: card work submitted from here on runs on
+    // wisp.fs, which stops last.
+    router_->stop_sd();
     worker_.stop();
 }
 
@@ -491,11 +524,20 @@ SceneWiring::ListedScene SceneWiring::listed_scene(const core::SceneManifest& m,
     return e;
 }
 
-bool SceneWiring::can_run(const os::LargeString& id, bool online) {
+bool SceneWiring::can_run(const os::LargeString& id, bool online, bool& unsure) {
     core::SceneFiles* sf = files_.get();
     if (sf == nullptr || online) return true;
-    const std::string_view sid(id.data(), id.size());
-    auto fi = sf->info(sid);
+    // A job of the scene's (SceneFiles::submit()): the record may need
+    // loading, and info() takes the scene's I/O lock, which a job on the
+    // worker may hold while it waits for nothing of this task's.
+    const std::string sid(id.data(), id.size());
+    auto fi = core::run_files<core::SceneFilesInfo>(
+        *sf, sid, [sid](core::SceneFiles& f) { return f.info(sid); }, deps_.files_probe_ms);
+    if (!fi && fi.error().code == ErrorCode::Timeout) {
+        WLOG_W(kTag, "%s: its files did not answer; shown as not runnable", sid.c_str());
+        unsure = true;
+        return false;
+    }
     if (!fi) {
         // A scene that wants the card and has no files yet is refused
         // outright while the card is out.
@@ -507,15 +549,24 @@ bool SceneWiring::can_run(const os::LargeString& id, bool online) {
     return !on_card;
 }
 
-shell::ShellListing SceneWiring::shell_scenes() {
+shell::ShellListing SceneWiring::shell_scenes(const std::function<bool()>& cancelled) {
     shell::ShellListing out;
+    // Between two reads: what was read so far stays consistent, and what
+    // was not is read next time (listed_ or the marks below are left as
+    // they were).
+    const auto stopped = [&] {
+        if (!cancelled || !cancelled()) return false;
+        out.cancelled = true;
+        return true;
+    };
+    bool unsure = false;
     core::SceneRepository* repo = repository();
     if (repo == nullptr) return out;
     const uint64_t t0 = os::now_us();
     // Asked before reading, so a change landing while this reads is read
     // again next time.
     uint64_t gen = 0;
-    const std::vector<std::string> changed = repo->changed_since(listed_gen_, gen);
+    const std::vector<std::string> changed = repo->changed_since(listed_gen_.load(), gen);
     const uint64_t sd = sd_changes_.load();
     const bool online = files_ == nullptr || files_->sd_online();
     const bool full = !listed_ || repo->dev();
@@ -532,19 +583,22 @@ shell::ShellListing SceneWiring::shell_scenes() {
     if (full) {
         listed_ = false;
         listing_.clear();
-        auto listed = repo->manifests();
+        auto listed = repo->manifests(core::ParseOn::Caller, cancelled);
+        if (stopped()) return out;
         if (!listed) {
             WLOG_W(kTag, "listing scenes failed: %s", listed.error().message.c_str());
             return out;
         }
         listing_.reserve(listed.value().size());
         for (const core::SceneManifest& m : listed.value()) {
+            if (stopped()) return out;
             listing_.push_back(listed_scene(m, bytes));
-            listing_.back().available = can_run(listing_.back().id, online);
+            listing_.back().available = can_run(listing_.back().id, online, unsure);
             keep_bytes(listing_.back().id);
         }
     } else {
         for (const std::string& id : changed) {
+            if (stopped()) return out;
             auto it = std::lower_bound(listing_.begin(), listing_.end(), id, by_id);
             const bool there =
                 it != listing_.end() && std::string_view(it->id.data(), it->id.size()) == id;
@@ -563,7 +617,7 @@ shell::ShellListing SceneWiring::shell_scenes() {
                 continue;
             }
             ListedScene e = listed_scene(m.value(), bytes);
-            e.available = can_run(e.id, online);
+            e.available = can_run(e.id, online, unsure);
             keep_bytes(e.id);
             if (there) {
                 *it = std::move(e);
@@ -572,17 +626,23 @@ shell::ShellListing SceneWiring::shell_scenes() {
             }
         }
         if (card) {
-            for (ListedScene& e : listing_) e.available = can_run(e.id, online);
+            for (ListedScene& e : listing_) {
+                if (stopped()) return out;
+                e.available = can_run(e.id, online, unsure);
+            }
         }
     }
     if (full || !changed.empty() || card) {
         // A failed read above leaves listed_ false for a full read next time.
-        listed_ = full || listed_;
+        listed_ = full || listed_.load();
         listed_gen_ = gen;
         listed_sd_ = sd;
         listed_online_ = online;
     }
+    // A scene whose files did not answer is asked again next time.
+    if (unsure) listed_ = false;
     out.cached = !full && changed.empty() && !card;
+    out.generation = listed_gen_.load();
     const uint64_t t1 = os::now_us();
 
     std::vector<std::string> background;
@@ -606,6 +666,15 @@ shell::ShellListing SceneWiring::shell_scenes() {
            static_cast<unsigned>(full ? listing_.size() : changed.size()),
            static_cast<unsigned>(listing_.size()), out.cached ? 1u : 0u);
     return out;
+}
+
+bool SceneWiring::shell_listing_current() const {
+    const core::SceneRepository* repo = repo_.get();
+    if (repo == nullptr || repo->dev() || !listed_.load()) return false;
+    uint64_t now = 0;
+    if (!repo->changed_since(listed_gen_.load(), now).empty()) return false;
+    const bool online = files_ == nullptr || files_->sd_online();
+    return sd_changes_.load() == listed_sd_.load() && online == listed_online_.load();
 }
 
 std::shared_ptr<const os::LargeBuffer> SceneWiring::shell_icon(const std::string& id) {

@@ -2,7 +2,8 @@
 
 // One VM's finished wisp.http / wisp.files calls waiting for the scene task
 // (scene_runtime.hpp, "Results"). Producers: the wisp.shttp workers, the
-// wisp.fs worker and the scene task itself (refusals made inside a call).
+// storage workers (wisp.fs, wisp.sd.io) and the scene task itself
+// (refusals made inside a call).
 // Made once per VM (make()) and shared with every deliver lambda, so a
 // late producer never touches a freed box, and a result always goes to the
 // box of the instance that made the call, never to a later instance of the

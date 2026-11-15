@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <functional>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -277,7 +279,7 @@ TEST(StorageWorker, RegistersItselfAsFlashThread) {
     EXPECT_TRUE(wisp::os::on_flash_thread());
 }
 
-TEST(StorageWorker, StopRunsQueuedJobsInBothLanes) {
+TEST(StorageWorker, StopRunsQueuedJobsInEveryLane) {
     wisp::os::Semaphore release(1, 0);
     std::atomic<int> ran{0};
     StorageWorker w;
@@ -286,9 +288,390 @@ TEST(StorageWorker, StopRunsQueuedJobsInBothLanes) {
     ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(w.submit([&] { ++ran; }, IoLane::Bulk));
     for (int i = 0; i < 3; ++i) ASSERT_TRUE(w.submit([&] { ++ran; }));
+    ASSERT_TRUE(w.submit([&] { ++ran; }, IoLane::Interactive));
 
     release.give();
     w.stop();
-    EXPECT_EQ(ran.load(), 7);
+    EXPECT_EQ(ran.load(), 8);
     EXPECT_EQ(w.pending(), 0u);
+}
+
+namespace {
+
+// Names of the jobs in the order they ran.
+struct Recorder {
+    std::mutex m;
+    std::vector<std::string> order;
+    std::function<void()> record(const char* name) {
+        return [this, name] {
+            std::lock_guard<std::mutex> lock(m);
+            order.emplace_back(name);
+        };
+    }
+    std::vector<std::string> get() {
+        std::lock_guard<std::mutex> lock(m);
+        return order;
+    }
+};
+
+}  // namespace
+
+TEST(StorageWorker, InteractiveOvertakesQueuedNormalAndBulk) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    Recorder rec;
+    ASSERT_TRUE(w.submit(rec.record("B1"), IoLane::Bulk));
+    ASSERT_TRUE(w.submit(rec.record("N1"), IoLane::Normal));
+    ASSERT_TRUE(w.submit(rec.record("I1"), IoLane::Interactive));
+    ASSERT_TRUE(w.submit(rec.record("I2"), IoLane::Interactive));
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    EXPECT_EQ(rec.get(), (std::vector<std::string>{"I1", "I2", "N1", "B1"}));
+}
+
+TEST(StorageWorker, LowerLanesGetATurnAfterEightJobs) {
+    EXPECT_EQ(wisp::core::kLaneTurnAfter, 8u);
+    EXPECT_EQ(wisp::core::kLaneCount, 3u);
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    Recorder rec;
+    static const char* const kInteractive[] = {"I1", "I2", "I3", "I4", "I5",
+                                               "I6", "I7", "I8", "I9"};
+    ASSERT_TRUE(w.submit(rec.record("B1"), IoLane::Bulk));
+    ASSERT_TRUE(w.submit(rec.record("N1"), IoLane::Normal));
+    for (const char* name : kInteractive) {
+        ASSERT_TRUE(w.submit(rec.record(name), IoLane::Interactive));
+    }
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    EXPECT_EQ(rec.get(), (std::vector<std::string>{"I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8",
+                                                   "B1", "I9", "N1"}));
+}
+
+namespace {
+
+// Submits job `prefix`+`n` on `lane`; when it runs it records its name and
+// submits job n + 1 of the same lane, up to `last`, so the lane keeps
+// receiving work while the worker drains rather than holding one backlog.
+void submit_chain(StorageWorker& w, Recorder& rec, IoLane lane, const char* prefix, int n,
+                  int last) {
+    ASSERT_TRUE(w.submit(
+        [&w, &rec, lane, prefix, n, last] {
+            {
+                std::lock_guard<std::mutex> lock(rec.m);
+                rec.order.push_back(prefix + std::to_string(n));
+            }
+            if (n < last) submit_chain(w, rec, lane, prefix, n + 1, last);
+        },
+        lane));
+}
+
+std::vector<std::string> names(const char* prefix, int first, int last) {
+    std::vector<std::string> out;
+    for (int i = first; i <= last; ++i) out.push_back(prefix + std::to_string(i));
+    return out;
+}
+
+std::vector<std::string> concat(std::initializer_list<std::vector<std::string>> parts) {
+    std::vector<std::string> out;
+    for (const auto& p : parts) out.insert(out.end(), p.begin(), p.end());
+    return out;
+}
+
+}  // namespace
+
+TEST(StorageWorker, ArrivingInteractiveJobsDoNotStarveLowerLanes) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    Recorder rec;
+    ASSERT_TRUE(w.submit(rec.record("B1"), IoLane::Bulk));
+    ASSERT_TRUE(w.submit(rec.record("N1"), IoLane::Normal));
+    ASSERT_NO_FATAL_FAILURE(submit_chain(w, rec, IoLane::Interactive, "I", 1, 12));
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    // Bulk runs as the 9th job, Normal as the 11th: a forced Bulk turn
+    // does not count toward Normal's.
+    EXPECT_EQ(rec.get(), concat({names("I", 1, 8), {"B1", "I9", "N1"}, names("I", 10, 12)}));
+}
+
+TEST(StorageWorker, ArrivingInteractiveAndNormalJobsDoNotStarveBulk) {
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    Recorder rec;
+    ASSERT_TRUE(w.submit(rec.record("B1"), IoLane::Bulk));
+    ASSERT_TRUE(w.submit(rec.record("B2"), IoLane::Bulk));
+    ASSERT_NO_FATAL_FAILURE(submit_chain(w, rec, IoLane::Normal, "N", 1, 6));
+    ASSERT_NO_FATAL_FAILURE(submit_chain(w, rec, IoLane::Interactive, "I", 1, 20));
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    // With both higher lanes never empty, each Bulk job waits for at most
+    // kLaneTurnAfter higher jobs (B2 runs 8 jobs after B1), and Normal
+    // still gets its own turns in between.
+    EXPECT_EQ(rec.get(), concat({names("I", 1, 8),
+                                 {"B1", "I9", "N1"},
+                                 names("I", 10, 15),
+                                 {"B2", "I16", "I17", "N2"},
+                                 names("I", 18, 20),
+                                 names("N", 3, 6)}));
+}
+
+TEST(StorageWorker, InteractiveRunsRightAfterTheRunningBulkJob) {
+    wisp::os::Semaphore release(1, 0);
+    wisp::os::Semaphore started(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_TRUE(w.submit(
+        [&] {
+            started.give();
+            release.take(wisp::os::kForever);
+        },
+        IoLane::Bulk));
+    ASSERT_TRUE(started.take(5000));
+
+    Recorder rec;
+    ASSERT_TRUE(w.submit(rec.record("N1")));
+    ASSERT_TRUE(w.submit(rec.record("N2")));
+    ASSERT_TRUE(w.submit(rec.record("N3")));
+    ASSERT_TRUE(w.submit(rec.record("I1"), IoLane::Interactive));
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    auto order = rec.get();
+    ASSERT_FALSE(order.empty());
+    EXPECT_EQ(order.front(), "I1");
+}
+
+TEST(StorageWorker, InteractiveLaneHoldsItsCapacity) {
+    EXPECT_EQ(StorageWorkerConfig{}.interactive_capacity, 16u);
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w(StorageWorkerConfig{.interactive_capacity = 2});
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+
+    EXPECT_TRUE(w.submit([] {}, IoLane::Interactive));
+    EXPECT_TRUE(w.submit([] {}, IoLane::Interactive));
+    EXPECT_FALSE(w.submit([] {}, IoLane::Interactive));
+    auto r = w.run_sync([] {}, 0, IoLane::Interactive);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::Busy);
+    // A full Interactive lane does not hold up the other lanes.
+    EXPECT_TRUE(w.submit([] {}));
+    EXPECT_TRUE(w.submit([] {}, IoLane::Bulk));
+
+    release.give();
+    EXPECT_TRUE(w.drain(5000));
+}
+
+TEST(StorageWorker, StatsRecordLongestWaitAndJob) {
+    std::atomic<uint64_t> clock{0};
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w(StorageWorkerConfig{.now_us = [&] { return clock.load(); }});
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));  // G, on Normal
+    ASSERT_TRUE(w.submit([&] { clock += 3000; }, IoLane::Interactive));
+    clock = 7000;
+
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    auto i = w.stats(IoLane::Interactive);
+    EXPECT_EQ(i.jobs, 1u);
+    EXPECT_EQ(i.max_wait_us, 7000u);
+    EXPECT_EQ(i.max_job_us, 3000u);
+    auto n = w.stats(IoLane::Normal);
+    EXPECT_EQ(n.jobs, 1u);
+    EXPECT_EQ(n.max_wait_us, 0u);
+    EXPECT_EQ(n.max_job_us, 7000u);
+    EXPECT_EQ(w.stats(IoLane::Bulk).jobs, 0u);
+}
+
+TEST(StorageWorker, InlineRunsAreNotCounted) {
+    StorageWorker w;
+    ASSERT_TRUE(w.run_sync([] {}, 0, IoLane::Interactive));
+    ASSERT_TRUE(w.run_sync([] {}, 0));
+    ASSERT_TRUE(w.start());
+    ASSERT_TRUE(w.drain(5000));
+    for (IoLane lane : {IoLane::Interactive, IoLane::Normal, IoLane::Bulk}) {
+        EXPECT_EQ(w.stats(lane).jobs, 0u);
+    }
+}
+
+using wisp::core::WorkerRole;
+
+TEST(StorageWorker, SdIoConfig) {
+    StorageWorkerConfig sd = StorageWorker::sd_io_config();
+    EXPECT_EQ(sd.role, WorkerRole::SdIo);
+    EXPECT_EQ(sd.interactive_capacity, 1u);
+    EXPECT_EQ(sd.queue_capacity, 16u);
+    EXPECT_EQ(sd.bulk_capacity, 4u);
+    auto c = StorageWorker::task_config(sd);
+    EXPECT_STREQ(c.name, "wisp.sd.io");
+    EXPECT_FALSE(c.flash_access);
+    EXPECT_FALSE(c.hot_stack);
+    EXPECT_EQ(c.stack_bytes, 8192u);
+    EXPECT_EQ(c.priority, 3);
+
+    EXPECT_EQ(StorageWorkerConfig{}.role, WorkerRole::Flash);
+    EXPECT_FALSE(StorageWorker::task_config({}).hot_stack);
+}
+
+TEST(StorageWorker, SdIoWorkerRegistersItsThread) {
+    StorageWorker w(StorageWorker::sd_io_config());
+    EXPECT_EQ(w.role(), WorkerRole::SdIo);
+    EXPECT_STREQ(w.name(), "wisp.sd.io");
+    ASSERT_TRUE(w.start());
+    std::atomic<bool> sd{false};
+    std::atomic<bool> flash{true};
+    ASSERT_TRUE(w.run_sync(
+        [&] {
+            sd = wisp::os::on_sd_io_thread();
+            flash = wisp::os::on_flash_thread();
+        },
+        5000));
+    EXPECT_TRUE(sd);
+    EXPECT_FALSE(flash);
+    EXPECT_FALSE(wisp::os::on_sd_io_thread());
+    w.stop();
+    // The role is given back, so a later worker or test starts clean.
+    std::atomic<bool> sd_after{true};
+    ASSERT_TRUE(w.run_sync([&] { sd_after = wisp::os::on_sd_io_thread(); }, 0));
+    EXPECT_FALSE(sd_after);
+}
+
+TEST(StorageWorker, RoleIsRegisteredWhenStartReturns) {
+    StorageWorker w;
+    ASSERT_TRUE(w.start());
+    // No window after start() in which every thread still passes the flash
+    // rule because the worker has not reached its first line yet.
+    EXPECT_FALSE(wisp::os::on_flash_thread());
+    w.stop();
+    EXPECT_TRUE(wisp::os::on_flash_thread());
+}
+
+TEST(StorageWorker, RunningTracksStartAndStop) {
+    StorageWorker w;
+    EXPECT_STREQ(w.name(), "wisp.fs");
+    EXPECT_EQ(w.role(), WorkerRole::Flash);
+    EXPECT_FALSE(w.running());
+    ASSERT_TRUE(w.start());
+    EXPECT_TRUE(w.running());
+    w.stop();
+    EXPECT_FALSE(w.running());
+    EXPECT_FALSE(w.start());
+    EXPECT_FALSE(w.running());
+}
+
+TEST(StorageWorker, RunSyncFromTheSdIoThreadOntoTheFlashWorkerIsRefused) {
+    for (bool flash_started : {true, false}) {
+        SCOPED_TRACE(flash_started ? "flash worker running" : "flash worker never started");
+        StorageWorker f;
+        StorageWorker s(StorageWorker::sd_io_config());
+        if (flash_started) ASSERT_TRUE(f.start());
+        ASSERT_TRUE(s.start());
+        std::atomic<bool> flag{false};
+        std::atomic<int> code{-1};
+        std::atomic<int> busy_code{-1};
+        std::atomic<bool> drained{true};
+        ASSERT_TRUE(s.run_sync(
+            [&] {
+                auto r = f.run_sync([&] { flag = true; }, wisp::os::kForever);
+                code = r ? 0 : static_cast<int>(r.error().code);
+                // call_on_worker() does not keep retrying the refusal.
+                auto c = wisp::core::call_on_worker<int>(&f, [&] {
+                    flag = true;
+                    return wisp::Result<int>::ok(1);
+                });
+                busy_code = c ? 0 : static_cast<int>(c.error().code);
+                drained = f.drain(wisp::os::kForever);
+            },
+            5000));
+        EXPECT_EQ(code.load(), static_cast<int>(wisp::ErrorCode::InvalidArgument));
+        EXPECT_EQ(busy_code.load(), static_cast<int>(wisp::ErrorCode::InvalidArgument));
+        EXPECT_FALSE(drained);
+        EXPECT_FALSE(flag);
+    }
+}
+
+TEST(StorageWorker, StopOfTheFlashWorkerFromTheSdIoThreadIsRefused) {
+    StorageWorker f;
+    StorageWorker s(StorageWorker::sd_io_config());
+    ASSERT_TRUE(f.start());
+    ASSERT_TRUE(s.start());
+    ASSERT_TRUE(s.run_sync([&] { f.stop(); }, 5000));
+    EXPECT_TRUE(f.running());
+    EXPECT_TRUE(f.submit([] {}));
+    f.stop();
+    EXPECT_FALSE(f.running());
+}
+
+TEST(StorageWorker, TrySubmitKeepsARefusedJob) {
+    std::atomic<int> ran{0};
+    std::function<void()> job = [&] { ++ran; };
+    StorageWorker w(StorageWorkerConfig{.queue_capacity = 1});
+    EXPECT_FALSE(w.try_submit(job));  // not running
+    ASSERT_TRUE(job);
+
+    wisp::os::Semaphore release(1, 0);
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    ASSERT_NO_FATAL_FAILURE(block_worker(w, release));
+    std::function<void()> first = [&] { ++ran; };
+    EXPECT_TRUE(w.try_submit(first));
+    EXPECT_FALSE(w.try_submit(job));  // lane full
+    ASSERT_TRUE(job);
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+    EXPECT_EQ(ran.load(), 1);
+    job();
+    EXPECT_EQ(ran.load(), 2);
+}
+
+TEST(StorageWorker, RunQueuedNeverRunsInline) {
+    std::atomic<int> ran{0};
+    std::function<void()> job = [&] { ++ran; };
+    StorageWorker w;
+    auto before = w.run_queued(job, 1000);
+    ASSERT_FALSE(before);
+    EXPECT_EQ(before.error().code, wisp::ErrorCode::Busy);
+    ASSERT_TRUE(job);
+
+    ASSERT_TRUE(w.start());
+    std::atomic<int> nested_code{-1};
+    std::function<void()> outer = [&] {
+        auto r = w.run_queued(job, 1000);
+        nested_code = r ? 0 : static_cast<int>(r.error().code);
+    };
+    ASSERT_TRUE(w.run_queued(outer, 5000));
+    EXPECT_EQ(nested_code.load(), static_cast<int>(wisp::ErrorCode::InvalidArgument));
+    EXPECT_EQ(ran.load(), 0);
+
+    ASSERT_TRUE(w.run_queued(job, 5000));
+    EXPECT_EQ(ran.load(), 1);
+    w.stop();
+    std::function<void()> after = [&] { ++ran; };
+    EXPECT_FALSE(w.run_queued(after, 1000));
+    EXPECT_TRUE(after);
+    EXPECT_EQ(ran.load(), 1);
 }

@@ -10,10 +10,12 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "admin/admin_fixture.hpp"
 #include "support/fake_http.hpp"
+#include "support/wait.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/reminders.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -237,4 +239,33 @@ TEST_F(MemoryRoutes, UnavailableWithoutServices) {
         EXPECT_EQ(res.status, 503) << path;
         EXPECT_EQ(error_code(res), "unavailable") << path;
     }
+}
+
+// A delete from the console is short and someone waits for it: it runs on
+// the Interactive lane, ahead of Normal work queued before it.
+TEST_F(MemoryRoutes, RemoveOvertakesANormalBacklog) {
+    auto id = add_note("称呼：小陈");
+    ASSERT_TRUE(id);
+
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    ASSERT_TRUE(worker->submit([&] {
+        started.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(started.take(5000));
+    size_t notes_seen_by_n1 = 99;
+    ASSERT_TRUE(worker->submit([&] { notes_seen_by_n1 = memory->list().size(); },
+                               wisp::core::IoLane::Normal));
+    HttpResponse deleted;
+    std::thread client([&] { deleted = del("/api/v1/memory/" + std::to_string(id.value())); });
+    // The blocker, N1 and the delete's job.
+    const bool queued = wisp::test::wait_until([&] { return worker->pending() == 3; }, 5000);
+    release.give();
+    client.join();
+    ASSERT_TRUE(queued);
+    ASSERT_TRUE(worker->drain(5000));
+
+    EXPECT_EQ(deleted.status, 204);
+    EXPECT_EQ(notes_seen_by_n1, 0u);
 }

@@ -59,6 +59,7 @@ wisp_test(NAME firmware_update_test SRCS core/firmware_update_test.cpp
           LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME storage_manager_test SRCS core/storage_manager_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME storage_worker_test SRCS core/storage_worker_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
+wisp_test(NAME storage_router_test SRCS core/storage_router_test.cpp LIBS wisp_core wisp_port_sim_os TIMEOUT 20)
 wisp_test(NAME cached_settings_test SRCS core/cached_settings_test.cpp LIBS wisp_core wisp_port_sim_os
           TIMEOUT 20)
 wisp_test(NAME latest_save_test SRCS core/latest_save_test.cpp LIBS wisp_core wisp_port_sim_os)

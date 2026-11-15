@@ -199,13 +199,23 @@ struct AgentService::Impl {
         return deps.run_io([&fn] { fn(); }).is_ok();
     }
 
+    // run_io() on the worker's Interactive lane (deps.run_io_interactive,
+    // or run_io without one): for the conversation appends, which are
+    // short and hold up the turn. The service waits for every store call,
+    // so an append still cannot pass an archive, clear or load it issued
+    // earlier, though they take the Normal lane.
+    bool run_io_interactive(const std::function<void()>& fn) {
+        if (!deps.run_io_interactive) return run_io(fn);
+        return deps.run_io_interactive([&fn] { fn(); }).is_ok();
+    }
+
     // --- wisp.agent (and start()) -------------------------------------
 
     uint64_t append(Message m) {
         m.ts = deps.wall_s ? deps.wall_s() : 0;
         const Role role = m.role;
         Result<uint64_t> r = Result<uint64_t>::err(ErrorCode::Busy, "storage worker refused");
-        run_io([&] { r = deps.store.append(std::move(m)); });
+        run_io_interactive([&] { r = deps.store.append(std::move(m)); });
         if (!r) {
             WLOG_W(kTag, "append %s failed: %s", to_string(role), r.error().message.c_str());
             return 0;

@@ -55,7 +55,11 @@ public:
 
     // Waits up to `timeout_ms` for a free slot, then enqueues `item`.
     // Returns false if the queue was still full when the timeout elapsed.
-    bool push(T item, uint32_t timeout_ms) {
+    bool push(T item, uint32_t timeout_ms) { return try_push(item, timeout_ms); }
+
+    // push(), but moves from `item` only once it has a slot, so a caller
+    // whose item was refused still holds it and can send it elsewhere.
+    bool try_push(T& item, uint32_t timeout_ms) {
         if (!free_slots_.take(timeout_ms)) {
             return false;
         }

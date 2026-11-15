@@ -8,7 +8,10 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "agent_wiring.hpp"
 #include "support/scene_runtime_fixture.hpp"
@@ -170,4 +173,70 @@ TEST_F(SceneToolIndexObserverTest, LoadsEveryInstalledSceneAtBoot) {
     ASSERT_TRUE(index->find("weather.lookup"));
     ASSERT_TRUE(index->find("notes.add"));
     EXPECT_EQ(index->size(), 2u);
+}
+
+// The boot load reads each scene.json on the worker and parses it on the
+// caller, so the worker's stack never holds a manifest parse for it.
+TEST_F(SceneToolIndexObserverTest, LoadInstalledParsesOffTheWorker) {
+    install("weather", "return ui.screen {}\n",
+            {{"scene.json",
+              manifest("weather", "Weather", R"([{"name":"lookup","description":"Temp"}])")}});
+    install(
+        "notes", "return ui.screen {}\n",
+        {{"scene.json", manifest("notes", "Notes", R"([{"name":"add","description":"Add"}])")}});
+    std::mutex mu;
+    std::vector<bool> on_worker;
+    wisp::core::SceneRepoConfig rc;
+    rc.code_root = in + "/scenes";
+    rc.data_root = in + "/scenes";
+    rc.worker = &worker;
+    rc.on_parse = [&](std::string_view) {
+        std::lock_guard<std::mutex> lock(mu);
+        on_worker.push_back(worker.on_worker());
+    };
+    wisp::core::SceneRepository parsing_repo(*storage, rc);
+    observer.reset();
+    observer =
+        std::make_unique<wisp::app::SceneToolIndexObserver>(bus, worker, parsing_repo, *index);
+
+    ASSERT_TRUE(observer->load_installed());
+    observer.reset();
+    EXPECT_TRUE(index->find("weather.lookup"));
+    EXPECT_TRUE(index->find("notes.add"));
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(on_worker, (std::vector<bool>{false, false}));
+}
+
+// A scene removed (or replaced) after its manifest was read but before the
+// boot load applied it: the load must not leave the old tools behind. The
+// bus event of that change may already have been handled, so the load
+// itself reads again whatever the repository says changed meanwhile.
+TEST_F(SceneToolIndexObserverTest, ChangeDuringTheBootLoadIsNotOverwritten) {
+    install(
+        "notes", "return ui.screen {}\n",
+        {{"scene.json", manifest("notes", "Notes", R"([{"name":"add","description":"Add"}])")}});
+    install("weather", "return ui.screen {}\n",
+            {{"scene.json",
+              manifest("weather", "Weather", R"([{"name":"lookup","description":"Temp"}])")}});
+    wisp::core::SceneRepository* self = nullptr;
+    wisp::core::SceneRepoConfig rc;
+    rc.code_root = in + "/scenes";
+    rc.data_root = in + "/scenes";
+    rc.worker = &worker;
+    // "notes" has been read by the time "weather" is; it goes now, on the
+    // worker (remove() runs inline there), with no scene.state event.
+    rc.on_read = [&](std::string_view id) {
+        if (id == "weather") EXPECT_TRUE(self->remove("notes", false));
+    };
+    wisp::core::SceneRepository parsing_repo(*storage, rc);
+    self = &parsing_repo;
+    observer.reset();
+    observer =
+        std::make_unique<wisp::app::SceneToolIndexObserver>(bus, worker, parsing_repo, *index);
+
+    ASSERT_TRUE(observer->load_installed());
+    ASSERT_TRUE(worker.drain(5000));
+    observer.reset();
+    EXPECT_TRUE(index->find("weather.lookup"));
+    EXPECT_FALSE(index->find("notes.add"));
 }

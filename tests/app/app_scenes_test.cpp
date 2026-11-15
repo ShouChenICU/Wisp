@@ -40,6 +40,7 @@
 #include "wisp/core/zip.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -993,8 +994,10 @@ TEST(AppScenes, ShellScenesListsAvailabilityDataAndIcons) {
     wiring.start_storage();
     ASSERT_NE(wiring.files(), nullptr);
     ASSERT_FALSE(wiring.files()->sd_online());
-    std::vector<wisp::shell::ShellScene> got;
-    ASSERT_TRUE(wiring.worker().run_sync([&] { got = wiring.shell_scenes().scenes; }, 5000));
+    // From this thread, as the shell's listing task calls it: every read
+    // goes through the workers (the simulator aborts on a direct one).
+    ASSERT_FALSE(wisp::os::on_flash_thread());
+    std::vector<wisp::shell::ShellScene> got = wiring.shell_scenes().scenes;
     std::map<std::string, const wisp::shell::ShellScene*> by_id;
     for (const auto& s : got) by_id[s.id] = &s;
     ASSERT_EQ(by_id.size(), 4u);
@@ -1022,14 +1025,13 @@ TEST(AppScenes, ShellScenesListsAvailabilityDataAndIcons) {
 
     // Whether there is data to delete is asked on its own.
     bool counter_data = false, photos_data = true;
-    std::shared_ptr<const wisp::os::LargeBuffer> again;
     ASSERT_TRUE(wiring.worker().run_sync(
         [&] {
             counter_data = wiring.scene_has_data("counter");
             photos_data = wiring.scene_has_data("photos");
-            again = wiring.shell_icon("clock");
         },
         5000));
+    std::shared_ptr<const wisp::os::LargeBuffer> again = wiring.shell_icon("clock");
     EXPECT_TRUE(counter_data);
     EXPECT_FALSE(photos_data);
     ASSERT_NE(again, nullptr);
@@ -1068,7 +1070,7 @@ struct ListingRig {
 
     void start() {
         wiring = std::make_unique<wisp::app::SceneWiring>(
-            wisp::app::SceneWiringDeps{platform, bus, *storage});
+            wisp::app::SceneWiringDeps{platform, bus, *storage, sd_own_worker, files_probe_ms});
         wiring->start_storage();
         ASSERT_NE(wiring->repository(), nullptr);
     }
@@ -1103,11 +1105,8 @@ struct ListingRig {
         return wiring->repository()->install(zip.span(), {});
     }
 
-    wisp::shell::ShellListing list() {
-        wisp::shell::ShellListing out;
-        EXPECT_TRUE(wiring->worker().run_sync([&] { out = wiring->shell_scenes(); }, 5000));
-        return out;
-    }
+    // From this thread, as the shell's listing task calls it.
+    wisp::shell::ShellListing list() { return wiring->shell_scenes(); }
 
     // StorageManager::refresh() on the flash thread, as the app runs it.
     void refresh() {
@@ -1135,8 +1134,53 @@ struct ListingRig {
     std::shared_ptr<FakeStorage> int_dev, sd_dev;
     std::unique_ptr<wisp::core::StorageManager> storage;
     wisp::app::Platform platform;
+    // SceneWiringDeps::sd_own_worker, for start().
+    bool sd_own_worker = wisp::app::kSdOwnWorker;
+    // SceneWiringDeps::files_probe_ms, for start().
+    uint32_t files_probe_ms = wisp::app::kFilesProbeMs;
     std::unique_ptr<wisp::app::SceneWiring> wiring;
 };
+
+// The fallback switch (SceneWiringDeps::sd_own_worker false, for a board
+// whose card writes cannot run from a PSRAM stack): with a card in, no SD
+// I/O worker starts, and card work -- the hot-plug probe and a card
+// write -- runs on wisp.fs instead.
+TEST(SceneWiringSd, WithoutItsOwnWorkerCardWorkRunsOnTheFlashThread) {
+    ListingRig r;
+    r.sd_own_worker = false;
+    r.start();
+    wisp::core::StorageRouter& router = r.wiring->router();
+    EXPECT_EQ(router.sd(), nullptr);
+    EXPECT_EQ(&router.worker_for(wisp::core::Medium::Sd), &r.wiring->worker());
+
+    std::atomic<int> probes_off_flash{0};
+    std::atomic<int> probes{0};
+    r.sd_dev->on_online = [&] {
+        probes.fetch_add(1);
+        if (!wisp::os::on_flash_thread()) probes_off_flash.fetch_add(1);
+    };
+    EXPECT_TRUE(router.run_sync(wisp::core::Medium::Sd, [&] { r.storage->refresh(); }, 5000));
+    r.sd_dev->on_online = nullptr;
+    EXPECT_GT(probes.load(), 0);
+    EXPECT_EQ(probes_off_flash.load(), 0);
+
+    bool wrote_on_flash = false;
+    wisp::Result<void> wrote = wisp::Result<void>::err(wisp::ErrorCode::Busy, "not run");
+    const std::string text = "x";
+    EXPECT_TRUE(router.run_sync(
+        wisp::core::Medium::Sd,
+        [&] {
+            wrote_on_flash = wisp::os::on_flash_thread();
+            wrote = r.storage->write_atomic(
+                r.sd + "/wisp/library/probe.txt",
+                std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(text.data()),
+                                         text.size()));
+        },
+        5000));
+    EXPECT_TRUE(wrote);
+    EXPECT_TRUE(wrote_on_flash);
+    EXPECT_TRUE(fs::exists(fs::path(r.sd) / "wisp" / "library" / "probe.txt"));
+}
 
 }  // namespace
 
@@ -1167,6 +1211,69 @@ TEST(AppScenes, ListingCachedAcrossOpens) {
     EXPECT_EQ(again->icon_png, nullptr);  // the hash alone
     EXPECT_EQ(again->icon_hash, clock->icon_hash);
     EXPECT_EQ(ListingRig::find(second, "counter")->name, "计数器");
+}
+
+// What the shell asks before it lists again on a warm open: current
+// until an install, a card change or a failed read; never in dev mode.
+TEST(AppScenes, ShellListingCurrentUntilSomethingChanges) {
+    ListingRig r(/*card_in=*/true);
+    r.put("photos", "相册", R"(,"files":"sd")");
+    r.put("clock", "时钟");
+    r.start();
+    EXPECT_FALSE(r.wiring->shell_listing_current());  // never listed
+    const wisp::shell::ShellListing first = r.list();
+    EXPECT_TRUE(r.wiring->shell_listing_current());
+    ASSERT_TRUE(r.install("todo", "待办"));
+    EXPECT_FALSE(r.wiring->shell_listing_current());
+    const wisp::shell::ShellListing second = r.list();
+    EXPECT_GT(second.generation, first.generation);
+    EXPECT_TRUE(r.wiring->shell_listing_current());
+    r.sd_dev->online_flag = false;
+    r.refresh();
+    EXPECT_FALSE(r.wiring->shell_listing_current());
+}
+
+// A listing told to stop (the shell stopping) gives up between scenes,
+// says so and leaves the next listing to read everything.
+TEST(AppScenes, ShellScenesStopsWhenCancelled) {
+    ListingRig r;
+    r.put("a", "A");
+    r.put("b", "B");
+    r.put("c", "C");
+    r.start();
+    int checks = 0;
+    // Lets the first scene through.
+    const wisp::shell::ShellListing got = r.wiring->shell_scenes([&] { return ++checks > 1; });
+    EXPECT_TRUE(got.cancelled);
+    EXPECT_TRUE(got.scenes.empty());
+    EXPECT_FALSE(r.wiring->shell_listing_current());
+    const wisp::shell::ShellListing again = r.list();
+    EXPECT_FALSE(again.cancelled);
+    EXPECT_EQ(again.scenes.size(), 3u);
+}
+
+// A probe of a scene's files that does not answer in time (a wedged
+// worker) shows the scene as not runnable and does not hold the listing;
+// the next listing asks again.
+TEST(AppScenes, SlowFilesProbeDoesNotHoldTheListing) {
+    ListingRig r(/*card_in=*/true);
+    r.files_probe_ms = 100;
+    r.put("clock", "时钟");
+    r.start();
+    ASSERT_TRUE(ListingRig::find(r.list(), "clock")->available);
+    r.sd_dev->online_flag = false;
+    r.refresh();
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    struct ReleaseOnExit {
+        std::promise<void>& p;
+        ~ReleaseOnExit() { p.set_value(); }
+    } guard{gate};
+    ASSERT_TRUE(r.wiring->worker().submit([held] { held.wait(); }));
+    const wisp::shell::ShellListing got = r.list();
+    ASSERT_NE(ListingRig::find(got, "clock"), nullptr);
+    EXPECT_FALSE(ListingRig::find(got, "clock")->available);
+    EXPECT_FALSE(r.wiring->shell_listing_current());
 }
 
 TEST(AppScenes, InstallInvalidatesListing) {

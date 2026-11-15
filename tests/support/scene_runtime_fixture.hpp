@@ -120,6 +120,10 @@ protected:
         wisp::log::init(256 * 1024);
         in = wisp::test::temp_dir().string();
         registry.add(std::make_shared<wisp::test::FakeStorage>("storage.int", in, false));
+        if (with_sd_card) {
+            sd = wisp::test::temp_dir().string();
+            registry.add(std::make_shared<wisp::test::FakeStorage>("storage.sd", sd, true));
+        }
         storage = std::make_unique<wisp::core::StorageManager>(registry, bus);
         ASSERT_TRUE(storage->init());
         ASSERT_TRUE(worker.start());
@@ -256,6 +260,9 @@ protected:
     }
 
     std::string in;
+    // Set before SetUp() for an SD card (at `sd`) beside internal storage.
+    bool with_sd_card = false;
+    std::string sd;
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
     std::unique_ptr<wisp::core::StorageManager> storage;

@@ -3,7 +3,10 @@
 // over SceneWorkspace. The draft tools run on the flash thread (Fs), since
 // every one of them reads or writes files; install and rollback run on the
 // agent's thread, as they wait for the scene task, the UI and the flash
-// thread in turn (SceneWorkspace does the hops).
+// thread in turn (SceneWorkspace does the hops). scene.list runs on the
+// agent's thread too: the repository reads the installed scenes one job
+// per scene, so work queued meanwhile (an Interactive save) runs between
+// them rather than behind one job as long as the whole listing.
 
 #include <string>
 #include <utility>
@@ -55,8 +58,18 @@ Result<void> add_scene_authoring_tools(ToolRegistry& reg, SceneWorkspace& ws) {
         .name = "scene.list",
         .description = "Installed scenes and drafts: id, name, version, state, bytes and "
                        "whether a draft exists.",
-        .thread = ToolThread::Fs,
-        .run = [&ws](const Value&, ToolCtx&) { return done({{"scenes", ws.list()}}); },
+        .thread = ToolThread::Agent,
+        .run =
+            [&ws](const Value&, ToolCtx& ctx) {
+                // On this thread the registry does not watch the turn, so
+                // a stop during the listing is answered here once it ends
+                // (one short job per scene).
+                Value scenes = ws.list();
+                if (ctx.cancelled && ctx.cancelled()) {
+                    return tool_error("cancelled", "the turn was stopped");
+                }
+                return done({{"scenes", std::move(scenes)}});
+            },
     }));
     WISP_TRY(reg.add({
         .name = "scene.list_files",

@@ -209,8 +209,8 @@
 //
 // Results: every VM (a scene's, the agent's run) has a CompletionBox
 // (completion_box.hpp), made with the VM. A finished wisp.http or
-// wisp.files call is put there, from the proxy's task, the wisp.fs worker
-// or the scene task itself (a refusal answered inside the call), and the
+// wisp.files call is put there, from the proxy's task, a storage worker
+// (wisp.fs or wisp.sd.io) or the scene task itself (a refusal answered inside the call), and the
 // queue carries only a Completed wake-up. A VM never has more than
 // kMaxCallsInFlight calls waiting (scene_api.hpp), so the box never fills
 // and no result is dropped for want of room, however full the queue is.
@@ -234,15 +234,19 @@
 // one in flight is stopped, and no callback runs for them; results
 // already in the box are freed with it and counted stale.
 //
-// Files (scene-device spec 7.1): each wisp.files call is a job on the
-// wisp.fs worker (SceneRuntimeDeps::files) whose result waits in the
-// scene's box like an HTTP result; a job already queued when the scene
+// Files (scene-device spec 7.1): each wisp.files call is a job of the
+// scene (SceneFiles::submit(), SceneRuntimeDeps::files), run on wisp.sd.io
+// once the scene's files are known to be on the card, else on wisp.fs; its
+// result waits in the scene's box like an HTTP result, and a refused job is
+// answered "busy" there at once. A job already queued when the scene
 // closes still runs, and its result is freed unseen. wisp.http.download
-// begins the file on the worker, then sends the request through the proxy
+// begins the file on that worker, then sends the request through the proxy
 // with the body streamed into it (core::FileDownload, fed on the proxy's
-// task) and finishes it on the worker. Closing or faulting cancels the
-// scene's downloads before its requests: the transfer stops and the
-// worker removes the partial file.
+// download task) and finishes it on the worker it began on
+// (FileDownload::submit()). Closing or faulting cancels the scene's
+// downloads before its requests: the transfer stops and the worker removes
+// the partial file (or, if that worker cannot take it at once, the next
+// count does).
 //
 // The agent's Lua (agent-tools spec 4.2, 4.3; scene_runtime_lua.cpp):
 // run_lua() hands a script to the scene task, which runs it in a VM of its

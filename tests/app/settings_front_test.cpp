@@ -3,9 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <thread>
 #include <utility>
 
 #include "support/fake_settings_backend.hpp"
+#include "support/wait.hpp"
 #include "wisp/core/cached_settings.hpp"
 #include "wisp/core/storage_worker.hpp"
 
@@ -99,4 +101,79 @@ TEST(SettingsFront, DetachWritesTheCacheBeforeDirectWrites) {
     // Detached: a second call has nothing to do.
     EXPECT_TRUE(front.detach_and_flush());
     EXPECT_EQ(platform.stored("audio", "volume"), Value(2));
+}
+
+// A direct call is a settings save too: it goes on the Interactive lane,
+// ahead of Normal work queued before it.
+TEST(SettingsFront, DirectCallsOvertakeANormalBacklog) {
+    auto owned = std::make_unique<FakePlatformBackend>();
+    FakePlatformBackend& platform = *owned;
+    SettingsFront front(std::move(owned));
+    StorageWorker w;
+    ASSERT_TRUE(w.start());
+    front.set_worker(&w);
+
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    ASSERT_TRUE(w.submit([&] {
+        started.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(started.take(5000));
+    // N1 records whether the platform write had already happened.
+    Value seen_by_n1;
+    ASSERT_TRUE(w.submit([&] { seen_by_n1 = platform.stored("display", "brightness"); },
+                         wisp::core::IoLane::Normal));
+    wisp::Result<void> set_result = wisp::Result<void>::ok();
+    std::thread setter([&] { set_result = Settings(front, "display").set("brightness", 40); });
+    // The blocker, N1 and the set's job.
+    const bool queued = wisp::test::wait_until([&] { return w.pending() == 3; }, 5000);
+    release.give();
+    setter.join();
+    ASSERT_TRUE(queued);
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_TRUE(set_result);
+    EXPECT_EQ(seen_by_n1, Value(40));
+    front.set_worker(nullptr);
+    w.stop();
+}
+
+// A full Interactive lane does not hold a direct call back: like the
+// cache's saves it takes the Normal lane, since one NVS call does not
+// care what order it runs in.
+TEST(SettingsFront, DirectCallsFallBackToNormalWhenInteractiveIsFull) {
+    auto owned = std::make_unique<FakePlatformBackend>();
+    FakePlatformBackend& platform = *owned;
+    SettingsFront front(std::move(owned));
+    StorageWorker w(wisp::core::StorageWorkerConfig{.interactive_capacity = 1});
+    ASSERT_TRUE(w.start());
+    front.set_worker(&w);
+
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    ASSERT_TRUE(w.submit([&] {
+        started.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(started.take(5000));
+    ASSERT_TRUE(w.submit([] {}, wisp::core::IoLane::Interactive));
+    wisp::Result<void> set_result = wisp::Result<void>::ok();
+    std::thread setter([&] { set_result = Settings(front, "display").set("brightness", 40); });
+    // The blocker, the Interactive filler and the set's job. pending()
+    // also counts a refused attempt for a moment, so this only makes it
+    // likely that the set tried while the lane was full; the lane counts
+    // below are what the test checks.
+    (void)wisp::test::wait_until([&] { return w.pending() == 3; }, 1000);
+    release.give();
+    setter.join();
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_TRUE(set_result);
+    EXPECT_EQ(platform.stored("display", "brightness"), Value(40));
+    // The blocker and the set ran on Normal; only the filler on Interactive.
+    EXPECT_EQ(w.stats(wisp::core::IoLane::Normal).jobs, 2u);
+    EXPECT_EQ(w.stats(wisp::core::IoLane::Interactive).jobs, 1u);
+    front.set_worker(nullptr);
+    w.stop();
 }

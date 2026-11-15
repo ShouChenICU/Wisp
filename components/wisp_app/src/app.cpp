@@ -229,10 +229,17 @@ Result<void> App::start() {
                     .notes = notes,
                     // The worker or nothing: a timer callback must never
                     // end up running a pass (which writes flash) itself.
+                    // Interactive: a pass rewrites one small file and a
+                    // reminder should ring on time. stop() waits for a
+                    // queued pass by queuing behind it, and the router's
+                    // todo actions must run before that too, so all three
+                    // use this one lane (a full lane: the retry timer for a
+                    // pass, drain_io for stop()).
                     .submit_io =
                         [worker](std::function<void()> job) {
-                            return worker->submit(std::move(job));
+                            return worker->submit(std::move(job), core::IoLane::Interactive);
                         },
+                    .drain_io = [worker](uint32_t ms) { return worker->drain(ms); },
                     .wall_s = [impl] { return impl->wall_now(); },
                     .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
                     .missed_title =
@@ -319,8 +326,8 @@ Result<void> App::start() {
             impl->settings_cache.reset();
         }
     }
-    // The SD card hot-plug probe, on the worker like every other storage
-    // access.
+    // The SD card hot-plug probe, on the card's worker (wisp.sd.io, or
+    // wisp.fs without one).
     impl_->refresh_pending.store(false);
     impl_->storage_timer =
         std::make_unique<os::Timer>("wisp.storage", kStorageRefreshMs, /*periodic=*/true,
@@ -561,10 +568,13 @@ Result<void> App::start() {
             .notify_volume = [impl] { return impl->notify_vol.load(); },
             .ui = impl_->ui.get(),
             .reminders = impl_->reminders.get(),
+            // The reminders' lane (see their submit_io above), so their
+            // stop() waits for a todo action queued before it.
             .submit_io = impl_->reminders && scenes != nullptr
                              ? std::function<bool(std::function<void()>)>(
                                    [worker = &scenes->worker()](std::function<void()> job) {
-                                       return worker->submit(std::move(job));
+                                       return worker->submit(std::move(job),
+                                                             core::IoLane::Interactive);
                                    })
                              : nullptr,
             // The shell is built later, and goes before the router is
@@ -736,14 +746,21 @@ Result<void> App::start() {
             },
             .now_ms = {},
             .agent = impl_->agent ? impl_->agent->service() : nullptr,
-            .list_scenes = scenes != nullptr ? std::function<shell::ShellListing()>(
-                                                   [scenes] { return scenes->shell_scenes(); })
-                                             : nullptr,
+            .list_scenes = scenes != nullptr
+                               ? std::function<shell::ShellListing(const std::function<bool()>&)>(
+                                     [scenes](const std::function<bool()>& cancelled) {
+                                         return scenes->shell_scenes(cancelled);
+                                     })
+                               : nullptr,
             .read_scene_icon =
                 scenes != nullptr
                     ? std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>(
                           [scenes](const std::string& id) { return scenes->shell_icon(id); })
                     : nullptr,
+            .listing_current = scenes != nullptr ? std::function<bool()>([scenes] {
+                return scenes->shell_listing_current();
+            })
+                                                 : nullptr,
             .scene_has_data = scenes != nullptr ? std::function<bool(const std::string&)>(
                                                       [scenes](const std::string& id) {
                                                           return scenes->scene_has_data(id);
@@ -1195,6 +1212,11 @@ void App::build_agent(const hal::ScreenShape& shape) {
             [impl](std::function<void()> job) {
                 return impl->run_io(std::move(job), os::kForever);
             },
+        .run_io_interactive =
+            [impl](std::function<void()> job) {
+                return impl->run_io(std::move(job), os::kForever, App::Impl::kIoBusyBudgetMs,
+                                    core::IoLane::Interactive);
+            },
         .delete_scene =
             [impl](const std::string& id, bool with_data, std::function<void(Result<void>)> done) {
                 impl->scenes->delete_scene(id, with_data, std::move(done));
@@ -1236,19 +1258,19 @@ bool App::Impl::submit_io(std::function<void()> job) {
 }
 
 Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms,
-                               uint32_t busy_budget_ms) {
+                               uint32_t busy_budget_ms, core::IoLane lane) {
     core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
     if (worker == nullptr) {
         job();
         return Result<void>::ok();
     }
-    // A full Normal lane drains within a few jobs; a worker that is
-    // stopping stays Busy until it has stopped, and then runs it inline.
-    Result<void> r = worker->run_sync(job, timeout_ms);
+    // A full lane drains within a few jobs; a worker that is stopping
+    // stays Busy until it has stopped, and then runs it inline.
+    Result<void> r = worker->run_sync(job, timeout_ms, lane);
     for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < busy_budget_ms;
          waited += kIoBusyPollMs) {
         os::sleep_ms(kIoBusyPollMs);
-        r = worker->run_sync(job, timeout_ms);
+        r = worker->run_sync(job, timeout_ms, lane);
     }
     return r;
 }
@@ -1262,22 +1284,33 @@ void App::flush_storage() {
     if (auto r = impl_->settings_front.flush(kShutdownSettingsFlushMs); !r) {
         WLOG_W("app", "settings not saved before going down: %s", r.error().message.c_str());
     }
-    core::StorageWorker* worker = storage_worker();
-    if (worker != nullptr && !worker->drain(kShutdownDrainMs)) {
+    // Both workers: card work queued on wisp.sd.io is written too.
+    core::StorageRouter* router = storage_router();
+    if (router != nullptr && !router->drain(kShutdownDrainMs)) {
         WLOG_W("app", "storage work still queued (%u jobs); going down anyway",
-               static_cast<unsigned>(worker->pending()));
+               static_cast<unsigned>(router->pending()));
     }
 }
 
 bool queue_storage_refresh(App& app) {
     App::Impl* impl = app.impl_.get();
     if (impl->refresh_pending.exchange(true)) return false;
-    if (impl->submit_io([impl] {
-            impl->storage.refresh();
-            impl->refresh_pending.store(false);
-        })) {
+    std::function<void()> job = [impl] {
+        impl->storage.refresh();
+        impl->refresh_pending.store(false);
+    };
+    // Card work (it takes only the card's I/O lock, and may deinit a
+    // pulled card): on wisp.sd.io when it runs, else on wisp.fs.
+    core::StorageRouter* router = app.storage_router();
+    if (router == nullptr) {
+        job();
         return true;
     }
+    if (router->submit(core::Medium::Sd, job)) return true;
+    // Not running (boot or shutdown): run_sync() runs it right here. Timeout
+    // means it got queued after all and runs later; Busy that it never will.
+    Result<void> r = router->run_sync(core::Medium::Sd, std::move(job), 0);
+    if (r || r.error().code == ErrorCode::Timeout) return true;
     impl->refresh_pending.store(false);
     return false;
 }
@@ -1307,6 +1340,9 @@ shell::ConversationController* App::conversation() {
 shell::Shell* App::shell() { return impl_->shell.get(); }
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
+}
+core::StorageRouter* App::storage_router() {
+    return impl_->scenes ? &impl_->scenes->router() : nullptr;
 }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }

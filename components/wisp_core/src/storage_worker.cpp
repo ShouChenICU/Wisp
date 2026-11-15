@@ -11,6 +11,15 @@ namespace {
 
 size_t at_least_one(size_t n) { return n == 0 ? 1 : n; }
 
+size_t lane_index(IoLane lane) { return static_cast<size_t>(lane); }
+
+void store_max(std::atomic<uint64_t>& field, uint64_t value) {
+    // Only the worker thread writes, so load-then-store cannot lose an update.
+    if (value > field.load(std::memory_order_relaxed)) {
+        field.store(value, std::memory_order_relaxed);
+    }
+}
+
 // The worker whose run() is executing on this thread, if any. on_worker()
 // reads this rather than os::on_flash_thread(): the guard also answers
 // true when no flash thread is registered at all (boot, shutdown), which
@@ -21,26 +30,66 @@ thread_local const StorageWorker* t_current_worker = nullptr;
 }  // namespace
 
 StorageWorker::StorageWorker(StorageWorkerConfig config)
-    : config_(config),
-      normal_(at_least_one(config.queue_capacity)),
-      bulk_(at_least_one(config.bulk_capacity)),
-      // Room for every lane slot plus the stop sentinel, so give() never
+    : config_(std::move(config)),
+      lanes_{os::Queue<Item>(at_least_one(config_.interactive_capacity)),
+             os::Queue<Item>(at_least_one(config_.queue_capacity)),
+             os::Queue<Item>(at_least_one(config_.bulk_capacity))},
+      // Room for every lane slot plus stop()'s count, so give() never
       // saturates while an item is waiting for its count.
-      work_(static_cast<uint32_t>(at_least_one(config.queue_capacity) +
-                                  at_least_one(config.bulk_capacity) + 1),
+      work_(static_cast<uint32_t>(at_least_one(config_.interactive_capacity) +
+                                  at_least_one(config_.queue_capacity) +
+                                  at_least_one(config_.bulk_capacity) + 1),
             0) {}
 
 StorageWorker::~StorageWorker() { stop(); }
 
 os::TaskConfig StorageWorker::task_config(const StorageWorkerConfig& c) {
     os::TaskConfig t;
-    t.name = "wisp.fs";
+    t.name = c.name;
     t.stack_bytes = c.stack_bytes;
     t.priority = c.priority;
     t.core = -1;
-    t.flash_access = true;
+    t.flash_access = c.role == WorkerRole::Flash;
+    t.hot_stack = false;
     return t;
 }
+
+StorageWorkerConfig StorageWorker::sd_io_config() {
+    return StorageWorkerConfig{.name = "wisp.sd.io",
+                               .role = WorkerRole::SdIo,
+                               .interactive_capacity = 1,
+                               .queue_capacity = 16,
+                               .bulk_capacity = 4,
+                               .stack_bytes = 8192,
+                               .priority = 3};
+}
+
+namespace {
+
+void register_role(WorkerRole role) {
+    if (role == WorkerRole::Flash) {
+        os::set_flash_thread();
+    } else {
+        os::set_sd_io_thread();
+    }
+}
+
+void clear_role(WorkerRole role) {
+    if (role == WorkerRole::Flash) {
+        os::clear_flash_thread();
+    } else {
+        os::clear_sd_io_thread();
+    }
+}
+
+// A Flash-role worker waited on from the SD I/O thread: refused, since
+// wisp.fs may itself be waiting for a card lock that the waiting SD job
+// holds (or for the SD worker's queue).
+bool sd_thread_waits_for_flash(WorkerRole role) {
+    return role == WorkerRole::Flash && os::on_sd_io_thread();
+}
+
+}  // namespace
 
 Result<void> StorageWorker::start() {
     std::lock_guard<os::Mutex> lock(mutex_);
@@ -49,14 +98,21 @@ Result<void> StorageWorker::start() {
     }
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });
     if (!task_) {
-        return Result<void>::err(ErrorCode::NoMemory, "cannot spawn wisp.fs");
+        return Result<void>::err(ErrorCode::NoMemory, "cannot spawn storage worker");
     }
+    // Until the worker has registered, no thread is the flash thread and
+    // the guard would let every thread touch flash; run() takes no lock
+    // before giving this, so waiting under mutex_ is safe.
+    registered_.take(os::kForever);
     started_ = true;
     accepting_ = true;
     return Result<void>::ok();
 }
 
 void StorageWorker::stop() {
+    if (sd_thread_waits_for_flash(config_.role)) {
+        return;  // it would wait for every queued flash job; see the header
+    }
     {
         std::lock_guard<os::Mutex> lock(mutex_);
         if (!accepting_) {
@@ -64,27 +120,47 @@ void StorageWorker::stop() {
         }
         accepting_ = false;
     }
-    // No submit() can push after accepting_ went false, so the sentinel
-    // lands behind every accepted job. Waiting for a slot is bounded: the
-    // worker keeps popping until it reaches the sentinel.
-    normal_.push(std::function<void()>(), os::kForever);
+    // Every accepted job was pushed and counted under the mutex before
+    // accepting_ went false, so the worker sees this extra count only
+    // after it has taken one per job; it then finds every lane empty and
+    // exits.
+    stopping_.store(true);
     work_.give();
     task_->join();
     std::lock_guard<os::Mutex> lock(mutex_);
     stopped_ = true;
 }
 
-bool StorageWorker::submit(std::function<void()> job, IoLane lane) {
+bool StorageWorker::running() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return accepting_;
+}
+
+bool StorageWorker::started() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return started_;
+}
+
+bool StorageWorker::joined() const {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    return stopped_;
+}
+
+bool StorageWorker::submit(std::function<void()> job, IoLane lane) { return try_submit(job, lane); }
+
+bool StorageWorker::try_submit(std::function<void()>& job, IoLane lane) {
     if (!job) {
         return false;
     }
+    const uint64_t queued_us = now();
     std::lock_guard<os::Mutex> lock(mutex_);
     if (!accepting_) {
         return false;
     }
     ++pending_;
-    auto& q = lane == IoLane::Bulk ? bulk_ : normal_;
-    if (!q.push(std::move(job), 0)) {
+    Item item{std::move(job), queued_us};
+    if (!lanes_[lane_index(lane)].try_push(item, 0)) {
+        job = std::move(item.fn);
         --pending_;
         return false;
     }
@@ -95,6 +171,10 @@ bool StorageWorker::submit(std::function<void()> job, IoLane lane) {
 Result<void> StorageWorker::run_sync(std::function<void()> job, uint32_t timeout_ms, IoLane lane) {
     if (!job) {
         return Result<void>::err(ErrorCode::InvalidArgument, "empty storage job");
+    }
+    if (sd_thread_waits_for_flash(config_.role)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "the sd worker must not wait for the flash worker");
     }
     if (on_worker()) {
         job();
@@ -109,19 +189,42 @@ Result<void> StorageWorker::run_sync(std::function<void()> job, uint32_t timeout
         job();
         return Result<void>::ok();
     }
-    auto done = std::make_shared<os::Semaphore>(1, 0);
+    return run_queued(job, timeout_ms, lane);
+}
+
+Result<void> StorageWorker::run_queued(std::function<void()>& job, uint32_t timeout_ms,
+                                       IoLane lane) {
+    if (!job) {
+        return Result<void>::err(ErrorCode::InvalidArgument, "empty storage job");
+    }
+    if (sd_thread_waits_for_flash(config_.role)) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "the sd worker must not wait for the flash worker");
+    }
+    if (on_worker()) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "a storage job must not wait for its own worker");
+    }
+    // Shared with the queued wrapper, which owns it once queued: after a
+    // timeout the job may still run, so it must not live on this stack.
+    struct Waited {
+        os::Semaphore done{1, 0};
+        std::function<void()> fn;
+    };
+    auto waited = std::make_shared<Waited>();
+    waited->fn = std::move(job);
     // The job's captures are released before done is given, so a caller
     // that waited may free whatever they referenced as soon as it wakes.
-    if (!submit(
-            [job = std::move(job), done]() mutable {
-                job();
-                job = nullptr;
-                done->give();
-            },
-            lane)) {
+    std::function<void()> wrapper = [waited] {
+        waited->fn();
+        waited->fn = nullptr;
+        waited->done.give();
+    };
+    if (!try_submit(wrapper, lane)) {
+        job = std::move(waited->fn);
         return Result<void>::err(ErrorCode::Busy, "storage worker queue full or stopping");
     }
-    if (!done->take(timeout_ms)) {
+    if (!waited->done.take(timeout_ms)) {
         return Result<void>::err(ErrorCode::Timeout, "storage job did not finish in time");
     }
     return Result<void>::ok();
@@ -129,8 +232,46 @@ Result<void> StorageWorker::run_sync(std::function<void()> job, uint32_t timeout
 
 bool StorageWorker::on_worker() const { return t_current_worker == this; }
 
+LaneStats StorageWorker::stats(IoLane lane) const {
+    const AtomicLaneStats& s = stats_[lane_index(lane)];
+    return LaneStats{s.jobs.load(std::memory_order_relaxed),
+                     s.max_wait_us.load(std::memory_order_relaxed),
+                     s.max_job_us.load(std::memory_order_relaxed)};
+}
+
+uint64_t StorageWorker::now() const { return config_.now_us ? config_.now_us() : os::now_us(); }
+
+size_t StorageWorker::pick_lane(const bool (&queued)[kLaneCount]) {
+    size_t lane = kLaneCount;
+    bool forced = false;
+    if (!last_forced_) {
+        // The lowest lane due a turn first: it has waited the longest.
+        for (size_t l = kLaneCount; l-- > 0;) {
+            if (queued[l] && passed_[l] >= kLaneTurnAfter) {
+                lane = l;
+                forced = true;
+                break;
+            }
+        }
+    }
+    if (!forced) {
+        for (size_t l = 0; l < kLaneCount; ++l) {
+            if (queued[l]) {
+                lane = l;
+                break;
+            }
+        }
+    }
+    last_forced_ = forced;
+    passed_[lane] = 0;
+    for (size_t l = lane + 1; l < kLaneCount; ++l) {
+        if (queued[l]) ++passed_[l];
+    }
+    return lane;
+}
+
 bool StorageWorker::drain(uint32_t timeout_ms) {
-    if (on_worker()) {
+    if (on_worker() || sd_thread_waits_for_flash(config_.role)) {
         return false;
     }
     uint64_t start = os::now_ms();
@@ -144,32 +285,46 @@ bool StorageWorker::drain(uint32_t timeout_ms) {
 }
 
 void StorageWorker::run() {
-    os::set_flash_thread();
+    register_role(config_.role);
     t_current_worker = this;
-    auto run_job = [this](std::function<void()>& job) {
-        job();
-        // Drop the job's captures before reporting it finished, so a
-        // drain()ing caller may free what they referenced.
-        job = nullptr;
-        --pending_;
-    };
+    registered_.give();
     while (true) {
         work_.take(os::kForever);
-        std::function<void()> job;
-        if (normal_.pop(job, 0)) {
-            if (!job) {
-                // The sentinel is the last item stop() let in, so the
-                // Normal lane is empty now; finish what Bulk still holds.
-                while (bulk_.pop(job, 0)) run_job(job);
-                break;
-            }
-            run_job(job);
-        } else if (bulk_.pop(job, 0)) {
-            run_job(job);
+        bool queued[kLaneCount];
+        bool any = false;
+        for (size_t l = 0; l < kLaneCount; ++l) {
+            queued[l] = lanes_[l].size() != 0;
+            any = any || queued[l];
         }
+        if (!any) {
+            // Each count is given after its push and each wake-up pops
+            // one item, so a wake-up holding a job's count always finds an
+            // item: the only empty wake-up is stop()'s, and every accepted
+            // job has run by then. The continue is defensive.
+            if (stopping_.load()) break;
+            continue;
+        }
+        const size_t lane = pick_lane(queued);
+        Item item;
+        // size() said the lane holds an item and only this thread pops, so
+        // the pop succeeds as soon as the push has given its slot.
+        lanes_[lane].pop(item, os::kForever);
+        const uint64_t start = now();
+        item.fn();
+        const uint64_t end = now();
+        // Drop the job's captures before reporting it finished, so a
+        // drain()ing caller may free what they referenced.
+        item.fn = nullptr;
+        AtomicLaneStats& s = stats_[lane];
+        s.jobs.fetch_add(1, std::memory_order_relaxed);
+        store_max(s.max_wait_us, start > item.queued_us ? start - item.queued_us : 0);
+        store_max(s.max_job_us, end > start ? end - start : 0);
+        // After the statistics, so a drain() that sees this job finished
+        // also sees its figures.
+        --pending_;
     }
     t_current_worker = nullptr;
-    os::clear_flash_thread();
+    clear_role(config_.role);
 }
 
 }  // namespace wisp::core

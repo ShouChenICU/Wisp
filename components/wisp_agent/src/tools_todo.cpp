@@ -1,7 +1,8 @@
 // todo.list, add, update, done and remove (mvp spec 3.2, 5.2): thin
 // adapters over ReminderScheduler. The mutating ones write todos.json, so
-// the whole set runs on the flash thread (ToolThread::Fs), list included,
-// so that a list right after an add sees it.
+// the whole set runs on the flash thread's Interactive lane
+// (ToolThread::FsInteractive: one small rewrite the user waits for), list
+// included, so that a list right after an add sees it.
 //
 // Times cross the wire as local "YYYY-MM-DDTHH:MM" (the device's UTC
 // offset); a due time or repeat rule of the wrong shape is bad_args naming
@@ -86,7 +87,7 @@ Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps) {
                        "repeat and snoozed_until. filter: open (default), done, all, or "
                        "due_today (open ones due today).",
         .schema_json = kListSchema,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kTodoMs,
         .run =
             [d, offset](const Value& a, ToolCtx&) {
@@ -113,7 +114,7 @@ Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps) {
             "(1 = Monday); a repeating todo rings again at the same time instead of ending.",
         .schema_json = kAddSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kTodoMs,
         .run =
             [d, offset](const Value& a, ToolCtx& ctx) {
@@ -146,7 +147,7 @@ Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps) {
                        "repeat makes it ring afresh.",
         .schema_json = kUpdateSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kTodoMs,
         .run =
             [d, offset](const Value& a, ToolCtx& ctx) {
@@ -186,7 +187,7 @@ Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps) {
                        "occurrence; it rings again next time.",
         .schema_json = kIdSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kTodoMs,
         .run =
             [d](const Value& a, ToolCtx& ctx) {
@@ -205,7 +206,7 @@ Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps) {
         .description = "Deletes a todo.",
         .schema_json = kIdSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kTodoMs,
         .run =
             [d](const Value& a, ToolCtx& ctx) {

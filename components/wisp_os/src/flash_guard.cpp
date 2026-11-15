@@ -14,6 +14,10 @@ namespace {
 // allow everything).
 std::atomic<uint32_t> g_owner{0};
 
+// The id of the registered SD I/O thread, 0 when none is. Same id space
+// as g_owner, so one thread_local id serves both roles.
+std::atomic<uint32_t> g_sd_owner{0};
+
 // Never-reused per-thread ids, handed out on a thread's first use of the
 // guard. A counter rather than a thread_local's address: a thread that
 // exits while still registered must not be impersonated by a later one
@@ -44,9 +48,28 @@ void clear_flash_thread() {
 }
 
 bool on_flash_thread() {
+    // The SD I/O thread never touches internal flash, not even in the
+    // phases where no flash thread is registered and everyone else may.
+    if (on_sd_io_thread()) {
+        return false;
+    }
     uint32_t owner = g_owner.load(std::memory_order_acquire);
     return owner == 0 || owner == this_thread_id();
 }
+
+void set_sd_io_thread() { g_sd_owner.store(this_thread_id(), std::memory_order_release); }
+
+void clear_sd_io_thread() {
+    uint32_t self = this_thread_id();
+    g_sd_owner.compare_exchange_strong(self, 0, std::memory_order_acq_rel);
+}
+
+bool on_sd_io_thread() {
+    uint32_t owner = g_sd_owner.load(std::memory_order_acquire);
+    return owner != 0 && owner == this_thread_id();
+}
+
+bool sd_io_allowed() { return on_sd_io_thread() || on_flash_thread(); }
 
 void set_flash_violation_reporter(FlashViolationReporter reporter) {
     g_flash_violation_reporter.store(reporter, std::memory_order_release);
@@ -64,10 +87,20 @@ void flash_guard_abort_if_violated(const char* what) {
     std::abort();
 }
 
-void flash_guard_report(const char* what) {
+void sd_guard_abort_if_violated(const char* what) {
+    if (sd_io_allowed()) {
+        return;
+    }
+    std::fprintf(stderr, "wisp::os: sd access off the sd i/o thread: %s\n",
+                 what != nullptr ? what : "(unknown)");
+    std::fflush(stderr);
+    std::abort();
+}
+
+void flash_guard_report(const char* what, bool sd) {
     FlashViolationReporter reporter = g_flash_violation_reporter.load(std::memory_order_acquire);
     if (reporter != nullptr) {
-        reporter(what);
+        reporter(what, sd);
     }
 }
 

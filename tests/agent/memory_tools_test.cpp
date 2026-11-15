@@ -43,6 +43,10 @@ protected:
         ASSERT_TRUE(worker.run_sync([this] { ASSERT_TRUE(store->load()); }, wisp::os::kForever));
         tools = std::make_unique<wisp::agent::ToolRegistry>(wisp::agent::ToolExecutors{
             .fs = [this](std::function<void()> fn) { return worker.submit(std::move(fn)); },
+            .fs_interactive =
+                [this](std::function<void()> fn) {
+                    return worker.submit(std::move(fn), wisp::core::IoLane::Interactive);
+                },
         });
         ASSERT_TRUE(
             wisp::agent::add_memory_tools(*tools, wisp::agent::MemoryToolDeps{.store = *store}));
@@ -75,7 +79,6 @@ TEST_F(MemoryTools, RiskThreadTimeout) {
         const ToolDef* def = tools->find_wire(c.wire);
         ASSERT_NE(def, nullptr) << c.wire;
         EXPECT_EQ(def->risk, c.risk) << c.wire;
-        EXPECT_EQ(def->thread, ToolThread::Fs) << c.wire;
         EXPECT_EQ(def->timeout_ms, 5000u) << c.wire;
     }
 }
@@ -118,4 +121,14 @@ TEST_F(MemoryTools, ErrorsAndNotes) {
     ToolOutput not_found = call("memory_remove", R"({"id":)" + std::to_string(id) + "}");
     ASSERT_FALSE(not_found.ok);
     EXPECT_EQ(str(not_found.result, "error"), "not_found");
+}
+
+// Short, and the user or the agent waits for each: the whole set takes the
+// Interactive lane, list included, so a list right after a change sees it.
+TEST_F(MemoryTools, DeclareTheInteractiveThread) {
+    for (const char* name : {"memory.list", "memory.add", "memory.update", "memory.remove"}) {
+        const ToolDef* def = tools->find(name);
+        ASSERT_NE(def, nullptr) << name;
+        EXPECT_EQ(def->thread, ToolThread::FsInteractive) << name;
+    }
 }

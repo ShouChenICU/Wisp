@@ -39,6 +39,10 @@
 
 #include "wisp/base/result.hpp"
 
+namespace wisp::core {
+class StorageRouter;
+}
+
 namespace wisp::app {
 
 class App;
@@ -57,5 +61,14 @@ std::string run_command(App& app, std::string_view line);
 
 // The quoted, escaped form of an SSID described in the file header.
 std::string quote_ssid(std::string_view ssid);
+
+// The storage lines of the `mem` command: one per worker and lane, the
+// flash worker first, lanes interactive, normal, bulk --
+//   storage <worker> <lane> jobs=<n> wait_max_ms=<w> job_max_ms=<j>
+// with the longest queue wait and the longest job rounded up to whole
+// milliseconds (StorageWorker::stats()); "storage wisp.sd.io off" in place
+// of the SD I/O worker's lines without one, and just "storage off" for a
+// null router. Lines joined by '\n', no trailing newline.
+std::string storage_report(const core::StorageRouter* router);
 
 }  // namespace wisp::app

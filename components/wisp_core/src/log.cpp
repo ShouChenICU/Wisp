@@ -215,10 +215,15 @@ thread_local bool g_in_sink = false;
 
 // Installed on os::flash_guard (wisp/os/flash_guard.hpp) below: wisp_os
 // cannot call WLOG_E itself (its own layer sits below wisp_core --
-// AGENTS.md section 3), so a device-build flash-thread violation reaches
-// this layer's logging through that hook instead of a direct call.
-void report_flash_violation(const char* what) {
-    WLOG_E("flash", "flash access off the flash thread: %s", what);
+// AGENTS.md section 3), so a device-build guard violation (flash rule or
+// SD rule, told apart by `sd`) reaches this layer's logging through that
+// hook instead of a direct call.
+void report_flash_violation(const char* what, bool sd) {
+    if (sd) {
+        WLOG_E("sd", "sd access off the sd i/o thread: %s", what);
+    } else {
+        WLOG_E("flash", "flash access off the flash thread: %s", what);
+    }
 }
 
 }  // namespace

@@ -1,13 +1,14 @@
 // wisp.files (scene_api.hpp; scene-device spec 7.1): a thin adapter over
 // core::SceneFiles. Nothing here touches flash: each call checks its
 // arguments, copies what the job needs (the data into PSRAM) and hands a
-// job to SceneApi::files_run, which runs it on the wisp.fs worker; the
-// result comes back as a message and run_files_callback() calls the
-// scene's function with it.
+// job to SceneApi::files_run, which runs it on the scene's storage worker
+// (wisp.fs, or wisp.sd.io for files on the card); the result waits in the
+// VM's completion box and run_files_callback() calls the scene's function
+// with it.
 //
 // Callbacks wait in a registry table by id until their result arrives;
-// results for a closed scene never arrive (the runtime drops stale
-// messages), and the table goes with the VM. wisp.http.download keeps its
+// results for a closed scene never arrive (its box closes with the
+// VM), and the table goes with the VM. wisp.http.download keeps its
 // callback here too (register_files_callback()). A task that left the
 // callback out waits there as its thread instead (lua_task.hpp), and
 // run_files_callback() resumes it with the callback's arguments.

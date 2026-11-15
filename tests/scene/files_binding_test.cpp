@@ -8,7 +8,9 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -20,7 +22,10 @@
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/net/scene_http.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace {
 
@@ -54,7 +59,10 @@ protected:
         wisp::core::SceneFilesConfig fc;
         fc.data_root = in + "/scenes";
         fc.max_list = 3;  // small enough for a test to go past it
-        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        fc.submit_io = [this](wisp::core::Medium, wisp::core::IoLane lane,
+                              std::function<void()> job) {
+            return worker.submit(std::move(job), lane);
+        };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
         configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
             d.http = http.get();
@@ -397,11 +405,9 @@ wisp.http.get("https://api.example.com/x", function(err, res) print("get done", 
     EXPECT_EQ(wait_log("h", 2), (std::vector<std::string>{"get done\tnil", "download done\tnil"}));
 }
 
-// wisp.files on the SD card, pulled while a write is on its way: the write
-// was issued (it waits on the storage worker), then the card goes. The
-// scene gets an error, never a crash; once the card is reported gone every
-// call says "unavailable"; once it is back nothing half-written is left and
-// the usage matches the disk.
+// wisp.files on the SD card, as the app runs it: the scene's card work on
+// the SD I/O worker "wisp.sd.io" behind a StorageRouter, everything else
+// on the fixture's flash worker.
 class FilesBindingSd : public FilesBinding {
 protected:
     void SetUp() override {
@@ -425,8 +431,24 @@ protected:
         fc.declared = [](std::string_view) {
             return wisp::Result<wisp::core::FilesWant>::ok(wisp::core::FilesWant::Sd);
         };
-        fc.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        fc.submit_io = [this](wisp::core::Medium m, wisp::core::IoLane lane,
+                              std::function<void()> job) {
+            return router.submit(m, std::move(job), lane);
+        };
+        fc.on_io = [this](std::string_view) {
+            std::lock_guard<std::mutex> lock(io_mu);
+            io_on_sd.push_back(wisp::os::on_sd_io_thread());
+        };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
+        ASSERT_TRUE(sd_worker.start());
+    }
+
+    void TearDown() override {
+        // The runtime first (its scene's last jobs may still be queued on
+        // either worker), then the SD I/O worker before the flash worker.
+        rt.reset();
+        sd_worker.stop();
+        FilesBinding::TearDown();
     }
 
     fs::path sd_files(const std::string& id) const {
@@ -442,14 +464,18 @@ protected:
         fs::rename(sd_dir, sd_dir + ".pulled");
         std::ofstream(sd_dir) << "no card";
     }
-    // On the worker, as the app's storage poll does it.
+    // As the app does it: the storage poll on the SD I/O worker, then the
+    // recount split between the two workers (SceneWiring).
     void report_card() {
-        EXPECT_TRUE(worker.run_sync(
-            [this] {
-                storage->refresh();
-                files->on_sd_changed();
-            },
-            wisp::os::kForever));
+        EXPECT_TRUE(router.run_sync(
+            wisp::core::Medium::Sd, [this] { storage->refresh(); }, wisp::os::kForever));
+        std::vector<std::string> ids;
+        EXPECT_TRUE(worker.run_sync([&] { ids = files->sd_changed_begin(); }, wisp::os::kForever));
+        for (const std::string& id : ids) {
+            EXPECT_TRUE(router.run_sync(
+                wisp::core::Medium::Sd, [&] { (void)files->recount(id); }, wisp::os::kForever));
+        }
+        EXPECT_TRUE(worker.run_sync([this] { files->sd_changed_end(); }, wisp::os::kForever));
     }
 
     wisp::Result<wisp::core::SceneFilesInfo> info_on_worker(const std::string& id) {
@@ -464,11 +490,12 @@ protected:
         report_card();
     }
 
-    // Holds the worker inside a job until the returned flag goes false.
+    // Holds the SD I/O worker, where the scene's card work runs once its
+    // location is known, inside a job until the returned flag goes false.
     std::shared_ptr<std::atomic<bool>> hold_worker() {
         auto hold = std::make_shared<std::atomic<bool>>(true);
         auto holding = std::make_shared<std::atomic<bool>>(false);
-        EXPECT_TRUE(worker.submit([hold, holding] {
+        EXPECT_TRUE(sd_worker.submit([hold, holding] {
             *holding = true;
             while (hold->load()) wisp::os::sleep_ms(1);
         }));
@@ -476,9 +503,43 @@ protected:
         return hold;
     }
 
+    std::vector<bool> io_threads() {
+        std::lock_guard<std::mutex> lock(io_mu);
+        return io_on_sd;
+    }
+
     std::string sd_dir;
     std::shared_ptr<wisp::test::FakeStorage> sd_dev;
+    wisp::core::StorageWorker sd_worker{wisp::core::StorageWorker::sd_io_config()};
+    wisp::core::StorageRouter router{worker, &sd_worker};
+    std::mutex io_mu;
+    // Per SceneFiles call: whether it ran on the SD I/O thread.
+    std::vector<bool> io_on_sd;
 };
+
+// The first write picks the card on wisp.fs (the location record is
+// internal flash); from then on the scene's card work runs on wisp.sd.io.
+TEST_F(FilesBindingSd, CardFilesRunOnTheSdWorker) {
+    start();
+    install("h", R"(
+wisp.files.write("a.txt", "one", function(err, ok)
+  print("first", err, ok)
+  wisp.files.write("b.txt", "two", function(err, ok) print("second", err, ok) end)
+end)
+)" + std::string(kScreen),
+            {{"scene.json", manifest_with_hosts("h")}});
+    ASSERT_TRUE(rt->open("h"));
+    EXPECT_EQ(wait_log("h", 2),
+              (std::vector<std::string>{"first\tnil\ttrue", "second\tnil\ttrue"}));
+    EXPECT_EQ(io_threads(), (std::vector<bool>{false, true}));
+    EXPECT_EQ(read_raw(sd_files("h") / "b.txt"), "two");
+}
+
+// Pulled while a write is on its way: the write and an append were issued
+// (they wait on wisp.sd.io), then the card goes. The scene gets an error,
+// never a crash; once the card is reported gone (the storage poll on
+// wisp.sd.io) every call says "unavailable"; once it is back nothing
+// half-written is left and the usage matches the disk.
 
 TEST_F(FilesBindingSd, CardPulledDuringAWriteOrAppend) {
     start();
@@ -505,13 +566,13 @@ return ui.screen {
 
     auto hold = hold_worker();
     ASSERT_TRUE(wait_label("again"));
-    const size_t before = worker.pending();
+    const size_t before = sd_worker.pending();
     ASSERT_TRUE(rt->click_ref("w"));
     // Both the write and the append are really queued behind the held
     // job before the card goes, not just clicked: the click message still
     // has to reach the scene task before it runs the Lua handler that
     // submits them.
-    ASSERT_TRUE(wait_until([&] { return worker.pending() >= before + 2; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return sd_worker.pending() >= before + 2; }, 2000));
     pull_card();
     *hold = false;
     auto lines = wait_log("h", 3);

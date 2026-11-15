@@ -197,6 +197,9 @@ struct AgentWiringDeps {
     net::HttpClient* http = nullptr;
     // StorageWorker::run_sync() with an unbounded wait.
     std::function<Result<void>(std::function<void()>)> run_io{};
+    // The same on the Interactive lane (AgentDeps::run_io_interactive).
+    // Empty: run_io.
+    std::function<Result<void>(std::function<void()>)> run_io_interactive{};
     // SceneWiring::delete_scene.
     std::function<void(const std::string& id, bool with_data,
                        std::function<void(Result<void>)> done)>
@@ -234,7 +237,9 @@ public:
     // updated at once, without reading it back from flash.
     void on_manifest(const core::SceneManifest& manifest);
 
-    // Reads every installed scene.json on the worker and builds the index.
+    // Builds the index from every installed scene.json: read on the worker
+    // one scene per job and parsed on the caller, which must be allowed to
+    // wait (not the UI thread).
     Result<void> load_installed();
 
 private:

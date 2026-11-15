@@ -1,7 +1,11 @@
 #include "wisp/shell/shell.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 
@@ -53,14 +57,42 @@ std::optional<voice::VoiceState> parse_voice(const std::string& s) {
 }
 }  // namespace
 
-// One page open's listing, for its timing line: written on the worker
-// before each post that carries it on, and on the UI thread after.
+// One page open's listing, for its timing line: written on the listing
+// task before each post that carries it on, and on the UI thread after.
 struct Shell::ListTiming {
     uint64_t asked_us = 0;
     uint32_t list_ms = 0, icons_ms = 0;
     uint64_t build_us = 0;
     size_t scenes = 0, decoded = 0;
     bool cached = false;
+};
+
+namespace {
+void log_timing(const char* tag, uint32_t list_ms, uint32_t icons_ms, uint64_t build_us,
+                size_t scenes, size_t decoded, bool cached) {
+    WLOG_I(tag, "scenes ms_list=%u ms_icons=%u ms_build=%u n=%u icons_decoded=%u cached=%u",
+           static_cast<unsigned>(list_ms), static_cast<unsigned>(icons_ms),
+           static_cast<unsigned>(build_us / 1000), static_cast<unsigned>(scenes),
+           static_cast<unsigned>(decoded), cached ? 1u : 0u);
+}
+}  // namespace
+
+// The scene listing task's state (shell.hpp). The UI thread asks for a
+// listing and joins the task; the task runs rounds until none is asked
+// for. Shared with the task, so it outlives a stop() that returns.
+struct Shell::ListRun {
+    enum class State : uint8_t { Idle, Running, Again };
+    os::Mutex mu;
+    // Under mu.
+    State state = State::Idle;
+    // The task, until it is joined (by the next spawn or stop()). Moved
+    // and joined on the UI thread only.
+    std::unique_ptr<os::Task> task;
+    // The timing line the next round fills, if any.
+    std::shared_ptr<ListTiming> timing;
+    // Set by stop(): the lister gives up after the read in progress, and
+    // the round reads no icon, decodes nothing and posts nothing.
+    std::atomic<bool> stopping{false};
 };
 
 const char* to_string(Page p) {
@@ -82,7 +114,20 @@ Shell::Shell(ShellDeps deps)
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
-Shell::~Shell() = default;
+Shell::~Shell() {
+    // Without stop(): the bus and the conversation must not call into this
+    // shell any more (stop() does the same, so this is a no-op after it).
+    if (scene_sub_ != 0) deps_.bus.unsubscribe(scene_sub_);
+    scene_sub_ = 0;
+    if (talk_voice_sub_ != 0) deps_.bus.unsubscribe(talk_voice_sub_);
+    talk_voice_sub_ = 0;
+    if (deps_.conversation != nullptr && talk_listener_ != 0)
+        deps_.conversation->remove_listener(talk_listener_);
+    talk_listener_ = 0;
+    join_listing();
+    // Without stop(): a post still queued must not reach this shell.
+    if (alive_) *alive_ = false;
+}
 
 lv_obj_t* Shell::home_screen() const { return home_screen_; }
 
@@ -112,7 +157,7 @@ void Shell::start() {
     lv_obj_add_event_cb(home_screen_, &Shell::home_loaded_cb, LV_EVENT_SCREEN_UNLOADED, this);
 
     lv_screen_load(home_screen_);
-    listing_ = std::make_shared<std::atomic<bool>>(false);
+    list_run_ = std::make_shared<ListRun>();
     icons_ = std::make_shared<IconCache>();
     // Always subscribed: a scene.state event has the talk overlay look
     // again (the scene that was in front may no longer be) whether or not
@@ -120,6 +165,10 @@ void Shell::start() {
     // records a say or note as seen when it takes one, so a hide here would
     // lose it for good; Home coming in front hides it on its own.
     scene_sub_ = deps_.bus.subscribe("scene.state", [this, alive = alive_](const core::Event&) {
+        // Counted here, before anything is posted: a listing that starts
+        // after this may or may not see the change, and one that started
+        // before did not.
+        scene_events_.fetch_add(1);
         // On the bus's thread: the list is read again from the UI
         // thread, which knows whether it is open.
         deps_.ui.post([this, alive] {
@@ -154,6 +203,11 @@ void Shell::stop() {
         deps_.bus.unsubscribe(talk_voice_sub_);
         talk_voice_sub_ = 0;
     }
+    // The listing task stops after the read in progress and posts nothing
+    // more; what it posted before runs after this returns and finds alive_
+    // false.
+    if (page_alive_) *page_alive_ = false;
+    join_listing();
     if (talk_timer_ != nullptr) {
         lv_timer_delete(talk_timer_);
         talk_timer_ = nullptr;
@@ -316,7 +370,7 @@ void Shell::show(Page p) {
         lv_screen_load(sub_);
         if (old != nullptr) lv_obj_delete(old);
         // Once its screen is loaded: the listing may answer at once.
-        if (p == Page::Scenes) list_scenes();
+        if (p == Page::Scenes) list_scenes(true);
     } else if (lv_screen_active() != sub_) {
         lv_screen_load(sub_);
     }
@@ -328,7 +382,6 @@ lv_obj_t* Shell::build_page(Page p) {
     detail::PageFrame f = detail::make_page(deps_.shape, title_of(p));
     lv_obj_add_event_cb(f.screen, &Shell::press_cb, LV_EVENT_ALL, this);
     page_alive_ = std::make_shared<bool>(true);
-    listing_ = std::make_shared<std::atomic<bool>>(false);
     sub_root_ = f.root;
     switch (p) {
         case Page::History:
@@ -425,6 +478,8 @@ void Shell::drop_pages() {
 }
 
 struct Shell::IconCache {
+    using Decode =
+        std::function<std::shared_ptr<const SceneIcon>(const os::LargeBuffer&, int32_t side)>;
     struct Entry {
         uint64_t hash = 0;                      // icon_hash() of the file
         std::shared_ptr<const SceneIcon> icon;  // null: the file did not decode
@@ -445,7 +500,6 @@ struct Shell::IconCache {
     std::vector<Pending> lookup(
         std::vector<ShellScene>& scenes,
         const std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>& read) {
-        std::lock_guard<os::Mutex> lock(mu);
         std::map<std::string, Entry> next;
         std::vector<Pending> pending;
         for (ShellScene& sc : scenes) {
@@ -469,34 +523,66 @@ struct Shell::IconCache {
 
     // Decodes one icon lookup() handed back and keeps it (a file that does
     // not decode is kept too, as none, so it is not tried again).
-    std::shared_ptr<const SceneIcon> decode(const Pending& p, int32_t side) {
-        std::shared_ptr<const SceneIcon> icon = decode_scene_icon(*p.png, side);
+    std::shared_ptr<const SceneIcon> decode(const Pending& p, int32_t side, const Decode& with) {
+        std::shared_ptr<const SceneIcon> icon =
+            with ? with(*p.png, side) : decode_scene_icon(*p.png, side);
         if (!icon) WLOG_W(kTag, "%s: icon not shown (not a PNG it can draw)", p.id.c_str());
-        std::lock_guard<os::Mutex> lock(mu);
         by_id[p.id] = {p.hash, icon};
         return icon;
     }
 
-    os::Mutex mu;
+    // Only the listing task touches it, one task at a time: the next is
+    // spawned after the last one was joined.
     std::map<std::string, Entry> by_id;
 };
 
-void Shell::list_scenes() {
-    if (!scenes_) return;
-    if (!deps_.list_scenes || !deps_.submit_io) {
-        scenes_->set_scenes({});
-        return;
+// What the listing task runs: everything by value, so it needs nothing
+// of the shell but what it posts back (checked against `alive` on the UI
+// thread) and scene_events_, an atomic of a shell that joins the task
+// before it goes.
+struct Shell::ListJob {
+    Shell* shell;
+    std::shared_ptr<bool> alive;  // the shell's alive_
+    std::shared_ptr<ListRun> run;
+    std::function<ShellListing(const std::function<bool()>&)> list;
+    std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)> read_icon;
+    IconCache::Decode decode;
+    SceneRecents* recents;
+    ui::UiRuntime* ui;
+    std::shared_ptr<IconCache> icons;
+    int32_t side;
+
+    // Rounds until none is asked for; Idle is the last thing it sets.
+    void operator()() const {
+        for (;;) {
+            std::shared_ptr<ListTiming> timing;
+            {
+                std::lock_guard<os::Mutex> lock(run->mu);
+                timing = std::move(run->timing);
+            }
+            if (!run->stopping.load()) once(timing);
+            std::lock_guard<os::Mutex> lock(run->mu);
+            if (run->state == ListRun::State::Again && !run->stopping.load()) {
+                run->state = ListRun::State::Running;
+                continue;
+            }
+            run->state = ListRun::State::Idle;
+            return;
+        }
     }
-    // One listing waiting in the queue answers every event before it ran.
-    if (listing_->exchange(true)) return;
-    // The page's first listing is the one its timing line is about.
-    std::shared_ptr<ListTiming> timing = std::move(open_timing_);
-    if (timing) timing->asked_us = os::now_us();
-    auto job = [this, list = deps_.list_scenes, read_icon = deps_.read_scene_icon,
-                recents = deps_.recents, ui = &deps_.ui, queued = listing_, alive = page_alive_,
-                icons = icons_, side = SceneList::icon_side(deps_.shape), timing] {
-        queued->store(false);
-        ShellListing listing = list();
+
+    // One listing: the cards first, with the icons decoded before; the new
+    // ones follow one by one as they decode. They go to the scene list
+    // page open when they arrive (a page closed and opened again meanwhile
+    // may show an older listing from the cache), unless they are older
+    // than what the cache holds.
+    void once(const std::shared_ptr<ListTiming>& timing) const {
+        const auto stopping = [r = run] { return r->stopping.load(); };
+        const uint64_t events = shell->scene_events_.load();
+        ShellListing listing = list(stopping);
+        // A stopped round shows nothing: its listing may be cut short.
+        if (listing.cancelled || stopping()) return;
+        const uint64_t gen = listing.generation;
         std::vector<ShellScene> got = std::move(listing.scenes);
         if (timing) {
             timing->cached = listing.cached;
@@ -520,48 +606,137 @@ void Shell::list_scenes() {
             }
             got = std::move(sorted);
         }
-        // The cards first, with the icons decoded before; the new ones
-        // follow one by one as they decode.
-        const std::vector<IconCache::Pending> pending = icons->lookup(got, read_icon);
-        if (!ui->post([this, alive, timing, got = std::move(got)]() mutable {
-                if (!*alive || !scenes_) return;
-                const uint64_t t0 = os::now_us();
-                scene_cache_ = got;
-                scenes_->set_scenes(std::move(got));
-                if (timing) timing->build_us += os::now_us() - t0;
-            })) {
+        // No icon read once the shell is stopping: each is a worker job.
+        const std::vector<IconCache::Pending> pending = icons->lookup(
+            got, [&](const std::string& id) -> std::shared_ptr<const os::LargeBuffer> {
+                if (!read_icon || stopping()) return nullptr;
+                return read_icon(id);
+            });
+        if (stopping()) return;
+        // The last listing is updated whether or not a page is open, so a
+        // warm open can show it as it is.
+        if (!ui->post(
+                [sh = shell, alive = alive, timing, gen, events, got = std::move(got)]() mutable {
+                    if (!*alive || gen < sh->cache_gen_) return;
+                    sh->cache_gen_ = gen;
+                    sh->cache_events_ = events;
+                    sh->scene_cache_ = got;
+                    if (!sh->scenes_) return;
+                    const uint64_t t0 = os::now_us();
+                    sh->scenes_->set_scenes(std::move(got));
+                    if (timing) timing->build_us += os::now_us() - t0;
+                })) {
+            // The last listing no longer says what storage does.
+            shell->scene_events_.fetch_add(1);
             WLOG_W(kTag, "scene list not shown (UI queue full)");
             return;
         }
         const uint64_t d0 = os::now_us();
+        size_t decoded = 0;
         for (const IconCache::Pending& p : pending) {
-            std::shared_ptr<const SceneIcon> icon = icons->decode(p, side);
-            if (!icon) continue;
-            (void)ui->post([this, alive, timing, id = p.id, icon] {
-                if (!*alive || !scenes_) return;
-                const uint64_t t0 = os::now_us();
-                for (ShellScene& sc : *scene_cache_)
-                    if (sc.id == id) sc.icon = icon;
-                scenes_->set_icon(id, icon);
-                if (timing) timing->build_us += os::now_us() - t0;
-            });
+            if (stopping()) return;
+            std::shared_ptr<const SceneIcon> icon = icons->decode(p, side, decode);
+            ++decoded;
+            if (!icon || stopping()) continue;
+            if (!ui->post([sh = shell, alive = alive, timing, gen, id = p.id, icon] {
+                    if (!*alive || gen < sh->cache_gen_) return;
+                    const uint64_t t0 = os::now_us();
+                    if (sh->scene_cache_)
+                        for (ShellScene& sc : *sh->scene_cache_)
+                            if (sc.id == id) sc.icon = icon;
+                    if (!sh->scenes_) return;
+                    sh->scenes_->set_icon(id, icon);
+                    if (timing) timing->build_us += os::now_us() - t0;
+                })) {
+                shell->scene_events_.fetch_add(1);
+            }
         }
         if (!timing) return;
         timing->icons_ms = static_cast<uint32_t>((os::now_us() - d0) / 1000);
-        timing->decoded = pending.size();
+        timing->decoded = decoded;
         (void)ui->post([timing] {
-            WLOG_I(kTag,
-                   "scenes ms_list=%u ms_icons=%u ms_build=%u n=%u icons_decoded=%u cached=%u",
-                   static_cast<unsigned>(timing->list_ms), static_cast<unsigned>(timing->icons_ms),
-                   static_cast<unsigned>(timing->build_us / 1000),
-                   static_cast<unsigned>(timing->scenes), static_cast<unsigned>(timing->decoded),
-                   timing->cached ? 1u : 0u);
+            log_timing(kTag, timing->list_ms, timing->icons_ms, timing->build_us, timing->scenes,
+                       timing->decoded, timing->cached);
         });
-    };
-    if (!deps_.submit_io(std::move(job))) {
-        listing_->store(false);
-        WLOG_W(kTag, "scene list not read (storage queue full)");
     }
+};
+
+bool Shell::listing() const {
+    if (!list_run_) return false;
+    std::lock_guard<os::Mutex> lock(list_run_->mu);
+    return list_run_->state != ListRun::State::Idle;
+}
+
+bool Shell::scene_cache_current() const {
+    if (!scene_cache_ || cache_events_ != scene_events_.load()) return false;
+    if (listing()) return false;
+    return deps_.listing_current && deps_.listing_current();
+}
+
+void Shell::join_listing() {
+    if (!list_run_) return;
+    std::unique_ptr<os::Task> task;
+    {
+        std::lock_guard<os::Mutex> lock(list_run_->mu);
+        list_run_->stopping.store(true);
+        task = std::move(list_run_->task);
+    }
+    if (task) task->join();
+}
+
+void Shell::list_scenes(bool opening) {
+    if (!scenes_) return;
+    if (!deps_.list_scenes) {
+        scenes_->set_scenes({});
+        return;
+    }
+    // The page's first listing is the one its timing line is about.
+    std::shared_ptr<ListTiming> timing = std::move(open_timing_);
+    if (opening && scene_cache_current()) {
+        // build_page() already showed it; nothing to read.
+        if (timing)
+            log_timing(kTag, 0, 0, timing->build_us, scene_cache_->size(), 0, /*cached=*/true);
+        return;
+    }
+    if (timing) timing->asked_us = os::now_us();
+    std::unique_ptr<os::Task> finished;
+    {
+        std::lock_guard<os::Mutex> lock(list_run_->mu);
+        if (timing) list_run_->timing = std::move(timing);
+        // One more round answers every request made while one runs.
+        if (list_run_->state != ListRun::State::Idle) {
+            list_run_->state = ListRun::State::Again;
+            return;
+        }
+        list_run_->state = ListRun::State::Running;
+        finished = std::move(list_run_->task);
+    }
+    // It set Idle as its last act: this waits only for it to return.
+    if (finished) finished->join();
+    std::unique_ptr<os::Task> task = os::Task::spawn({.name = "wisp.shell.list",
+                                                      .stack_bytes = kListStackBytes,
+                                                      .priority = kListPriority,
+                                                      .flash_access = false,
+                                                      .hot_stack = false},
+                                                     ListJob{
+                                                         .shell = this,
+                                                         .alive = alive_,
+                                                         .run = list_run_,
+                                                         .list = deps_.list_scenes,
+                                                         .read_icon = deps_.read_scene_icon,
+                                                         .decode = deps_.decode_icon,
+                                                         .recents = deps_.recents,
+                                                         .ui = &deps_.ui,
+                                                         .icons = icons_,
+                                                         .side = SceneList::icon_side(deps_.shape),
+                                                     });
+    std::lock_guard<os::Mutex> lock(list_run_->mu);
+    if (!task) {
+        list_run_->state = ListRun::State::Idle;
+        WLOG_W(kTag, "scene list not read (no task)");
+        return;
+    }
+    list_run_->task = std::move(task);
 }
 
 std::function<void(const std::string&, std::function<void(bool)>)> Shell::scene_has_data_query() {
@@ -739,7 +914,7 @@ void Shell::begin_drag(Page to, Swipe dir, lv_obj_t* target) {
     } else {
         sub_ = build_page(to);
         d.to_root = sub_root_;
-        if (to == Page::Scenes) list_scenes();
+        if (to == Page::Scenes) list_scenes(true);
     }
     lv_obj_set_parent(d.to_root, d.host);
     // LVGL would otherwise scroll these along with the drag: it looks for
@@ -986,7 +1161,7 @@ void Shell::rebuild_page() {
         lv_obj_update_layout(list);
         lv_obj_scroll_to_y(list, y, LV_ANIM_OFF);
     }
-    if (page_ == Page::Scenes) list_scenes();
+    if (page_ == Page::Scenes) list_scenes(true);
 }
 
 void Shell::follow_lang() {

@@ -1,9 +1,10 @@
 // memory.list, add, update and remove (mvp spec 3.2, 5.1): thin adapters
 // over MemoryStore. Every one of them reads or writes notes.json, so all
-// four run on the flash thread (ToolThread::Fs), list() included: it
-// never touches flash itself, but keeping the whole set on one thread
-// means a list() a caller issues right after an add() sees it, without a
-// second hop to find out.
+// four run on the flash thread's Interactive lane
+// (ToolThread::FsInteractive: one small rewrite the user waits for),
+// list() included: it never touches flash itself, but keeping the whole
+// set on one lane means a list() a caller issues right after an add()
+// sees it, without a second hop to find out.
 //
 // MemoryStore's own error messages ("empty", "too_long", "memory_full",
 // "not_found") already are the tool error codes the model should act on,
@@ -53,7 +54,7 @@ Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps) {
     WISP_TRY(reg.add({
         .name = "memory.list",
         .description = "Every memory note: id, text and when it was last added or changed.",
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kMemoryMs,
         .run =
             [d](const Value&, ToolCtx&) {
@@ -75,7 +76,7 @@ Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps) {
                        "characters, at most 64 notes: merge related ones before adding another.",
         .schema_json = kAddSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kMemoryMs,
         .run =
             [d](const Value& a, ToolCtx& ctx) {
@@ -92,7 +93,7 @@ Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps) {
         .description = "Replaces one memory note's text; same limits as memory_add.",
         .schema_json = kUpdateSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kMemoryMs,
         .run =
             [d](const Value& a, ToolCtx& ctx) {
@@ -111,7 +112,7 @@ Result<void> add_memory_tools(ToolRegistry& reg, MemoryToolDeps deps) {
         .description = "Deletes one memory note.",
         .schema_json = kIdSchema,
         .risk = ToolRisk::Note,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::FsInteractive,
         .timeout_ms = kMemoryMs,
         .run =
             [d](const Value& a, ToolCtx& ctx) {
