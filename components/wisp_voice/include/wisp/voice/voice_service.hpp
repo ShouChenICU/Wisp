@@ -200,7 +200,9 @@ struct VoiceDeps {
     // offline records anyway and its recognition waits for the network.
     // Empty: false.
     std::function<bool()> network_expected;
-    std::function<uint8_t()> volume;  // read from the settings cell at each use
+    // Read from the settings cell at each use. Empty: the volume setting's
+    // default, never full scale.
+    std::function<uint8_t()> volume;
     std::function<uint64_t()> now_ms = os::now_ms;
 };
 

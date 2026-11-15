@@ -6,13 +6,17 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "wisp/core/settings_schema.hpp"
+
 namespace wisp::agent {
 
 // A turn: at most this many tool calls, and this long in all, by default;
-// App passes the values set in Settings (core::SystemSettings'
-// agent_max_steps and agent_turn_min, whose defaults these must equal).
-inline constexpr uint32_t kMaxSteps = 60;
-inline constexpr uint32_t kTurnMs = 900000;
+// App passes the values set in Settings (agent_max_steps and
+// agent_turn_min), so the defaults are those rows'.
+inline constexpr uint32_t kMaxSteps =
+    static_cast<uint32_t>(core::setting_default_int(core::SettingId::AgentMaxSteps));
+inline constexpr uint32_t kTurnMs =
+    static_cast<uint32_t>(core::setting_default_int(core::SettingId::AgentTurnMin)) * 60000u;
 // A model stream with no new bytes for this long is aborted.
 inline constexpr uint32_t kStallMs = 60000;
 // A user message, counted in Unicode code points.

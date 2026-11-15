@@ -39,6 +39,7 @@
 
 #include "wisp/agent/conversation.hpp"
 #include "wisp/agent/limits.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/llm_client.hpp"
 #include "wisp/os/large.hpp"
@@ -49,7 +50,7 @@ namespace wisp::agent {
 // values a context source gathers without touching flash (cached state
 // only), since it runs on the wisp.agent task.
 struct DeviceSnapshot {
-    std::string lang = "zh";  // "zh" | "ja" | "en"
+    std::string lang{core::setting_default_text(core::SettingId::Language)};  // "zh" | "ja" | "en"
     hal::ScreenShape shape;
     std::string foreground;  // "" none
     std::vector<std::string> background;
@@ -57,7 +58,7 @@ struct DeviceSnapshot {
     bool charging = false;
     std::string wifi;  // "" unknown
     int64_t wall_s = 0;
-    int utc_offset_min = 480;
+    int utc_offset_min = core::setting_default_int(core::SettingId::UtcOffsetMin);
     std::vector<std::string> memory;  // "[<id>] <text>"
     int weekday = 0;                  // 1 = Monday; 0 while the clock is unset
     Source source = Source::Web;      // the running turn's

@@ -50,9 +50,9 @@ namespace {
 
 constexpr uint32_t kStorageRefreshMs = 2000;
 // How often PowerManager::tick() is driven. Settings
-// "power"/"screen_off_s" is specified (and set, default 60) in whole
-// seconds, so sub-second resolution here would be pointless; 1s keeps
-// the idle-timeout check's own overhead (and the "wisp.power" Timer
+// "power"/"screen_off_s" is specified (and set) in whole seconds, so
+// sub-second resolution here would be pointless; 1s keeps the
+// idle-timeout check's own overhead (and the "wisp.power" Timer
 // callback's wake rate) negligible.
 constexpr uint32_t kPowerTickMs = 1000;
 // At most 50 short notices to read at boot, or to write at shutdown.
@@ -102,9 +102,8 @@ ui::Lang lang_of(const core::SystemSettings& settings) {
 }
 
 uint8_t notify_vol_of(const core::SystemSettings& settings) {
-    return settings.cell().read([](const core::SystemSettingsValues& v) {
-        return static_cast<uint8_t>(std::clamp(v.notify_vol, 0, 100));
-    });
+    return settings.cell().read(
+        [](const core::SystemSettingsValues& v) { return static_cast<uint8_t>(v.notify_vol); });
 }
 
 bool time_24h_of(const core::SystemSettings& settings) {

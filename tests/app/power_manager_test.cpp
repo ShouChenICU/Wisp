@@ -47,6 +47,7 @@ using wisp::core::PowerMonitor;
 using wisp::core::Settings;
 using wisp::core::StateCell;
 using wisp::core::StorageManager;
+using wisp::core::SystemSettings;
 using wisp::core::SystemSettingsValues;
 using wisp::core::WakeLockKind;
 using wisp::core::WakeLockRegistry;
@@ -1164,15 +1165,14 @@ struct Headless {
         copy_store_to_cell();
         bus.wait_idle(2000);
     }
-    // Copies the stored power keys into the cell as they are, out-of-range
-    // values included, as SystemSettings::get() does.
+    // Copies the stored power keys into the cell as SystemSettings reads
+    // them: a stored value it would refuse reads as its default, so the
+    // cell never holds one.
     void copy_store_to_cell() {
-        Settings power(*backend, "power");
+        const SystemSettingsValues stored = SystemSettings(*backend, bus).get();
         SystemSettingsValues v = settings_cell.get();
-        v.screen_off_s =
-            static_cast<int>(power.get_int("screen_off_s", wisp::core::kDefaultScreenOffS));
-        v.deep_after_s =
-            static_cast<int>(power.get_int("deep_after_s", wisp::core::kDefaultDeepAfterS));
+        v.screen_off_s = stored.screen_off_s;
+        v.deep_after_s = stored.deep_after_s;
         settings_cell.set(v);
     }
 

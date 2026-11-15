@@ -43,8 +43,8 @@ struct NotificationRouterDeps {
     core::TonePlayer* tones = nullptr;
     scene::SceneRuntime* scenes = nullptr;
     core::WakeLockRegistry* locks = nullptr;
-    // audio/notify_vol, 0-100. Called on the posting thread, so it reads
-    // memory and never Settings. Empty: 60.
+    // audio/notify_vol. Called on the posting thread, so it reads memory
+    // and never Settings. Empty: the setting's default.
     std::function<uint8_t()> notify_volume;
     // Where the wake runs (PowerManager's transitions belong to the UI
     // task). Null: on the posting thread.

@@ -1,6 +1,5 @@
 #include "agent_wiring.hpp"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,22 +21,12 @@ namespace {
 
 constexpr const char* kTag = "agent";
 
-static_assert(agent::kMaxSteps == core::kDefaultAgentMaxSteps);
-static_assert(agent::kTurnMs == core::kDefaultAgentTurnMin * 60000);
-
-// Settings' agent_max_steps and agent_turn_min, clamped to their ranges
-// (SystemSettings only stores values within them); 0 leaves a limit as it
-// is.
-void apply_turn_limits(agent::AgentService& service, int64_t steps, int64_t minutes) {
-    const uint32_t s = steps == 0 ? 0
-                                  : static_cast<uint32_t>(std::clamp(steps, core::kMinAgentMaxSteps,
-                                                                     core::kMaxAgentMaxSteps));
-    const uint32_t ms =
-        minutes == 0
-            ? 0
-            : static_cast<uint32_t>(
-                  std::clamp(minutes, core::kMinAgentTurnMin, core::kMaxAgentTurnMin) * 60000);
-    service.set_turn_limits(s, ms);
+// Settings' agent_max_steps and agent_turn_min as the cell holds them: the
+// cell only ever holds values within the rows' ranges (SystemSettings maps
+// an invalid stored value to the default), so they pass as they are.
+void apply_turn_limits(agent::AgentService& service, const core::SystemSettingsValues& v) {
+    service.set_turn_limits(static_cast<uint32_t>(v.agent_max_steps),
+                            static_cast<uint32_t>(v.agent_turn_min) * 60000u);
 }
 
 // What a model request gets when the platform has no HTTP client: a
@@ -475,11 +464,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     // from the next turn on). The subscription's first call delivers the
     // same values again; coalesced changes deliver only the latest, which
     // is all the next turn reads.
-    const core::SystemSettingsValues now = deps_.settings.get();
-    apply_turn_limits(*service_, now.agent_max_steps, now.agent_turn_min);
+    apply_turn_limits(*service_, deps_.settings.cell().get());
     settings_sub_ = deps_.settings.cell().subscribe(
         [service = service_.get()](const core::SystemSettingsValues& v) {
-            apply_turn_limits(*service, v.agent_max_steps, v.agent_turn_min);
+            apply_turn_limits(*service, v);
         });
     service_->set_confirm(confirm_.get());
     const agent::ConfirmFn confirm = service_->confirm_fn();

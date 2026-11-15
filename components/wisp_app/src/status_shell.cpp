@@ -12,6 +12,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/minute_ticker.hpp"
@@ -24,7 +25,6 @@ namespace wisp::app {
 namespace {
 
 constexpr const char* kTag = "status";
-constexpr int kDefaultUtcOffsetMin = 480;
 
 // The first UTF-8 character of `s`.
 std::string first_char(std::string_view s) {
@@ -176,8 +176,12 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         ui::PanelHeader h;
         const int64_t t = deps.wall_s ? deps.wall_s() : 0;
         if (t >= scene::MinuteTicker::kValidSince) {
-            const int offset = deps.utc_offset_min ? deps.utc_offset_min() : kDefaultUtcOffsetMin;
-            const bool h24 = deps.time_24h ? deps.time_24h() : true;
+            const int offset = deps.utc_offset_min
+                                   ? deps.utc_offset_min()
+                                   : core::setting_default_int(core::SettingId::UtcOffsetMin);
+            const bool h24 = deps.time_24h
+                                 ? deps.time_24h()
+                                 : core::setting_default_int(core::SettingId::Time24h) != 0;
             h.time = std::string_view(ui::format_local_clock(t, offset, h24, ui::lang()));
         } else {
             h.time = "--:--";

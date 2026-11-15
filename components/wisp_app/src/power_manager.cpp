@@ -26,12 +26,6 @@ bool screen_lit(hal::PowerLevel level) { return level < hal::PowerLevel::Standby
 
 int64_t seconds_to_ms(int64_t s) { return s > 0 ? s * 1000 : 0; }
 
-// A stored value core::SystemSettings::set() would refuse reads as the
-// default, as SystemSettings::get() (and so GET /settings) reports it.
-int64_t valid_or(int64_t value, bool (*valid)(int64_t), int64_t def) {
-    return valid(value) ? value : def;
-}
-
 // The level cell's mirror: the power.state event subscribers had before
 // the cell, published under the cell's lock (so in change order).
 void power_state_mirror(core::EventBus& bus, const hal::PowerLevel&, const hal::PowerLevel& after) {
@@ -234,12 +228,8 @@ void PowerManager::undim() {
 }
 
 void PowerManager::apply_settings(int64_t screen_off_s, int64_t deep_after_s) {
-    const int64_t off_s =
-        valid_or(screen_off_s, core::valid_screen_off_s, core::kDefaultScreenOffS);
-    const int64_t deep_s =
-        valid_or(deep_after_s, core::valid_deep_after_s, core::kDefaultDeepAfterS);
-    screen_off_ms_.store(seconds_to_ms(off_s));
-    deep_after_ms_.store(seconds_to_ms(deep_s));
+    screen_off_ms_.store(seconds_to_ms(screen_off_s));
+    deep_after_ms_.store(seconds_to_ms(deep_after_s));
 }
 
 void PowerManager::tick(uint64_t now_ms) {

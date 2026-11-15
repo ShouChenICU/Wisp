@@ -39,6 +39,7 @@
 #include "self_check_tests.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
@@ -190,8 +191,8 @@ private:
     LoopbackStatus loop_status_;
     // The settings cell's utc_offset_min and time_24h as last delivered (or
     // read at build), for the time sync row. UI thread only.
-    int utc_offset_min_ = 480;
-    bool time_24h_ = true;
+    int utc_offset_min_ = core::SettingsSnapshot{}.utc_offset_min;
+    bool time_24h_ = core::SettingsSnapshot{}.time_24h;
     // os::now_ms() of the last read of the live network values (see
     // kNetLiveReadMs).
     uint64_t last_net_read_ms_ = 0;

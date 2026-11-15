@@ -11,6 +11,7 @@
 
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
 
@@ -19,7 +20,6 @@ namespace wisp::core {
 namespace {
 
 constexpr const char* kTag = "reminder";
-constexpr int kDefaultOffsetMin = 480;
 // How long stop() waits for a pass already queued on the worker.
 constexpr uint32_t kStopWaitMs = 5000;
 constexpr const char* kEllipsis = "…";
@@ -156,7 +156,8 @@ ReminderScheduler::~ReminderScheduler() { stop(); }
 int64_t ReminderScheduler::now_s() const { return deps_.wall_s ? deps_.wall_s() : 0; }
 
 int ReminderScheduler::utc_offset_min() const {
-    return deps_.utc_offset_min ? deps_.utc_offset_min() : kDefaultOffsetMin;
+    return deps_.utc_offset_min ? deps_.utc_offset_min()
+                                : setting_default_int(SettingId::UtcOffsetMin);
 }
 
 void ReminderScheduler::start(const StateCell<TimeSyncResult>* time) {

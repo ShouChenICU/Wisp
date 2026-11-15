@@ -11,6 +11,7 @@
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/voice/vad.hpp"
 
@@ -19,6 +20,13 @@ namespace wisp::voice {
 namespace {
 
 constexpr const char* kTag = "voice";
+
+// The volume a sound starts at: the settings cell's through deps.volume,
+// or without one the setting's default, as on a fresh device.
+uint8_t volume_of(const VoiceDeps& deps) {
+    return deps.volume ? deps.volume()
+                       : static_cast<uint8_t>(core::setting_default_int(core::SettingId::Volume));
+}
 
 // voice.state, built from the status cell: the state, and the outcome only
 // on the change that moved `outcomes` (the idle right after an error carries
@@ -371,7 +379,7 @@ bool VoiceService::begin_output(uint32_t rate, const std::function<bool()>& stop
             // that and opening under out_mu_ is what the guard decides
             // against.
             if (deps_.tones == nullptr || !deps_.tones->playing()) {
-                if (auto r = deps_.player.begin(rate, deps_.volume ? deps_.volume() : 100); !r) {
+                if (auto r = deps_.player.begin(rate, volume_of(deps_)); !r) {
                     WLOG_W(kTag, "no speech output: %s", r.error().message.c_str());
                     return false;
                 }
@@ -630,14 +638,14 @@ void VoiceService::capture(const Command& c, bool primed) {
         // The mic stays open: the tone lands in the recording (see the
         // file header). Not waited for, so the recording goes on.
         if (deps_.tones != nullptr) {
-            deps_.tones->play(core::ToneKind::Tone, deps_.volume ? deps_.volume() : 100);
+            deps_.tones->play(core::ToneKind::Tone, volume_of(deps_));
         }
     } else {
         // The start tone must not be skipped for speech that is still
         // closing the output, and the mic must not hear it.
         wait_for([this] { return !deps_.player.active(); }, kToneWaitMs);
         if (deps_.tones != nullptr) {
-            deps_.tones->play(core::ToneKind::Tone, deps_.volume ? deps_.volume() : 100);
+            deps_.tones->play(core::ToneKind::Tone, volume_of(deps_));
             wait_for([this] { return !deps_.tones->playing(); }, kToneWaitMs);
         }
         if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {

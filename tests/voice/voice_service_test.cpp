@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -205,7 +206,7 @@ struct VoiceServiceTest : ::testing::Test {
                 .locks = &locks,
                 .network_up = [this] { return net_up.load(); },
                 .network_expected = [this] { return net_expected.load(); },
-                .volume = [] { return uint8_t{100}; },
+                .volume = volume,
                 .now_ms = [this] { return wisp::os::now_ms() + virtual_ms.load(); },
             },
             config);
@@ -321,6 +322,8 @@ struct VoiceServiceTest : ::testing::Test {
     wisp::core::TonePlayer tones{out, nullptr};
     std::atomic<bool> net_up{true};
     std::atomic<bool> net_expected{false};
+    // VoiceDeps::volume as make() passes it.
+    std::function<uint8_t()> volume = [] { return uint8_t{100}; };
     std::unique_ptr<VoiceService> voice;
 
     mutable std::mutex mu;
@@ -745,6 +748,41 @@ TEST_F(VoiceServiceTest, LevelFollowsTheMicrophone) {
     EXPECT_EQ(voice->level(), 0);
     EXPECT_TRUE(wait_idle());
     EXPECT_EQ(voice->level(), 0);
+}
+
+// Without a volume source the start tone and speech play at the volume
+// setting's default, as a fresh device would, never at full scale.
+TEST_F(VoiceServiceTest, MissingVolumeUsesTheSettingDefault) {
+    // The start tone at 60 %, on an output of its own.
+    auto ref_out = std::make_shared<FakeAudioOut>();
+    wisp::core::TonePlayer ref(ref_out, nullptr);
+    ASSERT_TRUE(ref.start());
+    ref.play(ToneKind::Tone, 60);
+    ASSERT_TRUE(wait_until([&] { return ref_out->frames() == 2400; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return !ref.playing(); }, 1000));
+    ref.stop();
+
+    volume = nullptr;
+    add_asr();
+    add_tts();
+    make();
+    mic->set_script({silence(300), sine(1000)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->opens() == 1; }, 2000));
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(out->samples(), ref_out->samples());
+
+    const auto speech = ramp(4800);
+    server.push_tts(pcm_reply(speech));
+    voice->begin_speech();
+    voice->speak("好的。");
+    voice->end_speech();
+    ASSERT_TRUE(wait_until([&] { return saw("speaking") && !player.active(); }, 3000));
+    ASSERT_TRUE(wait_idle());
+    std::vector<int16_t> want = ref_out->samples();
+    for (int16_t v : speech) want.push_back(static_cast<int16_t>(v * 60 / 100));
+    EXPECT_EQ(out->samples(), want);
 }
 
 TEST_F(VoiceServiceTest, SpeaksSentencesInOrderAndPipelines) {

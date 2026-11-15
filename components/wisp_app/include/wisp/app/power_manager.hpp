@@ -8,11 +8,11 @@
 //                kDimPercent of the set brightness (at least the
 //                brightness setting's minimum). No device is told; any
 //                activity returns to Active.
-//   Standby      after Settings "power"/"screen_off_s" (default 60, 0 never)
+//   Standby      after Settings "power"/"screen_off_s" (0 never)
 //                of idleness, or enter_standby() (a short press of the
 //                power key). The UI pauses and every device that declares
 //                caps "standby" gets set_power(Standby); CPU and Wi-Fi stay.
-//   DeepStandby  after "power"/"deep_after_s" (default 300, 0 never) in
+//   DeepStandby  after "power"/"deep_after_s" (0 never) in
 //                Standby while no network wake lock is held; devices get
 //                set_power(DeepStandby). The Wi-Fi side follows level()
 //                (see net_wiring.cpp). A network lock taken here returns
@@ -317,13 +317,16 @@ private:
     std::atomic<bool> power_key_owned_{false};
     std::atomic<bool> light_sleep_on_{false};
 
-    // Stores the cached values from seconds, treating values
-    // SystemSettings::set() would refuse as their defaults.
+    // Stores the cached values from seconds as the settings cell delivers
+    // them: the cell holds only valid values (SystemSettings maps an
+    // invalid stored one to its default).
     void apply_settings(int64_t screen_off_s, int64_t deep_after_s);
     // From the settings cell, so tick() and UI-task work read atomics.
     // The defaults stand without a cell. 0: never.
-    std::atomic<int64_t> screen_off_ms_{core::kDefaultScreenOffS * 1000};
-    std::atomic<int64_t> deep_after_ms_{core::kDefaultDeepAfterS * 1000};
+    std::atomic<int64_t> screen_off_ms_{
+        int64_t{core::setting_default_int(core::SettingId::ScreenOffS)} * 1000};
+    std::atomic<int64_t> deep_after_ms_{
+        int64_t{core::setting_default_int(core::SettingId::DeepAfterS)} * 1000};
     // The deep timer had run out at the last tick-driven evaluation; lock
     // changes, which have no clock of their own, go by this.
     std::atomic<bool> deep_due_{false};

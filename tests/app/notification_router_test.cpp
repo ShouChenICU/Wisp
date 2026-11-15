@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -48,19 +50,25 @@ public:
     wisp::Result<void> open(const wisp::hal::AudioFormat&) override {
         return wisp::Result<void>::ok();
     }
-    wisp::Result<size_t> write(const int16_t*, size_t count) override {
+    wisp::Result<size_t> write(const int16_t* frames, size_t count) override {
         if (pace_ms_ > 0) wisp::os::sleep_ms(pace_ms_);
+        int peak = peak_.load();
+        for (size_t i = 0; i < count; ++i) peak = std::max(peak, std::abs(int{frames[i]}));
+        peak_.store(peak);
         frames_ += count;
         return wisp::Result<size_t>::ok(count);
     }
     void close() override {}
     wisp::Result<void> set_volume(uint8_t) override { return wisp::Result<void>::ok(); }
     size_t frames() const { return frames_.load(); }
+    // The loudest sample written so far.
+    int peak() const { return peak_.load(); }
 
 private:
     wisp::hal::DeviceInfo info_;
     uint32_t pace_ms_;
     std::atomic<size_t> frames_{0};
+    std::atomic<int> peak_{0};
 };
 
 class NotificationRouterTest : public wisp::test::SceneRuntimeFixture {
@@ -98,14 +106,14 @@ protected:
         notes.reset();
     }
 
-    void make_router() {
+    void make_router(std::function<uint8_t()> notify_volume = [] { return uint8_t{50}; }) {
         router = std::make_unique<NotificationRouter>(NotificationRouterDeps{
             .notes = *notes,
             .power = power.get(),
             .tones = tones.get(),
             .scenes = rt.get(),
             .locks = &locks,
-            .notify_volume = [] { return uint8_t{50}; },
+            .notify_volume = std::move(notify_volume),
         });
         router->start();
     }
@@ -174,6 +182,26 @@ TEST_F(NotificationRouterTest, SoundPlaysTone) {
     post("demo", "c", NotifySound::Tone, true);
     ASSERT_TRUE(wait_until([&] { return out->frames() == 4800; }, 2000));
     EXPECT_EQ(power->level(), PowerLevel::Active);
+}
+
+// Without a volume source the tone plays at the notify_vol setting's
+// default, as a fresh device would.
+TEST_F(NotificationRouterTest, MissingVolumeUsesTheSettingDefault) {
+    // The same tone at 60 %, on an output of its own.
+    auto ref_out = std::make_shared<CountingAudioOut>();
+    wisp::core::TonePlayer ref(ref_out, nullptr);
+    ASSERT_TRUE(ref.start());
+    ref.play(wisp::core::ToneKind::Tone, 60);
+    ASSERT_TRUE(wait_until([&] { return ref_out->frames() == 2400; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return !ref.playing(); }, 1000));
+    ref.stop();
+
+    make_router(nullptr);
+    post("demo", "a", NotifySound::Tone, false);
+    ASSERT_TRUE(wait_until([&] { return out->frames() == 2400; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return !tones->playing(); }, 1000));
+    ASSERT_GT(ref_out->peak(), 0);
+    EXPECT_EQ(out->peak(), ref_out->peak());
 }
 
 // An alarm rings until the user touches the device, so it wakes the

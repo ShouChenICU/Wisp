@@ -7,13 +7,13 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/core/settings_schema.hpp"
 
 namespace wisp::app {
 
 namespace {
 
 constexpr const char* kTag = "notify";
-constexpr uint8_t kDefaultVolume = 60;
 
 core::ToneKind tone_kind(core::NotifySound s) {
     return s == core::NotifySound::Alarm ? core::ToneKind::Alarm : core::ToneKind::Tone;
@@ -51,7 +51,9 @@ void NotificationRouter::set_banner(std::function<void(const core::Notification&
 }
 
 uint8_t NotificationRouter::volume() const {
-    return deps_.notify_volume ? deps_.notify_volume() : kDefaultVolume;
+    return deps_.notify_volume
+               ? deps_.notify_volume()
+               : static_cast<uint8_t>(core::setting_default_int(core::SettingId::NotifyVol));
 }
 
 void NotificationRouter::on_change(const core::NotificationChange& c) {

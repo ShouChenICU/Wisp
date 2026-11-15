@@ -14,6 +14,7 @@
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/conversation.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/os/os.hpp"
 
@@ -72,6 +73,13 @@ std::string repeat(const std::string& s, int n) {
 }
 
 }  // namespace
+
+// The agent's built-in limits are the settings' defaults: a build or a test
+// without a settings cell runs a turn exactly as a fresh device does.
+TEST(AgentLimits, DefaultsAreTheSchemas) {
+    EXPECT_EQ(wisp::agent::kMaxSteps, 60u);
+    EXPECT_EQ(wisp::agent::kTurnMs, 900000u);
+}
 
 TEST(AgentWiring, WsFramesFollowSpecShapes) {
     Sink sink;

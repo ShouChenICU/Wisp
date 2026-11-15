@@ -1,6 +1,5 @@
 #include "voice_wiring.hpp"
 
-#include <algorithm>
 #include <utility>
 
 #include "wisp/core/log.hpp"
@@ -23,8 +22,6 @@ public:
         return res;
     }
 };
-
-uint8_t clamp_volume(int64_t v) { return static_cast<uint8_t>(std::clamp<int64_t>(v, 0, 100)); }
 
 // A memory read of the settings cell, safe from any thread.
 bool tts_muted(const core::SystemSettings& settings) {
@@ -58,8 +55,9 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         // the stored value, whatever the bus has delivered.
         .volume =
             [settings = &deps_.settings] {
-                return settings->cell().read(
-                    [](const core::SystemSettingsValues& v) { return clamp_volume(v.volume); });
+                return settings->cell().read([](const core::SystemSettingsValues& v) {
+                    return static_cast<uint8_t>(v.volume);
+                });
             },
     });
     core::ModelProfileService* models = &deps_.models;
