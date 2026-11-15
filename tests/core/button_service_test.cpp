@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -1124,4 +1126,207 @@ TEST(ButtonService, ManualPollCannotBypassRunningProductionCadence) {
     for (int i = 0; i < 100; ++i) service.poll(wisp::os::now_ms() + 100000);
     EXPECT_EQ(button->pressed_calls.load(), reads);
     service.stop();
+}
+
+namespace {
+
+using wisp::core::ButtonEdge;
+using Kind = wisp::core::ButtonEdge::Kind;
+
+struct SeenEdge {
+    std::string id;
+    Kind kind;
+    uint64_t at_us;
+    bool operator==(const SeenEdge&) const = default;
+};
+
+}  // namespace
+
+TEST(ButtonService, ListenerGetsEveryEdgeInOrderWithItsTime) {
+    Fixture f;
+    std::vector<SeenEdge> seen;  // poll() runs the listeners on this thread
+    f.svc.add_listener(
+        [&](const ButtonEdge& e) { seen.push_back({std::string(e.id.view()), e.kind, e.at_us}); });
+
+    // A press of 1.2 s. The poll at 1100 ms finds the long deadline past:
+    // Long carries the deadline (Down + 1 s), not the time it was found.
+    f.btn->down = true;
+    f.svc.poll(0);
+    f.svc.poll(1100);
+    f.btn->down = false;
+    f.svc.poll(1200);
+    // A short press.
+    f.btn->down = true;
+    f.svc.poll(2000);
+    f.btn->down = false;
+    f.svc.poll(2300);
+
+    EXPECT_EQ(seen, (std::vector<SeenEdge>{{"button.power", Kind::Down, 0},
+                                           {"button.power", Kind::Long, 1'000'000},
+                                           {"button.power", Kind::Up, 1'200'000},
+                                           {"button.power", Kind::Down, 2'000'000},
+                                           {"button.power", Kind::Up, 2'300'000},
+                                           {"button.power", Kind::Short, 2'300'000}}));
+}
+
+TEST(EdgeEvent, ListenerTimesAreTheConfirmedEdges) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ButtonService service(registry, bus);
+    std::vector<SeenEdge> seen;
+    service.add_listener(
+        [&](const ButtonEdge& e) { seen.push_back({std::string(e.id.view()), e.kind, e.at_us}); });
+
+    service.poll(0);
+    ASSERT_TRUE(button->emit(true, 0));
+    service.poll(30);  // Down is confirmed 20 ms after the press.
+    // Released before the long deadline (1020 ms), confirmed after it:
+    // the release commits the Long first, at its deadline.
+    ASSERT_TRUE(button->emit(false, 1'010'000));
+    service.poll(1100);
+    service.stop();
+
+    EXPECT_EQ(seen, (std::vector<SeenEdge>{{"button.power", Kind::Down, 20'000},
+                                           {"button.power", Kind::Long, 1'020'000},
+                                           {"button.power", Kind::Up, 1'030'000}}));
+}
+
+TEST(ButtonService, RemovedListenerIsNeverCalledAgain) {
+    Fixture f;
+    wisp::os::Semaphore entered{1, 0};
+    wisp::os::Semaphore resume{1, 0};
+    std::atomic<int> calls{0};
+    std::atomic<bool> removed{false};
+    std::atomic<int> calls_after_removal{0};
+    const uint32_t id = f.svc.add_listener([&](const ButtonEdge&) {
+        if (removed.load()) ++calls_after_removal;
+        if (calls.fetch_add(1) == 0) {
+            entered.give();
+            resume.take(wisp::os::kForever);
+        }
+        if (removed.load()) ++calls_after_removal;
+    });
+    EXPECT_GE(id, 1u);
+    ASSERT_TRUE(f.svc.start());
+
+    f.btn->down = true;
+    ASSERT_TRUE(entered.take(2000));  // the worker is inside the listener, for Down
+    wisp::os::Semaphore remover_started{1, 0};
+    wisp::os::Semaphore remover_done{1, 0};
+    std::thread remover([&] {
+        remover_started.give();
+        f.svc.remove_listener(id);
+        removed.store(true);
+        remover_done.give();
+    });
+    ASSERT_TRUE(remover_started.take(2000));
+    // The removal waits for the call in progress: this wait is expected
+    // to time out.
+    EXPECT_FALSE(remover_done.take(50));
+    resume.give();
+    ASSERT_TRUE(remover_done.take(2000));
+    remover.join();
+
+    // A listener added while the worker runs gets the rest of the press;
+    // the removed one gets none of it.
+    wisp::os::Semaphore short_seen{1, 0};
+    f.svc.add_listener([&](const ButtonEdge& e) {
+        if (e.kind == Kind::Short) short_seen.give();
+    });
+    f.btn->down = false;
+    ASSERT_TRUE(short_seen.take(2000));
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(calls_after_removal.load(), 0);
+}
+
+TEST(ButtonService, BusEventsAreUnchanged) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<FakeButton>("button.power", power_caps());
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;  // started only after the presses: events wait in its queue
+    std::vector<std::pair<std::string, std::string>> events;
+    bus.subscribe("", [&](const Event& e) { events.emplace_back(e.topic, e.source); });
+    ButtonService service(registry, bus);
+    std::vector<bool> bus_empty_at_call;
+    std::vector<SeenEdge> seen;
+    service.add_listener([&](const ButtonEdge& e) {
+        // Listeners run before the bus copy of the same edge is published.
+        bus_empty_at_call.push_back(seen.empty() && bus.wait_idle(0));
+        seen.push_back({std::string(e.id.view()), e.kind, e.at_us});
+    });
+
+    button->down = true;
+    service.poll(0);
+    service.poll(1000);
+    button->down = false;
+    service.poll(1100);
+    button->down = true;
+    service.poll(2000);
+    button->down = false;
+    service.poll(2100);
+    ASSERT_TRUE(bus.start());
+    ASSERT_TRUE(bus.wait_idle(1000));
+    bus.stop();
+
+    ASSERT_FALSE(bus_empty_at_call.empty());
+    EXPECT_TRUE(bus_empty_at_call.front());
+    EXPECT_EQ(seen.size(), 6u);
+    const std::string id = "button.power";
+    EXPECT_EQ(events, (std::vector<std::pair<std::string, std::string>>{{id + ".down", id},
+                                                                        {id + ".long", id},
+                                                                        {id + ".up", id},
+                                                                        {id + ".down", id},
+                                                                        {id + ".up", id},
+                                                                        {id + ".short", id}}));
+}
+
+TEST(ButtonService, EmitForTestReachesListenersAndTheBus) {
+    DeviceRegistry registry;  // no button device at all
+    EventBus bus;
+    std::vector<std::pair<std::string, std::string>> events;
+    bus.subscribe("", [&](const Event& e) { events.emplace_back(e.topic, e.source); });
+    ButtonService service(registry, bus);
+    std::vector<SeenEdge> seen;
+    std::vector<bool> bus_empty_at_call;
+    service.add_listener([&](const ButtonEdge& e) {
+        bus_empty_at_call.push_back(bus.wait_idle(0));
+        seen.push_back({std::string(e.id.view()), e.kind, e.at_us});
+    });
+
+    service.emit_for_test("button.side", Kind::Down, 5);
+    service.emit_for_test("button.side", Kind::Long, 1'000'005);
+    service.emit_for_test("button.side", Kind::Up, 1'200'000);
+    service.emit_for_test("button.side", Kind::Short, 7);
+    ASSERT_TRUE(bus.start());
+    ASSERT_TRUE(bus.wait_idle(1000));
+    bus.stop();
+
+    EXPECT_EQ(seen, (std::vector<SeenEdge>{{"button.side", Kind::Down, 5},
+                                           {"button.side", Kind::Long, 1'000'005},
+                                           {"button.side", Kind::Up, 1'200'000},
+                                           {"button.side", Kind::Short, 7}}));
+    EXPECT_EQ(bus_empty_at_call, (std::vector<bool>{true, false, false, false}));
+    const std::string id = "button.side";
+    EXPECT_EQ(events,
+              (std::vector<std::pair<std::string, std::string>>{
+                  {id + ".down", id}, {id + ".long", id}, {id + ".up", id}, {id + ".short", id}}));
+}
+
+TEST(ButtonService, ListenersRunInRegistrationOrder) {
+    DeviceRegistry registry;
+    EventBus bus;
+    ButtonService service(registry, bus);
+    std::vector<int> order;
+    const uint32_t first = service.add_listener([&](const ButtonEdge&) { order.push_back(1); });
+    const uint32_t second = service.add_listener([&](const ButtonEdge&) { order.push_back(2); });
+    service.add_listener([&](const ButtonEdge&) { order.push_back(3); });
+    EXPECT_EQ(first, 1u);
+    EXPECT_EQ(second, 2u);
+    service.emit_for_test("button.side", Kind::Down, 0);
+    service.remove_listener(second);
+    service.remove_listener(second);  // a second removal is harmless
+    service.emit_for_test("button.side", Kind::Up, 0);
+    EXPECT_EQ(order, (std::vector<int>{1, 2, 3, 1, 3}));
 }

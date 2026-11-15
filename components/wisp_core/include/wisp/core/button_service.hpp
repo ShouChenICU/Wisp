@@ -4,23 +4,47 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/os/isr_queue.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::core {
 
+// A raw press/release record from a driver's edge sink, before debounce;
+// internal to ButtonService. Consumers see ButtonEdge below.
 struct ButtonEdgeEvent {
     uint16_t button_index = 0;
     bool pressed = false;
     uint64_t timestamp_us = 0;
 };
 
+// A confirmed gesture edge, as ButtonService's listeners receive it.
+struct ButtonEdge {
+    enum class Kind : uint8_t { Down, Up, Short, Long };
+    // The button's device id, e.g. "button.power". 32 bytes: the longest
+    // id DeviceRegistry::add() accepts for a button.
+    FixedString<32> id;
+    Kind kind = Kind::Down;
+    // os::now_us() base: the confirmed edge (Down, Up, Short; Short has
+    // its Up's time) or the long-press deadline, Down + the long-press
+    // threshold (Long), however late the service noticed it.
+    uint64_t at_us = 0;
+};
+using ButtonListener = os::LargeFunction<void(const ButtonEdge&)>;
+
+// Turns button input into gesture edges. For every down/up/short/long it
+// first calls its listeners, then publishes the event
+// "<button id>.<edge>" (source: the button id) on the bus, an observable
+// copy for the WebSocket hub and diagnostics that may be dropped. A
+// consumer that must not miss an edge listens instead.
 class ButtonService {
 public:
     ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t long_press_ms = 1000,
@@ -36,6 +60,38 @@ public:
     // Deterministic deadline processing without starting a worker. Ignored
     // while running; production input is driven only by its worker or fallback.
     void poll(uint64_t now_ms);
+
+    // Listeners. Each one is called for every edge of every button, in
+    // registration order, with the edge's own time, before the bus event
+    // of that edge. They run on whichever thread found the edge: the
+    // wisp.button worker, the fallback polling timer's task (the esp_timer
+    // task on the device), the thread calling poll() (tests), or once the
+    // start() caller when the worker cannot be created -- never in an ISR,
+    // whose sink only queues a record for the worker. A listener runs
+    // under ButtonService's state lock and its listener lock, so it may
+    // only push into an EdgeInbox, store an atomic, update a state cell or
+    // schedule a dispatch slot: it must not block, touch flash, or call
+    // ButtonService (add_listener()/remove_listener() from inside a
+    // listener deadlocks on the listener lock).
+    //
+    // Lock order: lifecycle -> state -> listeners -> whatever the listener
+    // takes (an inbox's lock, a cell's lock, a dispatcher's ready list).
+    // add_listener()/remove_listener() take only the listener lock, so a
+    // follower may call them from any thread while buttons are pressed
+    // and the service runs, provided it holds no lock its own listener
+    // takes. Every listener must be removed before ButtonService is
+    // destroyed.
+    //
+    // Any thread; allocates (Mem::Large). Ids start at 1 and are never 0.
+    uint32_t add_listener(ButtonListener fn);
+    // Any thread. When it returns, the listener is not running on any
+    // thread and is never called again: a call in progress elsewhere is
+    // waited for. Unknown or already removed ids are ignored.
+    void remove_listener(uint32_t id);
+    // Runs the path of a real edge -- listeners, then the bus event
+    // "<id>.<edge>" with source `id` -- for a button that need not exist,
+    // without start(). Ordered with real edges (takes the state lock).
+    void emit_for_test(std::string_view id, ButtonEdge::Kind kind, uint64_t at_us);
 
 private:
     struct ButtonState {
@@ -71,7 +127,9 @@ private:
     void commit_edge(ButtonState& state, bool pressed, uint64_t at_us);
     void sample_poll_only(ButtonState& state, bool pressed, uint64_t at_us);
     void recover_overflow(uint64_t now_us);
-    void publish_event(const ButtonState& state, const char* suffix);
+    // Caller holds state_mutex_. Listeners first, then the bus event.
+    void emit(std::string_view id, ButtonEdge::Kind kind, uint64_t at_us);
+    uint64_t long_deadline_us(const ButtonState& state) const;
     bool has_fallback_polling() const;
     Result<void> start_fallback_timer();
     void stop_fallback_timer();
@@ -103,6 +161,16 @@ private:
     std::unique_ptr<os::Timer> fallback_timer_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> fallback_mode_{false};
+
+    struct Listener {
+        uint32_t id = 0;
+        ButtonListener fn;
+    };
+    // Leaf lock under state_mutex_, held across the calls so that
+    // remove_listener() returns only after a call in progress.
+    os::Mutex listeners_mutex_;
+    os::LargeVector<Listener> listeners_;
+    uint32_t next_listener_id_ = 1;
 };
 
 }  // namespace wisp::core

@@ -14,6 +14,20 @@ constexpr const char* kTag = "button_service";
 constexpr size_t kEdgeQueueCapacity = 32;
 constexpr uint64_t kDebounceUs = 20'000;
 constexpr uint32_t kFallbackStandbyMs = 100;
+
+const char* edge_suffix(ButtonEdge::Kind kind) {
+    switch (kind) {
+        case ButtonEdge::Kind::Down:
+            return "down";
+        case ButtonEdge::Kind::Up:
+            return "up";
+        case ButtonEdge::Kind::Short:
+            return "short";
+        case ButtonEdge::Kind::Long:
+            return "long";
+    }
+    return "down";
+}
 }  // namespace
 
 ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t long_press_ms,
@@ -349,10 +363,9 @@ void ButtonService::process_deadlines(uint64_t now_us) {
             state.candidate_valid = false;
             commit_edge(state, pressed, confirmed_at_us);
         }
-        if (state.pressed && !state.long_sent &&
-            now_us >= state.down_at_us + static_cast<uint64_t>(long_press_ms_) * 1000) {
+        if (state.pressed && !state.long_sent && now_us >= long_deadline_us(state)) {
             state.long_sent = true;
-            publish_event(state, "long");
+            emit(state.id, ButtonEdge::Kind::Long, long_deadline_us(state));
         }
     }
 }
@@ -371,20 +384,19 @@ void ButtonService::commit_edge(ButtonState& state, bool pressed, uint64_t at_us
         state.pressed = true;
         state.down_at_us = at_us;
         state.long_sent = false;
-        publish_event(state, "down");
+        emit(state.id, ButtonEdge::Kind::Down, at_us);
         return;
     }
     // A delayed worker may confirm release after the long deadline. Preserve
     // chronological gesture order even when both deadlines are processed now.
-    if (!state.long_sent &&
-        at_us >= state.down_at_us + static_cast<uint64_t>(long_press_ms_) * 1000) {
+    if (!state.long_sent && at_us >= long_deadline_us(state)) {
         state.long_sent = true;
-        publish_event(state, "long");
+        emit(state.id, ButtonEdge::Kind::Long, long_deadline_us(state));
     }
     state.pressed = false;
-    publish_event(state, "up");
+    emit(state.id, ButtonEdge::Kind::Up, at_us);
     if (!state.long_sent) {
-        publish_event(state, "short");
+        emit(state.id, ButtonEdge::Kind::Short, at_us);
     }
 }
 
@@ -399,12 +411,12 @@ void ButtonService::sample_poll_only(ButtonState& state, bool pressed, uint64_t 
         state.pressed = true;
         state.down_at_us = at_us;
         state.long_sent = false;
-        publish_event(state, "down");
+        emit(state.id, ButtonEdge::Kind::Down, at_us);
     } else if (!pressed && state.pressed) {
         state.pressed = false;
-        publish_event(state, "up");
+        emit(state.id, ButtonEdge::Kind::Up, at_us);
         if (!state.long_sent) {
-            publish_event(state, "short");
+            emit(state.id, ButtonEdge::Kind::Short, at_us);
         }
     }
 }
@@ -443,11 +455,55 @@ void ButtonService::recover_overflow(uint64_t now_us) {
     }
 }
 
-void ButtonService::publish_event(const ButtonState& state, const char* suffix) {
+uint64_t ButtonService::long_deadline_us(const ButtonState& state) const {
+    return state.down_at_us + static_cast<uint64_t>(long_press_ms_) * 1000;
+}
+
+void ButtonService::emit(std::string_view id, ButtonEdge::Kind kind, uint64_t at_us) {
+    ButtonEdge edge;
+    edge.kind = kind;
+    edge.at_us = at_us;
+    if (edge.id.assign(id)) {
+        // Held across the calls: remove_listener() must not return while
+        // its listener runs here.
+        std::lock_guard<os::Mutex> listeners_lock(listeners_mutex_);
+        for (const auto& listener : listeners_) {
+            listener.fn(edge);
+        }
+    } else {
+        // DeviceRegistry::add() refuses such an id, so only emit_for_test()
+        // can get here. A cut id could equal another key's, so no listener
+        // sees it.
+        WLOG_E(kTag, "button id longer than %u bytes; listeners skipped",
+               static_cast<unsigned>(decltype(edge.id)::capacity()));
+    }
+
     Event event;
-    event.topic = state.id + "." + suffix;
-    event.source = state.id;
+    event.topic = std::string(id) + "." + edge_suffix(kind);
+    event.source = std::string(id);
     bus_.publish(std::move(event));
+}
+
+uint32_t ButtonService::add_listener(ButtonListener fn) {
+    std::lock_guard<os::Mutex> listeners_lock(listeners_mutex_);
+    const uint32_t id = next_listener_id_++;
+    if (next_listener_id_ == 0) {
+        next_listener_id_ = 1;
+    }
+    listeners_.push_back(Listener{id, std::move(fn)});
+    return id;
+}
+
+void ButtonService::remove_listener(uint32_t id) {
+    std::lock_guard<os::Mutex> listeners_lock(listeners_mutex_);
+    listeners_.erase(std::remove_if(listeners_.begin(), listeners_.end(),
+                                    [id](const Listener& l) { return l.id == id; }),
+                     listeners_.end());
+}
+
+void ButtonService::emit_for_test(std::string_view id, ButtonEdge::Kind kind, uint64_t at_us) {
+    std::lock_guard<os::Mutex> state_lock(state_mutex_);
+    emit(id, kind, at_us);
 }
 
 void ButtonService::poll(uint64_t now_ms) {
