@@ -4,6 +4,7 @@
 #include "wisp/scene/scene_runtime.hpp"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -674,6 +675,9 @@ TEST_F(SceneRuntimeTest, InstallMovesTheCatalog) {
 // cannot be removed) has changed what is stored, so the catalog moves as
 // for a replace that succeeded.
 TEST_F(SceneRuntimeTest, AReplaceThatFailsPartWayMovesTheCatalog) {
+    // The failure comes from a read-only directory, which root may remove
+    // all the same. These tests run only on the host (geteuid() is POSIX).
+    if (geteuid() == 0) GTEST_SKIP() << "running as root: a read-only directory blocks nothing";
     const fs::path dir = fs::path(in) / "scenes" / "a";
     auto block = std::make_shared<std::atomic<bool>>(false);
     wisp::core::SceneRepoConfig rc;
