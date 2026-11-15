@@ -220,6 +220,38 @@ return ui.screen {
               (std::vector<StateEvent>{{"a", "running"}, {"a", "background"}, {"a", "running"}}));
 }
 
+// The scenes overview follows a scene coming forward from the background,
+// standby (which leaves the scene in front) and the runtime stopping.
+TEST_F(SceneBackground, OverviewFollowsResumeStandbyAndStop) {
+    start();
+    install_bg("a", std::string(kHooks) + "return ui.screen { ui.label { text = 'scene a' } }");
+    install_bg("b", "return ui.screen { ui.label { text = 'scene b' } }");
+    auto front = [&] { return rt->overview().get().foreground.str(); };
+    auto back = [&] { return rt->overview().get().background_count; };
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->open("b"));
+    EXPECT_EQ(front(), "b");
+    EXPECT_EQ(back(), 1u);
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_EQ(front(), "a");
+    EXPECT_EQ(back(), 1u);
+    EXPECT_EQ(background_ids(), (std::vector<std::string>{"b"}));
+
+    // Its first on_hide was when b came forward.
+    rt->set_visible(false);
+    ASSERT_TRUE(wait_until([&] { return count_log("a", "hide") == 2; }, 2000));
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("a"));
+    EXPECT_EQ(front(), "a");
+    rt->set_visible(true);
+
+    ASSERT_TRUE(rt->close("a"));
+    EXPECT_EQ(front(), "");
+    EXPECT_EQ(back(), 2u);
+    rt->stop();
+    EXPECT_EQ(front(), "");
+    EXPECT_EQ(back(), 0u);
+}
+
 TEST_F(SceneBackground, BackgroundUpdatesTreeWithoutRendering) {
     start();
     install_bg("a", R"(

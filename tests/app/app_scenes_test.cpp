@@ -636,6 +636,43 @@ TEST(AppScenes, DeleteConfirmFlow) {
     EXPECT_TRUE(b.states("keep").empty());
 }
 
+// The scenes overview's catalog counter moves once for a confirmed delete,
+// before "deleted" goes out: whoever reacts to the event and reads the
+// cell already sees the catalog changed.
+TEST(AppScenes, ConfirmedDeleteMovesTheCatalogBeforeDeleted) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    const uint32_t before = rt->overview().get().catalog;
+
+    std::atomic<int64_t> at_deleted{-1};
+    const wisp::core::SubscriptionId sub =
+        b.h.app->bus().subscribe("scene.state", [&](const wisp::core::Event& e) {
+            if (e.payload.at("id").as_string() == "counter" &&
+                e.payload.at("state").as_string() == "deleted")
+                at_deleted.store(rt->overview().get().catalog);
+        });
+    auto res = api(b.h, Method::Delete, "/api/v1/scenes/counter", token);
+    ASSERT_EQ(res.status, 202) << res.body;
+    ASSERT_EQ(run_on_ui_thread(b.h.app->ui(),
+                               [] {
+                                   lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+                                   if (yes == nullptr) return "";
+                                   lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+                                   return "ok";
+                               }),
+              "ok");
+    EXPECT_TRUE(wait_until([&] { return at_deleted.load() >= 0; }, 3000));
+    b.h.app->bus().unsubscribe(sub);
+    EXPECT_EQ(at_deleted.load(), static_cast<int64_t>(before) + 1);
+    EXPECT_EQ(rt->overview().get().catalog, before + 1);
+}
+
 // SceneWiring::delete_scene(), for a caller that has already asked the
 // user (the agent's scene.delete): no dialog; the scene closes, its files
 // go and "deleted" is published, then `done` hears how it went.

@@ -14,7 +14,8 @@
 namespace wisp::core {
 
 // Compiles the package's sources through host.check_sources(), then
-// replaces the package keeping its data. Before the replace the scene is
+// replaces the package keeping its data; once it is replaced,
+// host.note_catalog_changed(). Before the replace the scene is
 // closed whatever its state (host.exit() returns once its last store
 // flush is on disk); one that was running is opened again after it, in
 // the background (host.open_background()) if it was there

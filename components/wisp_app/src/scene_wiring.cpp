@@ -414,6 +414,10 @@ Result<void> SceneWiring::remove(const std::string& id, const std::string& name,
         Result<core::SceneManifest> m = repo_->manifest(id);
         gone = !m && m.error().code == ErrorCode::NotFound;
     }
+    // Before "deleted" below, so whoever reacts to it finds the catalog
+    // moved; for a failed delete only if the scene is no longer installed.
+    // No runtime without a screen.
+    if (gone && runtime_) runtime_->note_catalog_changed();
     if (with_data && files_ && gone) {
         if (auto r = files_->remove_all(id); !r)
             WLOG_W(kTag, "%s: removing its files failed: %s", id.c_str(),

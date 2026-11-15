@@ -314,6 +314,7 @@
 #include <string_view>
 #include <vector>
 
+#include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
@@ -323,6 +324,7 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/core/sensor_service.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
@@ -379,6 +381,21 @@ struct BackgroundScene {
     std::string name;
     uint64_t since_ms = 0;
     bool operator==(const BackgroundScene&) const = default;
+};
+
+// What SceneRuntime::overview() holds (spec 3.4 of the state-cells
+// design): a summary beside scene.state, which stays as it is.
+struct SceneOverview {
+    // The scene in front (running or showing its error panel), as
+    // foreground() gives it; empty when none. Ids are at most
+    // core::kMaxSceneIdBytes.
+    FixedString<32> foreground;
+    // The scenes running out of sight: background_scenes() and the
+    // headless scene, if one runs.
+    uint16_t background_count = 0;
+    // Moves on every install, replace and delete of a package; wraps.
+    uint32_t catalog = 0;
+    bool operator==(const SceneOverview&) const = default;
 };
 
 // SceneRuntime::eval()'s default budget (agent-core spec 4.2); the most
@@ -555,6 +572,18 @@ public:
     // The scenes in the background, least recently in front first. Any
     // thread.
     std::vector<BackgroundScene> background_scenes() const;
+    // foreground(), how many scenes run out of sight and the catalog
+    // counter, for components that follow them instead of polling or
+    // reading scene.state. Set on the scene task with foreground_id_ and
+    // the background list, so at rest it answers what those queries do; the
+    // catalog moves from note_catalog_changed(). A subscriber releases its
+    // subscription before the runtime is destroyed (SceneWiring owns it;
+    // wisp/core/state_cell.hpp).
+    const core::StateCell<SceneOverview>& overview() const { return overview_; }
+    // Moves the overview's catalog counter: install_scene() calls it for an
+    // install or a replace, SceneWiring for a delete. Any thread, without
+    // the runtime's locks; never waits.
+    void note_catalog_changed() override;
     // The manifest name of scene `id` while it is in the foreground or the
     // background; "" otherwise. Any thread.
     std::string running_name(std::string_view id) const;
@@ -909,6 +938,10 @@ private:
     void notice(SceneNoticeKind kind, const Slot& s);
     // Rewrites background_ from the slots.
     void update_background_list();
+    // With status_mu_ held, on the scene task: brings the overview's
+    // foreground and background_count to foreground_id_, background_ and
+    // the headless slot, leaving its catalog alone.
+    void refresh_overview_locked();
     void hide_scenes();
     void show_scene(bool screen_came_on);
     // Hides or shows to match want_visible_ if visible_ differs.
@@ -1053,6 +1086,11 @@ private:
     std::vector<BackgroundScene> background_;
     // id -> instance of every slot, for scene_instance().
     std::map<std::string, uint32_t, std::less<>> slot_instances_;
+    // foreground and background_count are set with status_mu_ held (lock
+    // order status_mu_ -> the cell), catalog from any thread; all through
+    // update(), so neither undoes the other. Declared after deps_, whose
+    // bus its constructor takes.
+    core::StateCell<SceneOverview> overview_{deps_.bus, SceneOverview{}};
 
     os::Mutex delayed_mu_;
     std::vector<Delayed> delayed_;

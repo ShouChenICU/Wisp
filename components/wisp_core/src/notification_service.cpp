@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/base/json.hpp"
@@ -19,6 +20,11 @@ constexpr const char* kFileName = "/notifications.json";
 constexpr uint64_t kRateWindowMs = 60 * 1000;
 
 using LStr = os::LargeString;
+
+// A cell copies its value under its lock and onto a dispatcher's stack.
+static_assert(std::is_trivially_copyable_v<NoticeSummary>);
+// The unread count holds the whole list.
+static_assert(NotificationService::kStoredMax <= UINT16_MAX);
 
 LStr large(std::string_view s) { return LStr(s.data(), s.size()); }
 std::string plain(const LStr& s) { return std::string(s.data(), s.size()); }
@@ -167,6 +173,22 @@ struct NotificationService::State {
         ++change_gen;
     }
 
+    // Once at the end of each method that may change the list, after its
+    // last change (remove_at() announces before it erases, so a count taken
+    // there would be one off): the unread count and every change since the
+    // last call, as one value. No change is lost to an equal value: each
+    // change of `entries` moves change_gen, hence `changes`, except load()
+    // putting stored notices in, which only adds and so moves `unread`.
+    void summarize_locked() {
+        const uint64_t moved = change_gen - summarized_gen;
+        summarized_gen = change_gen;
+        const auto unread = static_cast<uint16_t>(entries.size());
+        summary.update([&](NoticeSummary& v) {
+            v.unread = unread;
+            v.changes += static_cast<uint32_t>(moved);
+        });
+    }
+
     // Drops the oldest notices past the per-scene and total limits.
     void enforce_limits(std::string_view source, std::vector<NotificationChange>& changes) {
         if (source != kSystemSource && source != kReminderSource) {
@@ -265,6 +287,12 @@ struct NotificationService::State {
     // disk (or queued for it).
     uint64_t change_gen = 0;
     uint64_t written_gen = 0;
+    // change_gen as summarize_locked() last passed it on.
+    uint64_t summarized_gen = 0;
+    // Set only with `mutex` held (summarize_locked()), so the lock order is
+    // mutex -> the cell; no mirror, so it publishes nothing. Declared after
+    // `deps`, whose bus its constructor takes.
+    StateCell<NoticeSummary> summary{deps.bus, NoticeSummary{}};
     // The timer is started and has not stopped itself yet.
     bool timer_armed = false;
     // A save job is queued on the worker.
@@ -582,6 +610,9 @@ Result<void> NotificationService::load() {
             entries.insert(entries.begin(), std::move(*it));
         }
         while (entries.size() > kStoredMax) state_->remove_at(0, DismissReason::Evict, changes);
+        // The summary's first value at boot (no mirror, so an update() is
+        // what a seed() would be, and it keeps what was posted before).
+        state_->summarize_locked();
     }
     State::announce(*state_, changes);
     State::arm(state_);
@@ -648,6 +679,7 @@ Result<std::string> NotificationService::post(Notification n, bool from_foregrou
         } else {
             s.store(n, changes);
         }
+        s.summarize_locked();
     }
     State::announce(s, changes);
     State::arm(state_);
@@ -674,6 +706,7 @@ std::string NotificationService::post_system(std::string code, std::string arg, 
         n.posted_ms = s.deps.now_ms();
         n.posted_unix = s.deps.wall_s ? std::max<int64_t>(s.deps.wall_s(), 0) : 0;
         s.store(n, changes);
+        s.summarize_locked();
     }
     State::announce(s, changes);
     State::arm(state_);
@@ -693,6 +726,7 @@ bool NotificationService::dismiss(std::string_view source, std::string_view id,
         auto it = s.find_entry(source, id);
         if (it == s.entries.end()) return false;
         s.remove_at(static_cast<size_t>(it - s.entries.begin()), reason, changes);
+        s.summarize_locked();
     }
     State::announce(s, changes);
     State::arm(state_);
@@ -711,6 +745,7 @@ size_t NotificationService::dismiss_source(std::string_view source, DismissReaso
                 ++i;
             }
         }
+        s.summarize_locked();
     }
     State::announce(s, changes);
     State::arm(state_);
@@ -729,6 +764,7 @@ size_t NotificationService::dismiss_code(std::string_view code, DismissReason re
                 ++i;
             }
         }
+        s.summarize_locked();
     }
     State::announce(s, changes);
     State::arm(state_);
@@ -741,6 +777,7 @@ void NotificationService::clear_all() {
     {
         std::lock_guard<os::Mutex> lock(s.mutex);
         while (!s.entries.empty()) s.remove_at(0, DismissReason::Dismiss, changes);
+        s.summarize_locked();
     }
     State::announce(s, changes);
     State::arm(state_);
@@ -763,6 +800,8 @@ size_t NotificationService::unread_count() const {
     std::lock_guard<os::Mutex> lock(state_->mutex);
     return state_->entries.size();
 }
+
+const StateCell<NoticeSummary>& NotificationService::summary() const { return state_->summary; }
 
 void NotificationService::set_listener(std::function<void(const NotificationChange&)> cb) {
     State& s = *state_;

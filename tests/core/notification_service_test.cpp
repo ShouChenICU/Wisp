@@ -14,10 +14,12 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/sim_os.hpp"
@@ -769,4 +771,103 @@ TEST(NotificationServiceTest, ReminderSourceAllowedNotRateLimited) {
     EXPECT_EQ(n->action2_arg, "3");
     EXPECT_EQ(n->body.size(), NotificationService::kReminderBodyMax);
     EXPECT_EQ(again->unread_count(), 13u);
+}
+
+// The summary (spec 3.4 of the state-cells design) beside the events: the
+// unread count as unread_count() gives it, and a counter that moves with
+// every change of the stored list.
+TEST(NotificationService, SummaryCountsUnreadAndEveryChange) {
+    Harness h;
+    auto s = h.make();
+    using Summary = wisp::core::NoticeSummary;
+    auto summary = [&] { return s->summary().get(); };
+    EXPECT_EQ(summary(), (Summary{0, 0}));
+
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "x"), false));
+    EXPECT_EQ(summary(), (Summary{1, 1}));
+    // A replacement is one change of the list.
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "b", "x"), false));
+    EXPECT_EQ(summary(), (Summary{1, 2}));
+    ASSERT_TRUE(s->dismiss("pomodoro", "x", DismissReason::Dismiss));
+    EXPECT_EQ(summary(), (Summary{0, 3}));
+
+    // System notices and reminders are unread like a scene's.
+    s->post_system(wisp::core::notice::kBatteryLow, "12");
+    Notification r = scene_note(wisp::core::kReminderSource, "t", "todo-1");
+    ASSERT_TRUE(s->post(r, false));
+    EXPECT_EQ(summary(), (Summary{2, 5}));
+    EXPECT_EQ(summary().unread, s->unread_count());
+
+    // A banner that replaces an unread notice removes it from the list.
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "c", "y"), false));
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "d", "y"), true));
+    EXPECT_EQ(summary(), (Summary{2, 7}));
+    EXPECT_EQ(summary().unread, s->unread_count());
+
+    // Past kUnreadPerScene the post and the eviction it causes arrive as
+    // one value.
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_TRUE(s->post(scene_note("timer", "t", "i" + std::to_string(i)), false));
+    }
+    EXPECT_EQ(summary(), (Summary{7, 12}));
+    const uint32_t before = s->summary().revision();
+    ASSERT_TRUE(s->post(scene_note("timer", "t", "i5"), false));
+    EXPECT_EQ(summary(), (Summary{7, 14}));
+    EXPECT_EQ(s->summary().revision(), before + 1);
+    EXPECT_EQ(summary().unread, s->unread_count());
+
+    // Clearing everything (the factory reset) is one value: every
+    // dismissal counted, nothing unread.
+    const uint32_t cleared_from = s->summary().revision();
+    s->clear_all();
+    EXPECT_EQ(summary(), (Summary{0, 21}));
+    EXPECT_EQ(s->summary().revision(), cleared_from + 1);
+}
+
+// What leaves the stored list as it was moves nothing (a banner that
+// replaces nothing, an unknown dismissal, a refused post).
+TEST(NotificationService, SummaryIgnoresWhatLeavesTheListAlone) {
+    Harness h;
+    auto s = h.make();
+    using Summary = wisp::core::NoticeSummary;
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "x"), false));
+    const uint32_t revision = s->summary().revision();
+
+    ASSERT_TRUE(s->post(scene_note("pomodoro", "front", "z"), true));
+    EXPECT_FALSE(s->dismiss("pomodoro", "nope", DismissReason::Dismiss));
+    EXPECT_EQ(s->dismiss_source("weather", DismissReason::Dismiss), 0u);
+    EXPECT_FALSE(s->post(scene_note("pomodoro", ""), false));
+    // The banner counted towards the rate limit: eight more replacements
+    // reach it.
+    for (int i = 0; i < 8; ++i) ASSERT_TRUE(s->post(scene_note("pomodoro", "t", "x"), false));
+    const uint32_t limited = s->summary().revision();
+    auto refused = s->post(scene_note("pomodoro", "t", "w"), false);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, ErrorCode::RateLimited);
+    EXPECT_EQ(s->summary().revision(), limited);
+    EXPECT_EQ(s->summary().get(), (Summary{1, 9}));
+    EXPECT_EQ(revision + 8, limited);
+}
+
+// load() gives the summary its first value: a subscriber made before it
+// hears the loaded list, not an empty one first.
+TEST(NotificationService, LoadSeedsTheSummary) {
+    Harness h;
+    {
+        auto s = h.make();
+        ASSERT_TRUE(s->post(scene_note("pomodoro", "a", "a"), false));
+        ASSERT_TRUE(s->post(scene_note("pomodoro", "b", "b"), false));
+        s->post_system(wisp::core::notice::kBatteryLow, "12");
+        ASSERT_TRUE(s->flush(1000));
+    }
+    wisp::test::ManualDispatcher ui;
+    NotificationService again(h.deps());
+    std::vector<wisp::core::NoticeSummary> seen;
+    wisp::core::CellSubscription sub = again.summary().subscribe(
+        [&](const wisp::core::NoticeSummary& v) { seen.push_back(v); }, &ui);
+    ASSERT_TRUE(again.load());
+    ui.run_all();
+    EXPECT_EQ(seen, (std::vector<wisp::core::NoticeSummary>{{3, 0}}));
+    EXPECT_EQ(again.summary().get().unread, again.unread_count());
+    sub.reset();
 }

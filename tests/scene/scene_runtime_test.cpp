@@ -32,6 +32,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -565,6 +566,68 @@ TEST_F(SceneRuntimeTest, OnInstalledReloadsOrPublishesStopped) {
     EXPECT_EQ(rt->status("a").state, SceneState::Running);
 }
 
+// The scenes overview (spec 3.4 of the state-cells design) answers what
+// foreground() and background_scenes() answer.
+TEST_F(SceneRuntimeTest, OverviewFollowsTheForegroundAndTheBackground) {
+    start();
+    install("a", kCounter,
+            {{"scene.json",
+              R"({"id":"a","name":"A","version":"1.0.0","schema_version":1,"background":true})"}});
+    auto overview = [&] { return rt->overview().get(); };
+    EXPECT_TRUE(overview().foreground.empty());
+    EXPECT_EQ(overview().background_count, 0u);
+
+    ASSERT_TRUE(rt->open("a"));
+    EXPECT_EQ(overview().foreground.view(), "a");
+    EXPECT_EQ(rt->foreground(), std::optional<std::string>("a"));
+    EXPECT_EQ(overview().background_count, 0u);
+
+    // Back: a declares "background", so it goes there.
+    ASSERT_TRUE(rt->close("a"));
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    EXPECT_TRUE(overview().foreground.empty());
+    EXPECT_EQ(overview().background_count, 1u);
+    EXPECT_EQ(rt->background_scenes().size(), 1u);
+
+    // exit() answers once the final flush has run, which can be before the
+    // scene task drops the slot from the list: wait for the query, then the
+    // overview says the same.
+    ASSERT_TRUE(rt->exit("a"));
+    ASSERT_TRUE(wait_until([&] { return rt->background_scenes().empty(); }, 1000));
+    EXPECT_TRUE(overview().foreground.empty());
+    EXPECT_EQ(overview().background_count, 0u);
+    // Nothing was installed or deleted.
+    EXPECT_EQ(overview().catalog, 0u);
+}
+
+// Closing a faulted scene's error panel publishes nothing (it stays in the
+// error state), but the scene is no longer in front.
+TEST_F(SceneRuntimeTest, ClosingAFaultedScenesPanelClearsTheForeground) {
+    start();
+    install("bad", R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() error("boom") end },
+}
+)");
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_label("go"));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(wait_until([&] { return error_panel_has("boom"); }, 1000));
+    EXPECT_EQ(rt->overview().get().foreground.view(), "bad");
+
+    on_ui([&] {
+        lv_obj_t* back = wisp::test::find_button_with_label(
+            lv_layer_top(), wisp::ui::tr(wisp::ui::StrId::SceneBack));
+        ASSERT_NE(back, nullptr);
+        lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+    });
+    // foreground_id_ and the overview change under the same lock.
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground(); }, 1000));
+    EXPECT_TRUE(rt->overview().get().foreground.empty());
+    EXPECT_EQ(rt->status("bad").state, SceneState::Error);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(events(), (std::vector<StateEvent>{{"bad", "running"}, {"bad", "error"}}));
+}
+
 // A package of `id` as an upload would bring it.
 wisp::os::LargeBuffer package_zip(const std::string& id, const std::string& main_lua) {
     wisp::core::ZipWriter w;
@@ -575,6 +638,29 @@ wisp::os::LargeBuffer package_zip(const std::string& id, const std::string& main
     add("scene.json", manifest(id));
     add("main.lua", main_lua);
     return w.finish();
+}
+
+// Every install moves the catalog counter once, whether the scene was
+// running (closed, replaced, opened again) or not; one that fails moves
+// nothing.
+TEST_F(SceneRuntimeTest, InstallMovesTheCatalog) {
+    start();
+    auto catalog = [&] { return rt->overview().get().catalog; };
+    EXPECT_EQ(catalog(), 0u);
+    wisp::os::LargeBuffer zip = package_zip("a", "return ui.screen { ui.label { text = 'v1' } }");
+    ASSERT_TRUE(wisp::core::install_scene(*repo, *rt, zip.span()));
+    EXPECT_EQ(catalog(), 1u);
+
+    ASSERT_TRUE(rt->open("a"));
+    zip = package_zip("a", "return ui.screen { ui.label { text = 'v2' } }");
+    ASSERT_TRUE(wisp::core::install_scene(*repo, *rt, zip.span()));
+    EXPECT_EQ(catalog(), 2u);
+    EXPECT_TRUE(wait_label("v2"));
+    EXPECT_EQ(rt->overview().get().foreground.view(), "a");
+
+    zip = package_zip("a", "return ui.screen {");
+    EXPECT_FALSE(wisp::core::install_scene(*repo, *rt, zip.span()));
+    EXPECT_EQ(catalog(), 2u);
 }
 
 // Holds the storage worker until release() (or destruction).

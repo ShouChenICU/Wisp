@@ -33,6 +33,13 @@
 // does not wake every 300 ms. `wake` is not stored, so a notice reloaded
 // after a restart never turns the screen on.
 //
+// Summary (spec 3.4 of the state-cells design): summary() is a state cell
+// beside the events, which stay as they are; it has no mirror. It holds the
+// unread count and a counter that moves with every change of the stored
+// list. Each method that changes the list sets it once, under the list's
+// lock, after its last change; the events it publishes are not ordered
+// against the cell, so a consumer follows one or the other.
+//
 // Thread-safe. Only load() and flush() touch flash; every other method
 // changes memory and arms the timer, so the scene task may call them.
 
@@ -47,6 +54,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -120,6 +128,19 @@ struct StoredNotification {
     bool wake = false;
     uint64_t posted_ms = 0;
     int64_t posted_unix = 0;
+};
+
+// What summary() holds.
+struct NoticeSummary {
+    // Notices in the stored list, as unread_count() counts them: every
+    // source (scenes, system, reminders, the agent); a banner-only post is
+    // never stored.
+    uint16_t unread = 0;
+    // Moves once for every change of the stored list: a stored post, a
+    // replacement, a dismissal or eviction, and a banner that replaced a
+    // stored notice. A post that stores nothing does not move it. It wraps.
+    uint32_t changes = 0;
+    bool operator==(const NoticeSummary&) const = default;
 };
 
 struct NotificationChange {
@@ -228,6 +249,11 @@ public:
     // Newest first.
     os::LargeVector<StoredNotification> unread() const;
     size_t unread_count() const;
+    // The unread count and the change counter (file header), for
+    // components that follow them instead of the events. load() gives it
+    // its first value. A subscriber releases its subscription before the
+    // service is destroyed (App::stop() order; wisp/core/state_cell.hpp).
+    const StateCell<NoticeSummary>& summary() const;
 
     // Runs on the caller's thread after each change, outside the lock.
     // Once set_listener() returns no call of the previous listener is

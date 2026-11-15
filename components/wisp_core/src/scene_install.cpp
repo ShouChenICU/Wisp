@@ -53,6 +53,9 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
             return Result<void>::ok();
         },
         opt);
+    // Before the reopen or on_installed(): whoever reacts to the scene's
+    // next state already finds the catalog moved.
+    if (installed) host.note_catalog_changed();
     if (!reopen.empty()) {
         // Whichever package is in place now: the new one, or the old one if
         // the replace failed.

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <ctime>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 #include "scene_instance.hpp"
@@ -24,6 +25,11 @@ namespace wisp::scene {
 namespace {
 
 constexpr const char* kTag = "scene";
+
+// A cell copies its value under its lock and onto a dispatcher's stack;
+// every valid scene id fits the overview whole.
+static_assert(std::is_trivially_copyable_v<SceneOverview>);
+static_assert(decltype(SceneOverview::foreground)::capacity() >= core::kMaxSceneIdBytes);
 // How long open(), close(), reload() and check_sources() wait for the
 // scene task, and how long they wait for room in its queue.
 constexpr uint32_t kWaitMs = 10000;
@@ -441,6 +447,13 @@ core::SceneStatus SceneRuntime::status(const std::string& id) const {
 std::optional<std::string> SceneRuntime::foreground() const {
     std::lock_guard<os::Mutex> lock(status_mu_);
     return foreground_id_;
+}
+
+void SceneRuntime::note_catalog_changed() {
+    // An update() of the counter alone: the scene task's refresh of the
+    // other fields, also an update(), never undoes it, nor it that. A
+    // counter that moved is never equal to the value before.
+    overview_.update([](SceneOverview& o) { ++o.catalog; });
 }
 
 std::vector<BackgroundScene> SceneRuntime::background_scenes() const {
@@ -1797,6 +1810,24 @@ void SceneRuntime::update_background_list() {
     std::lock_guard<os::Mutex> lock(status_mu_);
     background_ = std::move(list);
     slot_instances_ = std::move(ids);
+    refresh_overview_locked();
+}
+
+void SceneRuntime::refresh_overview_locked() {
+    // A headless scene is on no background list (file header) but runs
+    // out of sight all the same.
+    size_t out_of_sight = background_.size();
+    for (const auto& s : slots_)
+        if (s->headless && s->scene) ++out_of_sight;
+    FixedString<32> front;
+    if (foreground_id_ && !front.assign(*foreground_id_))
+        WLOG_W(kTag, "%s: id cut in the scenes overview", foreground_id_->c_str());
+    const auto count = static_cast<uint16_t>(out_of_sight);
+    // An equal value is no change: nothing a follower could miss.
+    overview_.update([&](SceneOverview& o) {
+        o.foreground = front;
+        o.background_count = count;
+    });
 }
 
 void SceneRuntime::erase_slot(Slot& s) {
@@ -1874,6 +1905,11 @@ void SceneRuntime::forget_front() {
     foreground_id_.reset();
     foreground_name_.clear();
     foreground_instance_ = 0;
+    // With the write, under the same lock, as at every write of
+    // foreground_id_: close_slot() publishes "stopped" before its
+    // erase_slot() rewrites the background list, and whoever follows that
+    // event finds the front already cleared.
+    refresh_overview_locked();
 }
 
 void SceneRuntime::drop_view(const Slot& s, bool closing) {

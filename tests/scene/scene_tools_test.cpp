@@ -210,6 +210,30 @@ TEST_F(CallTool, OnlyOneHeadless) {
     EXPECT_EQ(count_log("a", "close"), 1u);
 }
 
+// A headless scene is on no background list, but the overview counts it
+// as running out of sight.
+TEST_F(CallTool, HeadlessCountsInTheOverview) {
+    start();
+    install_notes();
+    auto overview = [&] { return rt->overview().get(); };
+    ASSERT_TRUE(call("notes", "get").ok);
+    ASSERT_EQ(rt->status("notes").state, SceneState::Headless);
+    EXPECT_TRUE(overview().foreground.empty());
+    EXPECT_EQ(overview().background_count, 1u);
+    EXPECT_TRUE(rt->background_scenes().empty());
+    // exit() answers once the final flush has run, which can be before the
+    // scene task drops the slot: wait for the state the slot's end sets.
+    ASSERT_TRUE(rt->exit("notes"));
+    ASSERT_TRUE(wait_until([&] { return wisp::scene::scene_instance(*rt, "notes") == 0; }, 1000));
+    EXPECT_EQ(overview().background_count, 0u);
+
+    ASSERT_TRUE(call("notes", "get").ok);
+    EXPECT_EQ(overview().background_count, 1u);
+    ASSERT_TRUE(rt->open("notes"));
+    EXPECT_EQ(overview().foreground.view(), "notes");
+    EXPECT_EQ(overview().background_count, 0u);
+}
+
 TEST_F(CallTool, OpenWhileHeadless) {
     start();
     install_notes();
