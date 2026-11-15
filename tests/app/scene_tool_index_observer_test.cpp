@@ -1,6 +1,8 @@
 // SceneToolIndexObserver (agent_wiring.hpp): the ToolIndex rebuilt from the
-// installed scenes at boot, on a delete, and on a scene.state change that
-// follows an install (agent-tools spec 5.3).
+// installed scenes at boot, on a delete, and on a scene lifecycle edge that
+// follows an install (agent-tools spec 5.3). App hands it the edges from its
+// scene_lifecycle inbox; these tests call on_transition() directly, or
+// forward the runtime's SceneRuntimeDeps::on_lifecycle to it.
 
 #include <gtest/gtest.h>
 
@@ -24,11 +26,18 @@
 
 namespace {
 
-using wisp::Value;
 using wisp::test::wait_until;
 
 std::span<const uint8_t> bytes(std::string_view text) {
     return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+}
+
+wisp::scene::SceneTransition transition(std::string_view id,
+                                        wisp::scene::SceneTransition::State state) {
+    wisp::scene::SceneTransition t;
+    EXPECT_TRUE(t.id.assign(id));
+    t.state = state;
+    return t;
 }
 
 std::string manifest(std::string_view id, std::string_view name, std::string_view tools) {
@@ -41,10 +50,14 @@ protected:
     void SetUp() override {
         SceneRuntimeFixture::SetUp();
         index = std::make_unique<wisp::agent::ToolIndex>();
-        observer = std::make_unique<wisp::app::SceneToolIndexObserver>(bus, worker, *repo, *index);
+        observer = std::make_unique<wisp::app::SceneToolIndexObserver>(worker, *repo, *index);
     }
 
     void TearDown() override {
+        // The runtime first: a test that forwards its lifecycle edges to
+        // the observer would otherwise reach a freed one from the scene
+        // task, whose last "stopped" comes from this stop.
+        rt.reset();
         observer.reset();
         index.reset();
         SceneRuntimeFixture::TearDown();
@@ -70,18 +83,14 @@ TEST_F(SceneToolIndexObserverTest, RebuiltOnInstallAndDelete) {
     boot_with("weather", "Weather", tools);
     ASSERT_TRUE(index->find("weather.lookup"));
 
-    // A delete reaches the bus as scene.state "deleted" and removes the
-    // scene's tools from the index without a flash read.
-    wisp::core::Event deleted;
-    deleted.topic = "scene.state";
-    deleted.source = "scene";
-    deleted.payload = {{"id", Value("weather")}, {"state", Value("deleted")}};
-    bus.publish(std::move(deleted));
+    // A delete arrives as Deleted and removes the scene's tools from the
+    // index without a flash read.
+    observer->on_transition(transition("weather", wisp::scene::SceneTransition::State::Deleted));
     ASSERT_TRUE(wait_until([&] { return !index->find("weather.lookup").has_value(); }, 2000));
     EXPECT_EQ(index->size(), 0u);
 
-    // A reinstall reaches the bus as "stopped"; the observer reads the new
-    // manifest back on the worker and repopulates the index.
+    // A reinstall arrives as Stopped; the observer reads the new manifest
+    // back on the worker and repopulates the index.
     const std::string newer =
         manifest("weather", "Weather", R"([{"name":"forecast","description":"Tomorrow's rain"}])");
     std::filesystem::path scene_json =
@@ -90,16 +99,47 @@ TEST_F(SceneToolIndexObserverTest, RebuiltOnInstallAndDelete) {
     f << newer;
     f.close();
 
-    wisp::core::Event stopped;
-    stopped.topic = "scene.state";
-    stopped.source = "scene";
-    stopped.payload = {{"id", Value("weather")}, {"state", Value("stopped")}};
-    bus.publish(std::move(stopped));
+    observer->on_transition(transition("weather", wisp::scene::SceneTransition::State::Stopped));
     ASSERT_TRUE(wait_until([&] { return index->find("weather.forecast").has_value(); }, 2000));
     EXPECT_FALSE(index->find("weather.lookup").has_value());
 }
 
+// Every state but Deleted reads the manifest back (each may follow an
+// install or a replace); Deleted removes the tools at once.
+TEST_F(SceneToolIndexObserverTest, TransitionsRefreshAndRemove) {
+    using State = wisp::scene::SceneTransition::State;
+    boot_with("weather", "Weather", R"([{"name":"v0","description":"Version 0"}])");
+    const std::filesystem::path scene_json =
+        std::filesystem::path(in) / "scenes" / "weather" / "scene.json";
+    int version = 0;
+    for (State state :
+         {State::Stopped, State::Running, State::Background, State::Headless, State::Error}) {
+        const std::string old_tool = "weather.v" + std::to_string(version);
+        ++version;
+        const std::string tool = "v" + std::to_string(version);
+        {
+            std::ofstream f(scene_json, std::ios::binary | std::ios::trunc);
+            f << manifest("weather", "Weather",
+                          R"([{"name":")" + tool + R"(","description":"Another version"}])");
+        }
+        observer->on_transition(transition("weather", state));
+        ASSERT_TRUE(worker.drain(2000));
+        EXPECT_TRUE(index->find("weather." + tool).has_value())
+            << wisp::scene::transition_name(state);
+        EXPECT_FALSE(index->find(old_tool).has_value()) << wisp::scene::transition_name(state);
+    }
+    observer->on_transition(transition("weather", State::Deleted));
+    EXPECT_FALSE(index->find("weather.v5").has_value());
+    EXPECT_EQ(index->size(), 0u);
+}
+
 TEST_F(SceneToolIndexObserverTest, SuccessfulInstallWithReloadFailureRefreshesToolIndex) {
+    // The runtime's edges reach the observer as App's inbox hands them on.
+    configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
+        d.on_lifecycle = [this](const wisp::scene::SceneTransition& t) {
+            observer->on_transition(t);
+        };
+    };
     start();
     boot_with("weather", "Weather", R"([{"name":"lookup","description":"Old forecast"}])");
     ASSERT_TRUE(rt->open("weather"));
@@ -143,11 +183,7 @@ TEST_F(SceneToolIndexObserverTest, DestructionDropsQueuedRefreshSafely) {
     }));
     blocker_started_future.wait();
 
-    wisp::core::Event stopped;
-    stopped.topic = "scene.state";
-    stopped.source = "scene";
-    stopped.payload = {{"id", Value("weather")}, {"state", Value("stopped")}};
-    bus.publish(std::move(stopped));
+    observer->on_transition(transition("weather", wisp::scene::SceneTransition::State::Stopped));
     const bool bus_idle = bus.wait_idle(1000);
     const bool refresh_queued = wait_until([&] { return worker.pending() >= 2; }, 2000);
 
@@ -196,8 +232,7 @@ TEST_F(SceneToolIndexObserverTest, LoadInstalledParsesOffTheWorker) {
     };
     wisp::core::SceneRepository parsing_repo(*storage, rc);
     observer.reset();
-    observer =
-        std::make_unique<wisp::app::SceneToolIndexObserver>(bus, worker, parsing_repo, *index);
+    observer = std::make_unique<wisp::app::SceneToolIndexObserver>(worker, parsing_repo, *index);
 
     ASSERT_TRUE(observer->load_installed());
     observer.reset();
@@ -209,7 +244,7 @@ TEST_F(SceneToolIndexObserverTest, LoadInstalledParsesOffTheWorker) {
 
 // A scene removed (or replaced) after its manifest was read but before the
 // boot load applied it: the load must not leave the old tools behind. The
-// bus event of that change may already have been handled, so the load
+// lifecycle edge of that change may already have been handled, so the load
 // itself reads again whatever the repository says changed meanwhile.
 TEST_F(SceneToolIndexObserverTest, ChangeDuringTheBootLoadIsNotOverwritten) {
     install(
@@ -224,15 +259,14 @@ TEST_F(SceneToolIndexObserverTest, ChangeDuringTheBootLoadIsNotOverwritten) {
     rc.data_root = in + "/scenes";
     rc.worker = &worker;
     // "notes" has been read by the time "weather" is; it goes now, on the
-    // worker (remove() runs inline there), with no scene.state event.
+    // worker (remove() runs inline there), with no lifecycle edge.
     rc.on_read = [&](std::string_view id) {
         if (id == "weather") EXPECT_TRUE(self->remove("notes", false));
     };
     wisp::core::SceneRepository parsing_repo(*storage, rc);
     self = &parsing_repo;
     observer.reset();
-    observer =
-        std::make_unique<wisp::app::SceneToolIndexObserver>(bus, worker, parsing_repo, *index);
+    observer = std::make_unique<wisp::app::SceneToolIndexObserver>(worker, parsing_repo, *index);
 
     ASSERT_TRUE(observer->load_installed());
     ASSERT_TRUE(worker.drain(5000));

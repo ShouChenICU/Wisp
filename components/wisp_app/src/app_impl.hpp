@@ -38,6 +38,7 @@
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
 #include "wisp/core/device_service.hpp"
+#include "wisp/core/edge_inbox.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -181,7 +182,23 @@ struct App::Impl {
     int64_t wall_now() const {
         return platform.wall_s ? platform.wall_s() : static_cast<int64_t>(std::time(nullptr));
     }
-    core::SubscriptionId scene_state_sub = 0;
+    // Scene lifecycle edges (scene::SceneTransition) for the scene order,
+    // the notices and the agent's tool index, which must see every one
+    // (spec 3.5 of the state-cells design). Producers: the scene task
+    // (until stop_runtime()) and deletes on wisp.fs (until scenes->stop()),
+    // through SceneWiringDeps::on_lifecycle, which pushes only while the
+    // gate is open. Built by start() before `scenes`; App::stop() closes
+    // the gate (waiting for a push in progress) and destroys the inbox
+    // (waiting for a drain in progress) right after networking goes and
+    // before the agent does: an edge after that is dropped, as nothing is
+    // left to act on it. Declared before `scenes`, whose callback holds a
+    // pointer to the gate, so it outlives them however Impl goes.
+    struct LifecycleGate {
+        os::Mutex mu;
+        core::EdgeInbox<scene::SceneTransition, 32>* inbox = nullptr;  // guarded by mu
+    };
+    LifecycleGate lifecycle_gate;
+    os::LargeUnique<core::EdgeInbox<scene::SceneTransition, 32>> lifecycle;
 
     // The storage worker, the scene repository and (with a screen) the
     // scene runtime: built by App::start() right after storage, reset by
@@ -223,7 +240,7 @@ struct App::Impl {
     std::unique_ptr<SelfCheck> self_check;
     // The scene list's order (wisp/shell/scene_recents.hpp), with a System
     // area and the storage worker: built and loaded on the worker with the
-    // todos, fed from scene.state, flushed in stop() before the worker
+    // todos, fed from the lifecycle inbox, flushed in stop() before the worker
     // drains and reset once it has stopped (the shell's listing jobs read
     // it there).
     std::unique_ptr<shell::SceneRecents> recents;

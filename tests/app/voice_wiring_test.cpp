@@ -236,6 +236,7 @@ TEST(AppVoice, DispatchReportListsTheTalkKeyInbox) {
     ASSERT_TRUE(v.start());
     const std::string report = v.h->app->dispatch_report();
     EXPECT_TRUE(std::regex_match(report, std::regex("^bus dropped=[0-9]+ cell_subs=[0-9]+\n"
+                                                    "inbox scene_lifecycle overflows=0\n"
                                                     "inbox power_key overflows=0\n"
                                                     "inbox talk_key overflows=0$")))
         << report;

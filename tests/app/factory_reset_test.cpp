@@ -8,6 +8,7 @@
 #include <atomic>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -41,6 +42,7 @@
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/scene_recents.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
@@ -330,6 +332,11 @@ TEST(FactoryReset, ClearsTodoDirectory) {
 // scene opened just before the reset does not write it back.
 TEST(FactoryReset, ClearsShellDirectory) {
     UiNetHarness h;
+    const std::filesystem::path clock = std::filesystem::path(h.root) / "scenes" / "clock";
+    std::filesystem::create_directories(clock);
+    std::ofstream(clock / "scene.json")
+        << R"({"id":"clock","name":"Clock","version":"1.0.0","schema_version":1})";
+    std::ofstream(clock / "main.lua") << "return ui.screen {}\n";
     ASSERT_TRUE(h.start("system."));
     wisp::app::App& app = *h.app;
     const std::string shell = app.storage().write_root(wisp::core::Area::System).value() + "/shell";
@@ -337,8 +344,11 @@ TEST(FactoryReset, ClearsShellDirectory) {
     const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(body.data()),
                                          body.size());
     ASSERT_TRUE(write_on_flash(app, shell + "/recents.json", bytes));
-    app.bus().publish({"scene.state", "test", 0, {{"id", "clock"}, {"state", "running"}}});
-    ASSERT_TRUE(app.bus().wait_idle(1000));
+    ASSERT_NE(app.scenes(), nullptr);
+    ASSERT_TRUE(app.scenes()->open("clock"));
+    // open() returns once "running" is reported; the scene lifecycle inbox
+    // was idle, so this barrier comes after its delivery to the recents.
+    ASSERT_TRUE(wisp::test::slot_barrier(app.bus(), &app.bus()));
 
     wisp::app::factory_reset(app);
 

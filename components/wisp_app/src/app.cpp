@@ -175,10 +175,47 @@ Result<void> App::start() {
                                   core::DeviceState::Failed, "button service unavailable"});
         }
     }
+    // Scene lifecycle edges, before the scenes that report them. The
+    // handler reads the notifications, the scene order and the agent at
+    // drain time: all three are set below before the runtime starts or a
+    // delete can be asked for, and outlive the inbox (stop()). On wisp.bus,
+    // which must not touch flash: the scene order saves through the worker
+    // and the tool index refreshes through it.
+    {
+        App::Impl* impl = impl_.get();
+        impl_->lifecycle = os::make_large<core::EdgeInbox<scene::SceneTransition, 32>>(
+            "scene_lifecycle", impl_->bus, [impl](const scene::SceneTransition& t) {
+                if (t.state == scene::SceneTransition::State::Running) {
+                    if (impl->recents) impl->recents->opened(t.id.str());
+                } else if (t.state == scene::SceneTransition::State::Deleted) {
+                    const std::string id = t.id.str();
+                    if (impl->recents) impl->recents->forget(id);
+                    if (impl->notifications) {
+                        impl->notifications->dismiss_source(id, core::DismissReason::Dismiss);
+                    }
+                }
+                if (impl->agent) impl->agent->on_scene_transition(t);
+            });
+        if (!impl_->lifecycle) {
+            WLOG_E("app",
+                   "no memory for the scene lifecycle inbox; the scene order, notices "
+                   "and scene tools miss scene changes");
+        }
+        std::lock_guard<os::Mutex> lock(impl_->lifecycle_gate.mu);
+        impl_->lifecycle_gate.inbox = impl_->lifecycle.get();
+    }
     // Scenes: the storage worker, and the repository recovered on it,
     // before anything can list or open a scene.
-    impl_->scenes =
-        os::make_large<SceneWiring>(SceneWiringDeps{impl_->platform, impl_->bus, impl_->storage});
+    {
+        SceneWiringDeps deps{impl_->platform, impl_->bus, impl_->storage};
+        deps.on_lifecycle = [gate = &impl_->lifecycle_gate](const scene::SceneTransition& t) {
+            // Under the gate's lock: App::stop() closes it before the inbox
+            // goes, so a push never reaches a destroyed inbox.
+            std::lock_guard<os::Mutex> lock(gate->mu);
+            if (gate->inbox != nullptr) gate->inbox->push(t);
+        };
+        impl_->scenes = os::make_large<SceneWiring>(std::move(deps));
+    }
     SceneWiring* scenes = impl_->scenes.get();
     if (scenes != nullptr) {
         scenes->start_storage();
@@ -288,25 +325,6 @@ Result<void> App::start() {
             }
             if (!r) WLOG_W("app", "scene order not loaded: %s", r.error().message.c_str());
         }
-        impl->scene_state_sub = impl->bus.subscribe(
-            core::topics::kSceneState,
-            [notes, recents = impl->recents.get()](const core::Event& e) {
-                auto id = e.payload.find("id");
-                auto state = e.payload.find("state");
-                if (id == e.payload.end() || state == e.payload.end() ||
-                    id->second.type() != Value::Type::String ||
-                    state->second.type() != Value::Type::String) {
-                    return;
-                }
-                const std::string& what = state->second.as_string();
-                if (what == "running") {
-                    if (recents != nullptr) recents->opened(id->second.as_string());
-                    return;
-                }
-                if (what != "deleted") return;
-                if (recents != nullptr) recents->forget(id->second.as_string());
-                notes->dismiss_source(id->second.as_string(), core::DismissReason::Dismiss);
-            });
     }
     // Settings from memory from here on, saved on the worker. Loaded
     // before anything below reads a setting; with the worker running the
@@ -993,18 +1011,28 @@ void App::stop() {
         impl_->net->stop();
         impl_->net.reset();
     }
+    // Scene lifecycle edges: the gate closes (a push in progress finishes
+    // first), then the inbox goes (a drain in progress finishes first), so
+    // the handler never reaches the agent reset next. Before the
+    // notifications close and the scene order's last flush, too. The
+    // scene task has stopped; a delete still queued on wisp.fs (until
+    // scenes->stop()) finds the gate closed and its edge is dropped.
+    {
+        std::lock_guard<os::Mutex> lock(impl_->lifecycle_gate.mu);
+        impl_->lifecycle_gate.inbox = nullptr;
+    }
+    impl_->lifecycle.reset();
     // Stopped above; nothing holds its api() any more.
     impl_->agent.reset();
     // The agent's tools and the router (both gone) were its last users.
     impl_->reminders.reset();
     // Nothing streams into it any more.
     impl_->firmware.reset();
-    // Notifications: nothing new from the bus, no more saves on the timer,
+    // Notifications: nothing new from the supply cell or the lifecycle
+    // inbox (gone above), no more saves on the timer,
     // then whatever is still unsaved goes to the worker before it stops.
     if (impl_->notifications) {
         impl_->supply_sub.reset();
-        impl_->bus.unsubscribe(impl_->scene_state_sub);
-        impl_->scene_state_sub = 0;
         impl_->notifications->close();
         if (!impl_->notifications->flush(kNotifyFlushMs)) {
             WLOG_W("app", "notifications not saved before shutdown");
@@ -1380,9 +1408,13 @@ const Platform& App::platform() const { return impl_->platform; }
 std::string App::dispatch_report() const {
     std::string report = "bus dropped=" + std::to_string(impl_->bus.dropped()) +
                          " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
-    // One line per inbox. The duties and the voice are built before the
-    // console task starts and destroyed after it stops (start(), stop()),
-    // so the console's `mem` never races them.
+    // One line per inbox. The scene lifecycle inbox, the duties and the
+    // voice are built before the console task starts and destroyed after
+    // it stops (start(), stop()), so the console's `mem` never races them.
+    if (impl_->lifecycle) {
+        report +=
+            "\ninbox scene_lifecycle overflows=" + std::to_string(impl_->lifecycle->overflows());
+    }
     if (impl_->duties) {
         report +=
             "\ninbox power_key overflows=" + std::to_string(impl_->duties->power_key_overflows());

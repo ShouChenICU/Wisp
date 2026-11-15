@@ -26,11 +26,14 @@
 #include "scene_wiring.hpp"
 #include "self_check_layout.hpp"
 #include "support/bus_flood.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "ui_net_harness.hpp"
+#include "wisp/agent/tool_registry.hpp"
 #include "wisp/app/power_manager.hpp"
+#include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -239,6 +242,77 @@ struct Booted {
 
     UiNetHarness h;
     lv_obj_t* screen = nullptr;
+};
+
+// A package with one tool, "<id>.count", which the agent's tool index lists.
+void put_tool_scene(const std::string& root, const std::string& id) {
+    const fs::path dir = fs::path(root) / "scenes" / id;
+    fs::create_directories(dir);
+    std::ofstream(dir / "scene.json")
+        << R"({"id":")" << id << R"(","name":")" << id
+        << R"(","version":"1.0.0","schema_version":1,"tools":[{"name":"count",)"
+        << R"("description":"Counts the clicks"}]})";
+    std::ofstream(dir / "main.lua") << "wisp.tools.register('count', function() return 1 end)\n"
+                                    << kCounter;
+}
+
+// Whether the agent's tools_find lists tool `name` ("<scene>.<tool>").
+bool agent_lists_tool(UiNetHarness& h, const std::string& name) {
+    const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
+    if (tools == nullptr) return false;
+    wisp::agent::ToolCtx ctx;
+    ctx.cancelled = [] { return false; };
+    ctx.lang = "zh";
+    wisp::agent::ToolOutput out = tools->call(
+        "tools_find", wisp::to_json(wisp::Value(wisp::Map{{"query", wisp::Value("clicks")}})), ctx);
+    const std::string text = out.result_json.empty()
+                                 ? wisp::to_json(out.result)
+                                 : std::string(out.result_json.data(), out.result_json.size());
+    return text.find("\"" + name + "\"") != std::string::npos;
+}
+
+// <System>/shell/recents.json's {"recent": {id: n}}, empty when unreadable.
+std::map<std::string, int64_t> read_recents(UiNetHarness& h) {
+    std::map<std::string, int64_t> out;
+    auto root = h.app->storage().write_root(wisp::core::Area::System);
+    if (!root) return out;
+    std::ifstream f(root.value() + "/shell/recents.json");
+    std::stringstream ss;
+    ss << f.rdbuf();
+    auto parsed = wisp::from_json(ss.str());
+    const wisp::Value* recent = parsed ? parsed.value().find("recent") : nullptr;
+    if (recent == nullptr || recent->type() != wisp::Value::Type::Map) return out;
+    for (const auto& [id, n] : recent->as_map())
+        if (n.type() == wisp::Value::Type::Int) out[id] = n.as_int();
+    return out;
+}
+
+// Asks for a delete through the admin API and answers "是" on the device.
+void confirm_delete(UiNetHarness& h, const std::string& token, const std::string& id) {
+    auto res = api(h, Method::Delete, "/api/v1/scenes/" + id, token);
+    ASSERT_EQ(res.status, 202) << res.body;
+    ASSERT_EQ(run_on_ui_thread(h.app->ui(),
+                               [] {
+                                   lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+                                   if (yes == nullptr) return "";
+                                   lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+                                   return "ok";
+                               }),
+              "ok");
+}
+
+// Collects the scene lifecycle inbox's overflow warnings.
+struct LifecycleOverflowWarnings : wisp::LogSink {
+    LifecycleOverflowWarnings() { wisp::log::add_sink(this); }
+    ~LifecycleOverflowWarnings() override { wisp::log::remove_sink(this); }
+    LifecycleOverflowWarnings(const LifecycleOverflowWarnings&) = delete;
+    LifecycleOverflowWarnings& operator=(const LifecycleOverflowWarnings&) = delete;
+    void write(const wisp::LogRecord& rec) override {
+        if (std::string_view(rec.msg).find("edge inbox scene_lifecycle overflowed") !=
+            std::string_view::npos)
+            ++count;
+    }
+    std::atomic<size_t> count{0};
 };
 
 }  // namespace
@@ -832,6 +906,162 @@ TEST(AppScenes, DeleteReportsDeletedAfterStopped) {
     run_on_ui_blocking(&ui, [&] { layer.reset(); });
     wiring.stop();
     bus.stop();
+}
+
+// Scene notices go with their scene: a delete dismisses them, a state
+// that is not a delete (the scene opening and closing) dismisses nothing.
+TEST(AppNotifications, DeletedSceneLosesItsNotices) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_scene(b.h.root, "pomodoro", "番茄钟", kCounter);
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+    wisp::core::NotificationService* notes = b.h.app->notifications();
+    ASSERT_NE(notes, nullptr);
+    wisp::core::Notification n;
+    n.source = "pomodoro";
+    n.title = "t";
+    ASSERT_TRUE(notes->post(n, false));
+    ASSERT_TRUE(notes->post(n, false));
+    ASSERT_TRUE(b.h.app->scenes()->open("pomodoro"));
+    ASSERT_TRUE(b.h.app->scenes()->close("pomodoro"));
+    // Both edges were pushed into an idle inbox before close() returned.
+    ASSERT_TRUE(wisp::test::slot_barrier(b.h.app->bus(), &b.h.app->bus()));
+    EXPECT_EQ(notes->unread_count(), 2u);
+    confirm_delete(b.h, token, "pomodoro");
+    EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
+}
+
+// A scene deleted while wisp.bus is held and flooded (its
+// scene.state events are lost there) still has its notices dismissed, its
+// tools leave the agent's index and it leaves the scene order.
+TEST(AppScenes, DeleteDismissesNoticesAndForgetsFlooded) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    Booted b(opts);
+    put_tool_scene(b.h.root, "counter");
+    put_scene(b.h.root, "keep", "保留", "return ui.screen { ui.label { text = 'k' } }");
+    ASSERT_TRUE(b.start());
+    const std::string token = pair_browser(b.h);
+    wisp::core::NotificationService* notes = b.h.app->notifications();
+    ASSERT_NE(notes, nullptr);
+    ASSERT_TRUE(agent_lists_tool(b.h, "counter.count"));
+    ASSERT_TRUE(b.h.app->scenes()->open("keep"));
+    ASSERT_TRUE(b.h.app->scenes()->open("counter"));
+    // The scene order is saved a little after it changes.
+    ASSERT_TRUE(wait_until([&] { return read_recents(b.h).count("counter") == 1; }, 3000));
+    wisp::core::Notification n;
+    n.source = "counter";
+    n.title = "t";
+    ASSERT_TRUE(notes->post(n, false));
+    ASSERT_TRUE(notes->post(n, false));
+    ASSERT_EQ(notes->unread_count(), 2u);
+
+    {
+        wisp::test::BusFlood flood(b.h.app->bus());
+        flood.hold();
+        confirm_delete(b.h, token, "counter");
+        ASSERT_TRUE(wait_until(
+            [&] { return !fs::exists(fs::path(b.h.root) / "scenes" / "counter"); }, 3000));
+        // remove() has reported "deleted" by the time its job is done.
+        ASSERT_TRUE(b.h.app->storage_worker()->drain(3000));
+        flood.flood(200);
+        flood.release();
+    }
+    ASSERT_TRUE(b.h.app->bus().wait_idle(3000));
+    // The bus lost the scene's "stopped" and "deleted" in the flood.
+    EXPECT_EQ(b.states("counter"), (std::vector<std::string>{"running"}));
+    EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return !agent_lists_tool(b.h, "counter.count"); }, 3000));
+    b.h.app->stop();
+    const std::map<std::string, int64_t> recents = read_recents(b.h);
+    EXPECT_EQ(recents.count("counter"), 0u);
+    EXPECT_EQ(recents.count("keep"), 1u);
+}
+
+// A scene opened while wisp.bus is held and flooded still comes to the
+// front of the scene order.
+TEST(AppScenes, OpenMovesTheSceneToTheFrontOfTheRecentsFlooded) {
+    Booted b;
+    put_scene(b.h.root, "a", "A", "return ui.screen { ui.label { text = 'a' } }");
+    put_scene(b.h.root, "b", "B", "return ui.screen { ui.label { text = 'b' } }");
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.h.app->scenes()->open("a"));
+    ASSERT_TRUE(wait_until([&] { return read_recents(b.h).count("a") == 1; }, 3000));
+    {
+        wisp::test::BusFlood flood(b.h.app->bus());
+        flood.hold();
+        ASSERT_TRUE(b.h.app->scenes()->open("b"));
+        flood.flood(200);
+        flood.release();
+    }
+    ASSERT_TRUE(b.h.app->bus().wait_idle(3000));
+    // The bus lost "b: running" in the flood.
+    EXPECT_TRUE(b.states("b").empty());
+    EXPECT_TRUE(wait_until(
+        [&] {
+            const std::map<std::string, int64_t> r = read_recents(b.h);
+            return r.count("a") == 1 && r.count("b") == 1 && r.at("b") > r.at("a");
+        },
+        3000));
+}
+
+// Restoring as many background scenes as the runtime keeps (kMaxBackground)
+// at boot leaves the scene lifecycle inbox room to spare.
+TEST(AppScenes, RestoringBackgroundScenesOverflowsNothing) {
+    Booted b;
+    std::string ids;
+    for (size_t i = 0; i < wisp::scene::kMaxBackground; ++i) {
+        const std::string id = "bg" + std::to_string(i);
+        const fs::path dir = fs::path(b.h.root) / "scenes" / id;
+        fs::create_directories(dir);
+        std::ofstream(dir / "scene.json") << R"({"id":")" << id << R"(","name":")" << id
+                                          << R"(","version":"1.0.0","schema_version":1,)"
+                                          << R"("background":true})";
+        std::ofstream(dir / "main.lua") << "return ui.screen { ui.label { text = 'x' } }";
+        ids += (ids.empty() ? "\"" : ",\"") + id + "\"";
+    }
+    const fs::path list = fs::path(b.h.root) / "system" / "scenes" / "background.json";
+    fs::create_directories(list.parent_path());
+    std::ofstream(list) << R"({"ids":[)" << ids << "]}";
+    LifecycleOverflowWarnings warnings;
+
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(wait_until(
+        [&] { return rt->background_scenes().size() == wisp::scene::kMaxBackground; }, 5000));
+    ASSERT_TRUE(wisp::test::slot_barrier(b.h.app->bus(), &b.h.app->bus()));
+    EXPECT_NE(b.h.app->dispatch_report().find("\ninbox scene_lifecycle overflows=0"),
+              std::string::npos)
+        << b.h.app->dispatch_report();
+    EXPECT_EQ(warnings.count.load(), 0u);
+}
+
+// More edges than the inbox holds while wisp.bus is held: the oldest are
+// dropped, counted in dispatch_report() and logged.
+TEST(AppScenes, LifecycleInboxOverflowIsReported) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(wisp::test::slot_barrier(b.h.app->bus(), &b.h.app->bus()));
+    LifecycleOverflowWarnings warnings;
+    {
+        wisp::test::BusFlood flood(b.h.app->bus());
+        flood.hold();
+        // 17 opens and closes: 34 edges into an inbox of 32.
+        for (int i = 0; i < 17; ++i) {
+            ASSERT_TRUE(b.h.app->scenes()->open("counter"));
+            ASSERT_TRUE(b.h.app->scenes()->close("counter"));
+        }
+        flood.release();
+    }
+    ASSERT_TRUE(b.h.app->bus().wait_idle(3000));
+    EXPECT_NE(b.h.app->dispatch_report().find("\ninbox scene_lifecycle overflows=2"),
+              std::string::npos)
+        << b.h.app->dispatch_report();
+    EXPECT_EQ(warnings.count.load(), 1u);
 }
 
 // A delete the user confirmed that cannot go ahead (the storage worker's

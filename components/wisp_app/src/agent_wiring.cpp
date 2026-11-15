@@ -15,7 +15,6 @@
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 
 namespace wisp::app {
 
@@ -332,21 +331,17 @@ void AgentWsBridge::on_event(const agent::AgentEvent& e) {
 
 // --- SceneToolIndexObserver ---
 
-SceneToolIndexObserver::SceneToolIndexObserver(core::EventBus& bus, core::StorageWorker& worker,
+SceneToolIndexObserver::SceneToolIndexObserver(core::StorageWorker& worker,
                                                core::SceneRepository& repo, agent::ToolIndex& index)
-    : bus_(bus),
-      worker_(worker),
+    : worker_(worker),
       repo_(repo),
       index_(index),
       refresh_state_(std::make_shared<RefreshState>()) {
     refresh_state_->repo = &repo_;
     refresh_state_->index = &index_;
-    subscription_ = bus_.subscribe(core::topics::kSceneState,
-                                   [this](const core::Event& event) { on_event(event); });
 }
 
 SceneToolIndexObserver::~SceneToolIndexObserver() {
-    if (subscription_ != 0) bus_.unsubscribe(subscription_);
     std::lock_guard<os::Mutex> lock(refresh_state_->mutex);
     refresh_state_->repo = nullptr;
     refresh_state_->index = nullptr;
@@ -359,8 +354,8 @@ void SceneToolIndexObserver::on_manifest(const core::SceneManifest& manifest) {
 Result<void> SceneToolIndexObserver::load_installed() {
     // manifests() reads each scene.json in a job of its own and parses it
     // here, on the caller (the agent's start), which may wait. An install
-    // or remove can land between two of those jobs, and its scene.state
-    // event may be handled before this applies the older manifest, so
+    // or remove can land between two of those jobs, and its lifecycle
+    // edge may be handled before this applies the older manifest, so
     // whatever the repository says changed meanwhile is read again by a
     // refresh() job queued after this.
     uint64_t since = 0;
@@ -375,27 +370,18 @@ Result<void> SceneToolIndexObserver::load_installed() {
     return Result<void>::ok();
 }
 
-void SceneToolIndexObserver::on_event(const core::Event& event) {
-    auto id = event.payload.find("id");
-    auto state = event.payload.find("state");
-    if (id == event.payload.end() || state == event.payload.end()) return;
-    if (id->second.type() != Value::Type::String || state->second.type() != Value::Type::String)
-        return;
-    const std::string& scene_id = id->second.as_string();
-    const std::string& scene_state = state->second.as_string();
-    if (scene_state == "deleted") {
+void SceneToolIndexObserver::on_transition(const scene::SceneTransition& t) {
+    const std::string scene_id = t.id.str();
+    if (t.state == scene::SceneTransition::State::Deleted) {
         index_.remove_scene(scene_id);
         return;
     }
-    // An install reaches the bus as "stopped" (a scene that was not running)
-    // or "running"/"background"/"error" after a scene that was reopened
-    // following its replace. A normal open and close publish the same states,
-    // so refresh() reads the manifest back from flash and is a no-op when
+    // An install arrives as Stopped (a scene that was not running) or
+    // Running/Background/Error after a scene that was reopened following
+    // its replace. A normal open and close report the same states, so
+    // refresh() reads the manifest back from flash and is a no-op when
     // nothing changed.
-    if (scene_state == "stopped" || scene_state == "running" || scene_state == "background" ||
-        scene_state == "headless" || scene_state == "error") {
-        refresh(scene_id);
-    }
+    refresh(scene_id);
 }
 
 void SceneToolIndexObserver::refresh(const std::string& scene_id) {
@@ -498,7 +484,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     service_->set_confirm(confirm_.get());
     const agent::ConfirmFn confirm = service_->confirm_fn();
     tool_index_observer_ =
-        std::make_unique<SceneToolIndexObserver>(deps_.bus, deps_.worker, deps_.repo, tool_index_);
+        std::make_unique<SceneToolIndexObserver>(deps_.worker, deps_.repo, tool_index_);
     workspace_ = std::make_unique<agent::SceneWorkspace>(agent::SceneWorkspaceDeps{
         .repo = deps_.repo,
         .runtime = deps_.runtime,
@@ -624,6 +610,10 @@ void AgentWiring::stop() {
     }
     bridge_->stop();
     attach_ws(nullptr);
+}
+
+void AgentWiring::on_scene_transition(const scene::SceneTransition& t) {
+    tool_index_observer_->on_transition(t);
 }
 
 void AgentWiring::attach_ws(admin::WsHub* hub) {

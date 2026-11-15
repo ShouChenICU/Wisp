@@ -226,12 +226,12 @@ struct AgentWiringDeps {
     agent::AgentConfig config{};
 };
 
-// Keeps scene tools in sync with installation and deletion events. Manifest
+// Keeps scene tools in sync with installation and deletion edges. Manifest
 // reads always run through StorageWorker; deletion only removes cached data.
 class SceneToolIndexObserver {
 public:
-    SceneToolIndexObserver(core::EventBus& bus, core::StorageWorker& worker,
-                           core::SceneRepository& repo, agent::ToolIndex& index);
+    SceneToolIndexObserver(core::StorageWorker& worker, core::SceneRepository& repo,
+                           agent::ToolIndex& index);
     ~SceneToolIndexObserver();
 
     SceneToolIndexObserver(const SceneToolIndexObserver&) = delete;
@@ -247,6 +247,11 @@ public:
     // wait (not the UI thread).
     Result<void> load_installed();
 
+    // One scene lifecycle edge (App's scene_lifecycle inbox, on wisp.bus):
+    // Deleted removes the scene's tools at once; every other state queues
+    // a refresh() on the worker. Memory work only; never waits.
+    void on_transition(const scene::SceneTransition& t);
+
 private:
     struct RefreshState {
         os::Mutex mutex;
@@ -254,15 +259,12 @@ private:
         agent::ToolIndex* index = nullptr;
     };
 
-    void on_event(const core::Event& event);
     void refresh(const std::string& scene_id);
 
-    core::EventBus& bus_;
     core::StorageWorker& worker_;
     core::SceneRepository& repo_;
     agent::ToolIndex& index_;
     std::shared_ptr<RefreshState> refresh_state_;
-    core::SubscriptionId subscription_ = 0;
 };
 
 class AgentWiring {
@@ -296,6 +298,10 @@ public:
     // Sends the agent frames to `hub` from now on (null: nowhere). The hub
     // must outlive stop() or the next attach_ws().
     void attach_ws(admin::WsHub* hub);
+    // SceneToolIndexObserver::on_transition(): App's scene_lifecycle inbox
+    // hands every scene lifecycle edge here, on wisp.bus, from before
+    // start() until it is destroyed in App::stop() before this object.
+    void on_scene_transition(const scene::SceneTransition& t);
 
 private:
     Value device_status();

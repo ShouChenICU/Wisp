@@ -4,7 +4,8 @@
 // opened first (MVP spec 6.4). Kept in <System>/shell/recents.json as
 //   {"version":1,"recent":{"<id>":<seq>, ...}}
 // where a larger seq is more recent. The App calls opened() on every
-// scene.state "running" and forget() on "deleted"; a factory reset removes
+// "running" scene lifecycle edge and forget() on "deleted" (on wisp.bus,
+// from its scene_lifecycle inbox); a factory reset removes
 // <System>/shell/ (and calls forget_all() first, so a save still pending
 // cannot write it back).
 //
@@ -49,9 +50,9 @@ public:
     // Writes a change still waiting for the timer. Flash.
     Result<void> flush();
 
-    // Scene `id` came to the front (scene.state running).
+    // Scene `id` came to the front (its "running" edge).
     void opened(const std::string& id);
-    // Scene `id` was deleted (scene.state deleted).
+    // Scene `id` was deleted (its "deleted" edge).
     void forget(const std::string& id);
     // Drops everything and saves nothing from now on (factory reset).
     void forget_all();
