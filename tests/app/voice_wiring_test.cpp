@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -226,6 +227,20 @@ TEST(AppVoice, BootWiresVoiceAndTalkKey) {
             return true;
         },
         5000));
+}
+
+// The talk key's inbox has its line in the dispatch report, after the
+// power key's; it goes with the voice.
+TEST(AppVoice, DispatchReportListsTheTalkKeyInbox) {
+    VoiceApp v(/*with_mic=*/true);
+    ASSERT_TRUE(v.start());
+    const std::string report = v.h->app->dispatch_report();
+    EXPECT_TRUE(std::regex_match(report, std::regex("^bus dropped=[0-9]+ cell_subs=[0-9]+\n"
+                                                    "inbox power_key overflows=0\n"
+                                                    "inbox talk_key overflows=0$")))
+        << report;
+    v.h->app->stop();
+    EXPECT_EQ(v.h->app->dispatch_report().find("talk_key"), std::string::npos);
 }
 
 TEST(AppVoice, NoMicStillBoots) {

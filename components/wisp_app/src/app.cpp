@@ -619,6 +619,8 @@ Result<void> App::start() {
             // WifiService.
             .network_expected = [impl] { return impl->net && impl->net->network_expected(); },
             .screen_on = [impl] { return impl->power_manager && !impl->power_manager->standby(); },
+            // App::stop() stops the voice before the buttons.
+            .buttons = &impl->buttons,
         });
         if (!impl_->voice) WLOG_E("app", "no memory for the voice; voice is off");
     }
@@ -1112,10 +1114,11 @@ void App::stop() {
     impl_->power_monitor.reset();
 
     // State-cell, inbox and button-listener owners rely on this order:
-    // shell -> duties -> power manager -> buttons -> ui -> bus, so button
-    // listeners are removed before ButtonService stops, UI-dispatched
-    // subscriptions and inboxes are released before the UI runtime goes
-    // and cells and inboxes before the bus (state_cell.hpp).
+    // voice (its talk key) -> shell -> duties -> power manager -> buttons
+    // -> ui -> bus, so button listeners are removed before ButtonService
+    // stops, UI-dispatched subscriptions and inboxes are released before
+    // the UI runtime goes and cells and inboxes before the bus
+    // (state_cell.hpp).
     impl_->buttons.stop();
     if (impl_->ui) {
         impl_->ui->stop();
@@ -1377,12 +1380,17 @@ const Platform& App::platform() const { return impl_->platform; }
 std::string App::dispatch_report() const {
     std::string report = "bus dropped=" + std::to_string(impl_->bus.dropped()) +
                          " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
-    // One line per inbox. The duties are built before the console task
-    // starts and destroyed after it stops (start(), stop()), so the
-    // console's `mem` never races them.
+    // One line per inbox. The duties and the voice are built before the
+    // console task starts and destroyed after it stops (start(), stop()),
+    // so the console's `mem` never races them.
     if (impl_->duties) {
         report +=
             "\ninbox power_key overflows=" + std::to_string(impl_->duties->power_key_overflows());
+    }
+    if (impl_->voice) {
+        if (std::optional<uint32_t> n = impl_->voice->talk_key_overflows()) {
+            report += "\ninbox talk_key overflows=" + std::to_string(*n);
+        }
     }
     return report;
 }

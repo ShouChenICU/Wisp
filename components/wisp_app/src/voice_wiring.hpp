@@ -4,7 +4,8 @@
 // over the platform's HTTP client, the PcmPlayer on the main speaker
 // (wisp.play), the VoiceService on the main mic (wisp.voice), the
 // ConversationController that joins it to the agent and, when a button's
-// caps "role" is "talk", the TalkKey on it.
+// caps "role" is "talk" and the deps give the ButtonService, the TalkKey on
+// it.
 //
 // App builds it with the agent (App::start(), right after build_agent())
 // and start()s it once the agent runs; stop() comes before the agent
@@ -25,6 +26,7 @@
 
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/base/result.hpp"
+#include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -57,6 +59,9 @@ struct VoiceWiringDeps {
     // voice::VoiceDeps::network_expected.
     std::function<bool()> network_expected;
     std::function<bool()> screen_on;
+    // The talk key listens to it (and must be outlived by it); null: no
+    // talk key.
+    core::ButtonService* buttons = nullptr;
 };
 
 class VoiceWiring {
@@ -77,6 +82,12 @@ public:
     voice::PcmPlayer& player() { return *player_; }
     // The talk key's button, if the board marked one.
     const std::optional<std::string>& talk_button() const { return talk_button_; }
+    // The talk key inbox's dropped edges (TalkKey::overflows()); nullopt
+    // without a talk key. Between start() and stop(), any thread.
+    std::optional<uint32_t> talk_key_overflows() const {
+        if (!talk_key_) return std::nullopt;
+        return talk_key_->overflows();
+    }
 
 private:
     VoiceWiringDeps deps_;

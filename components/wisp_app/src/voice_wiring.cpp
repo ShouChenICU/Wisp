@@ -86,9 +86,9 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .now_ms = os::now_ms,
     });
     talk_button_ = shell::find_talk_button(deps_.registry);
-    if (talk_button_) {
-        talk_key_ =
-            std::make_unique<shell::TalkKey>(deps_.bus, *talk_button_, *conv_, deps_.screen_on);
+    if (talk_button_ && deps_.buttons != nullptr) {
+        talk_key_ = std::make_unique<shell::TalkKey>(deps_.bus, *deps_.buttons, *talk_button_,
+                                                     *conv_, deps_.screen_on);
     }
 }
 
