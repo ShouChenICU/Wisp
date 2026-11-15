@@ -502,6 +502,41 @@ TEST(WifiService, ApClosesAfterTenIdleMinutes) {
     EXPECT_FALSE(ap[3].payload.at("active").as_bool());
 }
 
+// net.ap.state for each change of the client count, whole payloads and
+// source: {active, ssid, clients} as publish_ap_locked() built it before
+// the hotspot cell (clients as int; 0 once closed).
+TEST(WifiService, ApClientCountPayloadsArePinned) {
+    Fixture f;
+    auto& svc = f.make();
+    ASSERT_TRUE(svc.init(0));
+    ASSERT_TRUE(svc.start_provisioning(0));
+    f.wifi->ap_client_count = 1;
+    svc.tick(1000);
+    f.wifi->ap_client_count = 2;
+    svc.tick(2000);
+    svc.tick(3000);  // unchanged: no event
+    f.wifi->ap_client_count = 0;
+    svc.tick(4000);
+    ASSERT_TRUE(svc.stop_provisioning());
+    ASSERT_TRUE(f.bus.wait_idle(2000));
+
+    using wisp::Properties;
+    using wisp::Value;
+    auto ap = [](bool active, int clients) {
+        return Properties{{"active", Value(active)},
+                          {"ssid", Value(std::string("Wisp-3F2A"))},
+                          {"clients", Value(clients)}};
+    };
+    const std::vector<Properties> want{ap(true, 0), ap(true, 1), ap(true, 2), ap(true, 0),
+                                       ap(false, 0)};
+    std::vector<Properties> got;
+    for (const Event& e : f.topic(wisp::core::topics::kNetApState)) {
+        EXPECT_EQ(e.source, wisp::net::kWifiServiceSource);
+        got.push_back(e.payload);
+    }
+    EXPECT_EQ(got, want);
+}
+
 TEST(WifiService, ApLingersThirtySecondsAfterProvisionedConnect) {
     Fixture f;
     f.in_range("Home", -50, "homepass1");

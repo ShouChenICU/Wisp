@@ -965,3 +965,35 @@ TEST(FactoryReset, NeverRestartsWithoutErasing) {
     EXPECT_EQ(h.reboots.load(), 1);
     EXPECT_TRUE(app.wifi()->saved_ssids().empty());
 }
+
+// system.factory_reset "failed", whole payload and source: {state} as
+// publish_state() built it before the reset status cell, from "app".
+TEST(FactoryReset, FailedPayloadIsPinned) {
+    UiNetHarness h(UiNetOptions{});
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::StorageWorker* worker = app.storage_worker();
+    ASSERT_NE(worker, nullptr);
+
+    // The worker is stuck in a job and its queue is full, so the erase
+    // cannot start within its budget.
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto release = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(worker->submit([entered, release] {
+        entered->give();
+        release->take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered->take(2000));
+    while (worker->submit([] {})) {
+    }
+    wisp::app::set_reset_erase_budget(app, 300);
+    wisp::app::factory_reset(app);
+    ASSERT_TRUE(app.bus().wait_idle(2000));
+    std::vector<wisp::core::Event> events = h.topic("system.factory_reset");
+    release->give();
+    ASSERT_TRUE(worker->drain(5000));
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].source, "app");
+    EXPECT_EQ(events[0].payload, (wisp::Properties{{"state", wisp::Value("failed")}}));
+}

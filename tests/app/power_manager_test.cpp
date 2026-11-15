@@ -1301,6 +1301,33 @@ TEST(PowerManager, StateEventCarriesEveryLevel) {
     EXPECT_EQ(h.states(), (Strings{"dim", "standby", "deep_standby", "active"}));
 }
 
+// power.state for every level, whole payloads and source: {state} with
+// the level's name, as publish_state() built it before the level cell.
+TEST(PowerManager, StateEventPayloadsArePinned) {
+    // Before h, so they outlive its bus and the subscription.
+    std::mutex mu;
+    std::vector<wisp::Properties> payloads;
+    Headless h;
+    h.bus.subscribe("power.state", [&](const Event& e) {
+        EXPECT_EQ(e.source, wisp::app::kPowerManagerSource);
+        std::lock_guard<std::mutex> lock(mu);
+        payloads.push_back(e.payload);
+    });
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 50050);
+    h.pm->tick(t0 + 60050);
+    h.pm->tick(t0 + 60050 + 300000);
+    h.pm->exit_standby();
+    ASSERT_TRUE(h.bus.wait_idle(2000));
+    auto state = [](const char* name) {
+        return wisp::Properties{{"state", wisp::Value(std::string(name))}};
+    };
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(payloads, (std::vector<wisp::Properties>{state("dim"), state("standby"),
+                                                       state("deep_standby"), state("active")}));
+    EXPECT_STREQ(wisp::app::kPowerManagerSource, "app.power");
+}
+
 // The level cell follows every transition; a subscriber sees each level
 // its dispatcher runs after.
 TEST(PowerManager, LevelCellFollowsEveryTransition) {
