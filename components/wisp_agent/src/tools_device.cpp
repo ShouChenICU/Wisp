@@ -116,7 +116,7 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
                     d->submit_io,
                     [d, key, value]() -> Result<Change> {
                         Map was = agent_view(d->settings.get());
-                        WISP_TRY(d->settings.set({{key, value}}));
+                        WISP_TRY(d->settings.set({{key, value}}, core::SettingSurface::Agent));
                         Map now = agent_view(d->settings.get());
                         return Result<Change>::ok(Change{was[key], now[key]});
                     },

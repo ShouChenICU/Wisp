@@ -60,15 +60,14 @@ net::HttpResponse get_settings(AdminDeps& deps, const RequestContext&) {
     return net::HttpResponse::json(200, Value(core::to_map(deps.settings.get())));
 }
 
-// Any subset of the integers brightness, volume, screen_off_s and
-// utc_offset_min and the string language ("zh"/"ja"/"en"); SystemSettings
-// rejects unknown keys, wrong types and out-of-range values for the whole
-// batch.
+// Any subset of the keys GET /settings lists (the schema rows flagged
+// kSettingWeb); SystemSettings rejects other keys (the store-only ones
+// included), wrong types and out-of-range values for the whole batch.
 net::HttpResponse put_settings(AdminDeps& deps, const RequestContext& ctx) {
     if (ctx.body.type() != Value::Type::Map) {
         return bad_request("body must be a JSON object");
     }
-    auto r = deps.settings.set(ctx.body.as_map());
+    auto r = deps.settings.set(ctx.body.as_map(), core::SettingSurface::Web);
     if (!r) return service_error(r.error());
     return net::HttpResponse::json(200, Value(core::to_map(deps.settings.get())));
 }

@@ -815,7 +815,9 @@ Result<void> App::start() {
             .settings = [impl] { return impl->system_settings.cell().get(); },
             .set_settings =
                 [impl](std::map<std::string, Value> changes) {
-                    if (auto r = impl->system_settings.set(changes); !r)
+                    if (auto r =
+                            impl->system_settings.set(changes, core::SettingSurface::DevicePage);
+                        !r)
                         WLOG_W("app", "setting not stored: %s", r.error().message.c_str());
                 },
             .wifi_status = [this]() -> std::string {

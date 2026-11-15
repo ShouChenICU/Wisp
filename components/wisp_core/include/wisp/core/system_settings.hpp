@@ -77,6 +77,27 @@ inline constexpr int64_t kDefaultAgentTurnMin = setting_default_int(SettingId::A
 inline constexpr int64_t kMinAgentTurnMin = setting_spec(SettingId::AgentTurnMin).min;
 inline constexpr int64_t kMaxAgentTurnMin = setting_spec(SettingId::AgentTurnMin).max;
 
+// Who asks SystemSettings::set() to write: each surface may write only the
+// rows that carry its flag (settings-schema spec 3.4). Internal callers (App
+// itself, boot code, tests) write any row, the store-only ones included.
+enum class SettingSurface : uint8_t { Internal, Agent, Web, DevicePage };
+
+// The row flag a surface needs to write a key; 0 for Internal, which is not
+// checked.
+constexpr uint8_t surface_flag(SettingSurface s) {
+    switch (s) {
+        case SettingSurface::Agent:
+            return kSettingAgent;
+        case SettingSurface::Web:
+            return kSettingWeb;
+        case SettingSurface::DevicePage:
+            return kSettingDevicePage;
+        case SettingSurface::Internal:
+            break;
+    }
+    return 0;
+}
+
 // Event::source of system.settings: App published it before the cell did.
 inline constexpr char kSystemSettingsSource[] = "app";
 
@@ -113,14 +134,16 @@ public:
     void seed_cell();
 
     // Keys are the schema rows' names; each value must pass the row's
-    // valid_setting(). An unknown key, a value of the wrong type or an out-of-range value fails
-    // the whole batch with InvalidArgument before anything is written. If the backend fails
+    // valid_setting(). An unknown key, a key `from` may not write (its row lacks
+    // surface_flag(from); reported as unknown), a value of the wrong type or an out-of-range value
+    // fails the whole batch with InvalidArgument before anything is written. If the backend fails
     // partway, the keys already written are restored (best effort) and the backend's error
     // returned; apply_brightness and the event only happen once the whole batch is stored. When a
     // restore fails too, the cell is reseeded from what storage then holds (no event), so it never
     // stays behind storage. Every stored batch publishes exactly one system.settings event, after
     // apply_brightness.
-    Result<void> set(const std::map<std::string, Value>& changes);
+    Result<void> set(const std::map<std::string, Value>& changes,
+                     SettingSurface from = SettingSurface::Internal);
 
 private:
     // get(), logging each present but invalid stored value when `log_invalid`.

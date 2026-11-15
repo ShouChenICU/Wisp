@@ -93,10 +93,14 @@ SettingsSnapshot SystemSettings::read_store(bool log_invalid) const {
     return values;
 }
 
-Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
+Result<void> SystemSettings::set(const std::map<std::string, Value>& changes, SettingSurface from) {
+    const uint8_t needed = surface_flag(from);
     for (const auto& [name, value] : changes) {
         const SettingSpec* spec = find_setting(name);
-        if (spec == nullptr) {
+        // A key outside the caller's surface answers as an unknown one: the
+        // surface's key list is the table filtered by its flag, so to that
+        // caller the key does not exist.
+        if (spec == nullptr || (needed != 0 && (spec->flags & needed) == 0)) {
             return Result<void>::err(ErrorCode::InvalidArgument, "unknown setting: " + name);
         }
         if (!valid_setting(*spec, value)) {

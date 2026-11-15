@@ -489,6 +489,27 @@ TEST(Routes, SettingsErrorBodiesAreUnchanged) {
     }
 }
 
+// The store-only keys are not the web's to write, nor to read.
+TEST(Routes, SettingsPutRefusesStoreOnlyKeys) {
+    AdminFixture f;
+    const std::string token = f.token();
+    const Value before = body_json(f.srv->handle(authed(token, Get, "/api/v1/settings")));
+
+    HttpResponse r =
+        f.srv->handle(authed(token, Put, "/api/v1/settings", R"({"low_batt_pct":20})"));
+    EXPECT_EQ(r.status, 400);
+    EXPECT_EQ(wisp::test::body_text(r),
+              R"({"error":{"code":"invalid_argument","message":"unknown setting: low_batt_pct"}})");
+
+    const Value after = body_json(f.srv->handle(authed(token, Get, "/api/v1/settings")));
+    EXPECT_EQ(after, before);
+    ASSERT_EQ(after.type(), Value::Type::Map);
+    EXPECT_EQ(after.as_map().count("low_batt_pct"), 0u);
+    EXPECT_EQ(after.as_map().count("perf_overlay"), 0u);
+    EXPECT_EQ(f.settings->get().low_batt_pct,
+              wisp::core::setting_default_int(wisp::core::SettingId::LowBattPct));
+}
+
 TEST(Routes, ClientsListMarksCurrent) {
     AdminFixture f;
     const std::string mine = f.token();

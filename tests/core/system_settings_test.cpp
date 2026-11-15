@@ -832,3 +832,65 @@ TEST(SettingsGolden, EventPayloadIsTheMapOfTheStoredValues) {
     ASSERT_FALSE(changed.empty());
     EXPECT_EQ(changed.back(), wisp::core::to_map(fx.settings.get()));
 }
+
+// Each surface writes only the keys whose row carries its flag; a key it may
+// not write reads to it as an unknown one, and the two store-only keys
+// (low_batt_pct, perf_overlay) are refused from every surface. Internal
+// callers (App, tests) write any key.
+TEST(SystemSettings, SurfaceRefusesKeysOutsideItsFlags) {
+    using wisp::core::SettingSurface;
+    Fixture fx;
+    const SystemSettingsValues before = fx.settings.get();
+
+    auto refused = [&fx](const std::map<std::string, Value>& changes, SettingSurface from,
+                         const std::string& name) {
+        auto r = fx.settings.set(changes, from);
+        ASSERT_FALSE(r) << name;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << name;
+        EXPECT_EQ(r.error().message, "unknown setting: " + name);
+    };
+    refused({{"low_batt_pct", 20}}, SettingSurface::Web, "low_batt_pct");
+    refused({{"perf_overlay", true}}, SettingSurface::Web, "perf_overlay");
+    refused({{"deep_after_s", 600}}, SettingSurface::Agent, "deep_after_s");
+    refused({{"agent_max_steps", 100}}, SettingSurface::Agent, "agent_max_steps");
+    refused({{"ntp_servers", "a.b"}}, SettingSurface::Agent, "ntp_servers");
+    refused({{"agent_max_steps", 100}}, SettingSurface::DevicePage, "agent_max_steps");
+    refused({{"ntp_servers", "a.b"}}, SettingSurface::DevicePage, "ntp_servers");
+    // A refused key fails the whole batch, the keys the surface may write
+    // included.
+    refused({{"brightness", 120}, {"low_batt_pct", 20}}, SettingSurface::Web, "low_batt_pct");
+
+    // A refused batch writes nothing and publishes nothing.
+    EXPECT_EQ(fx.settings.get(), before);
+    EXPECT_TRUE(fx.changed().empty());
+    EXPECT_TRUE(fx.applied.empty());
+
+    ASSERT_TRUE(fx.settings.set({{"brightness", 100},
+                                 {"volume", 30},
+                                 {"screen_off_s", 300},
+                                 {"language", "ja"},
+                                 {"utc_offset_min", -210},
+                                 {"ntp_servers", "10.0.0.1"},
+                                 {"deep_after_s", 600},
+                                 {"notify_vol", 40},
+                                 {"tts_mute", true},
+                                 {"time_24h", false},
+                                 {"agent_max_steps", 120},
+                                 {"agent_turn_min", 30}},
+                                SettingSurface::Web));
+    auto v = fx.settings.get();
+    EXPECT_EQ(v.brightness, 100);
+    EXPECT_EQ(v.agent_turn_min, 30);
+    EXPECT_TRUE(v.tts_mute);
+
+    ASSERT_TRUE(fx.settings.set({{"brightness", 120}}, SettingSurface::Agent));
+    EXPECT_EQ(fx.settings.get().brightness, 120);
+    ASSERT_TRUE(fx.settings.set({{"tts_mute", false}}, SettingSurface::DevicePage));
+    EXPECT_FALSE(fx.settings.get().tts_mute);
+
+    ASSERT_TRUE(fx.settings.set({{"perf_overlay", true}}, SettingSurface::Internal));
+    ASSERT_TRUE(fx.settings.set({{"low_batt_pct", 20}}));
+    v = fx.settings.get();
+    EXPECT_TRUE(v.perf_overlay);
+    EXPECT_EQ(v.low_batt_pct, 20);
+}
