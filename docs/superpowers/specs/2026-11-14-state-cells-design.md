@@ -276,6 +276,8 @@ Alternatives rejected for the type:
 | agent | `agent::AgentStatus{state, tool, errors}` | `AgentService` `set_state()` | `agent.state` (`errors` not on the wire) |
 | voice | `voice::VoiceStatus{state, outcome, reason, outcomes}` | `VoiceService::publish()` for state changes only | `voice.state` without `level` |
 
+> In the code: the scenes cell is `scene::SceneOverview{foreground, background_count, headless, catalog}`. `background_count` counts the entries of the background list only (never the scene in front), and `headless` counts the running headless scene (0 or 1). A headless scene sent to the background changes both fields, so the cell moves; with one summed count it would stay equal and a follower of the cell would keep a stale background list.
+
 Decisions in this table that are not mechanical:
 
 - **Transients become counted outcomes.** `AgentStatus::errors` increments each time the agent enters `error`; `VoiceStatus::outcomes` increments with each `error` (with `reason`) or `idle` with `result = not_heard`. A subscriber that coalesced `error → idle` into `idle` still sees the counter move and shows the hint (Home `error_at_`, `home.cpp:476-483`; ConversationController, `conversation.cpp:481-496`). Rejected: an inbox per transient (two mechanisms for one status) and "never coalesce these cells" (that is the bus again).

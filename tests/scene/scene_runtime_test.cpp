@@ -576,11 +576,15 @@ TEST_F(SceneRuntimeTest, OverviewFollowsTheForegroundAndTheBackground) {
     auto overview = [&] { return rt->overview().get(); };
     EXPECT_TRUE(overview().foreground.empty());
     EXPECT_EQ(overview().background_count, 0u);
+    EXPECT_EQ(overview().background_count, rt->background_scenes().size());
+    EXPECT_EQ(overview().headless, 0u);
 
     ASSERT_TRUE(rt->open("a"));
     EXPECT_EQ(overview().foreground.view(), "a");
     EXPECT_EQ(rt->foreground(), std::optional<std::string>("a"));
     EXPECT_EQ(overview().background_count, 0u);
+    EXPECT_EQ(overview().background_count, rt->background_scenes().size());
+    EXPECT_EQ(overview().headless, 0u);
 
     // Back: a declares "background", so it goes there.
     ASSERT_TRUE(rt->close("a"));
@@ -588,6 +592,7 @@ TEST_F(SceneRuntimeTest, OverviewFollowsTheForegroundAndTheBackground) {
     EXPECT_TRUE(overview().foreground.empty());
     EXPECT_EQ(overview().background_count, 1u);
     EXPECT_EQ(rt->background_scenes().size(), 1u);
+    EXPECT_EQ(overview().headless, 0u);
 
     // exit() answers once the final flush has run, which can be before the
     // scene task drops the slot from the list: wait for the query, then the
@@ -596,6 +601,8 @@ TEST_F(SceneRuntimeTest, OverviewFollowsTheForegroundAndTheBackground) {
     ASSERT_TRUE(wait_until([&] { return rt->background_scenes().empty(); }, 1000));
     EXPECT_TRUE(overview().foreground.empty());
     EXPECT_EQ(overview().background_count, 0u);
+    EXPECT_EQ(overview().background_count, rt->background_scenes().size());
+    EXPECT_EQ(overview().headless, 0u);
     // Nothing was installed or deleted.
     EXPECT_EQ(overview().catalog, 0u);
 }

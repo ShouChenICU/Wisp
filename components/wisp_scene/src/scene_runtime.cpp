@@ -1820,21 +1820,25 @@ void SceneRuntime::refresh_overview_locked() {
     // disagree. A scene coming forward (resume()) is still on background_
     // until update_background_list() runs next: the one in front is never
     // counted, which at rest changes nothing (no scene is in both).
-    size_t out_of_sight = 0;
+    size_t in_back = 0;
     for (const BackgroundScene& b : background_)
-        if (!foreground_id_ || b.id != *foreground_id_) ++out_of_sight;
-    // A headless scene is on no background list (file header) but runs
-    // out of sight all the same.
+        if (!foreground_id_ || b.id != *foreground_id_) ++in_back;
+    // A headless scene is on no background list (file header): counted
+    // apart, so one sent to the background changes both counts instead of
+    // leaving their sum, and the cell, where they were.
+    size_t headless = 0;
     for (const auto& s : slots_)
-        if (s->headless && s->scene) ++out_of_sight;
+        if (s->headless && s->scene) ++headless;
     FixedString<32> front;
     if (foreground_id_ && !front.assign(*foreground_id_))
         WLOG_W(kTag, "%s: id cut in the scenes overview", foreground_id_->c_str());
-    const auto count = static_cast<uint16_t>(out_of_sight);
+    const auto count = static_cast<uint16_t>(in_back);
+    const auto running_headless = static_cast<uint8_t>(headless);
     // An equal value is no change: nothing a follower could miss.
     overview_.update([&](SceneOverview& o) {
         o.foreground = front;
         o.background_count = count;
+        o.headless = running_headless;
     });
 }
 

@@ -232,9 +232,11 @@ TEST_F(SceneBackground, OverviewFollowsResumeStandbyAndStop) {
     ASSERT_TRUE(rt->open("b"));
     EXPECT_EQ(front(), "b");
     EXPECT_EQ(back(), 1u);
+    EXPECT_EQ(back(), rt->background_scenes().size());
     ASSERT_TRUE(rt->open("a"));
     EXPECT_EQ(front(), "a");
     EXPECT_EQ(back(), 1u);
+    EXPECT_EQ(back(), rt->background_scenes().size());
     EXPECT_EQ(background_ids(), (std::vector<std::string>{"b"}));
 
     // Its first on_hide was when b came forward.
@@ -247,9 +249,11 @@ TEST_F(SceneBackground, OverviewFollowsResumeStandbyAndStop) {
     ASSERT_TRUE(rt->close("a"));
     EXPECT_EQ(front(), "");
     EXPECT_EQ(back(), 2u);
+    EXPECT_EQ(back(), rt->background_scenes().size());
     rt->stop();
     EXPECT_EQ(front(), "");
     EXPECT_EQ(back(), 0u);
+    EXPECT_EQ(back(), rt->background_scenes().size());
 }
 
 TEST_F(SceneBackground, BackgroundUpdatesTreeWithoutRendering) {

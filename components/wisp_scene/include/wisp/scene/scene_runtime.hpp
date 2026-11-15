@@ -390,9 +390,12 @@ struct SceneOverview {
     // foreground() gives it; empty when none. Ids are at most
     // core::kMaxSceneIdBytes.
     FixedString<32> foreground;
-    // The scenes running out of sight: background_scenes() and the
-    // headless scene, if one runs.
+    // The entries of background_scenes(), never the scene in front.
     uint16_t background_count = 0;
+    // The headless scenes running (0 or 1: a second closes the first).
+    // On no background list, so counted apart: a headless scene sent to
+    // the background moves both fields, and the cell with them.
+    uint8_t headless = 0;
     // Moves on every install, replace and delete of a package (also one
     // that failed after it changed what is stored); wraps. Dev-mode file
     // edits and a card coming or going do not move it: a follower that
@@ -943,8 +946,8 @@ private:
     void update_background_list();
     // With status_mu_ held, on the scene task, in the same hold as every
     // write of foreground_id_ and background_: brings the overview's
-    // foreground and background_count to them and the headless slot,
-    // leaving its catalog alone.
+    // foreground, background_count and headless to them and the headless
+    // slot, leaving its catalog alone.
     void refresh_overview_locked();
     void hide_scenes();
     void show_scene(bool screen_came_on);
@@ -1090,7 +1093,7 @@ private:
     std::vector<BackgroundScene> background_;
     // id -> instance of every slot, for scene_instance().
     std::map<std::string, uint32_t, std::less<>> slot_instances_;
-    // foreground and background_count are set with status_mu_ held (lock
+    // foreground and the two counts are set with status_mu_ held (lock
     // order status_mu_ -> the cell), catalog from any thread; all through
     // update(), so neither undoes the other. Declared after deps_, whose
     // bus its constructor takes.

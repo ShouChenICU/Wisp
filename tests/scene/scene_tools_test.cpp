@@ -210,8 +210,8 @@ TEST_F(CallTool, OnlyOneHeadless) {
     EXPECT_EQ(count_log("a", "close"), 1u);
 }
 
-// A headless scene is on no background list, but the overview counts it
-// as running out of sight.
+// A headless scene is on no background list; the overview counts it on
+// its own, apart from the background list.
 TEST_F(CallTool, HeadlessCountsInTheOverview) {
     start();
     install_notes();
@@ -219,19 +219,23 @@ TEST_F(CallTool, HeadlessCountsInTheOverview) {
     ASSERT_TRUE(call("notes", "get").ok);
     ASSERT_EQ(rt->status("notes").state, SceneState::Headless);
     EXPECT_TRUE(overview().foreground.empty());
-    EXPECT_EQ(overview().background_count, 1u);
+    EXPECT_EQ(overview().headless, 1u);
+    EXPECT_EQ(overview().background_count, 0u);
     EXPECT_TRUE(rt->background_scenes().empty());
     // exit() answers once the final flush has run, which can be before the
     // scene task drops the slot: wait for the state the slot's end sets.
     ASSERT_TRUE(rt->exit("notes"));
     ASSERT_TRUE(wait_until([&] { return wisp::scene::scene_instance(*rt, "notes") == 0; }, 1000));
+    EXPECT_EQ(overview().headless, 0u);
     EXPECT_EQ(overview().background_count, 0u);
 
     ASSERT_TRUE(call("notes", "get").ok);
-    EXPECT_EQ(overview().background_count, 1u);
+    EXPECT_EQ(overview().headless, 1u);
     ASSERT_TRUE(rt->open("notes"));
     EXPECT_EQ(overview().foreground.view(), "notes");
+    EXPECT_EQ(overview().headless, 0u);
     EXPECT_EQ(overview().background_count, 0u);
+    EXPECT_EQ(overview().background_count, rt->background_scenes().size());
 }
 
 TEST_F(CallTool, OpenWhileHeadless) {
@@ -456,6 +460,29 @@ TEST_F(CallTool, BootOfHeadlessGoesToBackground) {
     std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs + 300));
     EXPECT_EQ(rt->status("bgn").state, SceneState::Background);
     EXPECT_EQ(rt->status("bgo").state, SceneState::Background);
+}
+
+// A headless scene sent to the background moves the overview: it leaves
+// the headless count and joins the background list, which a follower
+// that refreshes its list on this cell must see.
+TEST_F(CallTool, HeadlessToBackgroundMovesTheOverview) {
+    start();
+    install("bgo", kNotes, {{"scene.json", tools_manifest("bgo", R"(,"background":true)")}});
+    auto overview = [&] { return rt->overview().get(); };
+    ASSERT_TRUE(call("bgo", "get").ok);
+    ASSERT_EQ(rt->status("bgo").state, SceneState::Headless);
+    EXPECT_EQ(overview().headless, 1u);
+    EXPECT_EQ(overview().background_count, 0u);
+    EXPECT_EQ(overview().background_count, rt->background_scenes().size());
+    const uint32_t before = rt->overview().revision();
+
+    ASSERT_TRUE(rt->open_background("bgo"));
+    ASSERT_EQ(rt->status("bgo").state, SceneState::Background);
+    EXPECT_EQ(rt->overview().revision(), before + 1);
+    EXPECT_EQ(overview().headless, 0u);
+    EXPECT_EQ(overview().background_count, 1u);
+    EXPECT_EQ(overview().background_count, rt->background_scenes().size());
+    EXPECT_TRUE(overview().foreground.empty());
 }
 
 TEST_F(CallTool, SceneClosedWhileAwaiting) {
