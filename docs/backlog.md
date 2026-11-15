@@ -48,9 +48,7 @@ Source: `feat/scene-device` review records.
   - a firmware downgrade drops a pending migration journal.
 - `restore_background` only logs when the worker is busy.
 - On power loss during a reinstall, a background scene can drop out of the list.
-- Tests:
-  - several negative assertions are sleep-based;
-  - `AppScenes.SelfCheckResyncsAfterAFaultedPanelCloses` takes about 30 s.
+- Tests: several negative assertions are sleep-based.
 
 ## 3b-1 device checks not run in the smoke pass
 
@@ -323,6 +321,16 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-3-subscribers.md`. Simula
 
 - NOT RUN: `WISP_PERF` on Home while listening and while speaking: the wisp's level animation is smooth at about 20 Hz (Home's timer runs every 50 ms then and passes only the level on between full refreshes), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
 - NOT RUN: `WISP_PERF` with the talk overlay up over a sub-page or a scene while listening and while speaking: its level bar animates at about 20 Hz while it shows Listening (the shell's timer runs every 50 ms then and moves only the bar, no full `update_talk()`), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
+
+## State cell subscribers parked review findings
+
+Notes for the next state-cell plan (removing the periodic compensations).
+
+- `PowerSupply` has no `known` flag: after a failed read the supply cell keeps the last good sample, so NetWiring's powered-Wi-Fi check reads `PowerMonitor::last_status()` instead of the cell. A `known` flag (false after a failed read) would let followers read only the cell and be woken by a failed read.
+- The UI-thread `sync_wifi()`/`sync_pairing()` of the system duties take the Wi-Fi and pairing services' mutexes, which are held across driver calls and persistence; read the snapshot cells instead.
+- When the system duties' start-time sync goes, a test must show that the reset status cell's initial delivery alone opens the factory-reset dialog.
+- `reset_status` survives `App::stop()`/`start()`; once the dialog opens on `seq` alone, the last run's request would reopen it (reset it to idle in `stop()`).
+- The voice status cell carries no capture id: a late outcome of capture N can mark capture N+1.
 
 ## CI speed
 

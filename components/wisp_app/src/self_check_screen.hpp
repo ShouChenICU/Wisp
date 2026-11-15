@@ -212,8 +212,9 @@ private:
 
     SelfCheckSampler sampler_;
 
-    // --- Subscriptions, all released by ~SelfCheck() on the UI thread,
-    // before App::stop() resets their owners. ---
+    // --- Subscriptions, all released at the start of ~SelfCheck() (the
+    // cells first thing, the button after the sampler stops), before
+    // App::stop() resets their owners. ---
     core::SubscriptionId button_sub_ = 0;
     // PowerManager::level_cell(), on wisp.bus: the sampler's standby flag
     // (memory only), off the UI thread.

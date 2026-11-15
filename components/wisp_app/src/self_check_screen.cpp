@@ -445,8 +445,9 @@ void SelfCheck::refresh_time_sync() {
 }
 
 void SelfCheck::follow_foreground() {
-    // Read live rather than from the event: the last event of a burst
-    // leaves the right answer even if an earlier one was dropped.
+    // Read live from the runtime, so the start and the periodic resync,
+    // which have no overview in hand, give the same answer as the
+    // overview cell's callback.
     scene::SceneRuntime* rt = app_.scenes();
     sampler_.set_covered(rt != nullptr && rt->foreground().has_value());
 }

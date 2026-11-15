@@ -275,6 +275,7 @@ public:
     // model request in flight. Null (the default): no cell. Set it before
     // start(); stop() releases the subscription, so the cell must outlive
     // only the started service (App stops the agent before networking).
+    // The cell is read only between start() and stop().
     void set_wifi(const core::StateCell<net::WifiSnapshot>* cell);
     // The ConfirmFn for the tools: on wisp.agent it puts the agent in
     // WaitingConfirm, emits Confirm(text), asks (cancelled by the turn's

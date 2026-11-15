@@ -419,7 +419,9 @@ void Home::set_conversation(ConversationController* conv) {
             [this, outcomes = voice.get().outcomes](const voice::VoiceStatus& v) mutable {
                 voice_state_.store(v.state);
                 // The count, as for the agent: an error that is idle again
-                // by this call still shows.
+                // by this call still shows. Only the last outcome is kept,
+                // so an Error coalesced with a later NotHeard reads as
+                // NotHeard (that takes two captures).
                 if (v.outcomes != outcomes) {
                     outcomes = v.outcomes;
                     if (v.outcome == voice::VoiceStatus::Outcome::Error) note_error();

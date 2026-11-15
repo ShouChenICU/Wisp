@@ -25,11 +25,11 @@
 // todos that can still ring, at most kMaxArmMs ahead (so a clock change
 // the scheduler missed is caught within that), and it is armed again after
 // every change, every fire and every sync the time-sync cell reports (see
-// start()). The timer callback
-// only queues fire_due() on the storage worker (submit_io): firing writes
-// the file. The timer is one-shot, so a pass the worker refuses (its queue
-// full) would leave nothing armed: a refused pass starts a second timer
-// that asks again every kRetryMs until a pass runs.
+// start()). The timer callback only queues fire_due() on the storage
+// worker (submit_io): firing writes the file. The timer is one-shot, so a
+// pass the worker refuses (its queue full) would leave nothing armed: a
+// refused pass starts a second timer that asks again every kRetryMs until
+// a pass runs.
 //
 // fire_due() goes through every todo whose effective time has come:
 //  - one at most kLateS late rings: a notification from kReminderSource,
