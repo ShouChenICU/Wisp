@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <span>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/base/base64.hpp"
@@ -20,6 +21,9 @@
 #include "wisp/os/large.hpp"
 
 namespace wisp::net {
+
+static_assert(std::is_trivially_copyable_v<PairingSnapshot>,
+              "a set() of the pairing state must not allocate");
 
 namespace {
 

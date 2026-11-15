@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <span>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/base/error.hpp"
@@ -15,6 +16,10 @@
 #include "wisp/os/large.hpp"
 
 namespace wisp::net {
+
+static_assert(std::is_trivially_copyable_v<WifiSnapshot>,
+              "a set() of the station must not allocate");
+static_assert(std::is_trivially_copyable_v<ApSnapshot>, "a set() of the hotspot must not allocate");
 
 namespace {
 

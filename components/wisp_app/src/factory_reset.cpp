@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "app_impl.hpp"
@@ -19,6 +20,8 @@
 #include "wisp/os/os.hpp"
 
 namespace wisp::app {
+
+static_assert(std::is_trivially_copyable_v<ResetStatus>, "a set() of the status must not allocate");
 
 namespace {
 

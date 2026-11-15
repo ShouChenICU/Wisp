@@ -1,6 +1,7 @@
 #include "wisp/core/power_monitor.hpp"
 
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/base/error.hpp"
@@ -8,6 +9,8 @@
 #include "wisp/core/topics.hpp"
 
 namespace wisp::core {
+
+static_assert(std::is_trivially_copyable_v<PowerSupply>, "a set() of the supply must not allocate");
 
 namespace {
 
