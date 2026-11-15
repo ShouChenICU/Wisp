@@ -48,3 +48,14 @@ TEST(Occupancy, SharedAndExclusive) {
     EXPECT_STREQ(wisp::core::to_string(OccupancyMode::Shared), "shared");
     EXPECT_STREQ(wisp::core::to_string(OccupancyMode::Exclusive), "exclusive");
 }
+
+TEST(Occupancy, ExclusiveHolder) {
+    OccupancyRegistry reg([] { return uint64_t{0}; });
+    EXPECT_EQ(reg.exclusive_holder("haptic.main"), "");
+    ASSERT_TRUE(reg.acquire("haptic.main", "scene.a", OccupancyMode::Shared));
+    EXPECT_EQ(reg.exclusive_holder("haptic.main"), "");
+    reg.release("haptic.main", "scene.a");
+    ASSERT_TRUE(reg.acquire("haptic.main", "scene.b", OccupancyMode::Exclusive));
+    EXPECT_EQ(reg.exclusive_holder("haptic.main"), "scene.b");
+    EXPECT_EQ(reg.exclusive_holder("led.main"), "");
+}

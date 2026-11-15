@@ -1,11 +1,14 @@
 #pragma once
 
 // Portable storage manager: tiered System/Library/Backup logical areas on
-// top of the two fixed storage devices every board registers --
-// "storage.int" (always-present internal flash, LittleFS on the ESP port)
-// and, optionally, "storage.sd" (a removable SD card, FAT on the ESP
-// port). See AGENTS.md's storage rule: every persistent write in Wisp goes
-// through write_atomic() here, never a raw fopen/fwrite elsewhere.
+// top of the two storage media a board registers, found by role
+// (wisp/hal/roles.hpp) rather than by id -- the one with role "internal"
+// (always-present internal flash, LittleFS on the ESP port) and,
+// optionally, the one with role "removable" (an SD card, FAT on the ESP
+// port). Comments here call them storage.int and storage.sd after their
+// usual ids; a board may name them otherwise. See AGENTS.md's storage
+// rule: every persistent write in Wisp goes through write_atomic() here,
+// never a raw fopen/fwrite elsewhere.
 //
 // Area root rules (spec 7.2):
 //   System  = [<int>/system]
@@ -191,6 +194,8 @@ struct MediaStatus {
     bool online = false;
     uint64_t total_bytes = 0;
     uint64_t free_bytes = 0;
+    // The medium found by role "removable" (the card), whatever its id.
+    bool removable = false;
 };
 
 struct StorageStatus {
@@ -216,14 +221,15 @@ public:
     StorageManager(const StorageManager&) = delete;
     StorageManager& operator=(const StorageManager&) = delete;
 
-    // Looks up "storage.int" (required) and "storage.sd" (optional) in the
-    // registry, and creates the area roots that should exist right now:
+    // Looks up the storage with role "internal" (required) and the one
+    // with role "removable" (optional) in the registry, and creates the
+    // area roots that should exist right now:
     // <int>/system, <int>/library always; <sd>/wisp/library and
     // <sd>/wisp/backup if storage.sd is present and currently online().
     // Fails with ErrorCode::StorageUnavailable (without creating anything,
     // and leaving every other method returning StorageUnavailable/empty
-    // roots -- see roots()/write_atomic()/read_file() below) if
-    // "storage.int" isn't registered -- every board must have one, so its
+    // roots -- see roots()/write_atomic()/read_file() below) if no
+    // storage has role "internal" -- every board must have one, so its
     // absence means storage is unusable, not merely degraded. A failure
     // to create <int>'s directories (e.g. a read-only internal
     // filesystem, or a non-directory file already sitting at that path --
@@ -369,16 +375,17 @@ public:
     // I/O) and every path before init() has succeeded. No file work.
     Medium medium_of(const std::string& path) const;
 
-    // Whether "storage.sd" is registered, as of the last successful
+    // Whether a removable medium is registered, as of the last successful
     // init(); false before it.
     bool has_sd() const;
 
-    // Re-probes storage.sd's online() state and, on a change since the
+    // Re-probes the removable medium's online() state and, on a change since the
     // last init()/refresh(), (re)creates its area roots (on an
     // offline->online transition; a creation failure only logs a warning,
     // same as init() -- see its doc comment) and publishes
-    // "storage.sd.inserted" or "storage.sd.removed" (source "storage.sd")
-    // accordingly. A no-op if "storage.sd" isn't registered, or if its
+    // "storage.sd.inserted" or "storage.sd.removed" (source: the card's
+    // own id; the topics keep their names whatever the id) accordingly.
+    // A no-op without a removable medium, or if its
     // online() state hasn't changed since the last call -- see the file
     // header's note on what that means for a card inserted and removed
     // between two polls. Intended to be called periodically (e.g. by a 2s
@@ -395,10 +402,10 @@ public:
     // (SceneWiring::storage_status_async() in wisp_app).
     StorageStatus status() const;
 
-    // Forwards to storage.sd's hal::Storage::set_standby() (a no-op if "storage.sd"
-    // isn't registered, or if its implementation doesn't override the
+    // Forwards to the card's hal::Storage::set_standby() (a no-op if there
+    // is no card, or if its implementation doesn't override the
     // hal::Storage default) -- see that method's doc comment. A no-op
-    // for "storage.int": internal flash has no background polling to
+    // for the internal medium: internal flash has no background polling to
     // pause in the first place. Called by PowerManager on enter_standby()
     // (standby=true) and exit_standby() (standby=false); does not change
     // sd_online_ or publish any event -- refresh() keeps running exactly
@@ -496,7 +503,7 @@ private:
     // calls(); bumped by checked_path().
     mutable std::atomic<uint64_t> calls_{0};
 
-    // True once init() has found "storage.int" and created its
+    // True once init() has found the internal medium and created its
     // directories; every operation refuses to do anything
     // (StorageUnavailable/empty roots) while this is false, rather than
     // operating on empty int_mount_/sd_mount_ strings.

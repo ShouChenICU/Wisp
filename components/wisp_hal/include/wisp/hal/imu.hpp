@@ -59,9 +59,13 @@ inline ImuSample to_screen_frame(const ImuSample& raw, const ImuAxisMap& map) {
 class Imu : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Imu;
+    static constexpr Interface kInterface = Interface::Imu;
 
     virtual Result<ImuSample> read() = 0;
     virtual Result<void> set_rate(uint32_t hz) = 0;
+
+protected:
+    Imu() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

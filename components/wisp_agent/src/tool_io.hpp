@@ -71,6 +71,10 @@ inline const char* tool_code(ErrorCode c) {
             return "unsupported";
         case ErrorCode::StorageUnavailable:
             return "unavailable";
+        case ErrorCode::RateLimited:
+            return "rate_limited";
+        case ErrorCode::DeviceFailure:
+            return "device_failure";
         default:
             return "failed";
     }

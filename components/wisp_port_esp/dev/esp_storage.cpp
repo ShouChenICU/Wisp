@@ -20,6 +20,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
@@ -126,6 +127,7 @@ EspInternalStorage::EspInternalStorage() {
     info_.model = "littlefs";
     info_.caps =
         wisp::Properties{{"removable", false}, {"fs", wisp::Value(std::string("littlefs"))}};
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kInternal);
 }
 
 Result<wisp::hal::Capacity> EspInternalStorage::capacity() {
@@ -155,6 +157,7 @@ EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name
     info_.cls = kClass;
     info_.model = std::move(model);
     info_.caps = wisp::Properties{{"removable", true}, {"fs", wisp::Value(std::string("fat"))}};
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kRemovable);
 
     if (already_mounted && card != nullptr) {
         card_ = card;

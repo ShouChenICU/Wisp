@@ -251,6 +251,128 @@ TEST(StorageManager, MissingInternalFailsInit) {
     EXPECT_EQ(m.init().error().code, wisp::ErrorCode::StorageUnavailable);
 }
 
+// StorageManager asks for the media by role, so a board may name them as
+// it likes.
+TEST(StorageManager, FindsMediaByRoleWhateverTheirIds) {
+    auto in = wisp::test::temp_dir().string();
+    auto sd = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.flash", in, false)));
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.card", sd, true)));
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    auto media = mgr.status().media;
+    ASSERT_EQ(media.size(), 2u);
+    EXPECT_EQ(media[0].id, "storage.flash");
+    EXPECT_FALSE(media[0].removable);
+    EXPECT_EQ(media[1].id, "storage.card");
+    EXPECT_TRUE(media[1].removable);
+    EXPECT_EQ(mgr.roots(Area::Library).front(), sd + "/wisp/library");
+}
+
+// The topics stay "storage.sd.*" (what subscribers listen for); the source
+// is the card's own id.
+TEST(StorageManager, CardEventsCarryTheCardsId) {
+    auto in = wisp::test::temp_dir().string();
+    auto sd = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    auto card = std::make_shared<FakeStorage>("storage.card", sd, true);
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.flash", in, false)));
+    ASSERT_TRUE(registry.add(card));
+    std::mutex mutex;
+    std::vector<Event> events;
+    bus.start();
+    bus.subscribe("", [&](const Event& e) {
+        std::lock_guard<std::mutex> lock(mutex);
+        events.push_back(e);
+    });
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    card->online_flag = false;
+    mgr.refresh();
+    bus.wait_idle(1000);
+    bus.stop();
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].topic, "storage.sd.removed");
+    EXPECT_EQ(events[0].source, "storage.card");
+}
+
+namespace {
+
+// A storage device with whatever caps "role" (and "removable") the test
+// gives it, e.g. none, or a board that put both roles on one medium.
+class RoleStorage : public FakeStorage {
+public:
+    RoleStorage(std::string id, std::string dir, bool removable, wisp::Value role)
+        : FakeStorage(std::move(id), std::move(dir), removable), info_(FakeStorage::info()) {
+        info_.caps["role"] = std::move(role);
+    }
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+private:
+    wisp::hal::DeviceInfo info_;
+};
+
+}  // namespace
+
+TEST(StorageManager, NoInternalRoleIsUnavailable) {
+    DeviceRegistry registry;
+    EventBus bus;
+    // Internal flash whose board forgot to give it a role.
+    ASSERT_TRUE(registry.add(std::make_shared<RoleStorage>(
+        "storage.int", wisp::test::temp_dir().string(), false, wisp::Value(""))));
+    StorageManager mgr(registry, bus);
+
+    auto r = mgr.init();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::StorageUnavailable);
+    EXPECT_EQ(r.error().message, "no storage device with role internal");
+}
+
+// A card is found by role, never by id: a "storage.sd" without the
+// removable role is not the card.
+TEST(StorageManager, NoRemovableRoleIsNoCard) {
+    auto in = wisp::test::temp_dir().string();
+    auto sd = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.int", in, false)));
+    ASSERT_TRUE(
+        registry.add(std::make_shared<RoleStorage>("storage.sd", sd, true, wisp::Value(""))));
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    auto media = mgr.status().media;
+    ASSERT_EQ(media.size(), 1u);
+    EXPECT_EQ(media[0].id, "storage.int");
+    EXPECT_EQ(mgr.roots(Area::Library), (std::vector<std::string>{in + "/library"}));
+}
+
+// A board that declares both roles on one medium has no card: listing it
+// twice, sending card events for internal flash or moving the Library
+// root would all be wrong.
+TEST(StorageManager, OneMediumWithBothRolesIsNoCard) {
+    auto in = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    ASSERT_TRUE(registry.add(std::make_shared<RoleStorage>(
+        "storage.int", in, false,
+        wisp::Value(wisp::List{wisp::Value("internal"), wisp::Value("removable")}))));
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    auto media = mgr.status().media;
+    ASSERT_EQ(media.size(), 1u);
+    EXPECT_EQ(media[0].id, "storage.int");
+    EXPECT_FALSE(media[0].removable);
+    EXPECT_EQ(mgr.roots(Area::Library), (std::vector<std::string>{in + "/library"}));
+}
+
 TEST(StorageManager, RejectsDotDotPath) {
     Fixture f(false);
     ASSERT_TRUE(f.mgr->init());

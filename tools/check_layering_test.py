@@ -527,6 +527,103 @@ class CheckLayeringTest(unittest.TestCase):
         )
         self.assertEqual(check_layering.run(self.root), [])
 
+    def test_device_id_literal_in_portable_code_fails(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'auto d = registry.get<hal::Display>("display.main");\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("x.cpp:1: device id literal \"display.main\": look the device up by role", errors[0])
+        self.assertIn("(AGENTS.md section 3)", errors[0])
+
+    def test_every_listed_device_id_literal_fails(self):
+        for lit in (
+            "imu.main",
+            "net.wifi",
+            "button.power",
+            "button.vol_up",
+            "button.vol_down",
+            "button.boot",
+            "storage.int",
+            "storage.sd",
+        ):
+            write(self.root, "simulator/x.cpp", f'auto d = get("{lit}");\n')
+            self.assertEqual(len(check_layering.run(self.root)), 1, lit)
+
+    def test_device_id_literal_in_a_comment_passes(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            '// the "display.main" device\n/* "button.power" */\nint x;\n',
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_device_id_literal_in_the_ports_passes(self):
+        for port in ("wisp_port_sim", "wisp_port_esp"):
+            write(self.root, f"components/{port}/src/x.cpp", 'auto d = get("display.main");\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_topic_with_an_id_prefix_passes(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("storage.sd.inserted"); b("net.wifi.state"); c("button.power.short");\n'
+            'd("button."); e("button.vol_up.down");\n',
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_literal_after_a_string_containing_slashes_is_caught(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("http://x"); get("display.main");\n',
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
+    def test_literal_after_a_block_comment_on_the_same_line_is_caught(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a(/* "button.power" */ "button.power");\n',
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
+    def test_literal_in_a_line_comment_after_a_string_passes(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("x"); // get("display.main")\n',
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_literal_after_a_string_containing_a_block_opener_is_caught(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'a("/*");\nget("display.main");\n',
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("x.cpp:2:", errors[0])
+
+    def test_escaped_quote_and_char_literal_do_not_end_the_scan_early(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            "a(\"\\\" //\", '\"'); get(\"display.main\");\n",
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
+    def test_raw_string_does_not_hide_later_code(self):
+        write(
+            self.root,
+            "components/wisp_app/src/x.cpp",
+            'auto r = R"x(a // b "q" )x"; get("display.main");\n',
+        )
+        self.assertEqual(len(check_layering.run(self.root)), 1)
+
     def test_third_party_and_managed_components_are_not_scanned(self):
         write(self.root, "managed_components/x/a.c", "void f() { nvs_commit(h); }\n")
         write(self.root, "third_party/x/a.c", "void f() { nvs_commit(h); }\n")

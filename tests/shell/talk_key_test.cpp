@@ -13,6 +13,7 @@
 #include "support/fake_devices.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/shell/conversation.hpp"
 #include "wisp/voice/limits.hpp"
 
@@ -170,10 +171,11 @@ TEST_F(TalkKeyTest, ShortPressWithTheScreenOffDoesNothingElse) {
     EXPECT_FALSE(saw_state("listening"));
 }
 
-TEST(FindTalkButton, UsesRoleCaps) {
+TEST(FindTalkButton, UsesTheTalkRole) {
     wisp::core::DeviceRegistry reg;
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::nullopt);
-    ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>("button.power")));
+    ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
+        "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}})));
     ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
         "button.vol_up", wisp::Properties{{"role", wisp::Value("volume")}})));
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::nullopt);
@@ -181,4 +183,14 @@ TEST(FindTalkButton, UsesRoleCaps) {
         "button.vol_down",
         wisp::Properties{{"standby", wisp::Value("wake_source")}, {"role", wisp::Value("talk")}})));
     EXPECT_EQ(wisp::shell::find_talk_button(reg), std::optional<std::string>("button.vol_down"));
+}
+
+// One key may be both the power and the talk key (wisp/hal/roles.hpp).
+TEST(FindTalkButton, AcceptsARoleList) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<wisp::test::FakeButton>(
+        "button.side",
+        wisp::Properties{{"role", wisp::Value(wisp::List{wisp::Value(wisp::hal::role::kPower),
+                                                         wisp::Value(wisp::hal::role::kTalk)})}})));
+    EXPECT_EQ(wisp::shell::find_talk_button(reg), std::optional<std::string>("button.side"));
 }

@@ -6,6 +6,7 @@
 
 #include "admin_internal.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/device_schema.hpp"
 
 namespace wisp::admin::detail {
 
@@ -35,7 +36,7 @@ net::HttpResponse devices(AdminDeps& deps, const RequestContext&) {
             {"class", Value(hal::to_string(info.cls))},
             {"model", Value(info.model)},
             {"state", Value(core::to_string(rep ? rep->state : core::DeviceState::Ok))},
-            {"caps", Value(info.caps)},
+            {"caps", Value(hal::caps_of(*dev))},
         }));
         listed.insert(info.id);
     }

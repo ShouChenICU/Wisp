@@ -44,6 +44,7 @@
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -215,6 +216,9 @@ struct AgentWiringDeps {
     // before handing the snapshot to AgentService; this need not (and, as
     // cached values only, cannot) set it.
     agent::ContextSource context{};
+    // The generic device path (device.list, device.call); null: no such
+    // tools. Must outlive the AgentWiring.
+    core::DeviceService* devices = nullptr;
     // device.status without "storage", which AgentWiring adds from its
     // cache. Cached values only.
     std::function<Value()> device_status{};
@@ -286,6 +290,8 @@ public:
     // /memory routes read and delete through this same instance rather
     // than opening a second one on the same file.
     core::MemoryStore* memory() { return memory_.get(); }
+    // The agent's tools, for tests of the order and the wiring.
+    const agent::ToolRegistry* tools() const { return registry_.get(); }
     // Sends the agent frames to `hub` from now on (null: nowhere). The hub
     // must outlive stop() or the next attach_ws().
     void attach_ws(admin::WsHub* hub);

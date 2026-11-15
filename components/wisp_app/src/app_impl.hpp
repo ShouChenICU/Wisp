@@ -36,6 +36,7 @@
 #include "wisp/app/system_notices.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -110,10 +111,8 @@ struct App::Impl {
 
     // Constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
-    // exit_standby()'s PowerMonitor::set_standby() hook), via its own new
-    // "power.main" device lookup in App::start() -- separate from, and
-    // parallel to, the existing "imu.main" lookup that App::start()
-    // already did for power_manager's own `imu` parameter. Owns its own
+    // exit_standby()'s PowerMonitor::set_standby() hook), via its own
+    // main-power-device lookup in App::start(). Owns its own
     // internal sample Timer (see power_monitor.hpp), so -- unlike
     // storage_timer below -- there is no separate App-owned Timer object
     // for it. Torn down in App::stop() right after power_manager (which
@@ -145,7 +144,7 @@ struct App::Impl {
     // posts to, started once the router and the banners are up, stopped
     // with the agent (whose tools use it) and reset after it.
     std::unique_ptr<core::ReminderScheduler> reminders;
-    // The notification sounds over "audio_out.main" (scene-device spec
+    // The notification sounds over the main speaker (scene-device spec
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.
     std::unique_ptr<core::TonePlayer> tones;
@@ -155,6 +154,10 @@ struct App::Impl {
     // by stop() once both are gone. Follows power.state (sensor_sub).
     std::unique_ptr<core::SensorService> sensors;
     core::SubscriptionId sensor_sub = 0;
+    // Self-describing devices (device model spec 3.6): built by start()
+    // next to sensors, reset by stop() after it; its power level follows
+    // the same power.state subscription (sensor_sub).
+    std::unique_ptr<core::DeviceService> devices;
     // audio/notify_vol and sys/tz_min, kept from system.settings: the
     // router reads the volume on the posting thread (the scene task) and
     // the status shell the time zone on the UI thread, neither of which

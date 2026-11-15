@@ -1,17 +1,16 @@
 #include "wisp/core/button_service.hpp"
 
 #include <algorithm>
-#include <cstring>
 #include <limits>
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 
 namespace wisp::core {
 
 namespace {
 constexpr const char* kTag = "button_service";
-constexpr const char* kIdPrefix = "button.";
 constexpr size_t kEdgeQueueCapacity = 32;
 constexpr uint64_t kDebounceUs = 20'000;
 constexpr uint32_t kFallbackStandbyMs = 100;
@@ -189,12 +188,9 @@ void ButtonService::refresh_buttons() {
         std::min(devices.size(), static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1));
     for (auto& button : devices) {
         const std::string& id = button->info().id;
-        if (id.compare(0, std::strlen(kIdPrefix), kIdPrefix) != 0) {
-            WLOG_W(kTag, "button device id '%s' does not start with '%s'; topic will be malformed",
-                   id.c_str(), kIdPrefix);
-        }
         ButtonState state;
         state.id = id;
+        state.power_key = hal::has_role(button->info(), hal::role::kPower);
         state.mode = button->input_mode();
         state.button = std::move(button);
         state.next_poll_ms = 0;
@@ -302,7 +298,9 @@ uint32_t ButtonService::poll_interval_ms(const ButtonState& state) const {
     if (!standby_) {
         return poll_ms_;
     }
-    if (state.id != "button.power") {
+    // Polling costs battery in standby, so only the power key, the wake
+    // source, is polled; a board without one polls nothing.
+    if (!state.power_key) {
         return 0;
     }
     const uint32_t interval = state.button->standby_poll_ms();

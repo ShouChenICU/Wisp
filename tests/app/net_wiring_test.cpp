@@ -87,17 +87,20 @@ bool holds(wisp::core::WakeLockRegistry& locks, const std::string& holder) {
 }
 
 struct Rig {
-    explicit Rig(bool with_power = false) {
+    // `wifi_id` and `rtc` let a test give the radio and the clock other ids.
+    explicit Rig(bool with_power = false, const std::string& wifi_id = "net.wifi",
+                 std::shared_ptr<wisp::test::FakeClock> rtc = nullptr) {
         wisp::log::reset_for_test();
         wisp::log::init(64 * 1024);
         registry.add(std::make_shared<FakeStorage>("storage.int", dir, /*removable=*/false));
-        wifi = std::make_shared<FakeWifi>("net.wifi");
+        wifi = std::make_shared<FakeWifi>(wifi_id);
         wifi->networks = {{"Home", -50, true}};
         wifi->passwords = {{"Home", "password1"}};
         // A scan that takes a while, like a real one: the radio is on but
         // the station not yet connected.
         wifi->on_scan = [this] { wisp::os::sleep_ms(scan_ms.load()); };
         registry.add(wifi);
+        if (rtc) registry.add(rtc);
         std::filesystem::create_directories(dir + "/system/net");
         std::ofstream(dir + "/system/net/wifi.json") << wisp::to_json(wisp::Value(wisp::Map{
             {"networks",
@@ -318,6 +321,19 @@ TEST(NetWiring, NetworkWindowDeliversADeferredRequest) {
 }
 
 }  // namespace
+
+// Spec 2.3: the radio and the RTC are found by role, whatever their ids.
+TEST(NetWiring, FindsTheRadioAndClockByRole) {
+    auto rtc = std::make_shared<wisp::test::FakeClock>("clock.rtc");
+    ASSERT_TRUE(rtc->set_unix(0));
+    Rig r(false, "net.radio", rtc);
+    r.net->start();
+    ASSERT_NE(r.net->wifi(), nullptr);
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    // The SNTP answer is written to the RTC.
+    EXPECT_TRUE(wait_until([&] { return rtc->get_unix().value() == 1767225600; }, 5000));
+}
 
 // What the voice reads before waiting for recognition: a connection is
 // on its way exactly while one is being made (WifiService::

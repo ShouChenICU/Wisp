@@ -5,6 +5,7 @@
 
 #include "esp_err.h"
 #include "wisp/base/error.hpp"
+#include "wisp/hal/roles.hpp"
 
 namespace wisp::port::esp {
 
@@ -32,6 +33,7 @@ EspPower::EspPower(axp2101_handle_t handle, std::string model) : handle_(handle)
         {"battery", true},
         {"charging_status", true},
     };
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
 }
 
 // No deinit: this device, like every other ESP HAL device Wisp

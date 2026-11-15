@@ -26,11 +26,12 @@ constexpr uint16_t kBufferedSamples = 1024;
 constexpr uint32_t kStallTimeoutMs = 1000;
 }  // namespace
 
-SimAudioOut::SimAudioOut(std::string id) {
+SimAudioOut::SimAudioOut(std::string id, std::string role) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-audio";
     info_.caps = wisp::Properties{{"standby", "off"}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 SimAudioOut::~SimAudioOut() { close(); }
@@ -191,11 +192,12 @@ wisp::Result<void> SimAudioOut::set_volume(uint8_t percent) {
     return wisp::Result<void>::ok();
 }
 
-SimAudioIn::SimAudioIn(std::string id) {
+SimAudioIn::SimAudioIn(std::string id, std::string role) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-audio";
     info_.caps = wisp::Properties{{"standby", "off"}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 SimAudioIn::~SimAudioIn() { close(); }

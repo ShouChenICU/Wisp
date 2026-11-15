@@ -38,6 +38,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       power_monitor_(deps.power_monitor),
       ui_(deps.ui),
       buttons_(deps.buttons),
+      power_key_(std::move(deps.power_key)),
       set_light_sleep_(std::move(deps.set_light_sleep)),
       before_deep_standby_(std::move(deps.before_deep_standby)),
       on_activity_(std::move(deps.on_activity)),
@@ -70,7 +71,8 @@ PowerManager::PowerManager(PowerManagerDeps deps)
         if (!standby()) {
             return;
         }
-        if (power_key_owned_.load(std::memory_order_acquire) && e.source == "button.power") {
+        if (power_key_owned_.load(std::memory_order_acquire) && !power_key_.empty() &&
+            e.source == power_key_) {
             return;  // The owner decides what this does -- see set_power_key_owned().
         }
         run_on_ui("exit_standby", [this] { exit_standby(); });

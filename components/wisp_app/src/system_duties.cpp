@@ -17,6 +17,8 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/hal/button.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/ui/strings.hpp"
@@ -44,8 +46,12 @@ SystemDuties::SystemDuties(App& app)
     : app_(app),
       ui_(*app.ui()),
       system_(*app.system_layer()),
-      display_(app.registry().get<hal::Display>("display.main")),
-      power_(app.registry().get<hal::Power>("power.main")),
+      display_(app.registry().by_role<hal::Display>(hal::role::kMain)),
+      power_(app.registry().by_role<hal::Power>(hal::role::kMain)),
+      power_key_id_([&app] {
+          auto key = app.registry().by_role<hal::Button>(hal::role::kPower);
+          return key ? key->info().id : std::string();
+      }()),
       setup_card_([this] {
           if (net::WifiService* wifi = app_.wifi()) {
               if (auto r = wifi->stop_provisioning(); !r) {
@@ -74,9 +80,9 @@ void SystemDuties::start() {
     button_sub_ =
         app_.bus().subscribe("button.", [this](const core::Event& e) { on_button_event(e); });
     // From here on, this object's PowerKeyController is the *only* thing
-    // that decides what a "button.power" event does to the screen --
+    // that decides what a power-key event does to the screen --
     // PowerManager's own generic "any button wakes standby" handler
-    // (power_manager.cpp) must leave button.power alone, or the two could
+    // (power_manager.cpp) must leave that key alone, or the two could
     // each independently decide to flip the screen for the very same
     // physical press (one reacting to `down`, the other -- with its own,
     // now-stale idea of "is the screen on" -- reacting to the
@@ -130,7 +136,7 @@ void SystemDuties::stop() {
         perf_timer_.reset();
     }
     // Give PowerManager's generic "any button wakes standby" handler back
-    // ownership of "button.power" now that this object's PowerKeyController
+    // ownership of the power key now that this object's PowerKeyController
     // stops listening -- see PowerManager::set_power_key_owned()'s doc
     // comment. Without it the power key would no longer wake the device
     // from standby.
@@ -179,7 +185,7 @@ void SystemDuties::emit_perf_line() {
 }
 
 void SystemDuties::on_button_event(const core::Event& e) {
-    if (e.source != "button.power") return;
+    if (power_key_id_.empty() || e.source != power_key_id_) return;
     // on_button_event() itself runs on the EventBus dispatcher thread, but
     // PowerKeyController is not thread-safe against concurrent callers --
     // on_power_off_answer() also drives it, from the UI thread, via
@@ -202,9 +208,10 @@ void SystemDuties::on_button_event(const core::Event& e) {
             PowerManager* pm = app_.power_manager();
             bool screen_on = pm == nullptr || !pm->standby();
             PowerKeyController::Action action = PowerKeyController::Action::None;
-            if (topic == "button.power.short") {
+            // ButtonService names the topics after the key's id.
+            if (topic == power_key_id_ + ".short") {
                 action = power_key_.on_short(screen_on);
-            } else if (topic == "button.power.long") {
+            } else if (topic == power_key_id_ + ".long") {
                 action = power_key_.on_long(screen_on);
             }
             if (action != PowerKeyController::Action::None) {

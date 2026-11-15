@@ -59,6 +59,7 @@ SensorService::SensorService(std::shared_ptr<hal::Imu> imu, OccupancyRegistry& o
                              SensorServiceConfig c)
     : imu_(std::move(imu)), occupancy_(occupancy), config_(c) {
     if (imu_) {
+        device_id_ = imu_->info().id;
         has_accel_ = cap(*imu_, "accel");
         has_gyro_ = cap(*imu_, "gyro");
     }
@@ -152,7 +153,7 @@ Result<uint32_t> SensorService::on_gesture(Gesture g, std::string holder,
 
 Result<uint32_t> SensorService::add(os::LargeUnique<Sub> s) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    if (auto r = occupancy_.acquire(kDevice, s->holder, OccupancyMode::Shared); !r)
+    if (auto r = occupancy_.acquire(device_id_, s->holder, OccupancyMode::Shared); !r)
         return Result<uint32_t>::err(r.error().code, r.error().message);
     s->handle = next_handle_++;
     if (next_handle_ == 0) next_handle_ = 1;
@@ -172,7 +173,7 @@ void SensorService::unsubscribe(uint32_t handle) {
     const bool still_held =
         std::any_of(subs_.begin(), subs_.end(),
                     [&](const os::LargeUnique<Sub>& s) { return s->holder == holder; });
-    if (!still_held) occupancy_.release(kDevice, holder);
+    if (!still_held) occupancy_.release(device_id_, holder);
     apply_locked();
 }
 

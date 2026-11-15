@@ -7,7 +7,7 @@
 namespace wisp::port::sim {
 
 SimDisplay::SimDisplay(std::string id, int32_t width, int32_t height, std::string shape,
-                       int32_t corner_radius, std::string panel)
+                       int32_t corner_radius, std::string panel, std::string role)
     : width_(width),
       height_(height),
       framebuffer_(static_cast<size_t>(width) * static_cast<size_t>(height), 0) {
@@ -24,6 +24,7 @@ SimDisplay::SimDisplay(std::string id, int32_t width, int32_t height, std::strin
         {"area_align", 2},
         {"standby", "off"},
     };
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 wisp::Result<void> SimDisplay::flush(const wisp::hal::Area& area, const uint16_t* rgb565) {

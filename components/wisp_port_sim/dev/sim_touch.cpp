@@ -4,11 +4,13 @@
 
 namespace wisp::port::sim {
 
-SimTouch::SimTouch(std::string id, std::shared_ptr<SimInput> input) : input_(std::move(input)) {
+SimTouch::SimTouch(std::string id, std::shared_ptr<SimInput> input, std::string role)
+    : input_(std::move(input)) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sdl-mouse";
     info_.caps = wisp::Properties{{"max_points", 1}, {"standby", "off"}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 wisp::Result<std::vector<wisp::hal::TouchPoint>> SimTouch::read() {

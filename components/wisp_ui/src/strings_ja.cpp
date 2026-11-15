@@ -319,6 +319,8 @@ const char* strings_ja(StrId id) {
             return "Agent が「{}」のファイル {} を削除しようとしています";
         case StrId::AgentNoteSetting:
             return "{} {} → {}";
+        case StrId::AgentNoteDevice:
+            return "デバイス {}：{}";
         case StrId::AgentSetBrightness:
             return "明るさ";
         case StrId::AgentSetVolume:
@@ -793,6 +795,10 @@ const char* strings_ja(StrId id) {
             return "通知を確認";
         case StrId::ActNotifyDismiss:
             return "通知を消す";
+        case StrId::ActDeviceList:
+            return "周辺機器を確認";
+        case StrId::ActDeviceCall:
+            return "周辺機器を使う";
         case StrId::ActDocsRead:
             return "ドキュメントを読む";
         case StrId::ActHttpFetch:

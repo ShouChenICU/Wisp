@@ -1518,6 +1518,8 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     for (const core::SceneToolDecl& t : s.package->manifest.tools) {
         api.tool_names.push_back(t.name);
     }
+    api.devices = deps_.devices;
+    api.device_grants = s.package->manifest.devices;
     // Only records it (lua_task.hpp: never destroy the VM in here).
     api.task_done = [this, instance = s.instance](uint32_t task, TaskOutcome outcome) {
         tool_task_done(instance, task, std::move(outcome));

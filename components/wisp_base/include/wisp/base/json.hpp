@@ -25,6 +25,13 @@ std::string to_json(const Value& v);
 // output is not necessarily valid UTF-8; never send it to a browser.
 std::string to_json_raw(const Value& v);
 
+// The size of to_json(v) in bytes, or limit + 1 as soon as it is known
+// to exceed `limit`. Walks `v` without building the text, so a caller
+// can refuse an oversized value without an allocation proportional to it
+// (no allocation proportional to the value; measuring each double builds
+// a small fixed-size temporary document).
+size_t json_size(const Value& v, size_t limit);
+
 // Parses `s` as JSON into a Value. On a parse error, returns
 // ErrorCode::InvalidArgument with ArduinoJson's error text in the message.
 Result<Value> from_json(std::string_view s);
@@ -34,6 +41,10 @@ Result<Value> from_json(std::string_view s);
 // Parsing recurses once per level, so this bounds the stack it needs; the
 // parser itself enforces it, so no string can hide a level from it.
 Result<Value> from_json(std::string_view s, uint8_t max_depth);
+
+// Whether `s` is well-formed UTF-8: exactly the strings to_json() keeps
+// without replacing anything.
+bool valid_utf8(std::string_view s);
 
 namespace json_detail {
 // Length of the well-formed UTF-8 sequence starting at s[i], or 0 when

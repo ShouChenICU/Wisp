@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "support/fake_devices.hpp"
 #include "support/fake_wifi.hpp"
@@ -10,11 +14,16 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/boot_report.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/device_schema.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/imu.hpp"
+#include "wisp/hal/roles.hpp"
 
+using wisp::test::FakeButton;
 using wisp::test::FakeDisplay;
+using wisp::test::FakeGeneric;
 using wisp::test::FakeImu;
+using wisp::test::FakeTouch;
 
 TEST(DeviceRegistry, AddFindGetList) {
     wisp::core::DeviceRegistry reg;
@@ -34,10 +43,10 @@ TEST(DeviceRegistry, ManifestJson) {
     wisp::core::DeviceRegistry reg;
     reg.add(std::make_shared<FakeImu>("imu.main"));  // caps: accel=true, gyro=true,
                                                      // magnetometer=false, max_rate_hz=1000,
-                                                     // standby="off"; model "FAKE"
+                                                     // standby="off", role="main"; model "FAKE"
     EXPECT_EQ(
         wisp::to_json(reg.manifest("b")),
-        R"({"board":"b","devices":[{"caps":{"accel":true,"gyro":true,"magnetometer":false,"max_rate_hz":1000,"standby":"off"},"class":"imu","id":"imu.main","model":"FAKE"}]})");
+        R"({"board":"b","devices":[{"caps":{"accel":true,"gyro":true,"magnetometer":false,"max_rate_hz":1000,"role":"main","standby":"off"},"class":"imu","id":"imu.main","model":"FAKE"}]})");
 }
 
 TEST(DeviceRegistry, ManifestListsNetworkDevice) {
@@ -122,7 +131,355 @@ TEST(DeviceRegistry, ManifestSafeArea) {
     }
 }
 
+TEST(DeviceRegistry, TypedLookupChecksTheInterfaceNotTheId) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<FakeGeneric>("display.x")));
+    EXPECT_EQ(reg.get<wisp::hal::Display>("display.x"), nullptr);
+    EXPECT_TRUE(reg.list<wisp::hal::Display>().empty());
+    EXPECT_NE(reg.find("display.x"), nullptr);
+}
+
+namespace {
+
+// A typed lookup names an interface class, never a concrete device: the
+// tag check cannot tell one Display implementation from another, so
+// get<FakeDisplay> would cast an EspDisplay to a FakeDisplay.
+template <class T>
+concept Gettable = requires(const wisp::core::DeviceRegistry& reg) { reg.get<T>(std::string()); };
+template <class T>
+concept Listable = requires(const wisp::core::DeviceRegistry& reg) { reg.list<T>(); };
+
+static_assert(Gettable<wisp::hal::Display>);
+static_assert(Listable<wisp::hal::Display>);
+static_assert(Gettable<wisp::hal::Wifi>);
+static_assert(!Gettable<FakeDisplay>);
+static_assert(!Listable<FakeDisplay>);
+static_assert(!Gettable<wisp::test::FakeWifi>);
+static_assert(!Gettable<wisp::hal::Device>);
+
+// Naming itself as the interface does not make a concrete device one: the
+// accepted set is the closed list of interface classes.
+class SelfNamedDisplay : public FakeDisplay {
+public:
+    using InterfaceType = SelfNamedDisplay;
+    using FakeDisplay::FakeDisplay;
+};
+static_assert(!Gettable<SelfNamedDisplay>);
+static_assert(!Listable<SelfNamedDisplay>);
+
+template <class T>
+concept RoleLookup =
+    requires(const wisp::core::DeviceRegistry& reg) { reg.by_role<T>(std::string_view()); };
+static_assert(RoleLookup<wisp::hal::Imu>);
+static_assert(!RoleLookup<FakeImu>);
+static_assert(!RoleLookup<SelfNamedDisplay>);
+static_assert(!RoleLookup<wisp::hal::Device>);
+
+}  // namespace
+
+// A generic device can say Display in its class, but has no way to report
+// the Display interface: add() refuses the mismatch and the typed lookup
+// never sees it.
+TEST(DeviceRegistry, AGenericDeviceCannotPassAsATypedOne) {
+    auto liar = std::make_shared<FakeGeneric>("display.main", wisp::hal::DeviceClass::Display);
+    EXPECT_EQ(liar->interface(), wisp::hal::Interface::None);
+
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(liar);
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "display.main: class display does not match interface none");
+    EXPECT_EQ(reg.get<wisp::hal::Display>("display.main"), nullptr);
+    EXPECT_TRUE(reg.list<wisp::hal::Display>().empty());
+}
+
+namespace {
+
+// An IMU that claims to be a display: the class is a data field a device
+// can get wrong, the interface is not.
+class MislabelledImu : public FakeImu {
+public:
+    explicit MislabelledImu(std::string id) : FakeImu(std::move(id)) {
+        mislabelled_ = FakeImu::info();
+        mislabelled_.cls = wisp::hal::DeviceClass::Display;
+    }
+    const wisp::hal::DeviceInfo& info() const override { return mislabelled_; }
+
+private:
+    wisp::hal::DeviceInfo mislabelled_;
+};
+
+}  // namespace
+
+TEST(DeviceRegistry, RejectsAClassThatDoesNotMatchTheInterface) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<MislabelledImu>("imu.main"));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "imu.main: class display does not match interface imu");
+    EXPECT_EQ(reg.find("imu.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsAGenericDeviceWithATypedClass) {
+    wisp::core::DeviceRegistry reg;
+    auto added =
+        reg.add(std::make_shared<FakeGeneric>("haptic.main", wisp::hal::DeviceClass::Button));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(reg.find("haptic.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsANullDevice) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(nullptr);
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_TRUE(reg.all().empty());
+}
+
+TEST(DeviceRegistry, GenericDeviceIdsNeedAKind) {
+    wisp::core::DeviceRegistry reg;
+    const std::string too_long = "h." + std::string(31, 'x');  // 33 bytes
+    for (const std::string& id : {std::string("haptic"), std::string("Haptic.main"), too_long}) {
+        auto added = reg.add(std::make_shared<FakeGeneric>(id));
+        ASSERT_FALSE(added) << id;
+        EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument) << id;
+        EXPECT_EQ(added.error().message,
+                  id + ": a generic device id is <kind>.<name>, at most 32 bytes");
+    }
+    EXPECT_TRUE(reg.add(std::make_shared<FakeGeneric>("h." + std::string(30, 'x'))));
+    EXPECT_TRUE(reg.add(std::make_shared<FakeGeneric>("led.status")));
+    EXPECT_EQ(reg.all().size(), 2u);
+}
+
+// Button topics are "<id>.<edge>" and the system's subscribers listen on
+// "button.", so a key under any other id would publish into the void.
+TEST(DeviceRegistry, ButtonIdsAreButtonDotName) {
+    wisp::core::DeviceRegistry reg;
+    for (const std::string& id :
+         {std::string("key.pwr"), std::string("button."), std::string("buttonx.a")}) {
+        auto added = reg.add(std::make_shared<FakeButton>(id));
+        ASSERT_FALSE(added) << id;
+        EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument) << id;
+        EXPECT_EQ(added.error().message, id + ": a button id is button.<name>");
+    }
+    EXPECT_TRUE(reg.all().empty());
+    EXPECT_TRUE(reg.add(std::make_shared<FakeButton>("button.power")));
+    EXPECT_EQ(reg.all().size(), 1u);
+}
+
+TEST(DeviceRegistry, ByRoleReturnsOnlyThatInterface) {
+    wisp::core::DeviceRegistry reg;
+    auto imu = std::make_shared<FakeImu>("imu.accel");
+    ASSERT_TRUE(reg.add(imu));
+    ASSERT_TRUE(reg.add(std::make_shared<FakeGeneric>("haptic.main", wisp::hal::DeviceClass::Other,
+                                                      wisp::Properties{{"role", "main"}})));
+    EXPECT_EQ(reg.by_role<wisp::hal::Imu>(wisp::hal::role::kMain), imu);
+    EXPECT_EQ(reg.by_role<wisp::hal::Display>(wisp::hal::role::kMain), nullptr);
+    EXPECT_EQ(reg.by_role<wisp::hal::Imu>(wisp::hal::role::kTalk), nullptr);
+}
+
+TEST(DeviceRegistry, SecondDeviceWithTheSameRoleIsRejected) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<FakeImu>("imu.a")));
+    auto added = reg.add(std::make_shared<FakeImu>("imu.b"));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::AlreadyExists);
+    EXPECT_EQ(added.error().message, "role main already taken by imu.a");
+    EXPECT_EQ(reg.find("imu.b"), nullptr);
+    EXPECT_TRUE(reg.add(std::make_shared<FakeImu>("imu.c", "")));
+}
+
+TEST(DeviceRegistry, AnEmptyRoleIsNoRole) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_TRUE(reg.add(std::make_shared<FakeButton>("button.a", wisp::Properties{{"role", ""}})));
+    EXPECT_TRUE(reg.add(std::make_shared<FakeButton>(
+        "button.b", wisp::Properties{{"role", wisp::List{wisp::Value("")}}})));
+    EXPECT_EQ(reg.by_role<wisp::hal::Button>(""), nullptr);
+}
+
+TEST(DeviceRegistry, SameRoleOnDifferentInterfacesIsFine) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_TRUE(reg.add(std::make_shared<FakeDisplay>("display.main", 480, 480)));
+    EXPECT_TRUE(reg.add(std::make_shared<FakeTouch>("touch.main")));
+}
+
+TEST(DeviceRegistry, RoleListsCountEveryRole) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<FakeButton>(
+        "button.a",
+        wisp::Properties{{"role", wisp::List{wisp::Value("power"), wisp::Value("talk")}}})));
+    auto talk = std::make_shared<FakeButton>("button.b", wisp::Properties{{"role", "talk"}});
+    auto added = reg.add(talk);
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::AlreadyExists);
+    EXPECT_EQ(added.error().message, "role talk already taken by button.a");
+    ASSERT_TRUE(reg.remove("button.a"));
+    EXPECT_TRUE(reg.add(talk));
+    EXPECT_EQ(reg.by_role<wisp::hal::Button>(wisp::hal::role::kTalk), talk);
+}
+
+TEST(DeviceRegistry, GenericRolesAreUniquePerKind) {
+    using wisp::hal::DeviceClass;
+    wisp::core::DeviceRegistry reg;
+    const wisp::Properties main{{"role", "main"}};
+    EXPECT_TRUE(reg.add(std::make_shared<FakeGeneric>("haptic.main", DeviceClass::Other, main)));
+    EXPECT_TRUE(reg.add(std::make_shared<FakeGeneric>("led.status", DeviceClass::Other, main)));
+    auto added = reg.add(std::make_shared<FakeGeneric>("haptic.side", DeviceClass::Other, main));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::AlreadyExists);
+    EXPECT_EQ(added.error().message, "role main already taken by haptic.main");
+}
+
+// A board that registers a device but forgets its role would otherwise
+// lose it silently: by_role() returns null as for a missing device.
+TEST(DeviceRegistry, MainRoleGapsNameTheInterfacesAndIds) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_TRUE(wisp::core::main_role_gaps(reg).empty());  // no display at all
+
+    ASSERT_TRUE(reg.add(
+        std::make_shared<FakeDisplay>("display.panel", 480, 480, 1, "rounded_rect", /*role=*/"")));
+    // Buttons and storage have no role main; they are not checked.
+    ASSERT_TRUE(reg.add(std::make_shared<FakeButton>("button.side")));
+    auto gaps = wisp::core::main_role_gaps(reg);
+    ASSERT_EQ(gaps.size(), 1u);
+    EXPECT_EQ(gaps[0].iface, wisp::hal::Interface::Display);
+    EXPECT_EQ(gaps[0].ids, std::vector<std::string>{"display.panel"});
+
+    ASSERT_TRUE(reg.remove("display.panel"));
+    ASSERT_TRUE(reg.add(std::make_shared<FakeDisplay>("display.panel", 480, 480)));
+    EXPECT_TRUE(wisp::core::main_role_gaps(reg).empty());
+}
+
+// One key holding both power and talk gets no gesture arbitration: holding
+// it to talk also triggers the power key's long press. App warns at boot.
+TEST(DeviceRegistry, PowerKeyThatAlsoTalksIsReported) {
+    wisp::core::DeviceRegistry reg;
+    EXPECT_FALSE(wisp::core::power_key_also_talks(reg));  // no power key
+
+    ASSERT_TRUE(reg.add(std::make_shared<FakeButton>(
+        "button.side",
+        wisp::Properties{{"role", wisp::List{wisp::Value("power"), wisp::Value("talk")}}})));
+    EXPECT_EQ(wisp::core::power_key_also_talks(reg), std::optional<std::string>("button.side"));
+}
+
+TEST(DeviceRegistry, SeparatePowerAndTalkKeysAreNotReported) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(
+        reg.add(std::make_shared<FakeButton>("button.a", wisp::Properties{{"role", "power"}})));
+    ASSERT_TRUE(
+        reg.add(std::make_shared<FakeButton>("button.b", wisp::Properties{{"role", "talk"}})));
+    EXPECT_FALSE(wisp::core::power_key_also_talks(reg));
+}
+
+TEST(DeviceRegistry, TalkKeyAloneIsNotReported) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(
+        reg.add(std::make_shared<FakeButton>("button.b", wisp::Properties{{"role", "talk"}})));
+    EXPECT_FALSE(wisp::core::power_key_also_talks(reg));
+}
+
 TEST(DeviceClass, StringRoundTrip) {
     EXPECT_EQ(wisp::hal::class_from_string("audio_out"), wisp::hal::DeviceClass::AudioOut);
+    EXPECT_EQ(wisp::hal::class_from_string("other"), wisp::hal::DeviceClass::Other);
+    EXPECT_STREQ(wisp::hal::to_string(wisp::hal::DeviceClass::Other), "other");
     EXPECT_FALSE(wisp::hal::class_from_string("gpu").has_value());
+}
+
+namespace {
+
+const wisp::hal::ParamSpec kTempProps[] = {
+    {.name = "temp_c", .type = wisp::hal::ParamType::Number, .unit = "°C"}};
+const wisp::hal::CmdSpec kCalibrate[] = {{.name = "calibrate", .desc = "Calibrate", .args = {}}};
+const wisp::hal::DeviceSchema kTempSchema{.props = kTempProps, .cmds = {}};
+const wisp::hal::DeviceSchema kCalibrateSchema{.props = kTempProps, .cmds = kCalibrate};
+const wisp::hal::CmdSpec kBadCmds[] = {{.name = "Pulse", .desc = "", .args = {}}};
+const wisp::hal::DeviceSchema kBadSchema{.props = {}, .cmds = kBadCmds};
+
+// A typed device that describes itself with `schema`.
+class DescribedImu : public FakeImu {
+public:
+    DescribedImu(std::string id, const wisp::hal::DeviceSchema* schema)
+        : FakeImu(std::move(id)), schema_(schema) {}
+    const wisp::hal::DeviceSchema* describe() const override { return schema_; }
+
+private:
+    const wisp::hal::DeviceSchema* schema_;
+};
+
+class DescribedDisplay : public FakeDisplay {
+public:
+    DescribedDisplay() : FakeDisplay("display.main", 480, 480) {}
+    const wisp::hal::DeviceSchema* describe() const override { return &kTempSchema; }
+};
+
+}  // namespace
+
+TEST(DeviceRegistry, RejectsHandWrittenSchemaCaps) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<FakeGeneric>("haptic.main", wisp::hal::DeviceClass::Other,
+                                                       wisp::Properties{{"schema", wisp::Map{}}}));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message,
+              "haptic.main: caps must not carry \"schema\"; describe() supplies it");
+    EXPECT_EQ(reg.find("haptic.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsAnInvalidSchema) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<FakeGeneric>("haptic.main", &kBadSchema));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message,
+              "haptic.main: cmd 'Pulse': name must match [a-z][a-z0-9_]{0,31}");
+    EXPECT_EQ(reg.find("haptic.main"), nullptr);
+}
+
+TEST(DeviceRegistry, RejectsCommandsOnTypedDevices) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<DescribedImu>("imu.main", &kCalibrateSchema));
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "imu.main: commands are only for generic devices");
+    EXPECT_EQ(reg.find("imu.main"), nullptr);
+}
+
+TEST(DeviceRegistry, AcceptsPropertiesOnTypedDevices) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<DescribedImu>("imu.main", &kTempSchema)));
+    const wisp::Value manifest = reg.manifest("b");
+    const wisp::Value& entry = manifest.find("devices")->as_list()[0];
+    const wisp::Value* schema = entry.find("caps")->find("schema");
+    ASSERT_NE(schema, nullptr);
+    EXPECT_EQ(schema->find("props")->as_list()[0].find("name")->as_string(), "temp_c");
+    EXPECT_TRUE(schema->find("cmds")->as_list().empty());
+}
+
+TEST(DeviceRegistry, RejectsAnySchemaOnADisplay) {
+    wisp::core::DeviceRegistry reg;
+    auto added = reg.add(std::make_shared<DescribedDisplay>());
+    ASSERT_FALSE(added);
+    EXPECT_EQ(added.error().code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(added.error().message, "display.main: a display has no schema");
+    EXPECT_EQ(reg.find("display.main"), nullptr);
+}
+
+TEST(DeviceRegistry, ManifestRendersTheSchema) {
+    wisp::core::DeviceRegistry reg;
+    ASSERT_TRUE(reg.add(std::make_shared<FakeGeneric>(
+        "haptic.main", &wisp::test::kFakeGenericSchema, wisp::Properties{}, "main")));
+    ASSERT_TRUE(reg.add(std::make_shared<FakeImu>("imu.main")));
+    const wisp::Value manifest = reg.manifest("b");
+    const auto& devices = manifest.find("devices")->as_list();
+    ASSERT_EQ(devices.size(), 2u);
+    const wisp::Value& haptic = devices[0];
+    EXPECT_EQ(haptic.find("id")->as_string(), "haptic.main");
+    EXPECT_EQ(haptic.find("class")->as_string(), "other");
+    EXPECT_EQ(*haptic.find("caps"),
+              wisp::Value(
+                  wisp::Map{{"role", "main"},
+                            {"schema", wisp::hal::render_schema(wisp::test::kFakeGenericSchema)}}));
+    // A device without a schema is unchanged.
+    EXPECT_EQ(devices[1].find("caps")->find("schema"), nullptr);
 }

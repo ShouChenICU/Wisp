@@ -34,6 +34,8 @@ wisp_test(NAME display_geometry_test SRCS hal/display_geometry_test.cpp LIBS wis
 wisp_test(NAME draw_buf_policy_test SRCS hal/draw_buf_policy_test.cpp LIBS wisp_hal)
 wisp_test(NAME wifi_types_test SRCS hal/wifi_types_test.cpp LIBS wisp_hal)
 wisp_test(NAME power_level_test SRCS hal/power_level_test.cpp LIBS wisp_hal)
+wisp_test(NAME device_identity_test SRCS hal/device_identity_test.cpp LIBS wisp_hal)
+wisp_test(NAME device_schema_test SRCS hal/device_schema_test.cpp LIBS wisp_hal wisp_base)
 wisp_test(NAME imu_axis_map_test SRCS hal/imu_axis_map_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
@@ -95,6 +97,8 @@ wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
 wisp_test(NAME tone_player_test SRCS core/tone_player_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME occupancy_test SRCS core/occupancy_test.cpp LIBS wisp_core wisp_port_sim_os)
+wisp_test(NAME device_service_test SRCS core/device_service_test.cpp
+          LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME gesture_test SRCS core/gesture_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME sensor_service_test SRCS core/sensor_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
@@ -439,6 +443,8 @@ wisp_test(NAME notify_binding_test SRCS scene/notify_binding_test.cpp
 target_include_directories(notify_binding_test PRIVATE ${WISP_ROOT}/components/wisp_scene/src)
 wisp_test(NAME sensor_binding_test SRCS scene/sensor_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME device_binding_test SRCS scene/device_binding_test.cpp
+          LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME lua_json_test SRCS scene/lua_json_test.cpp LIBS wisp_scene wisp_port_sim_os)
 wisp_test(NAME store_binding_test SRCS scene/store_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
@@ -515,7 +521,7 @@ wisp_test(NAME scene_tool_index_observer_test SRCS app/scene_tool_index_observer
 target_include_directories(scene_tool_index_observer_test PRIVATE
                            ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME app_agent_test SRCS app/app_agent_test.cpp
-          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+          LIBS wisp_app wisp_port_sim_dev wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(app_agent_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME voice_wiring_test SRCS app/voice_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
@@ -541,6 +547,8 @@ wisp_test(NAME scene_eval_test SRCS scene/scene_eval_test.cpp
 wisp_test(NAME scene_ops_tools_test SRCS agent/scene_ops_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
 wisp_test(NAME device_tools_test SRCS agent/device_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME device_call_tools_test SRCS agent/device_call_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME memory_tools_test SRCS agent/memory_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)

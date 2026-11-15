@@ -146,7 +146,8 @@ public:
                        std::function<Value()> device_status, std::function<void()> wake,
                        core::WakeLockRegistry* locks = nullptr,
                        core::NotificationService* notices = nullptr,
-                       core::SensorService* sensors = nullptr);
+                       core::SensorService* sensors = nullptr,
+                       core::DeviceService* devices = nullptr);
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);

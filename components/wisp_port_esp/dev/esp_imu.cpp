@@ -5,6 +5,7 @@
 
 #include "esp_err.h"
 #include "wisp/base/error.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
@@ -38,6 +39,7 @@ EspImu::EspImu(qmi8658_handle_t handle, std::string model, wisp::hal::ImuAxisMap
         {"max_rate_hz", 1000},
         {"standby", wisp::Value("off")},
     };
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
 }
 
 // No deinit: this device, like every other ESP HAL device Wisp

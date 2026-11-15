@@ -170,7 +170,7 @@ The model reasons through your configured OpenAI-compatible service; Wisp execut
 | Scene development & runtime | `scene.*`, `ui.tree`, `docs.read`, `tools.find`, `tools.call` | Read the built-in API reference, create and edit scenes, install or roll back versions, manage their lifecycle, data and files, and inspect widgets and logs for debugging. Discover and call tools exported by installed scenes to add reusable capabilities without changing the firmware. |
 | Web & scripting | `http.fetch`, `lua.run` | Access websites, APIs and LAN services over HTTP/HTTPS, extract text from HTML and read long responses in pages. Run sandboxed Lua 5.5 scripts to calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for results; memory and execution time are bounded. |
 | Memory & to-dos | `memory.*`, `todo.*` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
-| Device & notifications | `device.status`, `settings.*`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; adjust brightness, volume, screen timeout, language and clock format; review or dismiss notifications. |
+| Device & notifications | `device.status`, `device.list`, `device.call`, `settings.*`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; read and control peripherals that describe themselves, such as a vibration motor (when the board has such a device); adjust brightness, volume, screen timeout, language and clock format; review or dismiss notifications. |
 
 These tools can be combined in a conversation. For example:
 

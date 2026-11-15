@@ -542,6 +542,21 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                                   .notes = deps_.notes,
                                                   .submit_io = on_worker,
                                               }));
+    // Offered only when some device describes itself: elsewhere the tools
+    // could only list nothing, yet cost every request their JSON. Decided
+    // once, so the list stays byte-stable: no service re-resolves devices
+    // after boot (device model spec 1.4).
+    bool described = false;
+    if (deps_.devices != nullptr) {
+        deps_.devices->for_each([&](Value) {
+            described = true;
+            return false;
+        });
+    }
+    if (described) {
+        check("device call", agent::add_device_call_tools(
+                                 *registry_, agent::DeviceCallToolDeps{.devices = *deps_.devices}));
+    }
     check("docs", agent::add_docs_tools(*registry_));
     if (deps_.scene_http != nullptr) {
         check("http",
@@ -628,6 +643,7 @@ void AgentWiring::refresh_storage() {
         for (const core::MediaStatus& m : storage->status().media) {
             media.push_back(Value(Map{{"id", Value(m.id)},
                                       {"online", Value(m.online)},
+                                      {"removable", Value(m.removable)},
                                       {"total_bytes", Value(static_cast<int64_t>(m.total_bytes))},
                                       {"free_bytes", Value(static_cast<int64_t>(m.free_bytes))}}));
         }

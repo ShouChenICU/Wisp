@@ -17,10 +17,11 @@ int64_t wall_clock_seconds() {
 
 }  // namespace
 
-SimClock::SimClock(std::string id) {
+SimClock::SimClock(std::string id, std::string role) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "system-clock";
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 wisp::Result<int64_t> SimClock::get_unix() {

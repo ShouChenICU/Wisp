@@ -125,6 +125,8 @@ Decision needed from the owner: whether `hibernate` may drop Wi-Fi-dependent bac
 
 ### H. Device model, driver adapters and board kit (spec first)
 
+The spec `docs/superpowers/specs/2026-11-14-device-model-design.md` is approved (2026-11-14) and splits the phase into H1 (device identity and the generic access path), H2 (board kit, driver adapters, target readiness) and H3 (keypad input for system UI and the pixel-format cap).
+
 Decisions for the spec:
 
 - **Interface tags.** Each HAL interface has its own `kInterface` id; `DeviceRegistry::get<T>` checks the interface, not the class. `DeviceClass` stays as a display category only.
@@ -132,9 +134,9 @@ Decisions for the spec:
 - **Generic access path.** `hal::Device` gains optional `describe()` (properties and commands with types, in caps), `get(prop)` and `invoke(cmd, Value)`. One agent tool (`device.call`) and one Lua binding (`wisp.device.call`) expose every device that describes itself, so a new simple peripheral (LED, haptics, encoder) needs a driver and a board line only.
 - **Driver adapters leave the port.** `EspPower`/`EspClock`/`EspImu` (AXP2101, PCF85063, QMI8658 adapters) move next to their drivers as `drivers/<chip>/wisp_adapter.*`; `wisp_port_esp` no longer requires chip drivers.
 - **Board kit.** `boards/common/` holds the shared init code (335 duplicated lines today) driven by a declarative `BoardSpec`; pins come from the bmgr YAML only. A `board.cpp` keeps only real differences.
-- **S31 readiness.** Chip-specific sdkconfig moves to `sdkconfig.defaults.<target>`; `Mem::Large` gets a defined behaviour without PSRAM (fallback to the default heap with a boot-report note); the support matrix (minimum PSRAM, screen or voice) goes into `docs/porting-guide.md`. S31 specifics are filled in when its ESP-IDF support is pinned.
+- **S31 readiness.** Chip-specific sdkconfig moves to `sdkconfig.defaults.<target>`; PSRAM of 8 MB or more is required; no fallback is designed (the boot report records a smaller or missing PSRAM); the support matrix (minimum PSRAM, screen or voice) goes into `docs/porting-guide.md`. S31 specifics are filled in when its ESP-IDF support is pinned.
 - **Input and display generality.** `UiRuntime` registers an LVGL keypad/encoder group when the board has such devices; `Display` declares its pixel format in caps (RGB565 stays the only implemented one).
-- **Headless agent.** A `ConfirmPort` interface (screen, later voice or button) lets the agent and voice start without a display.
+- A device without a display is not a supported configuration for now.
 - `AudioIn` gains channel roles (mic, reference) in caps, without changing the mono read path yet.
 
 ### I. Scene capability modules, permissions and new capabilities (spec first)

@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
@@ -20,8 +21,6 @@ namespace wisp::core {
 namespace {
 
 constexpr const char* kTag = "storage_manager";
-constexpr const char* kIntId = "storage.int";
-constexpr const char* kSdId = "storage.sd";
 
 // Lexically normalizes `path`: collapses repeated '/', drops '.'
 // components, and drops a trailing '/' (so the result never has one).
@@ -543,10 +542,10 @@ Result<void> StorageManager::init() {
 
     // Everything is worked out in locals first: the directory creation and
     // online() below are I/O, which never runs under state_mu_.
-    std::shared_ptr<hal::Storage> int_dev = registry_.get<hal::Storage>(kIntId);
+    std::shared_ptr<hal::Storage> int_dev = registry_.by_role<hal::Storage>(hal::role::kInternal);
     if (!int_dev) {
         return Result<void>::err(ErrorCode::StorageUnavailable,
-                                 std::string(kIntId) + " not registered");
+                                 "no storage device with role internal");
     }
     Result<std::string> int_norm = normalize_path(int_dev->mount_point());
     if (!int_norm) {
@@ -556,7 +555,14 @@ Result<void> StorageManager::init() {
     WISP_TRY(mkdir_p(int_mount + "/system"));
     WISP_TRY(mkdir_p(int_mount + "/library"));
 
-    std::shared_ptr<hal::Storage> sd_dev = registry_.get<hal::Storage>(kSdId);
+    std::shared_ptr<hal::Storage> sd_dev = registry_.by_role<hal::Storage>(hal::role::kRemovable);
+    if (sd_dev == int_dev) {
+        // One medium cannot be both: as a card it would be listed twice,
+        // get card events and take the Library root off internal flash.
+        WLOG_W(kTag, "'%s' has both roles internal and removable; treating it as internal only",
+               int_dev->info().id.c_str());
+        sd_dev.reset();
+    }
     std::string sd_mount;
     bool sd_online = false;
     if (sd_dev) {
@@ -1195,7 +1201,7 @@ void StorageManager::refresh() {
     }
 
     Event e;
-    e.source = kSdId;
+    e.source = sd_dev->info().id;
     if (now_online) {
         // Best-effort, same as init(): a write-protected/corrupt card
         // stays marked online rather than flipping refresh() back to
@@ -1231,6 +1237,7 @@ StorageStatus StorageManager::status() const {
         }
         MediaStatus m;
         m.id = dev->info().id;
+        m.removable = dev == sd_dev;
         m.online = dev->online();
         Result<hal::Capacity> cap = dev->capacity();
         if (cap) {

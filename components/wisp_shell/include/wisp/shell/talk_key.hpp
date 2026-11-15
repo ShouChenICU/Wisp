@@ -1,6 +1,6 @@
 #pragma once
 
-// TalkKey (MVP spec 4.1, 6.3): the button whose caps "role" is "talk"
+// TalkKey (MVP spec 4.1, 6.3): the button with role talk
 // (find_talk_button()) as hold-to-talk. Held for voice::kHoldStartMs from
 // its "<id>.down" it calls hold_begin(); its "<id>.up" then calls
 // hold_end(). Released sooner, the press is no hold.

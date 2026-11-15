@@ -15,6 +15,7 @@
 #include "support/fake_devices.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/sim_os.hpp"
 
@@ -26,7 +27,12 @@ using wisp::test::FakeButton;
 
 namespace {
 
-// registry has one FakeButton "button.power"; bus is started and
+wisp::Properties role_caps(wisp::Value role) { return wisp::Properties{{"role", std::move(role)}}; }
+
+// The power key, which ButtonService keeps polling in standby.
+wisp::Properties power_caps() { return role_caps(wisp::Value(wisp::hal::role::kPower)); }
+
+// registry has one FakeButton "button.power" (role power); bus is started and
 // subscribed to every topic, collecting them (in delivery order) into
 // `topics`. `topics` is only written by the bus's dispatcher thread and
 // is read by tests only after bus.wait_idle() confirms that thread is
@@ -39,7 +45,7 @@ namespace {
 // the subscriber callback above -- a use-after-destroy race.
 struct Fixture {
     Fixture() {
-        btn = std::make_shared<FakeButton>("button.power");
+        btn = std::make_shared<FakeButton>("button.power", power_caps());
         registry.add(btn);
         bus.start();
         bus.subscribe("", [this](const Event& e) { topics.push_back(e.topic); });
@@ -65,10 +71,11 @@ struct Fixture {
 
 class EdgeButton final : public wisp::hal::Button {
 public:
-    explicit EdgeButton(std::string id) {
+    explicit EdgeButton(std::string id, wisp::Properties caps = {}) {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "EDGE_FAKE";
+        info_.caps = std::move(caps);
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -130,8 +137,8 @@ private:
 
 class PollButton final : public FakeButton {
 public:
-    PollButton(std::string id, uint32_t standby_poll_ms)
-        : FakeButton(std::move(id)), standby_poll_ms_(standby_poll_ms) {}
+    PollButton(std::string id, uint32_t standby_poll_ms, wisp::Properties caps = {})
+        : FakeButton(std::move(id), std::move(caps)), standby_poll_ms_(standby_poll_ms) {}
 
     bool pressed() override {
         ++pressed_calls;
@@ -196,7 +203,7 @@ struct EventLog {
 void check_resource_fallback(bool fail_task) {
     FailureReset failures;
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     auto ordinary = std::make_shared<PollButton>("button.vol_up", 0);
     ASSERT_TRUE(registry.add(power));
     ASSERT_TRUE(registry.add(ordinary));
@@ -233,7 +240,7 @@ void check_resource_fallback(bool fail_task) {
 void check_fallback_transition_with_timer_failure(bool fail_task, bool target_standby) {
     FailureReset failures;
     DeviceRegistry registry;
-    auto power = std::make_shared<PollButton>("button.power", 100);
+    auto power = std::make_shared<PollButton>("button.power", 100, power_caps());
     auto ordinary = std::make_shared<PollButton>("button.vol_up", 0);
     ASSERT_TRUE(registry.add(power));
     ASSERT_TRUE(registry.add(ordinary));
@@ -287,7 +294,7 @@ void check_fallback_transition_with_timer_failure(bool fail_task, bool target_st
 
 TEST(ButtonService, OverflowDuringPollSampleDoesNotReplayOldPress) {
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     auto talk = std::make_shared<EdgeButton>("button.talk");
     auto polled = std::make_shared<PollButton>("button.pmu", 0);
     ASSERT_TRUE(registry.add(power));
@@ -325,7 +332,7 @@ TEST(ButtonService, OverflowDuringPollSampleDoesNotReplayOldPress) {
 
 TEST(ButtonService, OverflowSnapshotRetriesWhenProducerContinuesDuringSampling) {
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(power));
     EventLog events;
     EventBus bus;
@@ -363,7 +370,7 @@ TEST(ButtonService, OverflowSnapshotRetriesWhenProducerContinuesDuringSampling) 
 void check_boot_held_fallback(unsigned failure) {
     FailureReset failures;
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     power->down.store(true);
     power->reject_sink = failure == 2;
     auto clock = std::make_shared<PollButton>("button.clock", 0);
@@ -402,7 +409,7 @@ TEST(ButtonService, AttachFailureSuppressesBootHeld) { check_boot_held_fallback(
 TEST(ButtonService, WorkerFailurePreservesQueuedGestureAfterAttach) {
     FailureReset failures;
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(power));
     EventLog events;
     EventBus bus;
@@ -427,7 +434,7 @@ TEST(ButtonService, WorkerFailurePreservesQueuedGestureAfterAttach) {
 TEST(ButtonService, WorkerFailurePreservesNewHeldPressAfterAttach) {
     FailureReset failures;
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(power));
     EventLog events;
     EventBus bus;
@@ -473,7 +480,7 @@ TEST(ButtonService, WorkerCreationFailureDetachesSinksAndKeepsPowerKeyUsable) {
 TEST(ButtonService, FallbackTimerFailureIsReported) {
     FailureReset failures;
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(power));
     EventBus bus;
     ButtonService service(registry, bus);
@@ -493,7 +500,7 @@ TEST(ButtonService, FallbackTimerFailureIsReported) {
 
 TEST(ButtonService, SinkRegistrationFailureUsesPerDevicePolling) {
     DeviceRegistry registry;
-    auto power = std::make_shared<EdgeButton>("button.power");
+    auto power = std::make_shared<EdgeButton>("button.power", power_caps());
     power->reject_sink = true;
     ASSERT_TRUE(registry.add(power));
     EventBus bus;
@@ -518,7 +525,7 @@ TEST(ButtonService, SinkRegistrationFailureUsesPerDevicePolling) {
 
 TEST(ButtonService, DestructionWaitsForInFlightProducer) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     auto service = std::make_unique<ButtonService>(registry, bus);
@@ -545,7 +552,7 @@ TEST(ButtonService, DestructionWaitsForInFlightProducer) {
 
 TEST(ButtonService, RegistryRemovalRetainsDeviceUntilSinksAreDetached) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     std::weak_ptr<EdgeButton> weak_button = button;
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
@@ -560,7 +567,7 @@ TEST(ButtonService, RegistryRemovalRetainsDeviceUntilSinksAreDetached) {
 
 TEST(ButtonService, RestartDoesNotTreatOldOverflowAsNewInput) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ButtonService service(registry, bus);
@@ -580,7 +587,7 @@ TEST(ButtonService, RestartDoesNotTreatOldOverflowAsNewInput) {
 
 TEST(ButtonService, ConcurrentStandbyAndStopAreSafe) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ButtonService service(registry, bus);
@@ -601,7 +608,7 @@ TEST(ButtonService, ConcurrentStandbyAndStopAreSafe) {
 
 TEST(EdgeEvent, ShortPressQueuedBeforeWorkerRuns) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<EdgeButton>("button.power");
+    auto btn = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -624,7 +631,7 @@ TEST(EdgeEvent, ShortPressQueuedBeforeWorkerRuns) {
 
 TEST(EdgeEvent, LongPressFiresOnceWhileHeld) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<EdgeButton>("button.power");
+    auto btn = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventLog events;
     EventBus bus;
@@ -649,7 +656,7 @@ TEST(EdgeEvent, LongPressFiresOnceWhileHeld) {
 
 TEST(EdgeEvent, WakeMaintenanceIsDeferredUntilTaskDrain) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ButtonService service(registry, bus);
@@ -668,7 +675,7 @@ TEST(EdgeEvent, WakeMaintenanceIsDeferredUntilTaskDrain) {
 
 TEST(EdgeEvent, OverflowAlsoMaintainsWakeForDroppedRelease) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ButtonService service(registry, bus);
@@ -685,7 +692,7 @@ TEST(EdgeEvent, OverflowAlsoMaintainsWakeForDroppedRelease) {
 
 TEST(EdgeEvent, DebounceAndDuplicateEdges) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<EdgeButton>("button.power");
+    auto btn = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -710,7 +717,7 @@ TEST(EdgeEvent, DebounceAndDuplicateEdges) {
 
 TEST(EdgeEvent, LongDeadlineBeforeDebouncedRelease) {
     DeviceRegistry registry;
-    auto button = std::make_shared<EdgeButton>("button.power");
+    auto button = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -749,7 +756,7 @@ TEST(PollOnly, ModeSwitchUsesPerDevicePolicy) {
 
 TEST(MixedInputs, EdgeButtonIsNeverPolled) {
     DeviceRegistry registry;
-    auto edge = std::make_shared<EdgeButton>("button.power");
+    auto edge = std::make_shared<EdgeButton>("button.power", power_caps());
     auto polled = std::make_shared<PollButton>("button.vol_up", 0);
     ASSERT_TRUE(registry.add(edge));
     ASSERT_TRUE(registry.add(polled));
@@ -802,7 +809,7 @@ TEST(PollOnly, StandbyStopsOrdinaryButton) {
 
 TEST(PollOnly, PowerFallbackPollsAt100Ms) {
     DeviceRegistry registry;
-    auto button = std::make_shared<PollButton>("button.power", 100);
+    auto button = std::make_shared<PollButton>("button.power", 100, power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ButtonService service(registry, bus);
@@ -822,9 +829,74 @@ TEST(PollOnly, PowerFallbackPollsAt100Ms) {
     service.stop();
 }
 
+TEST(ButtonService, StandbyPollsTheKeyWithThePowerRole) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<PollButton>("button.side", 100, power_caps());
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ASSERT_TRUE(bus.start());
+    std::vector<std::string> topics;
+    bus.subscribe("", [&](const Event& e) { topics.push_back(e.topic); });
+    ButtonService service(registry, bus);
+
+    service.poll(0);
+    const size_t active_calls = button->pressed_calls.load();
+    service.set_standby(true);
+    button->down = true;
+    service.poll(99);
+    EXPECT_EQ(button->pressed_calls.load(), active_calls);
+    service.poll(100);
+    EXPECT_EQ(button->pressed_calls.load(), active_calls + 1);
+    button->down = false;
+    service.poll(200);
+    EXPECT_EQ(button->pressed_calls.load(), active_calls + 2);
+    service.stop();
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_EQ(topics, (std::vector<std::string>{"button.side.down", "button.side.up",
+                                                "button.side.short"}));
+    bus.stop();
+}
+
+// One key may be both the power and the talk key.
+TEST(ButtonService, StandbyPollsAPowerKeyThatAlsoHasOtherRoles) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<PollButton>(
+        "button.side", 100,
+        role_caps(wisp::Value(wisp::List{wisp::Value(wisp::hal::role::kTalk),
+                                         wisp::Value(wisp::hal::role::kPower)})));
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ButtonService service(registry, bus);
+
+    service.poll(0);
+    const size_t active_calls = button->pressed_calls.load();
+    service.set_standby(true);
+    service.poll(100);
+    EXPECT_EQ(button->pressed_calls.load(), active_calls + 1);
+    service.stop();
+}
+
+// The id alone does not make a key the power key: a board without a
+// power-role key polls nothing in standby.
+TEST(ButtonService, WithoutThePowerRoleNoKeyIsPolledInStandby) {
+    DeviceRegistry registry;
+    auto button = std::make_shared<PollButton>("button.power", 100);
+    ASSERT_TRUE(registry.add(button));
+    EventBus bus;
+    ButtonService service(registry, bus);
+
+    service.poll(0);
+    const size_t active_calls = button->pressed_calls.load();
+    service.set_standby(true);
+    service.poll(100);
+    service.poll(1000);
+    EXPECT_EQ(button->pressed_calls.load(), active_calls);
+    service.stop();
+}
+
 TEST(EdgeEvent, HeldAcrossWake) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<EdgeButton>("button.power");
+    auto btn = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -850,7 +922,7 @@ TEST(EdgeEvent, HeldAcrossWake) {
 
 TEST(ButtonService, ModeSwitchKeepsPendingLongPress) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<EdgeButton>("button.power");
+    auto btn = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -876,7 +948,7 @@ TEST(ButtonService, ModeSwitchKeepsPendingLongPress) {
 
 TEST(ButtonService, EdgeQueueOverflowRecovers) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<EdgeButton>("button.power");
+    auto btn = std::make_shared<EdgeButton>("button.power", power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -901,7 +973,7 @@ TEST(ButtonService, EdgeQueueOverflowRecovers) {
 }
 
 TEST(ButtonService, BaseButtonDefaultsToPollOnlyWithoutStandbyFallback) {
-    FakeButton device("button.power");
+    FakeButton device("button.power", power_caps());
     const wisp::hal::Button& button = device;
     EXPECT_EQ(button.input_mode(), wisp::hal::ButtonInputMode::PollOnly);
     EXPECT_EQ(button.standby_poll_ms(), 0u);
@@ -941,7 +1013,7 @@ TEST(ButtonService, LongPressFiresOnceWhileHeld) {
 
 TEST(ButtonService, StandbyWhileRunningPreservesPendingLongPress) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<PollButton>("button.power", 100);
+    auto btn = std::make_shared<PollButton>("button.power", 100, power_caps());
     ASSERT_TRUE(registry.add(btn));
     EventLog events;
     EventBus bus;
@@ -986,7 +1058,7 @@ TEST(ButtonService, IndependentButtons) {
 // synthetic poll() calls) so the two threads genuinely race.
 TEST(ButtonService, StartCalledTwiceWhileHeldDoesNotDuplicateEvents) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<FakeButton>("button.power");
+    auto btn = std::make_shared<FakeButton>("button.power", power_caps());
     registry.add(btn);
     EventBus bus;
     bus.start();
@@ -1016,7 +1088,7 @@ TEST(ButtonService, StartCalledTwiceWhileHeldDoesNotDuplicateEvents) {
 // that press; the next press after its release is reported normally.
 TEST(ButtonService, ButtonHeldAtStartIsIgnoredUntilReleased) {
     DeviceRegistry registry;
-    auto btn = std::make_shared<FakeButton>("button.power");
+    auto btn = std::make_shared<FakeButton>("button.power", power_caps());
     registry.add(btn);
     EventBus bus;
     bus.start();
@@ -1042,7 +1114,7 @@ TEST(ButtonService, ButtonHeldAtStartIsIgnoredUntilReleased) {
 
 TEST(ButtonService, ManualPollCannotBypassRunningProductionCadence) {
     DeviceRegistry registry;
-    auto button = std::make_shared<PollButton>("button.power", 100);
+    auto button = std::make_shared<PollButton>("button.power", 100, power_caps());
     ASSERT_TRUE(registry.add(button));
     EventBus bus;
     ButtonService service(registry, bus, 1000, 1000);

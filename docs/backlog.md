@@ -320,3 +320,35 @@ Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator a
 ## Agent core tool enhancements
 
 - `lua.run` failures now carry their full payload in `ToolOutput.result_json`, while `AgentService::execute_tool` still reads the diagnostic error code only from `ToolOutput.result`. Runtime/compile/timeout/memory/cancelled failures therefore log `error:failed`; the model result and ToolEnd summary remain correct. Preserve a small structured error code or expose explicit metadata without parsing the large JSON payload. Add a regression at the production consumer boundary.
+
+## Device model: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-path.md`. Simulator and unit tests only so far; the ESP port and board edits (caps `role`, `EspPmuPowerKey`'s role) are not compiled in that environment.
+
+- Both boards build (`idf.py bmgr -c ../boards -b <board> && idf.py build`).
+- `WISP_MANIFEST` on both boards: the same devices, ids, models and caps as before, plus `role` (`main`, `internal`/`removable`, `power`, `talk`) on every device except keys without one; no new boot-report failure and no entry "role ... already taken"; no boot warning about a missing `main` role. Then record the manifest lines with `role` in `docs/hardware/*.md`.
+- Self-check: every device green; the SD row on the 2.16 follows card insert and remove; the display, battery and clock readouts present.
+- Voice: hold the talk key (2.16 Vol-, 1.75C BOOT), speak, hear the answer.
+- Standby and wake with the power key, short and long press; the power key still wakes from deep standby (role-based polling); on the 1.75C both the GPIO3 and the PMU fallback paths if switchable.
+- Net: Wi-Fi connects, the RTC is set after SNTP, the admin device page lists caps `role` and shows nothing new missing.
+- `mem` idle: expect about 1–1.5 KB less free internal RAM (one caps map node of about 90 bytes per device that has a role, plus `core::DeviceService`); re-measure against `ram_budget.hpp`.
+- SD card hot-plug on the 2.16 with a scene that uses `files: "sd"` open, and the admin overview's storage card (the SD row follows insert and remove, the labels read "SD card" and "Internal storage").
+- An IMU scene receives samples; IMU polling stops in standby and resumes on wake.
+- Notification tone, TTS playback and the self-check mic loopback.
+- Battery and charging shown (status bar, self-check, admin); a long press on the power key opens the power-off dialog.
+- The talk key from a dark screen wakes it and, held, records.
+- A 1.75C without an RTC shows no clock warning and still gets the time from SNTP.
+- The light-sleep statistics are still reported when the screen goes off and on.
+- On a board without a self-describing device (both current boards), the agent's request carries neither `device.list` nor `device.call`.
+- On the first board with a self-describing device: the serial monitor and the admin device page with its larger manifest (about 650 bytes more per device); the self-check screen on the round and the rounded shape scrolled to the end (such a device adds a row); driver calls from the agent thread and from a scene task at once over a shared I2C bus; `busy` in standby; `min_interval_ms` holding; the internal-RAM peak while `device.list` and the manifest are rendered.
+
+## Device model
+
+- A key that holds both roles `power` and `talk` (device-model spec 2.3) gets no gesture arbitration: holding it to talk also triggers the power key's long press (the power-off dialog after a second). It needs arbitration where talk owns the hold and the power key keeps only a short press; that belongs to the input-generality work of the device-model spec's part 3. Until then `App` warns about such a board at boot (`core::power_key_also_talks()`).
+- Next parts of the device-model work: the ESP devices' ids move into the board configs (`BoardSpec` slots, spec part 2); the install-time prompt for `permissions.device` comes with phase I's general permission mechanism (until then a declared permission is honoured).
+- Parked: the device routes and `DeviceRegistry::manifest()` build their JSON as a `Value` tree and a `std::string` in internal RAM (about 10 KB transient for a dozen devices of which three describe themselves); render into `os::LargeString` instead.
+- Parked: the admin device page shows `caps.schema` as one JSON blob.
+- Parked: a per-holder call budget in `DeviceService` for scenes: a scene can call a granted device's `get()`, or a command without `min_interval_ms`, as fast as its callbacks run, which contends for the bus and writes one log line per state-changing call.
+- Parked: the agent's `lua.run` reaches devices as holder `agent` without leaving a conversation note, unlike `device.call`.
+- Parked: the `device.call` activity line carries no device identity (it would need a per-tool key preference in `activity_target()`).
+- Parked: `tools/check_layering.py`'s comment stripper can report a false positive on a line with a digit separator and an apostrophe in its comment.

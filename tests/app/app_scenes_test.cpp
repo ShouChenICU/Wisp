@@ -38,6 +38,7 @@
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/zip.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/flash_guard.hpp"
@@ -175,6 +176,7 @@ public:
         info_.id = "audio_out.main";
         info_.cls = kClass;
         info_.model = "FAKE";
+        info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
     }
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<void> open(const wisp::hal::AudioFormat&) override {

@@ -34,10 +34,10 @@ std::string loopback_status_text(const LoopbackStatus& status, ui::Lang lang);
 // Must be called from any thread other than the "wisp.loop" task itself.
 // Spawns (and this call returns without waiting for) a "wisp.loop" task
 // that:
-//   1. opens "audio_in.main", records 3s (16kHz mono, a 96000-byte
+//   1. opens the main mic, records 3s (16kHz mono, a 96000-byte
 //      os::alloc(Mem::Large) buffer) and reports LoopRecording right
 //      before recording starts;
-//   2. closes audio_in, opens "audio_out.main", reports LoopPlaying right
+//   2. closes audio_in, opens the main speaker, reports LoopPlaying right
 //      before playback starts, writes the recorded buffer, closes
 //      audio_out;
 //   3. reports LoopDone.

@@ -6,6 +6,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/button.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/shell/activity.hpp"
 
 namespace wisp::shell {
@@ -545,15 +546,9 @@ void ConversationController::notify() {
 }
 
 std::optional<std::string> find_talk_button(core::DeviceRegistry& reg) {
-    for (const auto& b : reg.list<hal::Button>()) {
-        const Properties& caps = b->info().caps;
-        auto it = caps.find("role");
-        if (it != caps.end() && it->second.type() == Value::Type::String &&
-            it->second.as_string() == "talk") {
-            return b->info().id;
-        }
-    }
-    return std::nullopt;
+    auto key = reg.by_role<hal::Button>(hal::role::kTalk);
+    if (!key) return std::nullopt;
+    return key->info().id;
 }
 
 }  // namespace wisp::shell

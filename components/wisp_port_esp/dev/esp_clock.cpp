@@ -5,6 +5,7 @@
 
 #include "esp_err.h"
 #include "wisp/base/error.hpp"
+#include "wisp/hal/roles.hpp"
 
 namespace wisp::port::esp {
 
@@ -28,6 +29,7 @@ EspClock::EspClock(pcf85063_handle_t handle, std::string model) : handle_(handle
     info_.id = "clock.main";
     info_.cls = kClass;
     info_.model = std::move(model);
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
 }
 
 // No deinit: this device, like every other ESP HAL device Wisp

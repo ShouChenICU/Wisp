@@ -27,9 +27,11 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/reminders.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/button.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -73,7 +75,7 @@ hal::ScreenShape display_shape(const hal::Display& display) {
     if (shape) {
         return shape.value();
     }
-    WLOG_W("app", "display.main: invalid shape caps (%s); treating as circle",
+    WLOG_W("app", "%s: invalid shape caps (%s); treating as circle", display.info().id.c_str(),
            shape.error().message.c_str());
     hal::ScreenShape fallback;
     fallback.kind = hal::ScreenShapeKind::Circle;
@@ -144,6 +146,23 @@ Result<void> App::start() {
             impl_->report.record(
                 {device->info().id, device->info().cls, core::DeviceState::Ok, ""});
         }
+    }
+    // The wiring below finds these devices by role main; one registered
+    // without it would be treated as missing with nothing saying why.
+    for (const core::RoleGap& gap : core::main_role_gaps(impl_->registry)) {
+        std::string ids;
+        for (const std::string& id : gap.ids) {
+            if (!ids.empty()) ids += ", ";
+            ids += id;
+        }
+        WLOG_W("app", "no device with role main among %s: %s", hal::to_string(gap.iface),
+               ids.c_str());
+    }
+    if (auto key = core::power_key_also_talks(impl_->registry)) {
+        WLOG_W("app",
+               "%s holds roles power and talk: holding it to talk also triggers the power "
+               "key's long press",
+               key->c_str());
     }
 
     // Step 3: core services.
@@ -355,7 +374,7 @@ Result<void> App::start() {
     if (auto lang = ui::parse_lang(impl_->system_settings.get().language)) {
         ui::set_lang(*lang);
     }
-    auto display = impl_->registry.get<hal::Display>("display.main");
+    auto display = impl_->registry.by_role<hal::Display>(hal::role::kMain);
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;
     int64_t boot_brightness = 200;
@@ -364,7 +383,7 @@ Result<void> App::start() {
         boot_brightness = std::clamp<int64_t>(display_settings.get_int("brightness", 200), 0, 255);
         display->set_brightness(static_cast<uint8_t>(boot_brightness));
 
-        touch = impl_->registry.get<hal::Touch>("touch.main");
+        touch = impl_->registry.by_role<hal::Touch>(hal::role::kMain);
         ui::UiConfig ui_config;
         ui_config.install_image_decoders = impl_->platform.install_image_decoders;
         ui_config.font_image = impl_->platform.font_image;
@@ -395,14 +414,13 @@ Result<void> App::start() {
     // self-check screen is built below, since that screen's power-key
     // handling calls into it.
 
-    // PowerMonitor is constructed here too -- before
-    // PowerManager, which holds a non-owning pointer into it -- and, like
-    // PowerManager itself, regardless of headless mode: polling
-    // "power.main" and publishing power.charging.changed/power.battery.
-    // low has nothing to do with whether there's a screen. It's
-    // completely inert if no "power.main" device is registered (see
-    // power_monitor.hpp).
-    auto power_dev = impl_->registry.get<hal::Power>("power.main");
+    // PowerMonitor is constructed here too -- before PowerManager, which
+    // holds a non-owning pointer into it -- and, like PowerManager itself,
+    // regardless of headless mode: polling the main power device and
+    // publishing power.charging.changed/power.battery.low has nothing to do
+    // with whether there's a screen. It's completely inert if no Power
+    // device has role main (see power_monitor.hpp).
+    auto power_dev = impl_->registry.by_role<hal::Power>(hal::role::kMain);
     impl_->power_monitor = std::make_unique<core::PowerMonitor>(
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
     impl_->power_monitor->start();
@@ -410,7 +428,7 @@ Result<void> App::start() {
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
     impl_->tones = std::make_unique<core::TonePlayer>(
-        impl_->registry.get<hal::AudioOut>("audio_out.main"), &impl_->wakelocks);
+        impl_->registry.by_role<hal::AudioOut>(hal::role::kMain), &impl_->wakelocks);
     if (auto r = impl_->tones->start(); !r) {
         WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
     }
@@ -455,18 +473,35 @@ Result<void> App::start() {
     // subscription (spec 6.1); the state comes from the payload, as the
     // service keeps no reference to PowerManager.
     impl_->sensors = std::make_unique<core::SensorService>(
-        impl_->registry.get<hal::Imu>("imu.main"), impl_->occupancy);
+        impl_->registry.by_role<hal::Imu>(hal::role::kMain), impl_->occupancy);
     if (auto r = impl_->sensors->start(); !r) {
         WLOG_W("app", "sensors off: %s", r.error().message.c_str());
     }
-    impl_->sensor_sub =
-        impl_->bus.subscribe("power.state", [sensors = impl_->sensors.get()](const core::Event& e) {
+    // Generic devices (device model spec 3.6), for the agent tools and the
+    // scenes; it follows the same power.state as the sensors.
+    impl_->devices = std::make_unique<core::DeviceService>(
+        impl_->registry, &impl_->occupancy,
+        impl_->platform.device_clock_ms ? impl_->platform.device_clock_ms
+                                        : std::function<uint64_t()>(os::now_ms));
+    impl_->sensor_sub = impl_->bus.subscribe(
+        "power.state",
+        [sensors = impl_->sensors.get(), devices = impl_->devices.get()](const core::Event& e) {
             auto it = e.payload.find("state");
             if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
             const std::string& state = it->second.as_string();
-            sensors->set_standby(state == "standby" || state == "deep_standby");
+            std::optional<hal::PowerLevel> level;
+            for (hal::PowerLevel l : {hal::PowerLevel::Active, hal::PowerLevel::Dim,
+                                      hal::PowerLevel::Standby, hal::PowerLevel::DeepStandby}) {
+                if (state == hal::to_string(l)) level = l;
+            }
+            // A state this build does not know changes nothing for either.
+            if (!level) return;
+            sensors->set_standby(*level == hal::PowerLevel::Standby ||
+                                 *level == hal::PowerLevel::DeepStandby);
+            devices->set_power_level(*level);
         });
 
+    auto power_key = impl_->registry.by_role<hal::Button>(hal::role::kPower);
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
         .bus = impl_->bus,
         .registry = impl_->registry,
@@ -477,6 +512,7 @@ Result<void> App::start() {
         .power_monitor = impl_->power_monitor.get(),
         .ui = impl_->ui.get(),
         .buttons = &impl_->buttons,
+        .power_key = power_key ? power_key->info().id : std::string(),
         .set_light_sleep = impl_->platform.set_light_sleep,
         .before_deep_standby = [this] { flush_storage(); },
         .on_activity =
@@ -554,7 +590,8 @@ Result<void> App::start() {
                     impl->power_manager->exit_standby();
                 }
             },
-            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get());
+            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get(),
+            impl_->devices.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {
@@ -877,7 +914,7 @@ Result<void> App::start() {
     // spec 9.2 ("--no-sd 时 Library 只有内置根"): surfaces the actual
     // root list, rather than leaving it something only a unit test can
     // see, so a smoke test can assert on it directly without depending
-    // on whether "storage.sd" happened to be registered.
+    // on whether a card happened to be registered.
     {
         wisp::List library_roots;
         for (const std::string& root : impl_->storage.roots(core::Area::Library)) {
@@ -1048,6 +1085,7 @@ void App::stop() {
         impl_->sensors->stop();
         impl_->sensors.reset();
     }
+    impl_->devices.reset();
 
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn
@@ -1239,6 +1277,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .lang = [impl] { return std::string(ui::lang_code(impl->lang.load())); },
         .wall_s = wall_s,
         .context = std::move(context),
+        .devices = impl->devices.get(),
         .device_status = std::move(device_status),
     });
     if (!impl->agent) WLOG_E("app", "no memory for the agent; the agent is off");
@@ -1332,7 +1371,11 @@ core::NotificationService* App::notifications() { return impl_->notifications.ge
 core::ReminderScheduler* App::reminders() { return impl_->reminders.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
+core::DeviceService* App::devices() { return impl_->devices.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
+const agent::ToolRegistry* App::agent_tools() const {
+    return impl_->agent ? impl_->agent->tools() : nullptr;
+}
 core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() : nullptr; }
 shell::ConversationController* App::conversation() {
     return impl_->voice ? &impl_->voice->conversation() : nullptr;

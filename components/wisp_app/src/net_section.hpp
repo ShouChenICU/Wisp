@@ -2,7 +2,7 @@
 
 // The self-check screen's network block (connectivity spec 8.1): one
 // status line ("Wi-Fi: <state>", plus the signal strength while
-// connected) and a start/stop button for the setup hotspot. Without a WifiService (no "net.wifi"
+// connected) and a start/stop button for the setup hotspot. Without a WifiService (no main Wi-Fi
 // device, or networking disabled) the line says there is no Wi-Fi hardware and there is no button.
 //
 // Threading: UI thread only. refresh() reads the service's state (short

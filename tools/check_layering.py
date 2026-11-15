@@ -54,6 +54,11 @@ docs/architecture.md):
     access; every other task relies on os::TaskConfig::flash_access's
     (and EspHttpServerConfig::flash_access's) false default. Scanned over
     the same roots as the flash-API rule above.
+  - Device ids (AGENTS.md section 3): the literals "<class>.main",
+    "net.wifi", "button.power", "storage.int" and "storage.sd" may not
+    appear in the portable components or simulator/*.cpp; devices are
+    found by role (wisp/hal/roles.hpp). Event topics that merely start
+    with an id ("storage.sd.inserted") are different literals and pass.
 
 Prints one "path:line: <message>" line per violation and exits 1 if
 any were found, else exits 0 with no output.
@@ -415,6 +420,89 @@ def check_flash_access_true(root, path, errors):
             )
 
 
+# A whole string literal that is one of the ids the portable code used to
+# look devices up by. The closing quote makes "storage.sd.inserted" (a
+# topic) a different literal.
+DEVICE_ID_LITERAL_RE = re.compile(
+    r'"(?:[a-z_]+\.main|net\.wifi|button\.[a-z_]+|storage\.(?:int|sd))"'
+)
+
+
+def strip_comments_keep_strings(text):
+    """Blanks comments and raw string literals (newlines kept, so line
+    numbers stay right) but leaves ordinary string and char literals
+    intact, tracking them so "//" or "/*" inside a string does not start
+    a comment (strip_comments() above does not track strings; that is
+    deliberate for its #include users). Backslash escapes are honoured.
+    A raw string R"delim(...)delim" is blanked whole: its content is
+    embedded text (Lua, JSON, HTML), not code that looks devices up.
+    Out of scope: a literal split across adjacent strings ("display"
+    ".main"), and preprocessor line splices inside comments."""
+    out = []
+    i, n = 0, len(text)
+
+    def blank(chunk):
+        return "".join(c if c == "\n" else " " for c in chunk)
+
+    while i < n:
+        c = text[i]
+        two = text[i : i + 2]
+        if two == "//":
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(blank(text[i:j]))
+            i = j
+        elif two == "/*":
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(blank(text[i:j]))
+            i = j
+        elif c == "R" and text[i + 1 : i + 2] == '"' and not (
+            i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_")
+            and text[i - 1] not in "LuU8"
+        ):
+            open_paren = text.find("(", i + 2)
+            delim = text[i + 2 : open_paren] if open_paren >= 0 else None
+            if delim is None or len(delim) > 16 or any(ch in delim for ch in ' )\\"\n'):
+                out.append(c)
+                i += 1
+                continue
+            end = text.find(")" + delim + '"', open_paren)
+            j = n if end < 0 else end + len(delim) + 2
+            out.append(blank(text[i:j]))
+            i = j
+        elif c in "\"'":
+            j = i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            j = min(j + 1, n)
+            out.append(text[i:j])
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def check_device_id_literals(root, errors):
+    """Portable code (every wisp_* component but the two ports) and the
+    simulator's own sources find devices by role, never by id literal."""
+    paths = []
+    for component in COMPONENTS:
+        paths.extend(iter_source_files(root, component))
+    sim_dir = root / "simulator"
+    if sim_dir.is_dir():
+        paths.extend(sorted(sim_dir.glob("*.cpp")))
+    for path in paths:
+        text = strip_comments_keep_strings(path.read_text(encoding="utf-8", errors="replace"))
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for match in DEVICE_ID_LITERAL_RE.finditer(line):
+                errors.append(
+                    f"{path}:{lineno}: device id literal {match.group(0)}: "
+                    "look the device up by role (AGENTS.md section 3)"
+                )
+
+
 def run(root):
     """Runs every check against `root` and returns the list of error
     strings found (empty if clean). Importable so tools/check_layering_
@@ -430,6 +518,7 @@ def run(root):
     for path in iter_flash_api_files(root):
         check_flash_api(root, path, errors)
         check_flash_access_true(root, path, errors)
+    check_device_id_literals(root, errors)
     return errors
 
 

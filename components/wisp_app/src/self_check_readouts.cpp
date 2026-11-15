@@ -143,9 +143,9 @@ void StorageSection::update(const core::StorageStatus& status) {
     const core::MediaStatus* internal = nullptr;
     const core::MediaStatus* sd = nullptr;
     for (const auto& media : status.media) {
-        if (media.id == "storage.int") {
+        if (!media.removable && internal == nullptr) {
             internal = &media;
-        } else if (media.id == "storage.sd") {
+        } else if (media.removable && sd == nullptr) {
             sd = &media;
         }
     }

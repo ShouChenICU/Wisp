@@ -44,7 +44,7 @@ uint64_t dir_size(const std::string& path) {
 }  // namespace
 
 SimStorage::SimStorage(std::string id, std::string mount_point, bool removable, std::string fs,
-                       uint64_t total_bytes, std::function<bool()> online_fn)
+                       uint64_t total_bytes, std::function<bool()> online_fn, std::string role)
     : mount_point_(std::move(mount_point)),
       total_bytes_(total_bytes),
       online_fn_(std::move(online_fn)) {
@@ -52,6 +52,7 @@ SimStorage::SimStorage(std::string id, std::string mount_point, bool removable, 
     info_.cls = kClass;
     info_.model = "host-dir";
     info_.caps = wisp::Properties{{"removable", removable}, {"fs", wisp::Value(std::move(fs))}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 wisp::Result<wisp::hal::Capacity> SimStorage::capacity() {

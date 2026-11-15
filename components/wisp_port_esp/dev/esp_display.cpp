@@ -10,6 +10,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 
 namespace wisp::port::esp {
 
@@ -88,6 +89,7 @@ EspDisplay::EspDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t i
         {"rgb565_be", config_.rgb565_be},
         {"standby", wisp::Value("off")},
     };
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
     if (config_.draw_buf_lines > 0) info_.caps["draw_buf_lines"] = config_.draw_buf_lines;
     if (!config_.draw_buf_mem.empty())
         info_.caps["draw_buf_mem"] = wisp::Value(config_.draw_buf_mem);

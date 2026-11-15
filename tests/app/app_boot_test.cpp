@@ -30,14 +30,18 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/hal/button.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -66,6 +70,12 @@ struct MakeAppOptions {
     std::shared_ptr<FakeStorage> sd;
     // Every settings write_batch() first sleeps this long.
     uint32_t settings_write_delay_ms = 0;
+    // The same devices under other ids ("display.panel", "imu.accel",
+    // "storage.flash", "button.side"), with the same roles, plus a touch
+    // panel "touch.panel" with role main: the app must find them by role.
+    bool renamed_ids = false;
+    // The display's caps "role"; empty is no role.
+    std::string display_role = wisp::hal::role::kMain;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -99,7 +109,8 @@ private:
 
 // A wisp::app::Board that registers a fixed, test-controlled set of fake
 // devices: "display.main" (if with_display), "storage.int" (if
-// with_internal_storage), "imu.main" and "button.power" -- except that
+// with_internal_storage), "imu.main" and "button.power" (other ids with
+// renamed_ids) -- except that
 // any id listed in `opts.fail` is instead recorded into the BootReport as
 // DeviceState::Failed (with the configured reason) and never added to the
 // registry, exercising App::start()'s "boot continues past a failed
@@ -118,12 +129,21 @@ public:
         if (opts_.with_internal_storage) {
             maybe_register(
                 registry, report,
-                std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
+                std::make_shared<FakeStorage>(opts_.renamed_ids ? "storage.flash" : "storage.int",
+                                              wisp::test::temp_dir().string(),
                                               /*removable=*/false));
         }
         if (opts_.sd) maybe_register(registry, report, opts_.sd);
-        maybe_register(registry, report, std::make_shared<FakeImu>("imu.main"));
-        maybe_register(registry, report, std::make_shared<FakeButton>("button.power"));
+        maybe_register(registry, report,
+                       std::make_shared<FakeImu>(opts_.renamed_ids ? "imu.accel" : "imu.main"));
+        maybe_register(registry, report,
+                       std::make_shared<FakeButton>(
+                           opts_.renamed_ids ? "button.side" : "button.power",
+                           wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
+        if (opts_.renamed_ids) {
+            maybe_register(registry, report,
+                           std::make_shared<wisp::test::FakeTouch>("touch.panel"));
+        }
     }
 
 private:
@@ -159,7 +179,9 @@ struct Harness {
 private:
     wisp::app::Platform build_platform(const MakeAppOptions& opts) {
         if (opts.with_display) {
-            display = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1);
+            display = std::make_shared<FakeDisplay>(
+                opts.renamed_ids ? "display.panel" : "display.main", 480, 480, /*area_align=*/1,
+                "rounded_rect", opts.display_role);
         }
 
         wisp::app::Platform platform;
@@ -209,6 +231,142 @@ TEST(AppBoot, StartsUiWhenDisplayPresent) {
     ASSERT_NE(h.app.ui(), nullptr);
     EXPECT_TRUE(wait_until([&] { return h.display->flush_count() > 0; }, 2000));
     EXPECT_EQ(h.display->brightness(), 200);
+}
+
+// Spec 2.3: the app asks for "the main display", "the main IMU", "the
+// internal medium" and "the power key", never for an id.
+TEST(AppBoot, DevicesAreFoundByRoleNotById) {
+    auto h = make_app({.with_display = true, .renamed_ids = true});
+    ASSERT_TRUE(h.app.start());
+
+    ASSERT_NE(h.app.ui(), nullptr);
+    EXPECT_TRUE(wait_until([&] { return h.display->flush_count() > 0; }, 2000));
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* notes = rep.find("notes");
+    ASSERT_NE(notes, nullptr);
+    EXPECT_EQ(notes->find("mode"), nullptr);
+    EXPECT_EQ(notes->find("storage"), nullptr);
+
+    // The touch panel: the UI reads it as its pointer.
+    bool pointer = false;
+    wisp::test::run_on_ui_blocking(h.app.ui(), [&] {
+        for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+            if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) pointer = true;
+        }
+    });
+    EXPECT_TRUE(pointer);
+
+    // The IMU: a subscription holds it.
+    wisp::core::SensorService* sensors = h.app.sensors();
+    ASSERT_NE(sensors, nullptr);
+    ASSERT_TRUE(sensors->available(wisp::core::SensorKind::Accel));
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 10, "system.test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    auto held = h.app.occupancy().list();
+    ASSERT_EQ(held.size(), 1u);
+    EXPECT_EQ(held[0].device, "imu.accel");
+    EXPECT_EQ(held[0].holder, "system.test");
+    sensors->unsubscribe(sub.value());
+
+    // The power key: its short press turns the screen off (the system
+    // duties own it) ...
+    auto key = h.app.registry().get<wisp::hal::Button>("button.side");
+    ASSERT_NE(key, nullptr);
+    static_cast<FakeButton&>(*key).standby_poll = 20;
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(pm, nullptr);
+    h.app.bus().publish(wisp::core::Event{"button.side.short", "button.side"});
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+    // ... in standby only the power-role key is polled, and it still is
+    // under its own id; its down alone does not wake the screen (the
+    // PowerManager leaves the owned key to its owner) ...
+    std::atomic<bool> pressed{false};
+    const auto key_sub =
+        h.app.bus().subscribe("button.side.down", [&](const auto&) { pressed.store(true); });
+    static_cast<FakeButton&>(*key).down = true;
+    EXPECT_TRUE(wait_until([&] { return pressed.load(); }, 2000));
+    ASSERT_TRUE(h.app.bus().wait_idle(1000));
+    wisp::test::run_on_ui_blocking(h.app.ui(), [] {});
+    EXPECT_TRUE(pm->standby());
+    // ... and the short press its release makes wakes it.
+    static_cast<FakeButton&>(*key).down = false;
+    EXPECT_TRUE(wait_until([&] { return !pm->standby(); }, 2000));
+    h.app.bus().unsubscribe(key_sub);
+
+    h.app.stop();
+}
+
+// The device service follows power.state: a "standby: off" device is
+// unreachable while the screen is off, and reachable again after.
+TEST(AppBoot, DeviceServiceFollowsThePowerState) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::DeviceService* devices = h.app.devices();
+    ASSERT_NE(devices, nullptr);
+    auto haptic = std::make_shared<wisp::test::FakeGeneric>(
+        "haptic.main", &wisp::test::kFakeGenericSchema, wisp::Properties{}, std::string{}, true);
+    ASSERT_TRUE(h.app.registry().add(haptic));
+    // Before any power.state event the level is Active.
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+
+    auto publish = [&](const char* state) {
+        h.app.bus().publish(wisp::core::Event{"power.state", "test", 0,
+                                              wisp::Properties{{"state", wisp::Value(state)}}});
+        ASSERT_TRUE(h.app.bus().wait_idle(1000));
+    };
+    publish("standby");
+    auto busy = devices->get("haptic.main", "level");
+    ASSERT_FALSE(busy);
+    EXPECT_EQ(busy.error().code, wisp::ErrorCode::Busy);
+    // The App's power.state handler maps the state names; one it does not
+    // know leaves the level as it was, for the sensors as for the devices.
+    wisp::core::SensorService* sensors = h.app.sensors();
+    ASSERT_NE(sensors, nullptr);
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 50, "test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    EXPECT_EQ(sensors->imu_rate(), 0u);
+    publish("hibernate");
+    EXPECT_FALSE(devices->get("haptic.main", "level"));
+    EXPECT_EQ(sensors->imu_rate(), 0u);
+    publish("dim");
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+    EXPECT_EQ(sensors->imu_rate(), 50u);
+    sensors->unsubscribe(sub.value());
+    publish("deep_standby");
+    EXPECT_FALSE(devices->get("haptic.main", "level"));
+    publish("active");
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+
+    h.app.stop();
+    EXPECT_EQ(h.app.devices(), nullptr);
+}
+
+// A display that does not declare the role is not the main display: the
+// device boots headless, as with no display at all.
+TEST(AppBoot, ADisplayWithoutTheRoleIsLikeNoDisplay) {
+    auto h = make_app({.with_display = true, .display_role = ""});
+    // The log ring is shared by the whole process, so only lines logged by
+    // this start() count.
+    const auto before = wisp::log::ring_entries();
+    const uint32_t last_seq = before.empty() ? 0 : before.back().seq;
+    ASSERT_TRUE(h.app.start());
+    // The board's mistake is named at boot.
+    const auto entries = wisp::log::ring_entries();
+    EXPECT_EQ(std::count_if(entries.begin(), entries.end(),
+                            [last_seq](const auto& e) {
+                                return e.seq > last_seq && e.tag == "app" &&
+                                       e.msg ==
+                                           "no device with role main among display: "
+                                           "display.main";
+                            }),
+              1);
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* mode = rep.find("notes")->find("mode");
+    ASSERT_NE(mode, nullptr);
+    EXPECT_EQ(mode->as_string(), "headless");
+    EXPECT_EQ(h.app.ui(), nullptr);
 }
 
 // vector-font spec 3.6: without a font image the UI still starts, on

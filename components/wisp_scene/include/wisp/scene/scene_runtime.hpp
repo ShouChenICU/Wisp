@@ -320,6 +320,7 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
@@ -498,6 +499,9 @@ struct SceneRuntimeDeps {
     // they raise. Its jobs run on `worker`. Must outlive the runtime and
     // the worker's last job.
     core::SceneFiles* files = nullptr;
+    // wisp.device.list/get/call; null: list() returns {}, get() and call()
+    // nil, "unavailable". Must outlive the runtime.
+    core::DeviceService* devices = nullptr;
 };
 
 struct SceneRuntimeConfig {
