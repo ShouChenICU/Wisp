@@ -179,11 +179,15 @@ TEST(SystemSettings, ValidatesWholeBatchAtomically) {
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
     EXPECT_EQ(fx.settings.get().brightness, 200);
+    EXPECT_EQ(fx.settings.cell().get().brightness, 200);
+    EXPECT_EQ(fx.settings.cell().get(), fx.settings.get());
 
     auto unknown = fx.settings.set({{"brightness", 100}, {"contrast", 5}});
     ASSERT_FALSE(unknown);
     EXPECT_EQ(unknown.error().code, ErrorCode::InvalidArgument);
     EXPECT_EQ(fx.settings.get().brightness, 200);
+    EXPECT_EQ(fx.settings.cell().get().brightness, 200);
+    EXPECT_EQ(fx.settings.cell().get(), fx.settings.get());
 }
 
 TEST(SystemSettings, RangeBoundaries) {

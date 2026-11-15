@@ -850,6 +850,20 @@ TEST(PowerManager, SetBrightnessWhileActiveAppliesImmediately) {
     EXPECT_EQ(f.display->brightness(), 90);
 }
 
+// With a UI, the panel's brightness is the UI thread's: a call from another
+// thread is ignored, so it cannot race the cell follower.
+TEST(PowerManager, OffThreadSetBrightnessIsIgnored) {
+    Fixture f;
+    f.settle_ui();
+    const int level = f.display->brightness();
+    const int calls = f.display->set_brightness_calls();
+
+    f.pm->set_brightness(50);
+    f.drain_ui();
+    EXPECT_EQ(f.display->brightness(), level);
+    EXPECT_EQ(f.display->set_brightness_calls(), calls);
+}
+
 TEST(PowerManager, BrightnessChangedInStandbyAppliesOnWake) {
     Fixture f;
     f.run_on_ui([&] { f.pm->enter_standby(); });

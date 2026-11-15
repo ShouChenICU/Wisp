@@ -365,8 +365,8 @@ public:
     net::TimeSyncService* time_sync();
     // Always available; loaded from storage by start() (step 3).
     core::ModelProfileService& models();
-    // PowerManager follows its cell's brightness while started (otherwise
-    // the stored value takes effect at the next boot).
+    // PowerManager follows its cell's brightness only when started with a
+    // UI (otherwise the stored value takes effect at the next boot).
     core::SystemSettings& system_settings();
 
     // Non-null for the whole lifetime of a started App (see
