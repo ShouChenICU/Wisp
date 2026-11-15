@@ -23,13 +23,16 @@
 // where the key's logic and its calls into the controller run. No edge
 // needs the bus's event queue, so a flooded bus loses none; while the bus
 // is busy they wait in the inbox, in order. An overflow (more than 8 edges
-// waiting) drops the oldest, is counted (overflows()) and logged.
+// waiting) drops the oldest, is counted (overflows()) and logged; a down
+// that finds the key still down (its up was dropped) first ends the
+// previous press as that up would have.
 //
 // Timing. The hold is timed from the down edge's own time, not from when
 // it was handled, with now_ms() on a kPollMs timer that runs only while
 // the key is down: a down handled late starts the hold at the next tick
-// if it is already kHoldStartMs old, so a late delivery does not turn a
-// short press into a hold or delay the start of a hold. The end is not
+// if it is already kHoldStartMs old: a hold cannot start before its down
+// is handled, but a late delivery adds no second kHoldStartMs wait, and
+// does not turn a short press into a hold. The end is not
 // back-dated: the capture ends when the up is handled, so a late up ends
 // the capture late. Two guards keep a short press a press however late
 // it is handled: the listener stores the last up's time, and the timer

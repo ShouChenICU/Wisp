@@ -380,7 +380,9 @@ TEST_F(TalkKeyTest, InboxOverflowIsCountedAndLogged) {
         flood.hold();
         for (int i = 0; i < 5; ++i) {
             emit(Edge::Down, key_ms.load());
-            emit(Edge::Short, key_ms.load() + 50);  // not the key's: takes no room
+            // The key's own short edge: the listener keeps only downs and
+            // ups, so it takes no room.
+            emit(Edge::Short, key_ms.load() + 50);
             emit(Edge::Up, key_ms.load() + 50);
             key_ms += 100;
         }
@@ -392,6 +394,43 @@ TEST_F(TalkKeyTest, InboxOverflowIsCountedAndLogged) {
     EXPECT_FALSE(conv->holding());
     ASSERT_TRUE(settled());
     EXPECT_EQ(requests(wisp::test::kAsrPath), 0u);
+}
+
+// The up of a hold already under way is the oldest edge when the inbox
+// overflows, so it is dropped: the next down ends that hold first (its
+// recording is sent) and then begins its own press, instead of leaving
+// the capture to run to kMaxRecordMs.
+TEST_F(TalkKeyTest, LostUpIsEndedByTheNextDown) {
+    make_key();
+    mic->hold_at(0);
+    press(Edge::Down);
+    key_ms += wisp::voice::kHoldStartMs;
+    ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 1000));
+    mic->release();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    server.push_asr(wisp::test::asr_text("你好"));
+    server.llm().push(wisp::test::llm_text("<say>好。</say>"));
+    server.push_tts(wisp::test::tts_pcm());
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        key_ms += 500;
+        emit(Edge::Up, key_ms.load());  // the hold's up: dropped below
+        // Four short presses: nine edges in a ring of eight.
+        for (int i = 0; i < 4; ++i) {
+            emit(Edge::Down, key_ms.load() + 10);
+            emit(Edge::Up, key_ms.load() + 60);
+            key_ms += 100;
+        }
+        flood.release();
+    }
+    ASSERT_TRUE(h->bus.wait_idle(2000));
+    EXPECT_EQ(key->overflows(), 1u);
+    EXPECT_FALSE(conv->holding());
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(requests(wisp::test::kAsrPath), 1u);
 }
 
 TEST(FindTalkButton, UsesTheTalkRole) {

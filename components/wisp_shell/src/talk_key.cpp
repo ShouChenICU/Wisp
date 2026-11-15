@@ -87,14 +87,29 @@ void TalkKey::on_down(uint64_t at_us) {
     // wake the press asked for is still on its way (PowerManager's
     // follower on the UI task), and the mic is powered up only with it.
     const bool lit = !screen_on_ || screen_on_();
+    // Waits for a tick in progress, so none begins a hold for the previous
+    // press after the read below.
+    if (timer_) timer_->stop();
+    bool was_pressed = false;
+    bool was_holding = false;
     {
         std::lock_guard<os::Mutex> lock(mu_);
+        was_pressed = pressed_;
+        was_holding = holding_;
         pressed_ = true;
         holding_ = false;
         down_us_ = at_us;
         // An edge stamped ahead of the clock would make tick()'s unsigned
         // now - down wrap around.
         down_ms_ = std::min<uint64_t>(at_us / 1000, now_ms_());
+    }
+    // Still down: the previous press's up was dropped (the inbox drops its
+    // oldest edge when full). End that press as its up would have, or its
+    // capture runs on to kMaxRecordMs.
+    if (was_holding) {
+        conv_.hold_end();
+    } else if (was_pressed) {
+        conv_.press_end();
     }
     if (lit) conv_.press_begin();
     // Not under mu_: start() may wait for a tick that takes it.
