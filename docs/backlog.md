@@ -322,6 +322,7 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator an
 Source: `docs/superpowers/plans/2026-11-14-state-cells-3-subscribers.md`. Simulator and unit tests only so far.
 
 - NOT RUN: `WISP_PERF` on Home while listening and while speaking: the wisp's level animation is smooth at about 20 Hz (Home's timer runs every 50 ms then and passes only the level on between full refreshes), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
+- NOT RUN: `WISP_PERF` with the talk overlay up over a sub-page or a scene while listening and while speaking: its level bar animates at about 20 Hz while it shows Listening (the shell's timer runs every 50 ms then and moves only the bar, no full `update_talk()`), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
 
 ## CI speed
 

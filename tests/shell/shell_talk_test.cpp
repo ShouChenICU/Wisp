@@ -1,25 +1,31 @@
 // Shell's own wiring for the talk overlay (wisp/shell/talk_overlay.hpp,
-// mvp spec 6.5): home_in_front()/request_talk()/update_talk()/
-// on_voice_bus() and the tick timer, driven end to end over a real
-// ConversationController/AgentService/VoiceService (shell/shell_fixture.hpp)
-// and a real Shell on a live UiRuntime (as shell/shell_test.cpp drives one,
-// with the same scene stand-in). TalkOverlay's own phase/layout logic is
-// covered by shell/talk_overlay_test.cpp; this file only checks that Shell
-// drives it correctly from the real conversation and voice.state.
+// mvp spec 6.5): home_in_front()/request_talk()/update_talk(), the voice
+// and scene cells it follows and the tick timer, driven end to end over a
+// real ConversationController/AgentService/VoiceService
+// (shell/shell_fixture.hpp) and a real Shell on a live UiRuntime (as
+// shell/shell_test.cpp drives one, with the same scene stand-in).
+// TalkOverlay's own phase/layout logic is covered by
+// shell/talk_overlay_test.cpp; this file only checks that Shell drives it
+// correctly from the real conversation and the voice service.
 
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "shell/shell_fixture.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/home.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/shell.hpp"
@@ -43,6 +49,8 @@ class ShellTalkTest : public wisp::test::ShellFixture {
 protected:
     void make_shell(const std::string& shape = "rect", int32_t width = 480, int32_t height = 480) {
         start();
+        scenes_ = std::make_unique<wisp::core::StateCell<wisp::scene::SceneOverview>>(
+            h->bus, wisp::scene::SceneOverview{});
         display_ =
             std::make_shared<wisp::test::FakeDisplay>("display.main", width, height, 1, shape);
         shape_ = wisp::hal::screen_shape_from_caps(display_->info().caps).value();
@@ -78,13 +86,48 @@ protected:
             // virtual_ms), so bumping it for the Saying timeout doesn't
             // also have to fast-forward a real 5s sleep.
             .now_ms = [this] { return wisp::os::now_ms() + virtual_ms.load(); },
+            .scenes = scenes_.get(),
         });
         on_ui([&] { shell_->start(); });
+        voice_probe_ = conv->voice_status().subscribe(
+            [this](const wisp::voice::VoiceStatus& v) {
+                std::lock_guard<std::mutex> lock(probe_mu_);
+                voice_seen_ = v;
+            },
+            ui_.get());
+        scenes_probe_ = scenes_->subscribe(
+            [this](const wisp::scene::SceneOverview& o) {
+                std::lock_guard<std::mutex> lock(probe_mu_);
+                scenes_seen_ = o;
+            },
+            ui_.get());
+    }
+
+    // Until the shell has looked at the voice and scene cells as they are
+    // now, and the update_talk() its call posted has run. Each probe
+    // follows its cell on the UI thread, subscribed after the shell, so its
+    // call runs after the shell's (the cell schedules them in that order,
+    // the UI runs them first in, first out); the post the shell made then
+    // runs before the round trip's. Round trips alone do not tell: one
+    // drain of the UI's post queue may run them all before the slots' pass.
+    void settle_cells() {
+        const wisp::voice::VoiceStatus v = conv->voice_status().get();
+        const wisp::scene::SceneOverview o = scenes_->get();
+        ASSERT_TRUE(wait_until(
+            [&] {
+                std::lock_guard<std::mutex> lock(probe_mu_);
+                return voice_seen_ == v && scenes_seen_ == o;
+            },
+            2000));
+        on_ui([] {});
     }
 
     void TearDown() override {
+        voice_probe_.reset();
+        scenes_probe_.reset();
         if (shell_ != nullptr) on_ui([&] { shell_->stop(); });
         shell_.reset();
+        scenes_.reset();
         if (layer_) on_ui([&] { layer_.reset(); });
         if (ui_) ui_->stop();
         ShellFixture::TearDown();
@@ -141,7 +184,14 @@ protected:
     wisp::hal::ScreenShape shape_;
     std::unique_ptr<wisp::ui::UiRuntime> ui_;
     std::unique_ptr<wisp::ui::SystemLayer> layer_;
+    // The scene runtime's overview, as the test moves it; before the shell,
+    // which follows it.
+    std::unique_ptr<wisp::core::StateCell<wisp::scene::SceneOverview>> scenes_;
     std::unique_ptr<wisp::shell::Shell> shell_;
+    wisp::core::CellSubscription voice_probe_, scenes_probe_;
+    std::mutex probe_mu_;
+    std::optional<wisp::voice::VoiceStatus> voice_seen_;
+    std::optional<wisp::scene::SceneOverview> scenes_seen_;
 
     int leaves = 0;
     bool refuse = false;
@@ -161,9 +211,8 @@ TEST_F(ShellTalkTest, HoldOnHomeShowsNoOverlay) {
     say_into_mic();
     conv->hold_begin();
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
-    // Give request_talk()/update_talk() every chance to run before
-    // asserting the negative.
-    h->bus.wait_idle(500);
+    // request_talk()/update_talk() have run before asserting the negative.
+    settle_cells();
     EXPECT_EQ(phase(), Phase::Hidden);
     EXPECT_FALSE(overlay_shown());
 
@@ -221,9 +270,15 @@ TEST_F(ShellTalkTest, FailedTurnOnASubPageShowsItsNote) {
 
     virtual_ms += wisp::shell::kOverlaySayMs + 1;
     ASSERT_TRUE(wait_phase(Phase::Hidden, 2000));
-    // Shown once: a later change of the voice does not bring it back.
-    h->bus.publish({"voice.state", "test", 0, {{"state", "idle"}}});
+    // Shown once: a later change of the voice (a hold that records and is
+    // dropped, back to idle) does not bring it back.
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
     h->bus.wait_idle(500);
+    settle_cells();
     EXPECT_EQ(phase(), Phase::Hidden);
 }
 
@@ -318,7 +373,7 @@ TEST_F(ShellTalkTest, HomeInFrontHidesTheOverlay) {
         // At once, not on the next change.
         EXPECT_EQ(shell_->talk()->phase(), Phase::Hidden);
     });
-    h->bus.wait_idle(500);
+    settle_cells();
     EXPECT_EQ(phase(), Phase::Hidden);
     EXPECT_FALSE(overlay_shown());
 
@@ -333,7 +388,7 @@ TEST_F(ShellTalkTest, LeavingHomeShowsTheOverlay) {
     say_into_mic();
     conv->hold_begin();
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
-    h->bus.wait_idle(500);
+    settle_cells();
     ASSERT_EQ(phase(), Phase::Hidden);
 
     on_ui([&] { shell_->show(wisp::shell::Page::Scenes); });
@@ -457,10 +512,9 @@ TEST_F(ShellTalkTest, SceneStateReevaluatesTheOverlay) {
     ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
     ASSERT_TRUE(wait_phase(Phase::Listening, 2000));
 
-    h->bus.publish({"scene.state", "test", 0, {{"id", "demo"}, {"state", "background"}}});
-    h->bus.wait_idle(500);
-    // Two round-trips: the bus handler's post, then request_talk()'s own.
-    on_ui([] {});
+    // The scene goes to the background.
+    scenes_->update([](wisp::scene::SceneOverview& o) { o.background_count = 1; });
+    settle_cells();
     EXPECT_EQ(phase(), Phase::Listening);
     EXPECT_TRUE(overlay_shown());
 
@@ -483,14 +537,15 @@ TEST_F(ShellTalkTest, SceneStateKeepsAFailureNote) {
     for (int i = 0; i < 3; ++i)
         server.llm().push({.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
 
+    scenes_->update([](wisp::scene::SceneOverview& o) { o.foreground.assign("demo"); });
     ASSERT_TRUE(conv->voice_text("提醒我喝水"));
     ASSERT_TRUE(wait_turns(1));
     ASSERT_TRUE(settled());
     ASSERT_TRUE(wait_phase(Phase::Note, 3000));
 
-    h->bus.publish({"scene.state", "test", 0, {{"id", "demo"}, {"state", "closed"}}});
-    h->bus.wait_idle(500);
-    on_ui([] {});
+    // The scene closes.
+    scenes_->update([](wisp::scene::SceneOverview& o) { o.foreground = {}; });
+    settle_cells();
     EXPECT_EQ(phase(), Phase::Note);
     EXPECT_EQ(overlay_text(), wisp::ui::tr(wisp::ui::StrId::HomeTurnNetwork));
     EXPECT_TRUE(overlay_shown());
@@ -538,4 +593,69 @@ TEST_F(ShellTalkTest, TickHidesSayingAfterFiveSeconds) {
 
     ASSERT_TRUE(settled());
     drop_scene();
+}
+
+// The overlay follows the voice service's own state: with wisp.bus held (so
+// no voice.state reaches anyone) a hold on a sub-page still shows Listening,
+// and its end still hides the card.
+TEST_F(ShellTalkTest, OverlayFollowsTheVoiceCell) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        ASSERT_TRUE(conv->holding());
+        ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+        EXPECT_TRUE(wait_phase(Phase::Listening, 2000));
+        EXPECT_TRUE(overlay_shown());
+        conv->hold_cancel();
+        ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Idle; }, 2000));
+        EXPECT_TRUE(wait_phase(Phase::Hidden, 2000));
+    }
+    ASSERT_TRUE(settled());
+}
+
+// While listening the card's level bar is the voice service's level(), at
+// the quick period: at least 10 changes a second, with wisp.bus held so
+// none comes from a voice.state. The mic plays in real time and changes its
+// loudness every 50 ms; the overlay's change counter is read on the UI
+// thread and 20 changes are timed on the clock both sides run on (2x margin
+// over the 20 Hz both run at; the slow tick would give 4).
+TEST_F(ShellTalkTest, OverlayLevelComesFromTheVoiceService) {
+    make_shell();
+    on_ui([&] { shell_->show(wisp::shell::Page::Settings); });
+    mic->set_real_time(true);
+    std::vector<wisp::test::audio::Segment> script;
+    constexpr int16_t kAmplitudes[] = {1000, 4000, 12000, 2000, 24000};
+    for (int i = 0; i < 100; ++i) script.push_back(wisp::test::audio::sine(50, kAmplitudes[i % 5]));
+    mic->set_script(script);
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        ASSERT_TRUE(conv->holding());
+        auto talk = [&] { return shell_->talk(); };
+        ASSERT_TRUE(wait_until(
+            [&] {
+                bool ok = false;
+                on_ui([&] { ok = talk()->phase() == Phase::Listening && talk()->level() > 0; });
+                return ok;
+            },
+            3000));
+        uint32_t from = 0;
+        on_ui([&] { from = talk()->level_changes(); });
+        const uint64_t t0 = wisp::os::now_ms();
+        EXPECT_TRUE(wait_until(
+            [&] {
+                bool ok = false;
+                on_ui([&] { ok = talk()->level_changes() >= from + 20; });
+                return ok;
+            },
+            4000));
+        const uint64_t took = wisp::os::now_ms() - t0;
+        EXPECT_LE(took, 2000u) << "20 level changes took " << took << " ms";
+    }
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
 }

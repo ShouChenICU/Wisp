@@ -15,13 +15,21 @@
 
 #include "shell/page_fixture.hpp"
 #include "support/agent_fixture.hpp"
+#include "support/fake_audio.hpp"
+#include "support/fake_models.hpp"
 #include "wisp/agent/agent_service.hpp"
+#include "wisp/core/model_profiles.hpp"
+#include "wisp/shell/conversation.hpp"
 #include "wisp/shell/history.hpp"
 #include "wisp/shell/scene_list.hpp"
 #include "wisp/shell/settings_page.hpp"
 #include "wisp/shell/talk_overlay.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme_tokens.hpp"
+#include "wisp/voice/asr_client.hpp"
+#include "wisp/voice/pcm_player.hpp"
+#include "wisp/voice/tts_client.hpp"
+#include "wisp/voice/voice_service.hpp"
 
 using wisp::shell::Page;
 using wisp::test::box_visible;
@@ -103,6 +111,16 @@ protected:
     }
 
     void TearDown() override {
+        // The shell follows the voice; it lets go before the voice goes.
+        if (conv) {
+            h->on_ui([&] { h->shell().set_conversation(nullptr); });
+            conv->stop();
+        }
+        conv.reset();
+        voice.reset();
+        player.stop_task();
+        tts.reset();
+        asr.reset();
         if (agent_h) (void)agent_h->worker.drain(5000);
         h.reset();
         if (agent) agent->stop();
@@ -151,9 +169,61 @@ protected:
         lv_obj_update_layout(list);
     }
 
+    // A real voice service and conversation over agent_h, handed to the
+    // shell as the App does: the talk card shows what a real hold does. The
+    // mic reads live silence; nothing is sent to the models.
+    void start_voice() {
+        ASSERT_TRUE(agent_h->worker.run_sync(
+            [&] {
+                ASSERT_TRUE(
+                    agent_h->models->create({.kind = wisp::core::ModelKind::Asr,
+                                             .name = "asr",
+                                             .preset = "custom",
+                                             .base_url = std::string("https://asr.example.com/v1"),
+                                             .model = std::string("whisper-1"),
+                                             .api_key = std::string("sk-asr")}));
+                ASSERT_TRUE(
+                    agent_h->models->create({.kind = wisp::core::ModelKind::Tts,
+                                             .name = "tts",
+                                             .preset = "custom",
+                                             .base_url = std::string("https://tts.example.com/v1"),
+                                             .model = std::string("tts-1"),
+                                             .api_key = std::string("sk-tts")}));
+            },
+            wisp::os::kForever));
+        asr = std::make_unique<wisp::voice::AsrClient>(models_server, *agent_h->models,
+                                                       [](uint32_t) {});
+        tts = std::make_unique<wisp::voice::TtsClient>(models_server, *agent_h->models);
+        ASSERT_TRUE(player.start());
+        voice = std::make_unique<wisp::voice::VoiceService>(wisp::voice::VoiceDeps{
+            .bus = agent_h->bus,
+            .mic = mic,
+            .player = player,
+            .asr = *asr,
+            .tts = *tts,
+            .models = *agent_h->models,
+            .locks = agent_h->locks.get(),
+            .network_up = [] { return true; },
+            .volume = [] { return uint8_t{100}; },
+        });
+        ASSERT_TRUE(voice->start());
+        conv = std::make_unique<wisp::shell::ConversationController>(
+            wisp::shell::ConversationDeps{.bus = agent_h->bus, .agent = *agent, .voice = *voice});
+        conv->start();
+        h->on_ui([&] { h->shell().set_conversation(conv.get()); });
+    }
+
     std::unique_ptr<wisp::test::AgentHarness> agent_h;
     std::unique_ptr<wisp::agent::AgentService> agent;
     std::unique_ptr<wisp::test::PageHarness> h;
+    wisp::test::FakeModelServer models_server;
+    std::shared_ptr<wisp::test::audio::FakeAudioIn> mic =
+        std::make_shared<wisp::test::audio::FakeAudioIn>();
+    wisp::voice::PcmPlayer player{std::make_shared<wisp::test::audio::FakeAudioOut>()};
+    std::unique_ptr<wisp::voice::AsrClient> asr;
+    std::unique_ptr<wisp::voice::TtsClient> tts;
+    std::unique_ptr<wisp::voice::VoiceService> voice;
+    std::unique_ptr<wisp::shell::ConversationController> conv;
 };
 
 }  // namespace
@@ -252,7 +322,7 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
     }
 }
 
-// With the card up for a spoken turn (here: recording), Settings scrolled
+// With the card up for a spoken turn (here: a real hold recording), Settings scrolled
 // to its end shows its last row kGapSm above the card, and a real tap on
 // that row is the row's (it asks to power off), not the card's (which
 // goes Home). A page opened while the card is up gets the same room. Once
@@ -260,6 +330,7 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
 TEST_P(SubPageShapes, LastRowStaysClearOfTheTalkCard) {
     using Phase = wisp::shell::TalkOverlay::Phase;
     using Row = wisp::shell::SettingsPage::Row;
+    start_voice();
     h->show(Page::Settings);
     lv_area_t plain{};
     h->on_ui([&] {
@@ -269,7 +340,9 @@ TEST_P(SubPageShapes, LastRowStaysClearOfTheTalkCard) {
         lv_obj_update_layout(p->list());
         plain = coords_of(p->row(Row::PowerOff));
     });
-    h->bus().publish({"voice.state", "test", 0, {{"state", "listening"}, {"level", int64_t{40}}}});
+    conv->hold_begin();
+    ASSERT_TRUE(wisp::test::wait_until(
+        [&] { return voice->state() == wisp::voice::VoiceState::Listening; }, 2000));
     ASSERT_TRUE(h->ui_until([&] { return h->shell().talk()->phase() == Phase::Listening; }));
     lv_obj_t* last = nullptr;
     auto clear_of_card = [&](lv_obj_t* list, lv_obj_t* row_obj) {
@@ -313,7 +386,7 @@ TEST_P(SubPageShapes, LastRowStaysClearOfTheTalkCard) {
         wisp::shell::SettingsPage* p = h->shell().settings_page();
         clear_of_card(p->list(), p->row(Row::PowerOff));
     });
-    h->bus().publish({"voice.state", "test", 0, {{"state", "idle"}}});
+    conv->hold_cancel();
     ASSERT_TRUE(h->ui_until([&] { return h->shell().talk()->phase() == Phase::Hidden; }));
     h->on_ui([&] {
         wisp::shell::SettingsPage* p = h->shell().settings_page();

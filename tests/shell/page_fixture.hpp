@@ -3,7 +3,9 @@
 // PageHarness: a Shell on a live UiRuntime (a FakeDisplay of any shape and
 // a FakeTouch the tests drive one read at a time) with a system layer, for
 // the sub-page tests. The test fills ShellDeps' page services before
-// start(); boot() then shows the home screen.
+// start(); boot() then shows the home screen. The harness owns a scene
+// overview cell (scenes()) that ShellDeps::scenes points at, for the tests
+// to move as the scene runtime would.
 
 #include <gtest/gtest.h>
 
@@ -17,7 +19,9 @@
 #include "support/visible.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -83,6 +87,7 @@ public:
                 .layer = *layer_,
                 .shape = shape_,
                 .bus = bus_,
+                .scenes = &scenes_,
             });
         }
         return *deps_;
@@ -115,6 +120,7 @@ public:
     ui::SystemLayer& layer() { return *layer_; }
     ui::UiRuntime& ui() { return *ui_; }
     core::EventBus& bus() { return bus_; }
+    core::StateCell<scene::SceneOverview>& scenes() { return scenes_; }
     const hal::ScreenShape& shape() const { return shape_; }
 
     lv_obj_t* active() {
@@ -177,6 +183,8 @@ private:
     hal::ScreenShape shape_;
     std::unique_ptr<ui::UiRuntime> ui_;
     core::EventBus bus_;
+    // Before the shell, which follows it.
+    core::StateCell<scene::SceneOverview> scenes_{bus_, scene::SceneOverview{}};
     std::unique_ptr<ui::SystemLayer> layer_;
     std::unique_ptr<shell::ShellDeps> deps_;
     std::unique_ptr<shell::Shell> shell_;

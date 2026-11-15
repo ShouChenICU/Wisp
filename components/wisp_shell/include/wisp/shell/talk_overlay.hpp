@@ -11,9 +11,10 @@
 //
 // Shell owns the one instance and decides when to drive it: on_turn()/
 // tick() while Home is not in front, on_home() while it is (and the
-// moment it comes in front); a "scene.state" event (the scene that was in
-// front may no longer be) only has Shell look again, since a hide would
-// drop a say or note already taken.
+// moment it comes in front), set_level() between them while it shows
+// Listening; a change of the scene overview (the scene that was in front
+// may no longer be) only has Shell look again, since a hide would drop a
+// say or note already taken.
 //
 // Phase, from on_turn()'s VoiceState and TurnView: Listening while
 // recording (a pulsing dot and the level bar), Thinking while
@@ -83,8 +84,15 @@ public:
     void on_home(const TurnView& t);
     // Hidden at once (e.g. the foreground scene changed).
     void hide();
+    // The level bar alone, while Listening (a no-op otherwise): the
+    // shell's quick tick, between on_turn() calls, with nothing else
+    // re-laid out.
+    void set_level(uint8_t level);
 
     Phase phase() const { return phase_; }
+    // The level bar's value, and how many times it changed (for tests).
+    uint8_t level() const { return level_; }
+    uint32_t level_changes() const { return level_changes_; }
     lv_obj_t* obj() const { return obj_; }
     // The rows a scrolling screen under the card keeps clear at its end
     // while the card shows: from kGapSm above the card's top to the
@@ -116,6 +124,8 @@ private:
     lv_obj_t* bar_ = nullptr;
     lv_obj_t* label_ = nullptr;
     bool pulsing_ = false;
+    uint8_t level_ = 0;
+    uint32_t level_changes_ = 0;
     int32_t card_top_ = 0;  // the card's top row, as fit() last placed it
 
     Phase phase_ = Phase::Hidden;

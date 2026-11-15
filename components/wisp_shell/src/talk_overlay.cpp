@@ -215,11 +215,22 @@ void TalkOverlay::hide() {
     apply(0);
 }
 
+void TalkOverlay::set_level(uint8_t level) {
+    if (phase_ != Phase::Listening || level == level_) return;
+    level_ = level;
+    ++level_changes_;
+    lv_bar_set_value(bar_, level, LV_ANIM_OFF);
+}
+
 void TalkOverlay::apply(uint8_t level) {
     const bool listening = phase_ == Phase::Listening;
     if (listening) {
         lv_obj_remove_flag(dot_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(bar_, LV_OBJ_FLAG_HIDDEN);
+        if (level != level_) {
+            level_ = level;
+            ++level_changes_;
+        }
         lv_bar_set_value(bar_, level, LV_ANIM_OFF);
     } else {
         lv_obj_add_flag(dot_, LV_OBJ_FLAG_HIDDEN);

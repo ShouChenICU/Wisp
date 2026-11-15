@@ -8,8 +8,8 @@
 #include "lvgl_private.h"  // lv_indev_t's long-press stamps
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/gestures.hpp"
 #include "wisp/shell/history.hpp"
 #include "wisp/shell/home.hpp"
@@ -30,6 +30,9 @@ namespace {
 constexpr const char* kTag = "shell";
 // The talk overlay's tick(), as often as Home's own refresh timer.
 constexpr uint32_t kTalkTickMs = 250;
+// Its level bar while it shows Listening, as often as Home's wisp level
+// (Home::kRefreshMs): only the bar moves, nothing else is laid out again.
+constexpr uint32_t kTalkLevelMs = 50;
 
 ui::StrId title_of(Page p) {
     switch (p) {
@@ -42,15 +45,6 @@ ui::StrId title_of(Page p) {
             break;
     }
     return ui::StrId::PageHistory;
-}
-
-std::optional<voice::VoiceState> parse_voice(const std::string& s) {
-    using voice::VoiceState;
-    for (VoiceState v : {VoiceState::Idle, VoiceState::Listening, VoiceState::Transcribing,
-                         VoiceState::Speaking, VoiceState::Error}) {
-        if (s == voice::to_string(v)) return v;
-    }
-    return std::nullopt;
 }
 }  // namespace
 
@@ -116,30 +110,38 @@ void Shell::start() {
     lv_screen_load(home_screen_);
     listing_ = std::make_shared<std::atomic<bool>>(false);
     icons_ = std::make_shared<IconCache>();
-    // Always subscribed: a scene.state event has the talk overlay look
-    // again (the scene that was in front may no longer be) whether or not
-    // the scene list is also listening for it. Not a hide: the overlay
-    // records a say or note as seen when it takes one, so a hide here would
-    // lose it for good; Home coming in front hides it on its own.
-    scene_sub_ =
-        deps_.bus.subscribe(core::topics::kSceneState, [this, alive = alive_](const core::Event&) {
-            // On the bus's thread: the list is read again from the UI
-            // thread, which knows whether it is open.
-            deps_.ui.post([this, alive] {
-                if (!*alive) return;
-                // Posted again: the screen that replaces a closing scene may
-                // still be loading.
-                request_talk();
-                if (scenes_) list_scenes();
-            });
-        });
     talk_ =
         std::make_unique<TalkOverlay>(deps_.layer, deps_.shape, [this] { post_show(Page::Home); });
-    // on_voice_bus() only touches atomics directly; request_talk() (which
-    // it calls) does its own posting with its own alive_ check.
-    talk_voice_sub_ = deps_.bus.subscribe(core::topics::kVoiceState,
-                                          [this](const core::Event& e) { on_voice_bus(e); });
     talk_timer_ = lv_timer_create(&Shell::talk_timer_cb, kTalkTickMs, this);
+    talk_period_ = kTalkTickMs;
+    if (deps_.scenes != nullptr) {
+        // Every change has the talk overlay look again (the scene that was
+        // in front may no longer be), whether or not the scene list is
+        // open. Not a hide: the overlay records a say or note as seen when
+        // it takes one, so a hide here would lose it for good; Home coming
+        // in front hides it on its own. The list lists again only for what
+        // it shows: the packages (catalog) and which scenes run in front or
+        // in the background (its marks), not a headless scene.
+        const scene::SceneOverview now = deps_.scenes->get();
+        scene_sub_ = deps_.scenes->subscribe(
+            [this, catalog = now.catalog, foreground = now.foreground,
+             background = now.background_count](const scene::SceneOverview& o) mutable {
+                // Posted: the screen that replaces a closing scene may still
+                // be loading.
+                request_talk();
+                const bool listed = o.catalog != catalog || o.foreground != foreground ||
+                                    o.background_count != background;
+                catalog = o.catalog;
+                foreground = o.foreground;
+                background = o.background_count;
+                // The listing itself is the storage worker's.
+                if (listed && scenes_) list_scenes();
+            },
+            &deps_.ui);
+    }
+    // Fixtures hand the conversation in at construction; the App through
+    // set_conversation() once the voice has started.
+    follow_voice();
     if (deps_.conversation != nullptr) {
         talk_listener_ =
             deps_.conversation->add_listener([this](const TurnView&) { request_talk(); });
@@ -149,14 +151,9 @@ void Shell::start() {
 
 void Shell::stop() {
     if (home_ == nullptr) return;
-    if (scene_sub_ != 0) {
-        deps_.bus.unsubscribe(scene_sub_);
-        scene_sub_ = 0;
-    }
-    if (talk_voice_sub_ != 0) {
-        deps_.bus.unsubscribe(talk_voice_sub_);
-        talk_voice_sub_ = 0;
-    }
+    scene_sub_.reset();
+    talk_voice_sub_.reset();
+    voice_state_ = voice::VoiceState::Idle;
     if (talk_timer_ != nullptr) {
         lv_timer_delete(talk_timer_);
         talk_timer_ = nullptr;
@@ -193,11 +190,26 @@ void Shell::set_conversation(ConversationController* conversation) {
     talk_listener_ = 0;
     deps_.conversation = conversation;
     if (home_ != nullptr) home_->set_conversation(conversation);
+    // Released before the controller (and its voice) may go.
+    follow_voice();
     if (deps_.conversation != nullptr) {
         talk_listener_ =
             deps_.conversation->add_listener([this](const TurnView&) { request_talk(); });
     }
     request_talk();
+}
+
+void Shell::follow_voice() {
+    talk_voice_sub_.reset();
+    voice_state_ = voice::VoiceState::Idle;
+    // Before start() there is no overlay; start() subscribes then.
+    if (deps_.conversation == nullptr || home_ == nullptr) return;
+    talk_voice_sub_ = deps_.conversation->voice_status().subscribe(
+        [this](const voice::VoiceStatus& v) {
+            voice_state_ = v.state;
+            request_talk();
+        },
+        &deps_.ui);
 }
 
 bool Shell::home_in_front() const { return home_ != nullptr && lv_screen_active() == home_screen_; }
@@ -223,9 +235,26 @@ void Shell::update_talk() {
     if (home_in_front()) {
         talk_->on_home(view);
     } else {
-        talk_->on_turn(view, voice_state_.load(), voice_level_.load(), deps_.now_ms());
+        const uint8_t level =
+            deps_.conversation != nullptr ? deps_.conversation->voice_level() : uint8_t{0};
+        talk_->on_turn(view, voice_state_, level, deps_.now_ms());
     }
     sync_end_room();
+    sync_talk_timer();
+}
+
+void Shell::sync_talk_timer() {
+    if (talk_timer_ == nullptr) return;
+    // Quick only while the card shows its level bar and the screen is on:
+    // no 20 Hz tick on Home, in standby or while the card shows text.
+    const bool screen_off =
+        deps_.power != nullptr && deps_.power->get() >= hal::PowerLevel::Standby;
+    const bool metered = talk_ && deps_.conversation != nullptr &&
+                         talk_->phase() == TalkOverlay::Phase::Listening && !screen_off;
+    const uint32_t want = metered ? kTalkLevelMs : kTalkTickMs;
+    if (want == talk_period_) return;
+    talk_period_ = want;
+    lv_timer_set_period(talk_timer_, want);
 }
 
 void Shell::sync_end_room() {
@@ -248,27 +277,16 @@ void Shell::home_loaded_cb(lv_event_t* e) {
     }
 }
 
-void Shell::on_voice_bus(const core::Event& e) {
-    auto it = e.payload.find("state");
-    const std::string state = it != e.payload.end() && it->second.type() == Value::Type::String
-                                  ? it->second.as_string()
-                                  : std::string();
-    if (auto v = parse_voice(state)) {
-        voice_state_.store(*v);
-        auto lvl = e.payload.find("level");
-        voice_level_.store(
-            lvl != e.payload.end() && lvl->second.type() == Value::Type::Int
-                ? static_cast<uint8_t>(std::clamp<int64_t>(lvl->second.as_int(), 0, 100))
-                : 0);
-    }
-    request_talk();
-}
-
 void Shell::talk_timer_cb(lv_timer_t* t) {
     auto* self = static_cast<Shell*>(lv_timer_get_user_data(t));
     if (self->talk_) {
+        // The level alone: the voice service's, read when it is drawn (no
+        // event carries it), without a full update_talk() at 20 Hz.
+        if (self->talk_period_ == kTalkLevelMs && self->deps_.conversation != nullptr)
+            self->talk_->set_level(self->deps_.conversation->voice_level());
         self->talk_->tick(self->deps_.now_ms());
         self->sync_end_room();
+        self->sync_talk_timer();
     }
     self->check_drag();
     self->follow_lang();

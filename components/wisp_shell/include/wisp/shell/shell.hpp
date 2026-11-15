@@ -53,8 +53,9 @@
 //
 // The scene list is listed on the storage worker (ShellDeps::list_scenes
 // in a submit_io job), sorted by ShellDeps::recents, and handed to the
-// page on the UI thread; while it is open every scene.state event lists it
-// again.
+// page on the UI thread; while it is open it is listed again whenever the
+// scene overview (ShellDeps::scenes) shows a package installed, replaced or
+// deleted, or a scene moving in front or to the background.
 //
 // The hardware diagnostics (the self-check screen, "System -> Hardware
 // diagnostics" in spec 6.4) is not built at boot: open_diagnostics() has
@@ -78,11 +79,15 @@
 // connections page, the diagnostics -- !home_in_front()), every change of
 // the conversation or the voice state is forwarded to it, and so is the
 // moment Home leaves the front; the moment Home comes in front it hides,
-// since Home shows the same itself. Its own tap is show(Home): a scene is
-// sent back as leave_scene() does, a page or the diagnostics close as
-// their own way back closes them. Any "scene.state" event has it look
-// again, since the scene that was in front may no longer be; it does not
-// hide it, which would drop a say or note the overlay has already taken.
+// since Home shows the same itself. The voice state comes from the
+// conversation's voice_status() cell, and the level from voice_level(),
+// read when drawn: while the card shows Listening (screen on) the tick
+// timer runs at kTalkLevelMs and moves the level bar alone, otherwise at
+// its slow period. Its own tap is show(Home): a scene is sent back as
+// leave_scene() does, a page or the diagnostics close as their own way
+// back closes them. Any change of the scene overview has it look again,
+// since the scene that was in front may no longer be; it does not hide
+// it, which would drop a say or note the overlay has already taken.
 //
 // Threading: every member is UI thread only, like every lv_* call. A back
 // swipe's work is posted (it arrives from inside the pointer's read
@@ -122,6 +127,10 @@ class WispView;
 namespace wisp::agent {
 class AgentService;
 }  // namespace wisp::agent
+
+namespace wisp::scene {
+struct SceneOverview;
+}  // namespace wisp::scene
 
 namespace wisp::shell {
 
@@ -174,6 +183,11 @@ struct ShellDeps {
     // screen pauses the wisp while it is off. Null: always on. It must
     // outlive stop().
     const core::StateCell<hal::PowerLevel>* power = nullptr;
+    // The scene runtime's overview (SceneRuntime::overview()): the talk
+    // overlay looks again on each change, and an open scene list lists
+    // again when the scenes installed or running moved. Null: no scenes.
+    // It must outlive stop().
+    const core::StateCell<scene::SceneOverview>* scenes = nullptr;
     // The installed scenes, on the storage worker (a submit_io job): icon
     // bytes at most kIconMaxBytes (or only their icon_hash), available
     // false while the scene's files are on an SD card that is out. Asked
@@ -350,7 +364,12 @@ private:
     // Hands the overlay card's room (TalkOverlay::end_room()) to the
     // scrolling pages under it when it changed.
     void sync_end_room();
-    void on_voice_bus(const core::Event& e);
+    // (Re)subscribes to the conversation's voice status, releasing the
+    // last subscription first; none without a conversation or before
+    // start().
+    void follow_voice();
+    // The tick timer's period: quick while the card shows the level bar.
+    void sync_talk_timer();
     static void talk_timer_cb(lv_timer_t* t);
 
     ShellDeps deps_;
@@ -386,8 +405,8 @@ private:
     // Replaced with each sub-page: a scene listing still on its way finds
     // its page gone.
     std::shared_ptr<bool> page_alive_;
-    // scene.state while started.
-    core::SubscriptionId scene_sub_ = 0;
+    // ShellDeps::scenes while started.
+    core::CellSubscription scene_sub_;
     // Set while a listing for the current page waits on the worker, so a
     // burst of events queues one. Replaced with each sub-page, like
     // page_alive_: a new page never waits on an old page's listing, whose
@@ -409,10 +428,12 @@ private:
 
     std::unique_ptr<TalkOverlay> talk_;
     uint32_t talk_listener_ = 0;  // on deps_.conversation
-    core::SubscriptionId talk_voice_sub_ = 0;
+    // deps_.conversation's voice_status() while started.
+    core::CellSubscription talk_voice_sub_;
     lv_timer_t* talk_timer_ = nullptr;
-    std::atomic<voice::VoiceState> voice_state_{voice::VoiceState::Idle};
-    std::atomic<uint8_t> voice_level_{0};
+    uint32_t talk_period_ = 0;
+    // As that subscription last delivered it.
+    voice::VoiceState voice_state_ = voice::VoiceState::Idle;
     std::atomic<bool> talk_posted_{false};
     int32_t end_room_ = 0;  // the room last handed to the pages
 

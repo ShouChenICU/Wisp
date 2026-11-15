@@ -12,6 +12,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -68,6 +69,7 @@ protected:
         };
         d.list_scenes = [this] {
             on_worker_listing = agent.worker.on_worker();
+            ++listings;
             std::lock_guard<std::mutex> lock(mu);
             return wisp::shell::ShellListing{scenes, false};
         };
@@ -93,16 +95,44 @@ protected:
             return wisp::Result<void>::ok();
         };
         harness->boot();
+        probe = harness->scenes().subscribe(
+            [this](const wisp::scene::SceneOverview& o) {
+                std::lock_guard<std::mutex> lock(mu);
+                probe_seen = o;
+            },
+            &harness->ui());
+        settle_overview();
     }
 
     void TearDown() override {
         // A listing still queued posts to the harness's UI runtime.
         (void)agent.worker.drain(5000);
+        probe.reset();
         harness.reset();
         recents.reset();
     }
 
     SceneList* page() { return harness->shell().scene_list(); }
+    // A package installed, replaced or deleted, as the scene runtime's
+    // note_catalog_changed() moves it.
+    void catalog_moved() {
+        harness->scenes().update([](wisp::scene::SceneOverview& o) { ++o.catalog; });
+    }
+    // Until the shell's call for the overview as it is now has run. The
+    // probe follows the same cell on the same dispatcher, subscribed after
+    // the shell, so its call runs after the shell's: the cell schedules
+    // them in that order and the dispatcher runs them first in, first out.
+    // Round trips on the UI thread alone do not tell: one drain of its post
+    // queue may run them all before the slots' pass.
+    void settle_overview() {
+        const wisp::scene::SceneOverview now = harness->scenes().get();
+        ASSERT_TRUE(wisp::test::wait_until(
+            [&] {
+                std::lock_guard<std::mutex> lock(mu);
+                return probe_seen == now;
+            },
+            2000));
+    }
     void open_page(size_t want) {
         harness->show(Page::Scenes);
         ASSERT_NE(page(), nullptr);
@@ -124,6 +154,10 @@ protected:
     int data_asks = 0;
     std::vector<std::string> icon_reads;
     std::atomic<bool> on_worker_listing{false};
+    std::atomic<int> listings{0};
+    // What the probe last saw of harness->scenes() (settle_overview()).
+    wisp::core::CellSubscription probe;
+    std::optional<wisp::scene::SceneOverview> probe_seen;
     std::atomic<bool> on_worker_has_data{false};
 };
 
@@ -319,7 +353,7 @@ TEST_F(SceneListTest, IconByHashReadOnlyWhenUnknown) {
         // Another hash: read again.
         scenes[0].icon_hash = hash + 1;
     }
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "clock"}, {"state", "installed"}}});
+    catalog_moved();
     EXPECT_TRUE(harness->ui_until([&] {
         std::lock_guard<std::mutex> lock(mu);
         return icon_reads.size() == 2;
@@ -344,9 +378,48 @@ TEST_F(SceneListTest, SceneStateListsAgain) {
         std::lock_guard<std::mutex> lock(mu);
         scenes = {scene("todo", "待办")};
     }
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "installed"}}});
+    catalog_moved();
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
     harness->on_ui([&] { EXPECT_EQ(page()->empty_label(), nullptr); });
+}
+
+// The open list lists again when the installed scenes move (catalog) or a
+// scene goes to or comes back from the background (its mark); a headless
+// scene, which the list does not show, lists nothing, and neither does any
+// change while the list is closed. Each listing is the worker's, never the
+// cell callback's.
+TEST_F(SceneListTest, OpenListRelistsOnCatalogChange) {
+    boot();
+    catalog_moved();  // closed: nothing listed
+    settle_overview();
+    (void)agent.worker.drain(2000);
+    EXPECT_EQ(listings.load(), 0);
+
+    open_page(0);
+    (void)agent.worker.drain(2000);
+    ASSERT_EQ(listings.load(), 1);
+    on_worker_listing = false;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes = {scene("todo", "待办")};
+    }
+    catalog_moved();
+    ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
+    EXPECT_EQ(listings.load(), 2);
+    EXPECT_TRUE(on_worker_listing.load());
+
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        scenes[0].background = true;
+    }
+    harness->scenes().update([](wisp::scene::SceneOverview& o) { o.background_count = 1; });
+    ASSERT_TRUE(harness->ui_until([&] { return page()->mark(0) != nullptr; }));
+    EXPECT_EQ(listings.load(), 3);
+
+    harness->scenes().update([](wisp::scene::SceneOverview& o) { o.headless = 1; });
+    settle_overview();
+    (void)agent.worker.drain(2000);
+    EXPECT_EQ(listings.load(), 3);
 }
 
 // A page reopened while the last page's listing still waits behind other
@@ -431,7 +504,7 @@ TEST_F(SceneListTest, IconDecodedOnceAcrossListings) {
         scenes[0].icon_png = icon();
         scenes.push_back(scene("todo", "待办"));
     }
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "installed"}}});
+    catalog_moved();
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 2; }));
     harness->on_ui([&] {
         EXPECT_EQ(page()->scene(0).icon.get(), first);
@@ -443,7 +516,7 @@ TEST_F(SceneListTest, IconDecodedOnceAcrossListings) {
         scenes[0].icon_png = nullptr;
         scenes.pop_back();
     }
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "deleted"}}});
+    catalog_moved();
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
     harness->on_ui([&] {
         EXPECT_EQ(page()->scene(0).icon, nullptr);
@@ -462,7 +535,8 @@ TEST_F(SceneListTest, RefreshKeepsTheLongPressCard) {
     open_page(2);
     harness->hold(harness->centre_of(page()->card(0)), 700);
     harness->on_ui([&] { ASSERT_NE(page()->popup(), nullptr); });
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "todo"}, {"state", "running"}}});
+    // todo comes in front: the list lists again (its marks may change).
+    harness->scenes().update([](wisp::scene::SceneOverview& o) { o.foreground.assign("todo"); });
     // The listing ran and its answer, posted before drain() returns, is
     // handled before the next call on the UI thread.
     (void)agent.worker.drain(2000);
@@ -471,7 +545,7 @@ TEST_F(SceneListTest, RefreshKeepsTheLongPressCard) {
         std::lock_guard<std::mutex> lock(mu);
         scenes = {scene("todo", "待办")};
     }
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "counter"}, {"state", "deleted"}}});
+    catalog_moved();
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 1; }));
     harness->on_ui([&] { EXPECT_EQ(page()->popup(), nullptr); });
 }
@@ -587,7 +661,7 @@ TEST_F(SceneListTest, CardsFillWhenListingArrives) {
         std::lock_guard<std::mutex> lock(mu);
         scenes.push_back(scene("s30", "场景30"));
     }
-    harness->bus().publish({"scene.state", "test", 0, {{"id", "s30"}, {"state", "installed"}}});
+    catalog_moved();
     harness->on_ui([&] { EXPECT_EQ(page()->cards(), 30u); });
     held.release();
     ASSERT_TRUE(harness->ui_until([&] { return page()->cards() == 31; }));
