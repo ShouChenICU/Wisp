@@ -225,6 +225,9 @@ private:
     // before App::stop() resets their owners. ---
     // App's ButtonService listener; 0 once removed.
     uint32_t button_listener_ = 0;
+    // Button-test posts dropped by a full post queue; the listener logs the
+    // first and every kDroppedPostLogInterval-th.
+    std::atomic<uint32_t> dropped_button_posts_{0};
     // PowerManager::level_cell(), on wisp.bus: the sampler's standby flag
     // (memory only), off the UI thread.
     core::CellSubscription power_sub_;

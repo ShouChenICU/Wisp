@@ -288,6 +288,9 @@ const char* edge_name(core::ButtonEdge::Kind kind) {
     return "?";
 }
 
+// Matches EdgeInbox's overflow warning.
+constexpr uint32_t kDroppedPostLogInterval = 64;
+
 }  // namespace
 
 void SelfCheck::on_button_edge(const core::ButtonEdge& e) {
@@ -295,13 +298,19 @@ void SelfCheck::on_button_edge(const core::ButtonEdge& e) {
     // post, as the bus publish of the same edge allocates. A plain post:
     // the button test is interactive diagnostics, so an edge lost to a
     // full post queue only leaves the last edge shown (and the test
-    // unpassed) until the next press; it is logged.
+    // unpassed) until the next press. The drop is logged rate-limited, as
+    // an inbox's overflow is: a press is four edges, and this runs under
+    // ButtonService's lock while the UI is stalled.
     std::string topic = std::string(e.id.view()) + "." + edge_name(e.kind);
     if (!post([this, topic = std::move(topic)] {
             tests_section_.set_button_event(topic);
             pass_test(InteractiveTest::Button);
         })) {
-        WLOG_W("self_check", "post(button test) dropped (post queue full)");
+        const uint32_t dropped = dropped_button_posts_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (dropped == 1 || dropped % kDroppedPostLogInterval == 0) {
+            WLOG_W("self_check", "post(button test) dropped (post queue full; %u so far)",
+                   static_cast<unsigned>(dropped));
+        }
     }
 }
 
