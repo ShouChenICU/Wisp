@@ -59,6 +59,7 @@ UI-dispatcher subscriptions are all released before `ui->stop()`; `~UiRuntime` a
 3. **NetWiring's `wifi_state_` snapshot is replaced in this plan's NetWiring task** (spec 4 lists it under step 5): that task rewrites the same lines, and the snapshot has no other writer.
 4. **`voice.state` loses `level` in this plan's last task** (spec 4 lists it under step 5): as soon as Home and the talk overlay read `VoiceService::level()`, nothing reads it, and keeping it would keep the bus's main load (spec 1.2) for nothing.
 5. **Battery notices follow the supply cell's edges.** A `battery_low` notice persisted from the last run is now dismissed when the device boots charging (the follower starts from "not charging" and sees the first sample's charging edge). A USB-only change while already charging no longer dismisses it: only `charging` turning true does.
+6. **The voice cell's mirror ends plan 2's deviation 6.** In the code: `VoiceService`'s status cell has the mirror (`status_mirror()` in `voice_service.cpp`, source `voice::kVoiceSource`) and `publish()` no longer publishes by hand. Besides losing `level`, `voice.state` now goes out only when the cell changes: a `publish()` that repeats the current state with no outcome (the round backstop's `idle` while already idle, say) publishes nothing, where it published an event before. No consumer reads the topic by then; the tests that counted such events were rewritten. `publish_level()` only stores the level, without the bus's 50 ms throttle (Home and the talk overlay read it at their own 50 ms period).
 
 ---
 

@@ -118,6 +118,26 @@ std::string str(const Map& m, const char* key) {
     return it == m.end() ? std::string() : it->second.as_string();
 }
 
+// Records the highest level() the service showed while the microphone was
+// read. The service stores a frame's level after its read returns, so each
+// read sees the previous frame's level: nothing is lost between frames.
+struct LevelMic : FakeAudioIn {
+    using FakeAudioIn::FakeAudioIn;
+    wisp::Result<size_t> read(int16_t* frames, size_t count) override {
+        if (const VoiceService* v = voice.load()) {
+            const int level = v->level();
+            int seen = max_level.load();
+            while (level > seen && !max_level.compare_exchange_weak(seen, level)) {
+            }
+            if (level > 100) ++out_of_range;
+        }
+        return FakeAudioIn::read(frames, count);
+    }
+    std::atomic<const VoiceService*> voice{nullptr};
+    std::atomic<int> max_level{-1};
+    std::atomic<int> out_of_range{0};
+};
+
 struct VoiceServiceTest : ::testing::Test {
     void SetUp() override {
         wisp::log::reset_for_test();
@@ -312,8 +332,12 @@ struct VoiceServiceTest : ::testing::Test {
 }  // namespace
 
 TEST_F(VoiceServiceTest, HoldCaptureSendsOnRelease) {
+    auto level_mic =
+        std::make_shared<LevelMic>(std::vector<wisp::test::audio::Segment>{}, order, &virtual_ms);
+    mic = level_mic;
     add_asr();
     make();
+    level_mic->voice = voice.get();
     server.push_asr(asr_text("你好"));
     mic->set_script({silence(300), sine(1000)});
     ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
@@ -333,13 +357,7 @@ TEST_F(VoiceServiceTest, HoldCaptureSendsOnRelease) {
     EXPECT_EQ(mic->format().sample_rate, 16000u);
     EXPECT_TRUE(wait_idle());
     // No VAD, but the level meter still runs.
-    bool loud = false;
-    for (const Map& m : events()) {
-        if (str(m, "state") == "listening" && m.count("level")) {
-            loud = loud || m.at("level").as_int() > 50;
-        }
-    }
-    EXPECT_TRUE(loud);
+    EXPECT_GT(level_mic->max_level.load(), 50);
     // Busy while capturing is the only refusal.
     EXPECT_TRUE(voice->begin_capture(CaptureMode::Hold));
     EXPECT_EQ(voice->begin_capture(CaptureMode::Hold).error().code, wisp::ErrorCode::Busy);
@@ -510,27 +528,72 @@ TEST_F(VoiceServiceTest, StartToneBeforeTheMic) {
     EXPECT_GE(out->frames(), 2400u);  // the whole 150 ms tone
 }
 
-TEST_F(VoiceServiceTest, StatesAndThrottledLevels) {
+TEST_F(VoiceServiceTest, StatesAndLevels) {
+    auto level_mic =
+        std::make_shared<LevelMic>(std::vector<wisp::test::audio::Segment>{}, order, &virtual_ms);
+    mic = level_mic;
     add_asr();
     make();
+    level_mic->voice = voice.get();
     capture_turn();
     ASSERT_TRUE(wait_idle());
     EXPECT_EQ(states(), (std::vector<std::string>{"listening", "transcribing", "idle"}));
+    // The levels, read from level() frame by frame: 0..100, loud for the
+    // sine.
+    EXPECT_GE(level_mic->max_level.load(), 0);
+    EXPECT_EQ(level_mic->out_of_range.load(), 0);
+    EXPECT_GT(level_mic->max_level.load(), 50);
+    // They are not published: listening goes out once.
     size_t listening = 0;
-    bool loud = false;
+    for (const Map& m : events()) listening += str(m, "state") == "listening";
+    EXPECT_EQ(listening, 1u);
+}
+
+// The level stays off the bus: a loud capture publishes voice.state once
+// per state change, none with a level, while level() follows the mic.
+TEST_F(VoiceServiceTest, ListeningPublishesNoLevelEvents) {
+    auto level_mic =
+        std::make_shared<LevelMic>(std::vector<wisp::test::audio::Segment>{}, order, &virtual_ms);
+    mic = level_mic;
+    add_asr();
+    make();
+    level_mic->voice = voice.get();
+    server.push_asr(asr_text("你好"));
+    mic->set_script({sine(500)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    ASSERT_TRUE(wait_idle());
+    std::vector<std::string> all;
     for (const Map& m : events()) {
-        if (str(m, "state") != "listening") continue;
-        ++listening;
-        ASSERT_NE(m.find("level"), m.end());
-        const int64_t level = m.at("level").as_int();
-        EXPECT_GE(level, 0);
-        EXPECT_LE(level, 100);
-        loud = loud || level > 50;
+        all.push_back(str(m, "state"));
+        EXPECT_EQ(m.count("level"), 0u) << str(m, "state");
     }
-    EXPECT_TRUE(loud);
-    // 1.8 s of audio at most 20 Hz (the first event included).
-    EXPECT_LE(listening, 1u + 1800 / 50 + 1);
-    EXPECT_GE(listening, 2u);
+    EXPECT_EQ(all, (std::vector<std::string>{"listening", "transcribing", "idle"}));
+    EXPECT_GT(level_mic->max_level.load(), 50);
+    level_mic->voice = nullptr;
+}
+
+// An error goes out with its reason, and the idle right after it without
+// one; the next state change carries no outcome either.
+TEST_F(VoiceServiceTest, ErrorThenIdlePublishesBoth) {
+    make();
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_idle());
+    std::vector<Map> e = events();
+    ASSERT_EQ(e.size(), 2u);
+    EXPECT_EQ(e[0], (Map{{"state", Value("error")}, {"reason", Value("no_asr_profile")}}));
+    EXPECT_EQ(e[1], (Map{{"state", Value("idle")}}));
+
+    add_asr();
+    clear_events();
+    mic->set_script({silence(300), sine(1000)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return !events().empty(); }, 2000));
+    EXPECT_EQ(events().front(), (Map{{"state", Value("listening")}}));
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
 }
 
 TEST_F(VoiceServiceTest, MissingPiecesAreErrors) {
@@ -669,16 +732,10 @@ TEST_F(VoiceServiceTest, LevelFollowsTheMicrophone) {
     EXPECT_EQ(voice->state(), VoiceState::Listening);
     EXPECT_GT(voice->level(), 50);
 
-    // The levels went out as before, and only the change to listening
-    // moved the status.
+    // Only the change to listening moved the status and went out; the
+    // levels did neither.
     ASSERT_TRUE(bus.wait_idle(1000));
-    size_t levels = 0;
-    for (const Map& m : events()) {
-        ASSERT_EQ(str(m, "state"), "listening");
-        ASSERT_NE(m.find("level"), m.end());
-        ++levels;
-    }
-    EXPECT_GE(levels, 2u);
+    EXPECT_EQ(events(), (std::vector<Map>{{{"state", Value("listening")}}}));
     EXPECT_EQ(voice->status_cell().revision(), rev + 1);
     EXPECT_EQ(voice->status_cell().get().state, VoiceState::Listening);
 
@@ -1145,7 +1202,7 @@ TEST_F(VoiceServiceTest, TaskAndLogs) {
     EXPECT_EQ(lines, (std::vector<std::string>{"state listening", "state transcribing",
                                                "state idle", "state speaking", "state idle"}));
     for (const Map& m : events()) {
-        for (const auto& [k, v] : m) EXPECT_TRUE(k == "state" || k == "level") << k;
+        for (const auto& [k, v] : m) EXPECT_EQ(k, "state");
     }
 }
 
@@ -1265,7 +1322,10 @@ TEST_F(VoiceServiceTest, RoundBackstopEndsAForgottenRound) {
     clear_events();
     virtual_ms += 20000;
     ASSERT_TRUE(wait_until([&] { return voice_locks() == 0; }, 1000));
-    ASSERT_TRUE(wait_idle());
+    // Idle already: the backstop's idle changes nothing and publishes none.
+    EXPECT_EQ(voice->state(), VoiceState::Idle);
+    ASSERT_TRUE(bus.wait_idle(1000));
+    EXPECT_TRUE(events().empty());
     bool logged = false;
     for (const auto& e : wisp::log::ring_entries()) {
         logged = logged || (e.tag == "voice" && e.msg == "round backstop");

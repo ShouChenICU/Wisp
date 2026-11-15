@@ -20,6 +20,21 @@ namespace {
 
 constexpr const char* kTag = "voice";
 
+// voice.state, built from the status cell: the state, and the outcome only
+// on the change that moved `outcomes` (the idle right after an error carries
+// no reason). A change of the level alone never reaches the cell.
+void status_mirror(core::EventBus& bus, const VoiceStatus& before, const VoiceStatus& after) {
+    Map payload{{"state", Value(to_string(after.state))}};
+    if (after.outcomes != before.outcomes) {
+        if (after.outcome == VoiceStatus::Outcome::Error) {
+            payload.emplace("reason", Value(after.reason.str()));
+        } else if (after.outcome == VoiceStatus::Outcome::NotHeard) {
+            payload.emplace("result", Value("not_heard"));
+        }
+    }
+    bus.publish(core::Event{core::topics::kVoiceState, kVoiceSource, 0, std::move(payload)});
+}
+
 static_assert(std::is_trivially_copyable_v<VoiceStatus>,
               "an update() of the status must not allocate");
 // How long one push() into the player may wait before the synthesis looks
@@ -74,7 +89,10 @@ const char* to_string(VoiceError e) {
 }
 
 VoiceService::VoiceService(VoiceDeps deps, VoiceConfig config)
-    : deps_(std::move(deps)), config_(config), cmds_(config.queue_depth), status_(deps_.bus, {}) {}
+    : deps_(std::move(deps)),
+      config_(config),
+      cmds_(config.queue_depth),
+      status_(deps_.bus, {}, &status_mirror) {}
 
 VoiceService::~VoiceService() { stop(); }
 
@@ -429,44 +447,27 @@ void VoiceService::check_backstop() {
 
 void VoiceService::publish(VoiceState s, uint8_t level, const char* reason, const char* result) {
     const VoiceState before = state_.exchange(s);
-    Map payload{{"state", Value(to_string(s))}};
     const bool metered = s == VoiceState::Listening || s == VoiceState::Speaking;
     level_.store(metered ? level : 0, std::memory_order_relaxed);
-    if (metered) {
-        payload.emplace("level", Value(static_cast<int>(level)));
-        last_level_ = level;
-        last_level_ms_ = deps_.now_ms();
-    }
-    // Not for a level alone (publish_level(), up to 20 Hz): the cell's lock
-    // stays off that path. The status is set before voice.state goes out,
-    // as a mirror would, so a listener that sees the event finds it there.
-    if (before != s || reason != nullptr || result != nullptr) {
-        decltype(VoiceStatus::reason) why;
-        // Every to_string(VoiceError) fits (the longest is 15 bytes).
-        if (reason != nullptr && !why.assign(reason)) WLOG_W(kTag, "reason cut: %s", reason);
-        const bool not_heard = result != nullptr && std::string_view(result) == "not_heard";
-        // Never an equal value: a new state differs in `state`, and an
-        // outcome moves `outcomes`.
-        status_.update([&](VoiceStatus& v) {
-            v.state = s;
-            if (reason != nullptr) {
-                v.outcome = VoiceStatus::Outcome::Error;
-                v.reason = why;
-                ++v.outcomes;
-            } else if (not_heard) {
-                v.outcome = VoiceStatus::Outcome::NotHeard;
-                v.reason = {};
-                ++v.outcomes;
-            }
-        });
-    }
-    if (reason != nullptr) payload.emplace("reason", Value(reason));
-    if (result != nullptr) payload.emplace("result", Value(result));
-    deps_.bus.publish(core::Event{.topic = core::topics::kVoiceState,
-                                  .source = "voice",
-                                  .ts_ms = 0,
-                                  .payload = std::move(payload)});
     if (before == s && reason == nullptr && result == nullptr) return;
+    decltype(VoiceStatus::reason) why;
+    // Every to_string(VoiceError) fits (the longest is 15 bytes).
+    if (reason != nullptr && !why.assign(reason)) WLOG_W(kTag, "reason cut: %s", reason);
+    const bool not_heard = result != nullptr && std::string_view(result) == "not_heard";
+    // Never an equal value: a new state differs in `state`, and an outcome
+    // moves `outcomes`. The cell's mirror publishes voice.state.
+    status_.update([&](VoiceStatus& v) {
+        v.state = s;
+        if (reason != nullptr) {
+            v.outcome = VoiceStatus::Outcome::Error;
+            v.reason = why;
+            ++v.outcomes;
+        } else if (not_heard) {
+            v.outcome = VoiceStatus::Outcome::NotHeard;
+            v.reason = {};
+            ++v.outcomes;
+        }
+    });
     if (reason != nullptr) {
         WLOG_I(kTag, "state %s reason=%s", to_string(s), reason);
     } else if (result != nullptr) {
@@ -477,9 +478,9 @@ void VoiceService::publish(VoiceState s, uint8_t level, const char* reason, cons
 }
 
 void VoiceService::publish_level(VoiceState s, uint8_t level) {
+    // The level only: level() reads it, nothing is published for it.
     if (state_.load() != s) return;
-    if (level == last_level_ || deps_.now_ms() - last_level_ms_ < kLevelIntervalMs) return;
-    publish(s, level);
+    level_.store(level, std::memory_order_relaxed);
 }
 
 void VoiceService::fail(VoiceError e, uint32_t round) {

@@ -87,11 +87,12 @@
 // holds the output is skipped. The guard captures this service: clear it
 // (set_output_guard(nullptr)) before destroying the service.
 //
-// Events: "voice.state" (source "voice") {"state"}; listening and
-// speaking carry "level" (0..100, at most one per kLevelIntervalMs);
-// error carries "reason" and is followed at once by idle; idle may carry
-// "result":"not_heard". Payloads never carry the transcript or the speech
-// text, and neither does the log ("voice: state <s>" per change).
+// Events: "voice.state" (source kVoiceSource), the status cell's mirror,
+// one per change of the cell: {"state"}; error carries "reason" and is
+// followed at once by idle (without one); idle may carry
+// "result":"not_heard". The level is not in it (level()). Payloads never
+// carry the transcript or the speech text, and neither does the log
+// ("voice: state <s>" per change).
 //
 // Threads: every public method may be called from any thread. None waits
 // for the task: stop_speaking() and cancel_capture() set a flag, abort the
@@ -161,9 +162,9 @@ const char* to_string(VoiceState s);
 // "mic_unavailable"
 const char* to_string(VoiceError e);
 
-// The voice state as others follow it (VoiceService::status_cell()). The
-// level is not in it: it changes up to 20 times a second
-// (VoiceService::level()).
+// The voice state as others follow it (VoiceService::status_cell()); its
+// mirror publishes voice.state. The level is not in it: it changes with
+// every microphone frame while listening (VoiceService::level()).
 struct VoiceStatus {
     enum class Outcome : uint8_t { None, Error, NotHeard };
     VoiceState state = VoiceState::Idle;
@@ -175,6 +176,9 @@ struct VoiceStatus {
     uint32_t outcomes = 0;
     bool operator==(const VoiceStatus&) const = default;
 };
+
+// Event::source of voice.state.
+inline constexpr char kVoiceSource[] = "voice";
 
 // Vad is dormant: nothing in the shell starts a Vad capture any more
 // (see wisp/shell/conversation.hpp), but the mode and its Vad class stay
@@ -271,15 +275,15 @@ public:
     bool speaking() const { return state_.load() == VoiceState::Speaking; }
     // The state, the last outcome and their count. It moves when the state
     // changes or an outcome is published, not for a level; voice.state is
-    // still published as before, level included. Followers must release
+    // its mirror, so it goes out once per move. Followers must release
     // their subscription before the service is destroyed
     // (wisp/core/state_cell.hpp). App::stop() destroys it before the shell
     // stops, right after handing the shell set_conversation(nullptr) on the
     // UI thread, so a follower in the shell releases it there.
     const core::StateCell<VoiceStatus>& status_cell() const { return status_; }
-    // 0..100: the level the latest voice.state carried while listening or
-    // speaking, 0 in any other state. Any thread; an atomic, so it is
-    // cheap enough for every frame.
+    // 0..100: the latest microphone frame's level while listening, the
+    // output's (sampled as speech is pushed) while speaking, 0 in any other
+    // state. Any thread; an atomic, so it is cheap enough for every frame.
     uint8_t level() const { return level_.load(std::memory_order_relaxed); }
 
     // For TonePlayer::set_output_guard() (see the file header): an Alarm
@@ -365,8 +369,8 @@ private:
 
     std::atomic<VoiceState> state_{VoiceState::Idle};
     std::atomic<uint8_t> level_{0};
-    // Set in publish(). Declared after deps_ (the bus its constructor
-    // uses); App::stop() destroys the service before the bus stops.
+    // Set in publish(); its mirror publishes voice.state. Declared after
+    // deps_ (the bus its constructor uses); App::stop() destroys the service before the bus stops.
     core::StateCell<VoiceStatus> status_;
     std::atomic<bool> quit_{false};
     std::atomic<bool> wake_pending_{false};
@@ -401,8 +405,6 @@ private:
     uint32_t playing_gen_ = 0;
     bool player_begun_ = false;
     bool draining_ = false;
-    uint64_t last_level_ms_ = 0;
-    uint8_t last_level_ = 0;
 
     // The round that delivered a transcript and waits for its speech
     // (0: none), and when speech activity was last seen.
