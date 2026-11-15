@@ -683,7 +683,7 @@ TEST(FactoryReset, RequestBeforeTheScreenExistsIsShown) {
 }
 
 // The bus drops its oldest events when full: a request whose event was
-// lost still shows the dialog through the screen's periodic resync.
+// lost still shows the dialog, through the reset status cell.
 TEST(FactoryReset, RequestWithALostEventIsShown) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));
@@ -709,9 +709,10 @@ TEST(FactoryReset, RequestWithALostEventIsShown) {
     EXPECT_EQ(msgboxes(h), 1);
 }
 
-// When the resync shows the dialog first and the event arrives late --
-// after the user already said "no" -- the event finds the request taken:
-// the dialog does not come back.
+// The reset status cell shows the dialog while the event is held back; when
+// the event arrives late -- after the user already said "no" -- and the
+// periodic resync runs, they find the request taken: the dialog does not
+// come back.
 TEST(FactoryReset, LateEventDoesNotReopenTheDialog) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));

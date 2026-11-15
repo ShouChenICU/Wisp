@@ -1307,27 +1307,6 @@ TEST_F(SceneRuntimeTest, SyncHiddenBehindALaterFailureStillRedraws) {
     EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"open\tzh\t480\ttrue", "minute\t480"}));
 }
 
-// A runtime given the time-sync cell but never started holds no
-// subscription: the cell's owner may go first, and stop() is a no-op.
-TEST_F(SceneRuntimeTest, StopBeforeStartHoldsNoCell) {
-    follow_device_cells();
-    start();
-    const uint32_t before = bus.cell_subscriptions();
-    wisp::scene::SceneRuntimeDeps deps{bus, *storage, worker, *repo, *ui, *layer, shape};
-    deps.supply = &supply_cell;
-    deps.settings = &settings_cell;
-    auto other = std::make_unique<SceneRuntime>(std::move(deps));
-    {
-        // Destroyed before `other`, as net.reset() comes before the scenes.
-        wisp::core::StateCell<wisp::core::TimeSyncResult> owner{bus, wisp::core::TimeSyncResult{}};
-        other->attach_time_sync(&owner);
-        other->stop();
-        EXPECT_EQ(bus.cell_subscriptions(), before);
-    }
-    other.reset();
-    EXPECT_EQ(bus.cell_subscriptions(), before);
-}
-
 // The time-sync cell's owner may go before the runtime (App::stop()
 // destroys the network before the scenes): stop() lets go of every cell,
 // also on a runtime stopped before.

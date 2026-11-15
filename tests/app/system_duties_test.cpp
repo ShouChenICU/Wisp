@@ -312,7 +312,9 @@ TEST_F(SystemDutiesTest, ResetDialogOpensFlooded) {
 
     flood.release();
     h->app->ui()->set_paused(false);
-    // The late event and the resync find the request taken: one dialog.
+    // Once the bus has drained and the UI thread has run again, nothing
+    // opened a second dialog. The periodic resync is not waited out here;
+    // FactoryReset.LateEventDoesNotReopenTheDialog covers it.
     h->app->bus().wait_idle(2000);
     run_on_ui_blocking(h->app->ui(), [] {});
     EXPECT_EQ(msgboxes(), 1);

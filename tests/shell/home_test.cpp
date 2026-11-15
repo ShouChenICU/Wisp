@@ -982,11 +982,6 @@ protected:
         });
         return s;
     }
-    wisp::ui::WispMood mood() {
-        wisp::ui::WispMood m{};
-        on_ui([&] { m = shell_->wisp()->model().mood(); });
-        return m;
-    }
     bool logged(const std::string& needle) {
         for (auto& e : wisp::log::ring_entries())
             if (e.tag == "shell" && e.msg.find(needle) != std::string::npos) return true;
@@ -1384,8 +1379,9 @@ TEST_F(HomeTest, LevelComesFromTheVoiceService) {
 // plays in real time and changes its loudness every 50 ms, so the voice's
 // level moves about 20 times a second; the wisp's change counter is read
 // on the UI thread, and the test times 20 changes on the same clock both
-// sides run on (2x margin over the 20 Hz both run at; the slow tick would
-// give 4). wisp.bus is held, so none of them comes from a voice.state.
+// sides run on. Measured solo, they take about 1000 ms against the
+// 2000 ms limit (a 2x margin); the slow tick (kTickMs) would need about
+// 5000 ms. wisp.bus is held, so none of them comes from a voice.state.
 TEST_F(HomeTest, LevelAnimatesAtTheQuickPeriodWhileListening) {
     boot();
     mic->set_real_time(true);

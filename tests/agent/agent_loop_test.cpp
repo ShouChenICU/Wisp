@@ -911,10 +911,16 @@ TEST_F(AgentLoop, ReconnectBetweenRunsDoesNotAbort) {
 
 // A link that died while the cell never left Connected (the drop and the
 // reconnect coalesced) still ends the stream, through the stall check.
+// Both a stall and a network abort end as network_lost, so the stall is
+// told apart by time: it can fire only stall_ms after the last byte, which
+// came after t0, while a network abort would end the turn as soon as the
+// flood is released.
 TEST_F(AgentLoop, DeadLinkStillEndsByStall) {
+    constexpr uint32_t kStallMs = 200;
     follow_wifi = true;
-    start({.stall_ms = 200});
+    start({.stall_ms = kStallMs});
     h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hel")}, .hold_after = 1});
+    const uint64_t t0 = wisp::os::now_ms();
     ASSERT_TRUE(svc->submit("go", Source::Web));
     ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
     {
@@ -925,6 +931,7 @@ TEST_F(AgentLoop, DeadLinkStillEndsByStall) {
         flood.release();
     }
     ASSERT_TRUE(wait_turns(1, 3000));
+    EXPECT_GE(wisp::os::now_ms() - t0, kStallMs);
     EXPECT_EQ(h->server.held(), 0);
     EXPECT_EQ(last_status(), "error");
     EXPECT_EQ(last_reason(), "network_lost");
