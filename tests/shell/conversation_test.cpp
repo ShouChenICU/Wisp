@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "shell/shell_fixture.hpp"
+#include "support/bus_flood.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
@@ -32,7 +33,9 @@ using wisp::test::tts_pcm;
 using wisp::test::wait_until;
 using wisp::test::audio::silence;
 using wisp::test::audio::sine;
+using wisp::voice::VoiceError;
 using wisp::voice::VoiceState;
+using wisp::voice::VoiceStatus;
 
 namespace {
 
@@ -454,6 +457,84 @@ TEST_F(ConversationTest, HoldOverATranscriptionRecordsAnew) {
     auto b = begins();
     ASSERT_EQ(b.size(), 1u);
     EXPECT_EQ(b[0].text, "你好");
+}
+
+// The view's voice outcomes come from the voice's cell. wisp.bus is held
+// while the capture fails and is idle again (no voice.state reaches anyone,
+// and the controller's callback waits too); once it is free the error
+// shows: the cell's outcome count keeps it although the state is idle.
+// The events published meanwhile are flooded out.
+TEST_F(ConversationTest, ErrorThatEndsInIdleSetsTheError) {
+    start();
+    remove_asr();
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        ASSERT_TRUE(wait_until(
+            [&] {
+                const VoiceStatus s = voice->status_cell().get();
+                return s.state == VoiceState::Idle && s.outcome == VoiceStatus::Outcome::Error;
+            },
+            3000));
+        // The error and idle events are dropped.
+        flood.flood(256);
+        EXPECT_FALSE(conv->current().error.has_value());
+    }
+    EXPECT_TRUE(
+        wait_until([&] { return conv->current().error == VoiceError::NoAsrProfile; }, 3000));
+    EXPECT_FALSE(conv->current().not_heard);
+    conv->hold_end();
+    ASSERT_TRUE(settled());
+}
+
+// "Not heard" likewise, with wisp.bus held while the hold ends.
+TEST_F(ConversationTest, NotHeardIsSeenFlooded) {
+    start();
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        silent_hold();
+        ASSERT_EQ(voice->status_cell().get().outcome, VoiceStatus::Outcome::NotHeard);
+        flood.flood(256);
+        EXPECT_FALSE(conv->current().not_heard);
+    }
+    EXPECT_TRUE(wait_until([&] { return conv->current().not_heard; }, 3000));
+    EXPECT_FALSE(conv->current().error.has_value());
+    EXPECT_EQ(requests(kAsrPath), 0u);
+    ASSERT_TRUE(settled());
+}
+
+// A hold over a transcription waits for the cancelled capture to be idle
+// before it records: the idle comes from the cell, so with wisp.bus held the
+// hold waits, and it records once the bus is free.
+TEST_F(ConversationTest, DeferredHoldStartsWhenIdleArrives) {
+    start();
+    server.push_asr(FakeReply{.status = 200, .chunks = {R"({"text":"x"})"}, .hold_after = 0});
+    say_into_mic();
+    conv->hold_begin();
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    conv->hold_end();
+    ASSERT_TRUE(wait_until([&] { return server.held() == 1; }, 5000));
+    mic->set_script({silence(300), sine(1000)});
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        ASSERT_TRUE(conv->holding());
+        ASSERT_TRUE(wait_until(
+            [&] {
+                return voice->status_cell().get().state == VoiceState::Idle && !voice->capturing();
+            },
+            5000));
+        flood.flood(256);
+        EXPECT_EQ(mic->opens(), 1);
+    }
+    EXPECT_TRUE(wait_until([&] { return mic->opens() == 2; }, 3000));
+    EXPECT_TRUE(voice->capturing());
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(count(Kind::TurnEnd), 0u);
 }
 
 TEST_F(ConversationTest, HoldCancelDropsTheRecording) {

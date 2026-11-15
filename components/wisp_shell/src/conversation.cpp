@@ -1,11 +1,11 @@
 #include "wisp/shell/conversation.hpp"
 
 #include <mutex>
+#include <string_view>
 #include <utility>
 
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/shell/activity.hpp"
 
@@ -15,7 +15,7 @@ namespace {
 
 constexpr const char* kTag = "shell";
 
-std::optional<voice::VoiceError> parse_error(const std::string& s) {
+std::optional<voice::VoiceError> parse_error(std::string_view s) {
     using voice::VoiceError;
     for (VoiceError e :
          {VoiceError::NoAsrProfile, VoiceError::NoTtsProfile, VoiceError::Offline,
@@ -23,12 +23,6 @@ std::optional<voice::VoiceError> parse_error(const std::string& s) {
         if (s == voice::to_string(e)) return e;
     }
     return std::nullopt;
-}
-
-std::string str(const Properties& p, const char* key) {
-    auto it = p.find(key);
-    if (it == p.end() || it->second.type() != Value::Type::String) return {};
-    return it->second.as_string();
 }
 
 }  // namespace
@@ -62,8 +56,15 @@ void ConversationController::start() {
     started_ = true;
     deps_.voice.set_on_transcript([this](std::string text) { on_transcript(std::move(text)); });
     agent_listener_ = deps_.agent.add_listener([this](const agent::AgentEvent& e) { on_agent(e); });
-    voice_sub_ = deps_.bus.subscribe(core::topics::kVoiceState,
-                                     [this](const core::Event& e) { on_voice_state(e); });
+    // On wisp.bus (the cell's default dispatcher). The count starts at the
+    // cell's, so the first call replays no outcome from before start().
+    const core::StateCell<voice::VoiceStatus>& cell = deps_.voice.status_cell();
+    voice_sub_ =
+        cell.subscribe([this, outcomes = cell.get().outcomes](const voice::VoiceStatus& v) mutable {
+            const bool outcome = v.outcomes != outcomes;
+            outcomes = v.outcomes;
+            on_voice_state(v, outcome);
+        });
 }
 
 void ConversationController::stop() {
@@ -71,9 +72,8 @@ void ConversationController::stop() {
     started_ = false;
     deps_.voice.set_on_transcript(nullptr);
     deps_.agent.remove_listener(agent_listener_);
-    deps_.bus.unsubscribe(voice_sub_);
+    voice_sub_.reset();
     agent_listener_ = 0;
-    voice_sub_ = 0;
     std::lock_guard<os::Mutex> lock(mu_);
     holding_ = false;
     deferred_hold_ = false;
@@ -479,20 +479,20 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
     notify();
 }
 
-void ConversationController::on_voice_state(const core::Event& e) {
-    const std::string state = str(e.payload, "state");
+void ConversationController::on_voice_state(const voice::VoiceStatus& v, bool outcome) {
     {
         std::lock_guard<os::Mutex> lock(mu_);
-        if (state == "error") {
-            view_.error = parse_error(str(e.payload, "reason"));
-        } else if (state == "idle") {
-            if (str(e.payload, "result") == "not_heard") view_.not_heard = true;
-            if (deferred_hold_ && holding_ && !deps_.voice.capturing()) {
-                deferred_hold_ = false;
-                start_capture(voice::CaptureMode::Hold);
-            }
-        } else {
+        if (outcome && v.outcome == voice::VoiceStatus::Outcome::Error) {
+            view_.error = parse_error(v.reason.view());
+        } else if (outcome && v.outcome == voice::VoiceStatus::Outcome::NotHeard) {
+            view_.not_heard = true;
+        } else if (v.state != voice::VoiceState::Idle) {
             return;
+        }
+        if (v.state == voice::VoiceState::Idle && deferred_hold_ && holding_ &&
+            !deps_.voice.capturing()) {
+            deferred_hold_ = false;
+            start_capture(voice::CaptureMode::Hold);
         }
     }
     notify();

@@ -235,6 +235,29 @@ protected:
     }
     std::string text(const os::LargeString& s) const { return std::string(s.data(), s.size()); }
 
+    // Takes the asr profile away: the voice refuses the next capture with
+    // no_asr_profile.
+    void remove_asr() {
+        ASSERT_TRUE(h->worker.run_sync(
+            [&] {
+                const std::string id = h->models->get().active_for(core::ModelKind::Asr);
+                ASSERT_FALSE(id.empty());
+                ASSERT_TRUE(h->models->remove(id));
+            },
+            os::kForever));
+    }
+    // A hold released as soon as the mic opens: far shorter than
+    // kMinSpeechMs, so the voice ends it "not heard" without asking the
+    // recognizer. Returns once the capture is over.
+    void silent_hold() {
+        mic->set_script({});
+        conv->hold_begin();
+        ASSERT_TRUE(conv->holding());
+        ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 3000));
+        conv->hold_end();
+        ASSERT_TRUE(wait_until([&] { return !voice->capturing(); }, 3000));
+    }
+
     // A spoken utterance on the mic: noise floor, speech, then silence
     // long enough for the VAD to end it.
     void say_into_mic() {

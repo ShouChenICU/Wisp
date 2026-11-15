@@ -76,11 +76,11 @@
 //
 // Listeners are called after every change with a copy of the view as it
 // is then, on the thread that made the change: wisp.agent (agent events),
-// wisp.voice (a transcript), the event bus's dispatch thread (voice.state:
-// errors, "not heard") or the caller of a trigger or voice_text(). The
-// last call after a change always shows it. A listener must not block or
-// call back into this controller other than current(); the shell's
-// screens post to the UI thread from it.
+// wisp.voice (a transcript), the event bus's dispatch thread (the voice's
+// state cell: errors, "not heard") or the caller of a trigger or
+// voice_text(). The last call after a change always shows it. A listener
+// must not block or call back into this controller other than current();
+// the shell's screens post to the UI thread from it.
 
 #include <array>
 #include <cstddef>
@@ -97,6 +97,7 @@
 #include "wisp/base/result.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/voice/say_parser.hpp"
@@ -185,9 +186,10 @@ public:
     ConversationController(const ConversationController&) = delete;
     ConversationController& operator=(const ConversationController&) = delete;
 
-    // Takes the voice's transcripts and listens to the agent and to
-    // voice.state. Call once both services exist; stop() before either
-    // goes. Idempotent.
+    // Takes the voice's transcripts and listens to the agent and to the
+    // voice's state cell (on wisp.bus). Call once both services exist;
+    // stop() before either goes (it releases the cell's subscription).
+    // Idempotent.
     void start();
     void stop();
 
@@ -258,13 +260,15 @@ private:
 
     void on_agent(const agent::AgentEvent& e);
     void on_transcript(std::string text);
-    void on_voice_state(const core::Event& e);
+    // `outcome`: the cell's outcome count moved since the last call (an
+    // error or a "not heard", seen even when the state is idle again).
+    void on_voice_state(const voice::VoiceStatus& v, bool outcome);
     void notify();
 
     ConversationDeps deps_;
     bool started_ = false;  // start()/stop() only
     uint32_t agent_listener_ = 0;
-    core::SubscriptionId voice_sub_ = 0;
+    core::CellSubscription voice_sub_;
 
     mutable os::Mutex mu_;
     TurnView view_;

@@ -987,17 +987,6 @@ protected:
         on_ui([&] { m = shell_->wisp()->model().mood(); });
         return m;
     }
-    // Takes the asr profile away: the voice refuses the next capture with
-    // no_asr_profile.
-    void remove_asr() {
-        ASSERT_TRUE(h->worker.run_sync(
-            [&] {
-                const std::string id = h->models->get().active_for(wisp::core::ModelKind::Asr);
-                ASSERT_FALSE(id.empty());
-                ASSERT_TRUE(h->models->remove(id));
-            },
-            wisp::os::kForever));
-    }
     bool logged(const std::string& needle) {
         for (auto& e : wisp::log::ring_entries())
             if (e.tag == "shell" && e.msg.find(needle) != std::string::npos) return true;
@@ -1144,9 +1133,7 @@ TEST_F(HomeTest, ReadinessAndErrorHints) {
     EXPECT_EQ(hint(), "");
 
     // "Not heard" from the voice chain.
-    h->bus.publish(
-        {"voice.state", "voice", 0,
-         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
+    silent_hold();
     EXPECT_TRUE(wait_until([&] { return hint() == "没听清"; }, 3000));
 
     // A hold the voice refuses: no asr profile.
@@ -1609,9 +1596,7 @@ TEST_F(HomeTest, LaterVoiceHintReplacesTheNote) {
     ASSERT_TRUE(wait_turns(1));
     ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
     EXPECT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
-    h->bus.publish(
-        {"voice.state", "voice", 0,
-         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
+    silent_hold();
     EXPECT_TRUE(wait_until([&] { return hint_shown() == "没听清"; }, 3000));
 }
 
@@ -1809,9 +1794,7 @@ TEST_F(HomeTest, FreshFailureOutranksTheChecklistWhileTalkingWorks) {
     EXPECT_EQ(hint_shown(), checklist);
 
     // "Not heard" likewise.
-    h->bus.publish(
-        {"voice.state", "voice", 0,
-         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
+    silent_hold();
     EXPECT_TRUE(wait_until([&] { return hint_shown() == "没听清"; }, 3000));
     home_ms.fetch_add(kFadeAfterMs + 1000);
     EXPECT_EQ(hint_shown(), checklist);
@@ -1824,11 +1807,12 @@ TEST_F(HomeTest, ChecklistStaysWhileTalkingCannotWork) {
     const std::string checklist = "还差：语音识别\nhttp://10.0.0.7:8900";
     ready.store(wisp::shell::Readiness{.asr = false});
     ASSERT_EQ(hint_shown(), checklist);
-    h->bus.publish(
-        {"voice.state", "voice", 0,
-         wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
-    h->bus.wait_idle(1000);
-    wisp::os::sleep_ms(100);
+    // A hold needs talking to work: the "not heard" is made with it
+    // working, and the controller holds it when it stops working again.
+    ready.store(wisp::shell::Readiness{});
+    silent_hold();
+    ASSERT_TRUE(wait_until([&] { return conv->current().not_heard; }, 3000));
+    ready.store(wisp::shell::Readiness{.asr = false});
     EXPECT_EQ(hint_shown(), checklist);
     // The hint was there all along: with talking possible it shows.
     ready.store(wisp::shell::Readiness{.tts = false});
