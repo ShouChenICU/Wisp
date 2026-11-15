@@ -1,5 +1,6 @@
 #include "wisp/core/scene_install.hpp"
 
+#include <cstdint>
 #include <string>
 
 #include "wisp/core/log.hpp"
@@ -27,9 +28,15 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
     // worker, which may itself be waiting for that lock in load().
     std::string reopen;
     bool in_background = false;
+    // The id once the package passed its checks; before that nothing is
+    // stored. `since` is the repository's change mark before the install.
+    std::string touched;
+    uint64_t since = 0;
+    (void)repo.changed_since(UINT64_MAX, since);
     auto installed = repo.install(
         zip, [&host](std::span<const SourceFile> files) { return host.check_sources(files); },
         [&](const SceneManifest& m) -> Result<void> {
+            touched = m.id;
             const SceneState was = host.status(m.id).state;
             const bool was_running = was == SceneState::Running || was == SceneState::Background;
             in_background = was == SceneState::Background;
@@ -54,8 +61,15 @@ Result<SceneInfo> install_scene(SceneRepository& repo, SceneHost& host,
         },
         opt);
     // Before the reopen or on_installed(): whoever reacts to the scene's
-    // next state already finds the catalog moved.
-    if (installed) host.note_catalog_changed();
+    // next state already finds the catalog moved. An install that failed
+    // after it began replacing (or finished an earlier cut-short replace
+    // of the id) changed what is stored too; the repository says so.
+    bool changed = static_cast<bool>(installed);
+    if (!changed && !touched.empty()) {
+        uint64_t now = 0;
+        for (const std::string& id : repo.changed_since(since, now)) changed |= id == touched;
+    }
+    if (changed) host.note_catalog_changed();
     if (!reopen.empty()) {
         // Whichever package is in place now: the new one, or the old one if
         // the replace failed.

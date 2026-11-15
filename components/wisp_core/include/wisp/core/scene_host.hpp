@@ -67,7 +67,9 @@ public:
     // waits.
     virtual void on_installed(const std::string& id) = 0;
     // The set of installed packages changed: install_scene() calls it once
-    // for each install that succeeded, before it reopens the scene or calls
+    // for each install that changed what is stored (one that succeeded, or
+    // one that failed part way through the replace), before it reopens the
+    // scene or calls
     // on_installed() (on_installed() alone misses a scene that was running,
     // which is reopened instead). Any thread; never waits. A host that
     // keeps no catalog state ignores it.

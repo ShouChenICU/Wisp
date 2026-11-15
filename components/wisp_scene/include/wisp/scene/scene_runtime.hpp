@@ -393,7 +393,10 @@ struct SceneOverview {
     // The scenes running out of sight: background_scenes() and the
     // headless scene, if one runs.
     uint16_t background_count = 0;
-    // Moves on every install, replace and delete of a package; wraps.
+    // Moves on every install, replace and delete of a package (also one
+    // that failed after it changed what is stored); wraps. Dev-mode file
+    // edits and a card coming or going do not move it: a follower that
+    // lists scenes from the card or in dev mode needs its own trigger.
     uint32_t catalog = 0;
     bool operator==(const SceneOverview&) const = default;
 };
@@ -938,9 +941,10 @@ private:
     void notice(SceneNoticeKind kind, const Slot& s);
     // Rewrites background_ from the slots.
     void update_background_list();
-    // With status_mu_ held, on the scene task: brings the overview's
-    // foreground and background_count to foreground_id_, background_ and
-    // the headless slot, leaving its catalog alone.
+    // With status_mu_ held, on the scene task, in the same hold as every
+    // write of foreground_id_ and background_: brings the overview's
+    // foreground and background_count to them and the headless slot,
+    // leaving its catalog alone.
     void refresh_overview_locked();
     void hide_scenes();
     void show_scene(bool screen_came_on);

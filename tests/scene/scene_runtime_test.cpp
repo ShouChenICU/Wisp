@@ -663,6 +663,44 @@ TEST_F(SceneRuntimeTest, InstallMovesTheCatalog) {
     EXPECT_EQ(catalog(), 2u);
 }
 
+// A replace that fails after it began moving files (here: the old package
+// cannot be removed) has changed what is stored, so the catalog moves as
+// for a replace that succeeded.
+TEST_F(SceneRuntimeTest, AReplaceThatFailsPartWayMovesTheCatalog) {
+    const fs::path dir = fs::path(in) / "scenes" / "a";
+    auto block = std::make_shared<std::atomic<bool>>(false);
+    wisp::core::SceneRepoConfig rc;
+    rc.code_root = in + "/scenes";
+    rc.data_root = in + "/scenes";
+    rc.worker = &worker;
+    // Between moving data/ aside and removing the old package: a package
+    // directory that refuses removal fails the replace there.
+    rc.on_data_moved = [dir, block] {
+        if (block->exchange(false))
+            fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec,
+                            fs::perm_options::replace);
+    };
+    repo = std::make_unique<wisp::core::SceneRepository>(*storage, rc);
+    start();
+    struct Restore {
+        fs::path dir;
+        ~Restore() {
+            std::error_code ec;
+            fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
+        }
+    } restore{dir};
+
+    wisp::os::LargeBuffer zip = package_zip("a", "return ui.screen { ui.label { text = 'v1' } }");
+    ASSERT_TRUE(wisp::core::install_scene(*repo, *rt, zip.span()));
+    ASSERT_EQ(rt->overview().get().catalog, 1u);
+
+    block->store(true);
+    zip = package_zip("a", "return ui.screen { ui.label { text = 'v2' } }");
+    EXPECT_FALSE(wisp::core::install_scene(*repo, *rt, zip.span()));
+    EXPECT_FALSE(block->load());
+    EXPECT_EQ(rt->overview().get().catalog, 2u);
+}
+
 // Holds the storage worker until release() (or destruction).
 class WorkerGate {
 public:

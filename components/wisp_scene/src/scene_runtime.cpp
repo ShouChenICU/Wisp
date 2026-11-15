@@ -1315,6 +1315,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         foreground_id_ = id;
         foreground_name_ = s.name;
         foreground_instance_ = s.instance;
+        refresh_overview_locked();
     }
     update_background_list();
     show_view(s);
@@ -1814,9 +1815,16 @@ void SceneRuntime::update_background_list() {
 }
 
 void SceneRuntime::refresh_overview_locked() {
+    // Called with every write of foreground_id_ and of background_, in the
+    // same lock hold, so a reader never sees foreground() and the overview
+    // disagree. A scene coming forward (resume()) is still on background_
+    // until update_background_list() runs next: the one in front is never
+    // counted, which at rest changes nothing (no scene is in both).
+    size_t out_of_sight = 0;
+    for (const BackgroundScene& b : background_)
+        if (!foreground_id_ || b.id != *foreground_id_) ++out_of_sight;
     // A headless scene is on no background list (file header) but runs
     // out of sight all the same.
-    size_t out_of_sight = background_.size();
     for (const auto& s : slots_)
         if (s->headless && s->scene) ++out_of_sight;
     FixedString<32> front;
@@ -1905,10 +1913,10 @@ void SceneRuntime::forget_front() {
     foreground_id_.reset();
     foreground_name_.clear();
     foreground_instance_ = 0;
-    // With the write, under the same lock, as at every write of
-    // foreground_id_: close_slot() publishes "stopped" before its
-    // erase_slot() rewrites the background list, and whoever follows that
-    // event finds the front already cleared.
+    // With the write, under the same lock (refresh_overview_locked()):
+    // close_slot() also publishes "stopped" before its erase_slot()
+    // rewrites the background list, and whoever follows that event finds
+    // the front already cleared.
     refresh_overview_locked();
 }
 
@@ -2000,6 +2008,7 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
         foreground_id_ = id;
         foreground_name_ = s.name;
         foreground_instance_ = s.instance;
+        refresh_overview_locked();
     }
     update_background_list();
     // Spec 3.5: room for the scene coming forward.
