@@ -387,6 +387,7 @@ export default {
   'sys.agent_minutes': '每轮最长时间（分钟）',
   'sys.agent_hint': '工具调用 {smin}–{smax} 次，时间 {mmin}–{mmax} 分钟。从下一轮对话开始生效。',
   'sys.agent_save': '保存',
+  'sys.more_title': '更多设置',
   'sys.agent_saved': 'Agent 上限已保存',
   'clients.title': '已配对的浏览器',
   'clients.count': '{count}',

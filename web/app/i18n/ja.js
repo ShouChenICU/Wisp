@@ -387,6 +387,7 @@ export default {
   'sys.agent_minutes': '1 ターンあたりの最長時間（分）',
   'sys.agent_hint': 'ツール呼び出しは {smin}〜{smax} 回、時間は {mmin}〜{mmax} 分。次のターンから適用されます。',
   'sys.agent_save': '保存',
+  'sys.more_title': 'その他の設定',
   'sys.agent_saved': 'エージェントの上限を保存しました',
   'clients.title': 'ペアリング済みブラウザ',
   'clients.count': '{count}',

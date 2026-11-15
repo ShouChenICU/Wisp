@@ -3,6 +3,11 @@
 // restart and factory reset. The phone layout also reaches the log page
 // from here.
 //
+// Settings: values from GET /settings, their ranges, choices and labels
+// from GET /settings/schema (settings-schema spec 3.7), loaded together.
+// The cards place the known keys by hand; a key no card places shows in
+// "More settings" with a control chosen by its type.
+//
 // Power (scene-device spec 4.5): the level, light sleep, how many scene
 // requests wait for the network and every wake lock with how long it has
 // been held, refreshed while the tab is visible; with it the deep-standby
@@ -72,27 +77,8 @@ import {
   IconUpload,
 } from '../icons.js';
 
-// SystemSettings' accepted ranges (spec 5.4).
-const AGENT_STEPS_MIN = 8;
-const AGENT_STEPS_MAX = 200;
-const AGENT_MIN_MIN = 2;
-const AGENT_MIN_MAX = 60;
-const BRIGHTNESS_MIN = 10;
-const BRIGHTNESS_MAX = 255;
-const VOLUME_MAX = 100;
-// Screen-off choices in seconds; 0 = never.
-const SCREEN_OFF = [0, 15, 30, 60, 120, 300, 600];
-// Deep-standby delays in seconds; 0 = never (SystemSettings: 0 or 60-3600).
-const DEEP_AFTER = [0, 60, 120, 300, 600, 1800, 3600];
 // How often the power card refreshes while the tab is visible.
 const POWER_REFRESH_MS = 5000;
-// Time zone choices in minutes east of UTC: the offsets in use today.
-// SystemSettings takes any whole minute from -720 to 840.
-const UTC_OFFSETS = [
-  -720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120, -60, 0, 60, 120,
-  180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630, 660, 720, 765,
-  780, 840,
-];
 const REBOOT_POLL_MS = 2000;
 // Past this the page says the restart is taking longer than usual (and
 // keeps waiting).
@@ -117,19 +103,34 @@ export async function confirmLogout() {
 }
 
 /**
- * @typedef {Object} Settings  GET/PUT /settings
- * @property {number} brightness   10-255
- * @property {number} volume       0-100
- * @property {number} screen_off_s 0 (never) or 15-3600
- * @property {'zh'|'ja'|'en'} language  the device's own UI language
- * @property {number} utc_offset_min  the time zone, minutes east of UTC (-720 to 840)
- * @property {string} ntp_servers  1-2 time servers, comma-separated
- * @property {number} deep_after_s  0 (never) or 60-3600: deep standby after the screen is off this long
- * @property {number} notify_vol   0-100, the notification sounds
+ * @typedef {Object} Settings  GET/PUT /settings; ranges, choices and
+ *   defaults: see GET /settings/schema
+ * @property {number} brightness
+ * @property {number} volume
+ * @property {number} screen_off_s  0: never
+ * @property {string} language  the device's own UI language
+ * @property {number} utc_offset_min  the time zone, minutes east of UTC
+ * @property {string} ntp_servers  time servers, comma-separated
+ * @property {number} deep_after_s  0: never; deep standby after the screen is off this long
+ * @property {number} notify_vol   the notification sounds
  * @property {boolean} tts_mute    silence spoken replies (text still shows)
  * @property {boolean} time_24h    24-hour clock on the device (false: 12-hour)
- * @property {number} agent_max_steps  8-200 tool calls per agent turn
- * @property {number} agent_turn_min   2-60 minutes per agent turn
+ * @property {number} agent_max_steps  tool calls per agent turn
+ * @property {number} agent_turn_min   minutes per agent turn
+ *
+ * @typedef {Object} SettingSpec  one entry of GET /settings/schema's keys
+ * @property {string} name
+ * @property {'int'|'bool'|'enum'|'hosts'} type
+ * @property {string} label  the web dictionary key is 'sys.' + label
+ * @property {number} [min]
+ * @property {number} [max]
+ * @property {number|boolean|string} default
+ * @property {string} [unit]
+ * @property {boolean} [zero_never]  0 is also valid and means never
+ * @property {number[]} [choices]  the values offered in a list
+ * @property {string[]} [values]   an enum's codes
+ * @property {number} [max_entries]
+ * @property {number} [max_length]
  *
  * @typedef {Object} PowerStatus  GET /system/power
  * @property {'active'|'dim'|'standby'|'deep_standby'} level
@@ -153,15 +154,20 @@ export async function confirmLogout() {
 
 export function SystemPage() {
   const [settings, setSettings] = useState(/** @type {Settings|null} */ (null));
+  const [schema, setSchema] = useState(/** @type {{keys: SettingSpec[]}|null} */ (null));
   const [clients, setClients] = useState(/** @type {Client[]|null} */ (null));
   const [error, setError] = useState(null);
   const [clientsError, setClientsError] = useState(null);
   const alive = useRef(true);
 
+  // The schema is read again with every load: after a restart (a firmware
+  // update among them) the device may describe its settings differently.
   async function loadSettings() {
     try {
-      const s = await api('GET', '/settings');
+      const [s, sc] = await Promise.all([api('GET', '/settings'), api('GET', '/settings/schema')]);
+      if (!Array.isArray(sc?.keys)) throw Object.assign(new Error('no settings schema'), { code: 'unknown' });
       if (!alive.current) return;
+      setSchema(sc);
       setSettings(s);
       setError(null);
     } catch (e) {
@@ -208,6 +214,11 @@ export function SystemPage() {
     }
   }
 
+  // Every settings card needs both the values and their schema; until then
+  // they show skeletons.
+  const ready = settings && schema ? settings : null;
+  const spec = schema ? specOf(schema) : null;
+
   return html`<div class="page">
     <header class="page-head">
       <div>
@@ -216,7 +227,7 @@ export function SystemPage() {
       </div>
     </header>
 
-    ${error && !settings
+    ${error && !ready
       ? html`<${Card} title=${t('sys.load_failed')} icon=${IconAlert} tone="err">
           <p class="muted">${describeError(error)}</p>
           ${errorDetail(error) ? html`<p class="err-detail mono">${errorDetail(error)}</p>` : null}
@@ -225,18 +236,51 @@ export function SystemPage() {
       : null}
 
     <div class="grid grid-2">
-      <${DisplayCard} settings=${settings} put=${put} />
-      <${LanguageCard} settings=${settings} put=${put} />
-      <${TimeZoneCard} settings=${settings} put=${put} />
-      <${TimeSyncCard} settings=${settings} put=${put} />
+      <${DisplayCard} settings=${ready} spec=${spec} put=${put} />
+      <${LanguageCard} settings=${ready} spec=${spec} put=${put} />
+      <${TimeZoneCard} settings=${ready} spec=${spec} put=${put} />
+      <${TimeSyncCard} settings=${ready} spec=${spec} put=${put} />
     </div>
-    <${PowerCard} settings=${settings} put=${put} />
-    <${AgentLimitsCard} settings=${settings} put=${put} />
+    <${PowerCard} settings=${ready} spec=${spec} put=${put} />
+    <${AgentLimitsCard} settings=${ready} spec=${spec} put=${put} />
+    <${MoreCard} settings=${ready} schema=${schema} put=${put} />
     <${OccupancyCard} />
     <${ClientsCard} clients=${clients} error=${clientsError} reload=${loadClients} />
     <${FirmwareCard} />
     <${MaintenanceCard} onBack=${loadAll} />
   </div>`;
+}
+
+/** `spec(name)`: the schema entry of the key `name`. */
+function specOf(schema) {
+  const byName = new Map(schema.keys.map((k) => [k.name, k]));
+  return (name) => byName.get(name);
+}
+
+/** The keys the cards above place by hand; MoreCard shows the rest. */
+const PLACED = new Set([
+  'brightness',
+  'volume',
+  'notify_vol',
+  'tts_mute',
+  'screen_off_s',
+  'deep_after_s',
+  'language',
+  'utc_offset_min',
+  'time_24h',
+  'ntp_servers',
+  'agent_max_steps',
+  'agent_turn_min',
+]);
+
+/** `choices`, with `value` added in order when it is not one of them. */
+function withCurrent(choices, value) {
+  return choices.includes(value) ? choices : [...choices, value].sort((a, b) => a - b);
+}
+
+/** Whether `v` is a valid value of the int key `s`. */
+function intValid(s, v) {
+  return Number.isInteger(v) && ((v >= s.min && v <= s.max) || (!!s.zero_never && v === 0));
 }
 
 /** A slider that shows its value while dragging and saves on release. */
@@ -281,47 +325,48 @@ function screenOffLabel(s) {
   return s % 60 === 0 ? fmt(s / 60, 'minute') : fmt(s, 'second');
 }
 
-function DisplayCard({ settings, put }) {
+function DisplayCard({ settings, spec, put }) {
   if (!settings) return html`<${SkeletonCard} />`;
-  const choices = SCREEN_OFF.includes(settings.screen_off_s)
-    ? SCREEN_OFF
-    : [...SCREEN_OFF, settings.screen_off_s].sort((a, b) => a - b);
+  const brightness = spec('brightness');
+  const volume = spec('volume');
+  const notify = spec('notify_vol');
+  const choices = withCurrent(spec('screen_off_s').choices, settings.screen_off_s);
   return html`<${Card} title=${t('sys.display_title')} icon=${IconDisplay}>
     <div class="form">
       <${RangeField}
         id="sys-brightness"
         label=${t('sys.brightness')}
         icon=${IconSun}
-        min=${BRIGHTNESS_MIN}
-        max=${BRIGHTNESS_MAX}
+        min=${brightness.min}
+        max=${brightness.max}
         value=${settings.brightness}
-        format=${(v) => percent(v, BRIGHTNESS_MIN, BRIGHTNESS_MAX)}
+        format=${(v) => percent(v, brightness.min, brightness.max)}
         onCommit=${(v) => put({ brightness: v })}
       />
       <${RangeField}
         id="sys-volume"
         label=${t('sys.volume')}
         icon=${IconSpeaker}
-        min=${0}
-        max=${VOLUME_MAX}
+        min=${volume.min}
+        max=${volume.max}
         value=${settings.volume}
-        format=${(v) => percent(v, 0, VOLUME_MAX)}
+        format=${(v) => percent(v, volume.min, volume.max)}
         onCommit=${(v) => put({ volume: v })}
       />
       <${RangeField}
         id="sys-notify-vol"
         label=${t('sys.notify_vol')}
         icon=${IconSpeaker}
-        min=${0}
-        max=${VOLUME_MAX}
-        value=${settings.notify_vol ?? 60}
-        format=${(v) => percent(v, 0, VOLUME_MAX)}
+        min=${notify.min}
+        max=${notify.max}
+        value=${settings.notify_vol}
+        format=${(v) => percent(v, notify.min, notify.max)}
         onCommit=${(v) => put({ notify_vol: v })}
       />
       <label class="scene-check">
         <input
           type="checkbox"
-          checked=${!!settings.tts_mute}
+          checked=${settings.tts_mute}
           onChange=${(e) => put({ tts_mute: e.currentTarget.checked })}
         />
         ${t('sys.tts_mute')}
@@ -377,13 +422,10 @@ function deepAfterLabel(s) {
 
 const LEVEL_TONE = { active: 'ok', dim: 'accent', standby: 'muted', deep_standby: 'muted' };
 
-function PowerCard({ settings, put }) {
+function PowerCard({ settings, spec, put }) {
   const [power, error] = usePolled('/system/power');
   const locks = Array.isArray(power?.locks) ? power.locks : [];
-  const choices =
-    !settings || DEEP_AFTER.includes(settings.deep_after_s)
-      ? DEEP_AFTER
-      : [...DEEP_AFTER, settings.deep_after_s].sort((a, b) => a - b);
+  const choices = settings ? withCurrent(spec('deep_after_s').choices, settings.deep_after_s) : [];
   return html`<${Card}
     title=${t('power.title')}
     icon=${IconBolt}
@@ -463,8 +505,14 @@ function OccupancyCard() {
   </${Card}>`;
 }
 
-function LanguageCard({ settings, put }) {
+/** The device's languages: the schema's codes, named as the web names them. */
+function deviceLangs(codes) {
+  return codes.map((id) => LANGS.find((l) => l.id === id) || { id, label: id, html: id });
+}
+
+function LanguageCard({ settings, spec, put }) {
   if (!settings) return html`<${SkeletonCard} />`;
+  const langs = deviceLangs(spec('language').values);
   return html`<${Card} title=${t('sys.lang_title')} icon=${IconGlobe}>
     <div class="form">
       <div class="field">
@@ -476,12 +524,12 @@ function LanguageCard({ settings, put }) {
           onChange=${async (e) => {
             const v = e.currentTarget.value;
             if (await put({ language: v })) {
-              toast(t('sys.lang_saved', { lang: LANGS.find((l) => l.id === v)?.label || v }), 'ok');
+              toast(t('sys.lang_saved', { lang: langs.find((l) => l.id === v)?.label || v }), 'ok');
             }
           }}
           aria-describedby="sys-lang-hint"
         >
-          ${LANGS.map((l) => html`<option key=${l.id} value=${l.id} lang=${l.html}>${l.label}</option>`)}
+          ${langs.map((l) => html`<option key=${l.id} value=${l.id} lang=${l.html}>${l.label}</option>`)}
         </select>
       </div>
       <div class="inline-note" id="sys-lang-hint">
@@ -500,11 +548,9 @@ function utcOffsetLabel(m) {
   return `UTC${m < 0 ? '\u2212' : '+'}${hh}:${mm}`;
 }
 
-function TimeZoneCard({ settings, put }) {
+function TimeZoneCard({ settings, spec, put }) {
   if (!settings) return html`<${SkeletonCard} />`;
-  const choices = UTC_OFFSETS.includes(settings.utc_offset_min)
-    ? UTC_OFFSETS
-    : [...UTC_OFFSETS, settings.utc_offset_min].sort((a, b) => a - b);
+  const choices = withCurrent(spec('utc_offset_min').choices, settings.utc_offset_min);
   return html`<${Card} title=${t('sys.tz_title')} icon=${IconClock}>
     <div class="form">
       <div class="field">
@@ -523,7 +569,7 @@ function TimeZoneCard({ settings, put }) {
       <label class="scene-check">
         <input
           type="checkbox"
-          checked=${settings.time_24h !== false}
+          checked=${settings.time_24h}
           onChange=${(e) => put({ time_24h: e.currentTarget.checked })}
         />
         ${t('sys.time_24h')}
@@ -558,7 +604,12 @@ function tidyServers(text) {
     .join(',');
 }
 
-function TimeSyncCard({ settings, put }) {
+/** The longest text a hosts key takes: its entries at full length, comma-separated. */
+function hostsLength(s) {
+  return s.max_entries * s.max_length + s.max_entries - 1;
+}
+
+function TimeSyncCard({ settings, spec, put }) {
   const [status, setStatus] = useState(/** @type {TimeStatus|null} */ (null));
   const [unavailable, setUnavailable] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -688,7 +739,7 @@ function TimeSyncCard({ settings, put }) {
             spellcheck="false"
             autocapitalize="off"
             autocomplete="off"
-            maxlength="127"
+            maxlength=${hostsLength(spec('ntp_servers'))}
             value=${shown}
             onInput=${(e) => setDraft(e.currentTarget.value)}
             aria-describedby="sys-ntp-hint"
@@ -703,23 +754,25 @@ function TimeSyncCard({ settings, put }) {
   </${Card}>`;
 }
 
-/** A whole number within [min, max], or null. */
-function wholeIn(text, min, max) {
-  const v = Number(text);
-  return Number.isInteger(v) && v >= min && v <= max ? v : null;
+/** `text` as a valid value of the int key `s`, or null. */
+function wholeIn(text, s) {
+  const v = text.trim() === '' ? NaN : Number(text);
+  return intValid(s, v) ? v : null;
 }
 
 // The agent's per-turn limits (agent-core spec 3.1): saved together, they
 // apply from the next turn on.
-function AgentLimitsCard({ settings, put }) {
+function AgentLimitsCard({ settings, spec, put }) {
   const [steps, setSteps] = useState(/** @type {string|null} */ (null));
   const [minutes, setMinutes] = useState(/** @type {string|null} */ (null));
   const [saving, setSaving] = useState(false);
   if (!settings) return html`<${SkeletonCard} />`;
-  const stepsShown = steps ?? String(settings.agent_max_steps ?? 60);
-  const minutesShown = minutes ?? String(settings.agent_turn_min ?? 15);
-  const stepsValue = wholeIn(stepsShown, AGENT_STEPS_MIN, AGENT_STEPS_MAX);
-  const minutesValue = wholeIn(minutesShown, AGENT_MIN_MIN, AGENT_MIN_MAX);
+  const stepsSpec = spec('agent_max_steps');
+  const minutesSpec = spec('agent_turn_min');
+  const stepsShown = steps ?? String(settings.agent_max_steps);
+  const minutesShown = minutes ?? String(settings.agent_turn_min);
+  const stepsValue = wholeIn(stepsShown, stepsSpec);
+  const minutesValue = wholeIn(minutesShown, minutesSpec);
   const valid = stepsValue !== null && minutesValue !== null;
   const changed = stepsValue !== settings.agent_max_steps || minutesValue !== settings.agent_turn_min;
 
@@ -754,11 +807,11 @@ function AgentLimitsCard({ settings, put }) {
   return html`<${Card} title=${t('sys.agent_title')} icon=${IconModel}>
     <div class="form">
       <div class="grid grid-2">
-        ${numberField('sys-agent-steps', t('sys.agent_steps'), stepsShown, stepsValue !== null, AGENT_STEPS_MIN, AGENT_STEPS_MAX, setSteps)}
-        ${numberField('sys-agent-minutes', t('sys.agent_minutes'), minutesShown, minutesValue !== null, AGENT_MIN_MIN, AGENT_MIN_MAX, setMinutes)}
+        ${numberField('sys-agent-steps', t('sys.agent_steps'), stepsShown, stepsValue !== null, stepsSpec.min, stepsSpec.max, setSteps)}
+        ${numberField('sys-agent-minutes', t('sys.agent_minutes'), minutesShown, minutesValue !== null, minutesSpec.min, minutesSpec.max, setMinutes)}
       </div>
       <p id="sys-agent-hint" class="field-hint">
-        ${t('sys.agent_hint', { smin: AGENT_STEPS_MIN, smax: AGENT_STEPS_MAX, mmin: AGENT_MIN_MIN, mmax: AGENT_MIN_MAX })}
+        ${t('sys.agent_hint', { smin: stepsSpec.min, smax: stepsSpec.max, mmin: minutesSpec.min, mmax: minutesSpec.max })}
       </p>
       <div>
         <button type="button" class="btn btn-secondary" onClick=${save} disabled=${!valid || !changed || saving}>
@@ -768,6 +821,80 @@ function AgentLimitsCard({ settings, put }) {
       </div>
     </div>
   </${Card}>`;
+}
+
+// The keys GET /settings lists that no card above places, each with a
+// control chosen by its type, so a new key can be changed here before
+// anyone writes a card for it. Not shown when every key has its card.
+function MoreCard({ settings, schema, put }) {
+  if (!settings) return null;
+  const keys = schema.keys.filter((k) => !PLACED.has(k.name) && k.name in settings);
+  if (keys.length === 0) return null;
+  return html`<${Card} title=${t('sys.more_title')} icon=${IconSystem}>
+    <div class="form">
+      ${keys.map((k) => html`<${MoreField} key=${k.name} spec=${k} value=${settings[k.name]} put=${put} />`)}
+    </div>
+  </${Card}>`;
+}
+
+function MoreField({ spec: s, value, put }) {
+  const [draft, setDraft] = useState(/** @type {string|null} */ (null));
+  const id = 'sys-more-' + s.name;
+  const label = t('sys.' + s.label);
+
+  if (s.type === 'bool') {
+    return html`<label class="scene-check">
+      <input type="checkbox" checked=${value} onChange=${(e) => put({ [s.name]: e.currentTarget.checked })} />
+      ${label}
+    </label>`;
+  }
+
+  if (s.type === 'enum') {
+    return html`<div class="field">
+      <label class="field-label" for=${id}>${label}</label>
+      <select id=${id} class="input select" value=${value} onChange=${(e) => put({ [s.name]: e.currentTarget.value })}>
+        ${s.values.map((v) => html`<option key=${v} value=${v}>${v}</option>`)}
+      </select>
+    </div>`;
+  }
+
+  // int and hosts: typed into a field, saved when it is left or Enter is
+  // pressed, and only when the device would take it.
+  const isInt = s.type === 'int';
+  const shown = draft ?? String(value);
+  const parsed = isInt ? wholeIn(shown, s) : tidyServers(shown);
+  const ok = isInt ? parsed !== null : parsed.length > 0;
+  async function commit() {
+    if (draft === null) return;
+    if (!ok || parsed === value) {
+      if (ok) setDraft(null);
+      return;
+    }
+    if (await put({ [s.name]: parsed })) setDraft(null);
+  }
+  const hint = isInt ? (s.zero_never ? `0, ${s.min}–${s.max}` : `${s.min}–${s.max}`) : null;
+  return html`<div class="field">
+    <label class="field-label" for=${id}>${label}</label>
+    <input
+      id=${id}
+      class="input mono"
+      type=${isInt ? 'number' : 'text'}
+      inputmode=${isInt ? 'numeric' : null}
+      min=${isInt ? s.min : null}
+      max=${isInt ? s.max : null}
+      step=${isInt ? '1' : null}
+      maxlength=${isInt ? null : hostsLength(s)}
+      spellcheck="false"
+      autocapitalize="off"
+      autocomplete="off"
+      value=${shown}
+      aria-invalid=${ok ? null : 'true'}
+      aria-describedby=${hint ? id + '-hint' : null}
+      onInput=${(e) => setDraft(e.currentTarget.value)}
+      onChange=${commit}
+    />
+    ${hint ? html`<p id=${id + '-hint'} class="field-hint mono">${hint}</p>` : null}
+  </div>`;
 }
 
 function SkeletonCard() {

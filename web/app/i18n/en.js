@@ -388,6 +388,7 @@ export default {
   'sys.agent_minutes': 'Time per turn, at most (minutes)',
   'sys.agent_hint': 'Tool calls {smin}–{smax}, minutes {mmin}–{mmax}. Applies from the next turn on.',
   'sys.agent_save': 'Save',
+  'sys.more_title': 'More settings',
   'sys.agent_saved': 'Agent limits saved',
   'clients.title': 'Paired browsers',
   'clients.count': '{count}',
