@@ -242,7 +242,9 @@ public:
     static constexpr uint32_t kRefreshMs = 50, kTickMs = 250, kFadeOutMs = 300;
 
     explicit Home(HomeDeps deps);
-    // Makes no LVGL call: stop() first when started.
+    // Makes no LVGL call: stop() first when started. Any thread: it first
+    // releases its cell subscriptions and conversation listener, which
+    // stop() alone releases for a started one.
     ~Home();
 
     Home(const Home&) = delete;

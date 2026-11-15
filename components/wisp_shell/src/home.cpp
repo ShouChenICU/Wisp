@@ -191,7 +191,16 @@ Home::Home(HomeDeps deps) : deps_(std::move(deps)), press_(swipe_min_px(deps_.sh
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
-Home::~Home() = default;
+Home::~Home() {
+    // Without stop() (a Home never started can still have been handed a
+    // conversation), what calls back into this object goes before any
+    // member it touches: the cell subscriptions (from another thread each
+    // release waits for a call under way) and the controller's listener.
+    agent_sub_.reset();
+    power_sub_.reset();
+    voice_sub_.reset();
+    if (conv_ != nullptr && listener_ != 0) conv_->remove_listener(listener_);
+}
 
 bool Home::start() {
     if (screen_ != nullptr) return true;

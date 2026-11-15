@@ -1003,6 +1003,25 @@ protected:
 
 // A voice turn and a web turn both show their heard text above the wisp,
 // the say text under it and the body below.
+// A Home destroyed without stop() (here one never started, handed a
+// conversation) lets go of the voice cell and the controller's listener
+// before its members go: a turn afterwards calls nothing of it.
+TEST_F(HomeTest, DestroyedWithoutStopLetsGoOfItsFollowers) {
+    boot();
+    h->bus.wait_idle(1000);
+    const uint32_t before = h->bus.cell_subscriptions();
+    auto spare = std::make_unique<Home>(
+        wisp::shell::HomeDeps{.ui = *ui_, .shape = shape_, .now_ms = {}, .admin_url = {}});
+    on_ui([&] { spare->set_conversation(conv.get()); });
+    EXPECT_EQ(h->bus.cell_subscriptions(), before + 1);
+    spare.reset();
+    EXPECT_EQ(h->bus.cell_subscriptions(), before);
+    server.llm().push(wisp::test::llm_text("<say>好。</say>"));
+    ASSERT_TRUE(agent->submit("在吗", wisp::agent::Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
+}
+
 TEST_F(HomeTest, TurnShowsHeardSayAndBody) {
     boot();
     server.llm().push(wisp::test::llm_text("<say>好的。</say>细节 **粗**\n- 一"));
@@ -1584,7 +1603,11 @@ TEST_F(HomeTest, UnauthorizedNoteCarriesTheAdminUrl) {
     EXPECT_EQ(hint_shown(), "");
 }
 
-// A voice hint that comes after the turn's outcome takes its place.
+// A voice hint that comes after the turn's outcome takes its place. The
+// real hold clears the turn's note as it starts, before "not heard"
+// appears, so this proves the hint shown after a capture, not a hint
+// outranking a note still on screen: with the hold driven through the
+// voice service, that state no longer occurs.
 TEST_F(HomeTest, LaterVoiceHintReplacesTheNote) {
     boot();
     for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});

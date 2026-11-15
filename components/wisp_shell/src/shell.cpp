@@ -77,7 +77,14 @@ Shell::Shell(ShellDeps deps)
     if (!deps_.now_ms) deps_.now_ms = os::now_ms;
 }
 
-Shell::~Shell() = default;
+Shell::~Shell() {
+    // As ~Home: without stop(), what calls back into this object goes
+    // before any member it touches; home_ then releases its own.
+    scene_sub_.reset();
+    talk_voice_sub_.reset();
+    if (deps_.conversation != nullptr && talk_listener_ != 0)
+        deps_.conversation->remove_listener(talk_listener_);
+}
 
 lv_obj_t* Shell::home_screen() const { return home_screen_; }
 

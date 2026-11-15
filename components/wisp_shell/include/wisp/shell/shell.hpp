@@ -231,7 +231,9 @@ struct ShellDeps {
 class Shell {
 public:
     explicit Shell(ShellDeps deps);
-    // Makes no LVGL call: stop() first when started.
+    // Makes no LVGL call: stop() first when started. Any thread: it first
+    // releases its cell subscriptions and conversation listener, which
+    // stop() alone releases for a started one.
     ~Shell();
 
     Shell(const Shell&) = delete;
