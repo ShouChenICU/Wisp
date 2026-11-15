@@ -7,6 +7,7 @@
 
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/ui/setting_labels.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/symbols.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -25,9 +26,81 @@ constexpr int32_t kSliderReachPx = (detail::kMinTouchPx - kSliderPx) / 2;
 constexpr int32_t kSwitchW = 52, kSwitchH = 30;
 constexpr int32_t kEndIconPx = 20;
 
-int percent(int value, int max) { return (value * 100 + max / 2) / max; }
+using core::SettingId;
+using core::SettingSpec;
 
-std::string percent_text(int value, int max) { return std::to_string(percent(value, max)) + "%"; }
+constexpr SettingRow kSettingRows[] = {
+    {SettingGroup::DisplaySound, SettingId::Brightness, SettingWidget::Slider},
+    {SettingGroup::DisplaySound, SettingId::Volume, SettingWidget::Slider},
+    {SettingGroup::DisplaySound, SettingId::NotifyVol, SettingWidget::Slider},
+    {SettingGroup::DisplaySound, SettingId::TtsMute, SettingWidget::InvertedSwitch},
+    {SettingGroup::ScreenPower, SettingId::ScreenOffS, SettingWidget::Choice},
+    {SettingGroup::ScreenPower, SettingId::DeepAfterS, SettingWidget::Choice},
+    {SettingGroup::LangTime, SettingId::Language, SettingWidget::Choice},
+    {SettingGroup::LangTime, SettingId::UtcOffsetMin, SettingWidget::Choice},
+    {SettingGroup::LangTime, SettingId::Time24h, SettingWidget::Choice},
+};
+
+// The icons beside a setting: a row's leading icon, or a slider's two end
+// icons (low, high).
+struct SettingIcons {
+    const char* icon = nullptr;
+    const char* high = nullptr;
+};
+
+SettingIcons icons_of(SettingId id) {
+    switch (id) {
+        case SettingId::Brightness:
+            return {WISP_SYMBOL_MOON, WISP_SYMBOL_SUN};
+        case SettingId::Volume:
+            return {LV_SYMBOL_MUTE, LV_SYMBOL_VOLUME_MAX};
+        case SettingId::NotifyVol:
+            return {LV_SYMBOL_MUTE, LV_SYMBOL_BELL};
+        case SettingId::TtsMute:
+            return {LV_SYMBOL_AUDIO, nullptr};
+        case SettingId::ScreenOffS:
+            return {WISP_SYMBOL_MOON, nullptr};
+        case SettingId::DeepAfterS:
+            return {WISP_SYMBOL_HOURGLASS, nullptr};
+        case SettingId::Language:
+            return {WISP_SYMBOL_GLOBE, nullptr};
+        case SettingId::UtcOffsetMin:
+            return {WISP_SYMBOL_MAP_MARKER, nullptr};
+        case SettingId::Time24h:
+            return {WISP_SYMBOL_CLOCK, nullptr};
+        default:
+            return {};
+    }
+}
+
+// The Row a choice setting's value row is known by (for tests and the
+// simulator's checks).
+SettingsPage::Row row_of(SettingId id) {
+    using Row = SettingsPage::Row;
+    switch (id) {
+        case SettingId::ScreenOffS:
+            return Row::ScreenOff;
+        case SettingId::DeepAfterS:
+            return Row::DeepStandby;
+        case SettingId::Language:
+            return Row::Language;
+        case SettingId::UtcOffsetMin:
+            return Row::TimeZone;
+        case SettingId::Time24h:
+            return Row::TimeFormat;
+        default:
+            return Row::Count;
+    }
+}
+
+// Every shown setting has a label (SettingLabels.EveryDeviceShownKeyHasALabel).
+ui::StrId label_of(SettingId id) {
+    return ui::setting_label(core::setting_spec(id).label).value_or(ui::StrId::SettingsBrightness);
+}
+
+std::string percent_text(int value, const SettingSpec& spec) {
+    return std::to_string(SettingsPage::percent(value, spec)) + "%";
+}
 
 ui::StrId lang_name(core::LangCode code) {
     switch (code) {
@@ -50,22 +123,79 @@ std::string time_zone_text(int offset) {
     return SettingsPage::utc_label(offset);
 }
 
-// `base` with `current` put in its place when the list lacks it: before
-// "never" (0, last), in order among the rest.
-std::vector<int> with_current(const std::array<int, 6>& base, int current) {
-    std::vector<int> out(base.begin(), base.end());
+// An Int row's choices as the page lists them, ascending, with "never"
+// (0 on a kSettingZeroNever row) moved to the end, and `current` put in its
+// place when the list lacks it: before "never", in order among the rest.
+std::vector<int> int_options(const SettingSpec& spec, int current) {
+    const bool zero_never = (spec.flags & core::kSettingZeroNever) != 0;
+    auto never = [&](int v) { return zero_never && v == 0; };
+    std::vector<int> out;
+    for (int32_t v : spec.int_choices) {
+        if (!never(v)) out.push_back(static_cast<int>(v));
+    }
+    for (int32_t v : spec.int_choices) {
+        if (never(v)) out.push_back(0);
+    }
     if (std::find(out.begin(), out.end(), current) != out.end()) return out;
-    auto at = std::find_if(out.begin(), out.end(), [&](int s) { return s == 0 || s > current; });
+    auto at = std::find_if(out.begin(), out.end(), [&](int v) { return never(v) || v > current; });
     out.insert(at, current);
     return out;
 }
 
-int index_of(const std::vector<int>& list, int v) {
-    auto it = std::find(list.begin(), list.end(), v);
-    return it == list.end() ? -1 : static_cast<int>(it - list.begin());
+// A choice row's value as its row and choice page read.
+std::string option_text(SettingId id, const Value& v) {
+    const SettingSpec& spec = core::setting_spec(id);
+    switch (spec.type) {
+        case core::SettingType::Int: {
+            const int n = static_cast<int>(v.as_int());
+            if (spec.unit == core::SettingUnit::Seconds) return SettingsPage::duration_text(n);
+            if (spec.unit == core::SettingUnit::UtcOffsetMinutes) return time_zone_text(n);
+            return std::to_string(n);
+        }
+        case core::SettingType::Enum:
+            return ui::tr(lang_name(core::parse_lang_code(v.as_string())
+                                        .value_or(core::setting_init<core::LangCode>(id))));
+        case core::SettingType::Bool:
+            // The only Bool choice row is the time format.
+            return ui::tr(v.as_bool() ? ui::StrId::SettingsClock24 : ui::StrId::SettingsClock12);
+        case core::SettingType::HostList:
+            break;
+    }
+    return v.as_string();
+}
+
+// The choices of a choice row, as the values written.
+std::vector<Value> options_of(SettingId id, const core::SettingsSnapshot& now) {
+    const SettingSpec& spec = core::setting_spec(id);
+    std::vector<Value> out;
+    switch (spec.type) {
+        case core::SettingType::Int:
+            for (int v : int_options(spec, static_cast<int>(core::setting_value(now, id).as_int())))
+                out.emplace_back(static_cast<int64_t>(v));
+            break;
+        case core::SettingType::Enum:
+            // The only Enum row is the language, listed in the page's own order.
+            for (core::LangCode code : SettingsPage::kLanguageOrder)
+                out.emplace_back(std::string(core::lang_code(code)));
+            break;
+        case core::SettingType::Bool:
+            out = {Value(true), Value(false)};
+            break;
+        case core::SettingType::HostList:
+            break;
+    }
+    return out;
 }
 
 }  // namespace
+
+std::span<const SettingRow> SettingsPage::setting_rows() { return kSettingRows; }
+
+int SettingsPage::percent(int value, const core::SettingSpec& spec) {
+    const int range = spec.max - spec.min;
+    if (range <= 0) return 0;
+    return ((value - spec.min) * 100 + range / 2) / range;
+}
 
 const std::vector<TimeZoneChoice>& SettingsPage::time_zones() {
     using ui::StrId;
@@ -103,18 +233,7 @@ std::string SettingsPage::duration_text(int seconds) {
 }
 
 SettingsPage::SettingsPage(SettingsDeps deps) : deps_(std::move(deps)) {
-    if (deps_.settings) {
-        now_ = deps_.settings();
-    } else {
-        now_.brightness = 200;
-        now_.volume = 60;
-        now_.notify_vol = 60;
-        now_.screen_off_s = static_cast<int>(core::kDefaultScreenOffS);
-        now_.deep_after_s = static_cast<int>(core::kDefaultDeepAfterS);
-        now_.language = core::LangCode::Zh;
-        now_.utc_offset_min = 480;
-        now_.time_24h = true;
-    }
+    if (deps_.settings) now_ = deps_.settings();
 }
 
 SettingsPage::~SettingsPage() {
@@ -128,9 +247,10 @@ lv_obj_t* SettingsPage::add_group(ui::StrId heading) {
     return cards_.back();
 }
 
-lv_obj_t* SettingsPage::add_slider(lv_obj_t* card, ui::StrId name, const char* low,
-                                   const char* high, int min, int max, int value,
-                                   lv_obj_t** value_label) {
+void SettingsPage::add_slider(lv_obj_t* card, SettingId id) {
+    const SettingSpec& spec = core::setting_spec(id);
+    const SettingIcons icons = icons_of(id);
+    SettingParts& parts = settings_[static_cast<size_t>(id)];
     lv_obj_t* box = detail::make_row_box(card);
     if (lv_obj_get_index(box) > 0) detail::add_divider(box);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
@@ -140,8 +260,8 @@ lv_obj_t* SettingsPage::add_slider(lv_obj_t* card, ui::StrId name, const char* l
     lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(head, ui::theme::kGapSm, 0);
     lv_obj_t* l = lv_label_create(head);
-    lv_label_set_text(l, ui::tr(name));
-    *value_label = detail::add_row_value(head, "", false);
+    lv_label_set_text(l, ui::tr(label_of(id)));
+    parts.value = detail::add_row_value(head, "", false);
 
     lv_obj_t* line = detail::make_box(box);
     lv_obj_set_height(line, detail::kMinTouchPx);
@@ -149,15 +269,16 @@ lv_obj_t* SettingsPage::add_slider(lv_obj_t* card, ui::StrId name, const char* l
     lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(line, ui::theme::kGapMd, 0);
     lv_obj_t* lo = lv_label_create(line);
-    lv_label_set_text(lo, low);
+    lv_label_set_text(lo, icons.icon);
     lv_obj_set_width(lo, kEndIconPx);
     lv_obj_set_style_text_align(lo, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(lo, detail::dim_colour(card), 0);
     lv_obj_t* s = lv_slider_create(line);
     lv_obj_set_height(s, kSliderPx);
     lv_obj_set_flex_grow(s, 1);
-    lv_slider_set_range(s, min, max);
-    const int v = std::clamp(value, min, max);
+    lv_slider_set_range(s, spec.min, spec.max);
+    const int v = std::clamp(static_cast<int>(core::setting_value(now_, id).as_int()),
+                             static_cast<int>(spec.min), static_cast<int>(spec.max));
     lv_slider_set_value(s, v, LV_ANIM_OFF);
     lv_obj_set_ext_click_area(s, kSliderReachPx);
     // Dragging it sideways is the slider's, not a page drag.
@@ -165,15 +286,18 @@ lv_obj_t* SettingsPage::add_slider(lv_obj_t* card, ui::StrId name, const char* l
     lv_obj_add_event_cb(s, &SettingsPage::event_cb, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(s, &SettingsPage::event_cb, LV_EVENT_RELEASED, this);
     lv_obj_t* hi = lv_label_create(line);
-    lv_label_set_text(hi, high);
+    lv_label_set_text(hi, icons.high);
     lv_obj_set_width(hi, kEndIconPx);
     lv_obj_set_style_text_align(hi, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(*value_label, percent_text(v, max).c_str());
-    return s;
+    lv_label_set_text(parts.value, percent_text(v, spec).c_str());
+    parts.control = s;
 }
 
-lv_obj_t* SettingsPage::add_switch(lv_obj_t* card, const char* icon, ui::StrId name, bool on) {
-    detail::ListRow r = detail::make_list_row(card, icon, ui::tr(name), false);
+void SettingsPage::add_switch(lv_obj_t* card, const SettingRow& row) {
+    const bool value = core::setting_value(now_, row.id).as_bool();
+    const bool on = row.widget == SettingWidget::InvertedSwitch ? !value : value;
+    detail::ListRow r =
+        detail::make_list_row(card, icons_of(row.id).icon, ui::tr(label_of(row.id)), false);
     lv_obj_set_flex_grow(r.name, 1);
     lv_label_set_long_mode(r.name, LV_LABEL_LONG_WRAP);
     lv_obj_t* sw = lv_switch_create(r.row);
@@ -182,7 +306,28 @@ lv_obj_t* SettingsPage::add_switch(lv_obj_t* card, const char* icon, ui::StrId n
     if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
     lv_obj_add_flag(sw, detail::kNoSwipe);
     lv_obj_add_event_cb(sw, &SettingsPage::event_cb, LV_EVENT_VALUE_CHANGED, this);
-    return sw;
+    settings_[static_cast<size_t>(row.id)].control = sw;
+}
+
+void SettingsPage::add_setting_rows(lv_obj_t* card, SettingGroup group) {
+    for (const SettingRow& row : setting_rows()) {
+        if (row.group != group) continue;
+        switch (row.widget) {
+            case SettingWidget::Slider:
+                add_slider(card, row.id);
+                break;
+            case SettingWidget::Switch:
+            case SettingWidget::InvertedSwitch:
+                add_switch(card, row);
+                break;
+            case SettingWidget::Choice: {
+                const Row r = row_of(row.id);
+                add_value_row(card, r, icons_of(row.id).icon, label_of(row.id), true);
+                settings_[static_cast<size_t>(row.id)] = {this->row(r), value(r)};
+                break;
+            }
+        }
+    }
 }
 
 void SettingsPage::add_value_row(lv_obj_t* card, Row which, const char* icon, ui::StrId name,
@@ -219,18 +364,10 @@ void SettingsPage::build(lv_obj_t* list) {
     list_ = list;
 
     lv_obj_t* card = add_group(ui::StrId::SettingsGroupDisplay);
-    brightness_ = add_slider(card, ui::StrId::SettingsBrightness, WISP_SYMBOL_MOON, WISP_SYMBOL_SUN,
-                             10, 255, now_.brightness, &brightness_value_);
-    volume_ = add_slider(card, ui::StrId::SettingsVolume, LV_SYMBOL_MUTE, LV_SYMBOL_VOLUME_MAX, 0,
-                         100, now_.volume, &volume_value_);
-    notify_ = add_slider(card, ui::StrId::SettingsNotifyVol, LV_SYMBOL_MUTE, LV_SYMBOL_BELL, 0, 100,
-                         now_.notify_vol, &notify_value_);
-    speak_ = add_switch(card, LV_SYMBOL_AUDIO, ui::StrId::SettingsSpeak, !now_.tts_mute);
+    add_setting_rows(card, SettingGroup::DisplaySound);
 
     card = add_group(ui::StrId::SettingsGroupPower);
-    add_value_row(card, Row::ScreenOff, WISP_SYMBOL_MOON, ui::StrId::SettingsScreenOff, true);
-    add_value_row(card, Row::DeepStandby, WISP_SYMBOL_HOURGLASS, ui::StrId::SettingsDeepStandby,
-                  true);
+    add_setting_rows(card, SettingGroup::ScreenPower);
     card = add_group(ui::StrId::SettingsGroupNetwork);
     add_value_row(card, Row::Wifi, LV_SYMBOL_WIFI, ui::StrId::SettingsWifi, true);
 
@@ -240,9 +377,7 @@ void SettingsPage::build(lv_obj_t* list) {
     add_value_row(card, Row::ModelTts, nullptr, ui::StrId::ModelTts, true);
 
     card = add_group(ui::StrId::SettingsGroupLangTime);
-    add_value_row(card, Row::Language, WISP_SYMBOL_GLOBE, ui::StrId::SettingsLanguage, true);
-    add_value_row(card, Row::TimeZone, WISP_SYMBOL_MAP_MARKER, ui::StrId::SettingsTimeZone, true);
-    add_value_row(card, Row::TimeFormat, WISP_SYMBOL_CLOCK, ui::StrId::SettingsTimeFormat, true);
+    add_setting_rows(card, SettingGroup::LangTime);
 
     card = add_group(ui::StrId::SettingsGroupSystem);
     add_value_row(card, Row::Version, WISP_SYMBOL_INFO, ui::StrId::AboutFirmware, false);
@@ -266,12 +401,11 @@ void SettingsPage::build(lv_obj_t* list) {
 }
 
 void SettingsPage::show_values() {
-    lv_label_set_text(value(Row::ScreenOff), duration_text(now_.screen_off_s).c_str());
-    lv_label_set_text(value(Row::DeepStandby), duration_text(now_.deep_after_s).c_str());
-    lv_label_set_text(value(Row::Language), ui::tr(lang_name(now_.language)));
-    lv_label_set_text(value(Row::TimeZone), time_zone_text(now_.utc_offset_min).c_str());
-    lv_label_set_text(value(Row::TimeFormat), ui::tr(now_.time_24h ? ui::StrId::SettingsClock24
-                                                                   : ui::StrId::SettingsClock12));
+    for (const SettingRow& row : setting_rows()) {
+        if (row.widget != SettingWidget::Choice) continue;
+        lv_label_set_text(shown(row.id),
+                          option_text(row.id, core::setting_value(now_, row.id)).c_str());
+    }
 }
 
 void SettingsPage::refresh() {
@@ -298,72 +432,21 @@ void SettingsPage::refresh() {
     }
 }
 
-void SettingsPage::open(Row r) {
+void SettingsPage::open(SettingId id) {
     if (!deps_.open_choice) return;
+    const std::vector<Value> options = options_of(id, now_);
+    const Value current = core::setting_value(now_, id);
     ChoiceSpec spec;
-    switch (r) {
-        case Row::ScreenOff:
-        case Row::DeepStandby: {
-            const bool off = r == Row::ScreenOff;
-            const std::vector<int> times =
-                with_current(off ? kScreenOffChoices : kDeepStandbyChoices,
-                             off ? now_.screen_off_s : now_.deep_after_s);
-            spec.title = off ? ui::StrId::SettingsScreenOff : ui::StrId::SettingsDeepStandby;
-            for (int s : times) spec.labels.push_back(duration_text(s));
-            spec.current = index_of(times, off ? now_.screen_off_s : now_.deep_after_s);
-            spec.on_pick = [this, off, times](size_t i) {
-                const char* key = off ? "screen_off_s" : "deep_after_s";
-                (off ? now_.screen_off_s : now_.deep_after_s) = times[i];
-                show_values();
-                write({{key, Value(static_cast<int64_t>(times[i]))}});
-            };
-            break;
-        }
-        case Row::Language: {
-            spec.title = ui::StrId::SettingsLanguage;
-            for (size_t i = 0; i < kLanguages.size(); ++i) {
-                const core::LangCode code = *core::parse_lang_code(kLanguages[i]);
-                spec.labels.push_back(ui::tr(lang_name(code)));
-                if (now_.language == code) spec.current = static_cast<int>(i);
-            }
-            spec.on_pick = [this](size_t i) {
-                now_.language = *core::parse_lang_code(kLanguages[i]);
-                show_values();
-                write({{"language", Value(std::string(kLanguages[i]))}});
-            };
-            break;
-        }
-        case Row::TimeZone: {
-            std::vector<int> offsets;
-            for (const TimeZoneChoice& z : time_zones()) offsets.push_back(z.utc_offset_min);
-            if (index_of(offsets, now_.utc_offset_min) < 0) {
-                offsets.insert(
-                    std::upper_bound(offsets.begin(), offsets.end(), now_.utc_offset_min),
-                    now_.utc_offset_min);
-            }
-            spec.title = ui::StrId::SettingsTimeZone;
-            for (int m : offsets) spec.labels.push_back(time_zone_text(m));
-            spec.current = index_of(offsets, now_.utc_offset_min);
-            spec.on_pick = [this, offsets](size_t i) {
-                now_.utc_offset_min = offsets[i];
-                show_values();
-                write({{"utc_offset_min", Value(static_cast<int64_t>(offsets[i]))}});
-            };
-            break;
-        }
-        case Row::TimeFormat:
-            spec.title = ui::StrId::SettingsTimeFormat;
-            spec.labels = {ui::tr(ui::StrId::SettingsClock24), ui::tr(ui::StrId::SettingsClock12)};
-            spec.current = now_.time_24h ? 0 : 1;
-            spec.on_pick = [this](size_t i) {
-                now_.time_24h = i == 0;
-                show_values();
-                write({{"time_24h", Value(now_.time_24h)}});
-            };
-            break;
-        default:
-            return;
+    spec.title = label_of(id);
+    for (size_t i = 0; i < options.size(); ++i) {
+        spec.labels.push_back(option_text(id, options[i]));
+        if (options[i] == current) spec.current = static_cast<int>(i);
     }
+    spec.on_pick = [this, id, options](size_t i) {
+        if (!core::assign_setting(now_, id, options[i])) return;
+        show_values();
+        write({{std::string(core::setting_spec(id).name), options[i]}});
+    };
     deps_.open_choice(std::move(spec));
 }
 
@@ -402,32 +485,33 @@ void SettingsPage::event_cb(lv_event_t* e) {
     auto* self = static_cast<SettingsPage*>(lv_event_get_user_data(e));
     lv_obj_t* obj = lv_event_get_current_target_obj(e);
     const lv_event_code_t code = lv_event_get_code(e);
-    struct Slider {
-        lv_obj_t* slider;
-        lv_obj_t* value;
-        int max;
-        const char* key;
-        int* now;
-    };
-    const Slider sliders[] = {
-        {self->brightness_, self->brightness_value_, 255, "brightness", &self->now_.brightness},
-        {self->volume_, self->volume_value_, 100, "volume", &self->now_.volume},
-        {self->notify_, self->notify_value_, 100, "notify_vol", &self->now_.notify_vol},
-    };
-    for (const Slider& s : sliders) {
-        if (obj != s.slider) continue;
-        const int v = lv_slider_get_value(obj);
-        lv_label_set_text(s.value, percent_text(v, s.max).c_str());
-        if (code == LV_EVENT_RELEASED) {
-            *s.now = v;
-            self->write({{s.key, Value(static_cast<int64_t>(v))}});
+    for (const SettingRow& row : setting_rows()) {
+        if (obj != self->control(row.id)) continue;
+        const std::string key(core::setting_spec(row.id).name);
+        switch (row.widget) {
+            case SettingWidget::Slider: {
+                const int v = lv_slider_get_value(obj);
+                lv_label_set_text(self->shown(row.id),
+                                  percent_text(v, core::setting_spec(row.id)).c_str());
+                if (code == LV_EVENT_RELEASED && core::assign_setting(self->now_, row.id, Value(v)))
+                    self->write({{key, Value(static_cast<int64_t>(v))}});
+                break;
+            }
+            case SettingWidget::Switch:
+            case SettingWidget::InvertedSwitch: {
+                const bool checked = lv_obj_has_state(obj, LV_STATE_CHECKED);
+                const bool v = row.widget == SettingWidget::InvertedSwitch ? !checked : checked;
+                if (core::assign_setting(self->now_, row.id, Value(v)))
+                    self->write({{key, Value(v)}});
+                break;
+            }
+            case SettingWidget::Choice:
+                self->open(row.id);
+                break;
         }
         return;
     }
-    if (obj == self->speak_) {
-        self->now_.tts_mute = !lv_obj_has_state(obj, LV_STATE_CHECKED);
-        self->write({{"tts_mute", Value(self->now_.tts_mute)}});
-    } else if (obj == self->row(Row::Wifi)) {
+    if (obj == self->row(Row::Wifi)) {
         if (self->deps_.start_wifi_setup) self->deps_.start_wifi_setup();
     } else if (obj == self->row(Row::ModelLlm) || obj == self->row(Row::ModelAsr) ||
                obj == self->row(Row::ModelTts)) {
@@ -439,11 +523,6 @@ void SettingsPage::event_cb(lv_event_t* e) {
         if (self->deps_.open_diagnostics) self->deps_.open_diagnostics();
     } else if (obj == self->row(Row::Restart) || obj == self->row(Row::PowerOff)) {
         self->ask(obj == self->row(Row::Restart) ? Row::Restart : Row::PowerOff);
-    } else {
-        for (Row r :
-             {Row::ScreenOff, Row::DeepStandby, Row::Language, Row::TimeZone, Row::TimeFormat}) {
-            if (obj == self->row(r)) self->open(r);
-        }
     }
 }
 

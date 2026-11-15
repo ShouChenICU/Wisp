@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -134,6 +135,50 @@ protected:
 };
 
 }  // namespace
+
+// The hand-written layout list (settings-schema spec 3.8) against the table:
+// every key the page may write has exactly one row, and no other key has one.
+TEST(SettingsPageLayout, EveryDevicePageKeyHasOneRow) {
+    std::map<wisp::core::SettingId, int> rows;
+    for (const wisp::shell::SettingRow& r : SettingsPage::setting_rows()) ++rows[r.id];
+    for (const wisp::core::SettingSpec& spec : wisp::core::kSettingsSchema) {
+        const wisp::core::SettingId id = wisp::core::setting_id_of(spec);
+        const bool shown = (spec.flags & wisp::core::kSettingDevicePage) != 0;
+        EXPECT_EQ(rows.count(id) != 0 ? rows[id] : 0, shown ? 1 : 0) << spec.name;
+    }
+}
+
+TEST(SettingsPageLayout, EveryTimeZoneChoiceHasACity) {
+    for (int32_t offset : wisp::core::kUtcOffsetChoices) {
+        const auto& zones = SettingsPage::time_zones();
+        EXPECT_EQ(std::count_if(zones.begin(), zones.end(),
+                                [&](const auto& z) { return z.utc_offset_min == offset; }),
+                  1)
+            << offset;
+    }
+}
+
+TEST(SettingsPageLayout, LanguageOrderIsAPermutationOfTheCodes) {
+    const auto& order = SettingsPage::kLanguageOrder;
+    const auto codes = wisp::core::setting_spec(wisp::core::SettingId::Language).enum_values;
+    ASSERT_EQ(order.size(), codes.size());
+    for (std::string_view code : codes) {
+        EXPECT_EQ(
+            std::count_if(order.begin(), order.end(),
+                          [&](wisp::core::LangCode c) { return wisp::core::lang_code(c) == code; }),
+            1)
+            << code;
+    }
+}
+
+TEST(SettingsPageLayout, PercentFollowsTheRange) {
+    const auto& brightness = wisp::core::setting_spec(wisp::core::SettingId::Brightness);
+    const auto& volume = wisp::core::setting_spec(wisp::core::SettingId::Volume);
+    EXPECT_EQ(SettingsPage::percent(10, brightness), 0);
+    EXPECT_EQ(SettingsPage::percent(255, brightness), 100);
+    EXPECT_EQ(SettingsPage::percent(200, brightness), 78);
+    EXPECT_EQ(SettingsPage::percent(60, volume), 60);
+}
 
 TEST_F(SettingsPageTest, GroupsAndRowsInOrder) {
     boot();
@@ -269,7 +314,10 @@ TEST_F(SettingsPageTest, ControlsWriteSettings) {
     // The value beside the name follows the finger.
     harness->on_ui([&] {
         const int v = lv_slider_get_value(page()->brightness());
-        EXPECT_EQ(text_of(page()->brightness_value()), std::to_string((v * 100 + 127) / 255) + "%");
+        EXPECT_EQ(text_of(page()->brightness_value()),
+                  std::to_string(SettingsPage::percent(
+                      v, wisp::core::setting_spec(wisp::core::SettingId::Brightness))) +
+                      "%");
     });
     harness->feed({});
     EXPECT_EQ(harness->shell().page(), Page::Settings);
@@ -369,17 +417,17 @@ TEST_P(SettingsChoice, SwipeBackWritesNothing) {
 const ChoiceCase kChoiceCases[] = {
     ChoiceCase{Row::ScreenOff,
                "自动熄屏",
-               {"15 秒", "30 秒", "1 分钟", "5 分钟", "10 分钟", "从不"},
+               {"15 秒", "30 秒", "1 分钟", "2 分钟", "5 分钟", "10 分钟", "从不"},
                2,
-               5,
+               6,
                "screen_off_s",
                Value(int64_t{0}),
                "从不"},
     ChoiceCase{Row::DeepStandby,
                "深度待机",
-               {"1 分钟", "5 分钟", "10 分钟", "30 分钟", "1 小时", "从不"},
-               1,
-               4,
+               {"1 分钟", "2 分钟", "5 分钟", "10 分钟", "30 分钟", "1 小时", "从不"},
+               2,
+               5,
                "deep_after_s",
                Value(int64_t{3600}),
                "1 小时"},
@@ -442,16 +490,32 @@ TEST_F(SettingsPageTest, TimeZonesOpenAtTheCurrentOne) {
 // A value the list lacks (set on the admin page) is listed in its place
 // and marked.
 TEST_F(SettingsPageTest, StoredValueOutsideTheListIsListed) {
-    stored.screen_off_s = 120;
+    stored.screen_off_s = 45;
     stored.utc_offset_min = 15;
     boot();
-    EXPECT_EQ(value_of(Row::ScreenOff), "2 分钟");
+    EXPECT_EQ(value_of(Row::ScreenOff), "45 秒");
     EXPECT_EQ(value_of(Row::TimeZone), "UTC+00:15");
     tap_row(Row::ScreenOff);
     ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
-    EXPECT_EQ(choice_labels(), (std::vector<std::string>{"15 秒", "30 秒", "1 分钟", "2 分钟",
-                                                         "5 分钟", "10 分钟", "从不"}));
-    harness->on_ui([&] { EXPECT_EQ(choice()->current(), 3); });
+    EXPECT_EQ(choice_labels(), (std::vector<std::string>{"15 秒", "30 秒", "45 秒", "1 分钟",
+                                                         "2 分钟", "5 分钟", "10 分钟", "从不"}));
+    harness->on_ui([&] { EXPECT_EQ(choice()->current(), 2); });
+    harness->drag({60, harness->shape().height / 2},
+                  {60 + harness->shape().width / 2, harness->shape().height / 2});
+    ASSERT_TRUE(back_on_settings());
+    // The time zones: UTC+00:15 between UTC+00:00 and UTC+01:00, not before
+    // the zero offset as if it meant "never".
+    tap_row(Row::TimeZone);
+    ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
+    const std::vector<std::string> zones = choice_labels();
+    harness->on_ui([&] {
+        const size_t cur = static_cast<size_t>(choice()->current());
+        ASSERT_GT(cur, 0u);
+        ASSERT_LT(cur + 1, zones.size());
+        EXPECT_EQ(zones[cur], "UTC+00:15");
+        EXPECT_EQ(zones[cur - 1].rfind("UTC+00:00", 0), 0u) << zones[cur - 1];
+        EXPECT_EQ(zones[cur + 1].rfind("UTC+01:00", 0), 0u) << zones[cur + 1];
+    });
 }
 
 // A new language re-texts the settings page at once, in place and where
