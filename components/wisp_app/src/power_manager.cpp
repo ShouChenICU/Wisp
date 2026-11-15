@@ -84,31 +84,58 @@ PowerManager::PowerManager(PowerManagerDeps deps)
     // screen lock ends dim.
     locks_.set_on_change([this] { schedule_lock_eval(); });
 
-    // The wake itself is posted rather than run on the bus dispatcher:
-    // waking can block for the panel's wake latency, and handlers must
-    // return quickly (event_bus.hpp).
-    button_sub_ = bus_.subscribe(core::topics::kButtonPrefix, [this](const core::Event& e) {
-        note_activity();
+    if (buttons_ != nullptr) {
+        // Buttons reach the UI task through a cell rather than a post or
+        // the bus, so a press wakes the screen with the post queue full and
+        // wisp.bus flooded. The follower's first call, at subscription,
+        // finds both flags clear and does nothing. Subscribed before the
+        // listener exists, so no edge comes before it.
+        button_follower_ = button_activity_.subscribe(
+            [this](const uint32_t&) { on_button_activity(); },
+            ui_ != nullptr ? static_cast<core::Dispatcher*>(ui_) : nullptr);
+        // On wisp.button under ButtonService's lock: atomics and a cell
+        // update only. A wake can block for the panel's wake latency, so it
+        // waits for the follower.
+        button_listener_ = buttons_->add_listener([this](const core::ButtonEdge& e) {
+            last_activity_ms_.store(os::now_ms());
+            activity_pending_.store(true, std::memory_order_release);
+            const bool owned = power_key_owned_.load(std::memory_order_acquire) &&
+                               !power_key_.empty() && e.id.view() == power_key_;
+            if (!owned) {
+                // The owner decides what the power key does -- see
+                // set_power_key_owned(). Whether the screen is off is
+                // read by the follower, so a press during the transition
+                // to standby still wakes it.
+                wake_latch_.store(true, std::memory_order_release);
+            }
+            button_activity_.update([](uint32_t& n) { ++n; });
+        });
+    }
+}
+
+void PowerManager::on_button_activity() {
+    if (activity_pending_.exchange(false, std::memory_order_acq_rel)) {
         if (on_activity_) on_activity_();
-        if (!standby()) {
-            return;
-        }
-        if (power_key_owned_.load(std::memory_order_acquire) && !power_key_.empty() &&
-            e.source == power_key_) {
-            return;  // The owner decides what this does -- see set_power_key_owned().
-        }
-        run_on_ui("exit_standby", [this] { exit_standby(); });
-    });
+        undim();
+    }
+    if (wake_latch_.exchange(false, std::memory_order_acq_rel) && standby()) {
+        exit_standby();
+    }
 }
 
 PowerManager::~PowerManager() {
-    // After these return neither the bus handlers nor the lock callback
-    // runs again, so nothing new is posted. Jobs already posted are
-    // drained below -- except when called on the UI task itself, which
-    // cannot wait for its own queue; the header makes that a caller's
-    // precondition.
+    // After these return neither the button listener and follower, the
+    // settings follower nor the lock callback runs again, so nothing new is
+    // posted. The listener goes first, so no edge moves the counter after
+    // its follower is gone; ButtonService outlives this object
+    // (App::stop()). Jobs already posted are drained below -- except when
+    // called on the UI task itself, which cannot wait for its own queue;
+    // the header makes that a caller's precondition.
+    if (buttons_ != nullptr) {
+        buttons_->remove_listener(button_listener_);
+    }
+    button_follower_.reset();
     settings_sub_.reset();
-    bus_.unsubscribe(button_sub_);
     locks_.set_on_change(nullptr);
 
     if (ui_ == nullptr) {
@@ -177,12 +204,17 @@ void PowerManager::note_activity() {
     if (level() != hal::PowerLevel::Dim) {
         return;
     }
-    run_on_ui("undim", [this] {
-        std::unique_lock<os::Mutex> lock(transition_mutex_);
-        if (level() == hal::PowerLevel::Dim) {
-            go_to(hal::PowerLevel::Active, now_for_eval(), lock);
-        }
-    });
+    run_on_ui("undim", [this] { undim(); });
+}
+
+void PowerManager::undim() {
+    if (level() != hal::PowerLevel::Dim) {
+        return;  // most button edges: no transition lock to take
+    }
+    std::unique_lock<os::Mutex> lock(transition_mutex_);
+    if (level() == hal::PowerLevel::Dim) {
+        go_to(hal::PowerLevel::Active, now_for_eval(), lock);
+    }
 }
 
 void PowerManager::read_settings() {

@@ -35,6 +35,7 @@
 using wisp::app::PowerKeyController;
 using wisp::app::PowerManager;
 using wisp::app::PowerManagerDeps;
+using wisp::core::ButtonEdge;
 using wisp::core::ButtonService;
 using wisp::core::DeviceRegistry;
 using wisp::core::Event;
@@ -174,6 +175,11 @@ struct Fixture {
             .buttons = buttons.get(),
             .power_key = power_key_id,
             .set_light_sleep = [this](bool on) { light_sleep_calls.push_back(on); },
+            .on_activity =
+                [this] {
+                    if (!ui->on_ui_thread()) activity_off_ui = true;
+                    ++activity_calls;
+                },
         });
     }
 
@@ -270,6 +276,10 @@ struct Fixture {
     // Written on the UI task; tests read it only after run_on_ui() or
     // drain_ui(), which order those writes before the read.
     std::vector<bool> light_sleep_calls;
+    // PowerManagerDeps::on_activity: its calls, and whether one ran off
+    // the UI task.
+    std::atomic<int> activity_calls{0};
+    std::atomic<bool> activity_off_ui{false};
 
 private:
     std::mutex power_events_mutex;
@@ -641,9 +651,9 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
 
     // A *different* button -- never routed through the owned wiring --
     // wakes it via PowerManager's own generic handler.
-    // Generic wake semantics are tested with an edge-source event: ordinary
+    // Generic wake semantics are tested with an emitted edge: ordinary
     // PollOnly volume buttons intentionally cannot wake from standby.
-    f.bus.publish({"button.vol_up.down", "button.vol_up"});
+    f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Down, 0);
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
 
     // The next power-key short press must still see the screen as on
@@ -676,10 +686,88 @@ TEST(PowerManager, PowerKeyOwnershipFollowsTheRoleKey) {
 
     press_short(*f.buttons, *f.btn);
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
-    f.bus.publish({"button.vol_up.down", "button.vol_up"});
+    f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Down, 0);
     ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     press_short(*f.buttons, *f.btn);
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+}
+
+// A button press in standby wakes the screen with the UI's post queue
+// full and wisp.bus held and flooded: the edge reaches PowerManager
+// through its ButtonService listener and a cell follower on the UI task,
+// neither of which needs a free queue slot or the bus. Only the UI job is
+// released before the wake is asserted; the bus is still held then.
+TEST(PowerManager, ButtonWakesFromStandbyWithAFullUiQueue) {
+    Fixture f;
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    ASSERT_TRUE(f.pm->standby());
+    ASSERT_TRUE(f.ui->paused());
+
+    // The paused loop takes this job and blocks in it; then every post
+    // fails.
+    wisp::os::Semaphore entered{1, 0};
+    wisp::os::Semaphore gate{1, 0};
+    ASSERT_TRUE(f.ui->post([&] {
+        entered.give();
+        gate.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered.take(2000));
+    size_t filled = 0;
+    while (f.ui->post([] {})) ++filled;
+    ASSERT_GT(filled, 0u);
+
+    wisp::test::BusFlood flood(f.bus);
+    flood.hold();
+    flood.flood(512);
+
+    f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Down, 0);
+    f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Up, 100'000);
+    EXPECT_TRUE(f.pm->standby());  // the follower waits for the UI task
+
+    gate.give();
+    EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+    EXPECT_FALSE(f.ui->paused());
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    flood.release();
+}
+
+// Once the power key is owned, its edges in standby are left to the owner:
+// PowerManager notes the activity but does not wake. Any other key wakes.
+TEST(PowerManager, OwnedPowerKeyIsLeftToItsOwner) {
+    Fixture f;
+    f.pm->set_power_key_owned(true);
+    f.run_on_ui([&] { f.pm->enter_standby(); });
+    ASSERT_TRUE(f.pm->standby());
+
+    f.buttons->emit_for_test("button.power", ButtonEdge::Kind::Down, 0);
+    f.buttons->emit_for_test("button.power", ButtonEdge::Kind::Up, 100'000);
+    f.buttons->emit_for_test("button.power", ButtonEdge::Kind::Short, 100'000);
+    // The follower has run (its hook), and finished (a UI round trip).
+    ASSERT_TRUE(wait_until([&] { return f.activity_calls.load() >= 1; }, 2000));
+    f.drain_ui();
+    EXPECT_TRUE(f.pm->standby());
+
+    f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Down, 200'000);
+    EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+}
+
+// The activity hook (App: silence an alarm) runs on the UI task for a
+// button edge, as it does for a touch.
+TEST(PowerManager, ButtonActivitySilencesAlarmsOnTheUi) {
+    Fixture f;
+    f.drain_ui();
+    EXPECT_EQ(f.activity_calls.load(), 0);  // nothing at construction
+
+    f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Down, 0);
+    ASSERT_TRUE(wait_until([&] { return f.activity_calls.load() >= 1; }, 2000));
+    f.drain_ui();
+    EXPECT_FALSE(f.activity_off_ui.load());
+
+    // A real press, its edges found on this thread (poll()).
+    press_short(*f.buttons, *f.btn);
+    ASSERT_TRUE(wait_until([&] { return f.activity_calls.load() >= 2; }, 2000));
+    f.drain_ui();
+    EXPECT_FALSE(f.activity_off_ui.load());
 }
 
 // A confirm dialog left open when automatic standby kicks in must not
@@ -1707,8 +1795,9 @@ TEST(PowerManager, DeviceTakingALockDuringATransitionDoesNotDeadlock) {
     EXPECT_EQ(log->take(), (Strings{"imu.locky:standby", "imu.locky:active"}));
 }
 
-// The activity hook hears every button event and every touch read with a
-// finger down (an alarm stops on them).
+// The activity hook hears every button edge and every touch read with a
+// finger down (an alarm stops on them). Building the PowerManager calls it
+// for neither.
 TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
     EventBus bus;
     ASSERT_TRUE(bus.start());
@@ -1719,6 +1808,7 @@ TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
     auto touch = std::make_shared<FakeTouch>("touch.main");
     UiRuntime ui(display, touch);
     ASSERT_TRUE(ui.start());
+    ButtonService buttons(registry, bus);
     std::atomic<int> calls{0};
     {
         PowerManager pm(PowerManagerDeps{
@@ -1728,10 +1818,14 @@ TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
             .settings = Settings(backend, "power"),
             .display = display,
             .ui = &ui,
+            .buttons = &buttons,
             .on_activity = [&] { ++calls; },
         });
-        bus.publish({"button.vol_up.down", "button.vol_up", 0, {}});
-        ASSERT_TRUE(bus.wait_idle(1000));
+        buttons.emit_for_test("button.vol_up", ButtonEdge::Kind::Down, 0);
+        // The hook runs on the UI task: wait for it, then for any second
+        // call a stray first delivery would have made.
+        ASSERT_TRUE(wait_until([&] { return calls.load() >= 1; }, 1000));
+        ui.run_blocking([] {});
         EXPECT_EQ(calls.load(), 1);
         touch->set_points({{10, 10, 0}});
         ASSERT_TRUE(wait_until([&] { return calls.load() >= 2; }, 1000));

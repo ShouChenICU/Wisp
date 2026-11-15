@@ -43,13 +43,14 @@
 //
 // Threading: whenever a UiRuntime exists, every transition runs on its
 // task, because the display may only be called from there (spec 5.3).
-// tick(), note_activity(), the wake-lock change callback and the
-// "any button wakes it" subscriber post their work onto that task; callers
-// already on it (the system duties' power key) call enter_standby()/
-// exit_standby() directly. A wake-lock change is always posted (coalesced
-// into one job), even from the UI task, so a lock taken or released
-// anywhere -- inside a device's set_power() during a transition included
-// -- never runs a transition in the caller's critical section. Headless
+// tick(), note_activity() and the wake-lock change callback post their
+// work onto that task; button edges reach it through a cell follower (see
+// below); callers already on it (the system duties' power key) call
+// enter_standby()/exit_standby() directly. A wake-lock change is always
+// posted (coalesced into one job), even from the UI task, so a lock taken
+// or released anywhere -- inside a device's set_power() during a
+// transition included -- never runs a transition in the caller's critical
+// section. Headless
 // (no UiRuntime), everything runs on the caller's thread, lock changes
 // included, so there a device's set_power() must not take or release a
 // wake lock (no board ships headless).
@@ -64,12 +65,19 @@
 // core::SystemSettings::set() would refuse reads as its default, as
 // SystemSettings::get() reports it.
 //
-// Any button event resets the idle clock and, while the screen is off,
+// Any button edge resets the idle clock and, while the screen is off,
 // wakes the device (spec 6.7/8 of the foundation spec), except the power
 // key (PowerManagerDeps::power_key) once set_power_key_owned(true) handed
-// that key to its owner. With a UiRuntime, touch activity resets the idle
-// clock too (UiRuntime::set_touch_activity_cb(), which only fires when
-// there is a touch device).
+// that key to its owner. The edges come from a ButtonService listener
+// (PowerManagerDeps::buttons; none without it), which on wisp.button only
+// stamps the idle clock, sets two flags and moves a private counter cell;
+// the cell's follower, on the UI task (wisp.bus headless), runs the
+// activity hook, the undim and the wake. A cell needs no free post-queue
+// slot and no bus, and runs while the UI is paused, so a press wakes the
+// screen however busy both are; it coalesces, which a wake latch wants.
+// With a UiRuntime, touch activity resets the idle clock too
+// (UiRuntime::set_touch_activity_cb(), which only fires when there is a
+// touch device).
 
 #include <atomic>
 #include <cstdint>
@@ -123,10 +131,10 @@ struct PowerManagerDeps {
     // for flash (App::flush_storage(), spec 3.8 of the flash-thread
     // design). May block for seconds.
     std::function<void()> before_deep_standby;
-    // Runs on every touch read with a finger down (the UI task) and every
-    // button event (the bus dispatcher), besides resetting the idle clock:
-    // the user is there (an alarm stops, spec 5.1). Keep it short and
-    // non-blocking.
+    // Runs on every touch read with a finger down and after button edges
+    // (once for the edges since its last run), on the UI task (wisp.bus
+    // without one), besides resetting the idle clock: the user is there
+    // (an alarm stops, spec 5.1). Keep it short and non-blocking.
     std::function<void()> on_activity;
     // SystemSettings::cell(): the power keys follow it. Null in tests that
     // need no settings changes; then only the periodic re-read sees them.
@@ -143,13 +151,13 @@ public:
 
     explicit PowerManager(PowerManagerDeps deps);
 
-    // Releases the settings subscription, unsubscribes from the bus, drops
-    // the wake-lock change callback and clears the touch-activity hook (on
-    // the UI task, after every job this posted). Does not leave standby:
-    // App::stop() does that first. Precondition: not called on the UI
-    // task. Jobs this posted (tick and lock-change evaluations) capture
-    // `this` and could not be drained from there; App::stop() destroys it
-    // from its own thread.
+    // Removes the button listener, then releases the button follower and
+    // the settings subscription, drops the wake-lock change callback and
+    // clears the touch-activity hook (on the UI task, after every job this
+    // posted). Does not leave standby: App::stop() does that first.
+    // Precondition: not called on the UI task. Jobs this posted (tick and
+    // lock-change evaluations) capture `this` and could not be drained from
+    // there; App::stop() destroys it from its own thread.
     ~PowerManager();
 
     PowerManager(const PowerManager&) = delete;
@@ -197,7 +205,7 @@ public:
     // PowerManager is destroyed.
     void set_brightness(uint8_t level);
 
-    // Excludes the power key from the "any button wakes it" subscriber
+    // Excludes the power key from the "any button wakes it" listener
     // once some other code (the system duties' PowerKeyController)
     // decides what that key does. Without this one short press in standby
     // ("down" then "short") would be acted on twice: this class wakes on
@@ -226,6 +234,12 @@ private:
 
     // The posted bodies of tick() and of the lock-change callback.
     void evaluate(std::optional<uint64_t> now_ms);
+    // Dim -> Active, on the UI task (or headless).
+    void undim();
+    // The button follower's body: the activity hook and the undim when an
+    // edge came, the wake when a key that wakes was pressed and the screen
+    // is off.
+    void on_button_activity();
     void schedule_tick_eval(uint64_t now_ms);
     void schedule_lock_eval();
 
@@ -335,7 +349,14 @@ private:
     std::atomic<bool> lock_eval_queued_{false};
     std::atomic<uint64_t> tick_eval_now_{0};
 
-    core::SubscriptionId button_sub_ = 0;
+    // Button edges since construction, moved by the listener only to
+    // schedule its follower; no mirror. Declared after bus_.
+    core::StateCell<uint32_t> button_activity_{bus_, 0};
+    // Set by the listener, taken by the follower.
+    std::atomic<bool> activity_pending_{false};
+    std::atomic<bool> wake_latch_{false};
+    uint32_t button_listener_ = 0;
+    core::CellSubscription button_follower_;
     // Follows PowerManagerDeps::system_settings; empty without one.
     core::CellSubscription settings_sub_;
 };
