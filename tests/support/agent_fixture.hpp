@@ -7,7 +7,8 @@
 // an EventBus, a WakeLockRegistry, a NotificationService that saves
 // nothing, an empty ToolRegistry whose ui/fs/io executors are plain
 // worker threads, and a clock that runs with os::now_ms() but can be
-// moved ahead.
+// moved ahead. `wifi` stands in for WifiService's cell: a test hands it to
+// the service with set_wifi() (otherwise the service asks `network_up`).
 //
 // Tests add tools to `tools` before they start the service.
 
@@ -32,10 +33,12 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/llm_client.hpp"
+#include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::test {
@@ -154,6 +157,9 @@ struct AgentHarness {
     }
 
     uint64_t now() const { return os::now_ms() + offset.load(); }
+    void set_wifi(net::WifiState st) {
+        wifi.update([st](net::WifiSnapshot& w) { w.state = st; });
+    }
     void advance(uint64_t ms) { offset += ms; }
 
     void set_lang(std::string l) {
@@ -164,6 +170,9 @@ struct AgentHarness {
     std::string root;
     core::DeviceRegistry registry;
     core::EventBus bus;
+    // After the bus, and owned here so it outlives the test's service.
+    core::StateCell<net::WifiSnapshot> wifi{
+        bus, net::WifiSnapshot{.enabled = true, .state = net::WifiState::Connected}};
     std::unique_ptr<core::StorageManager> storage;
     core::StorageWorker worker;
     FakeLlmServer server;

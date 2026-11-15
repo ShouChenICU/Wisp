@@ -174,18 +174,16 @@ struct AgentService::Impl {
         if (in_request.load() && now() - last_byte.load() > cfg.stall_ms) trigger(Abort::Stall);
     }
 
-    void on_wifi(const core::Event& e) {
-        if (e.topic != core::topics::kNetWifiState) return;
-        auto it = e.payload.find("state");
-        if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
-        const bool up = it->second.as_string() == "connected";
-        net_state = up ? 1 : 0;
-        if (!up && in_request.load()) trigger(Abort::Network);
+    // The Wi-Fi cell's callback, on wisp.bus: atomics and the watch only.
+    // The first delivery (at start(), nothing in flight) does nothing.
+    void on_wifi(const net::WifiSnapshot& w) {
+        if (w.state != net::WifiState::Connected && in_request.load()) trigger(Abort::Network);
     }
 
+    // The cell itself, not a copy fed from its callback, which could only
+    // lag behind it.
     bool network_up() const {
-        const int n = net_state.load();
-        if (n >= 0) return n == 1;
+        if (wifi != nullptr) return wifi->get().state == net::WifiState::Connected;
         return deps.network_up ? deps.network_up() : true;
     }
 
@@ -967,9 +965,11 @@ struct AgentService::Impl {
     os::Semaphore wake{64, 0};
     std::unique_ptr<os::Task> task;
     std::atomic<bool> quit{false};
-    core::SubscriptionId sub = 0;
+    // set_wifi()'s cell; followed from start() to stop().
+    const core::StateCell<net::WifiSnapshot>* wifi = nullptr;
+    core::CellSubscription wifi_sub;
 
-    // Turn control, read by the check timer and the bus handler.
+    // Turn control, read by the check timer and the Wi-Fi callback.
     std::atomic<uint8_t> abort{static_cast<uint8_t>(Abort::None)};
     std::atomic<bool> in_turn{false};
     std::atomic<bool> in_request{false};
@@ -982,7 +982,6 @@ struct AgentService::Impl {
     uint32_t max_steps = 0;
     std::atomic<uint32_t> turn_ms{0};
     std::atomic<uint64_t> last_byte{0};
-    std::atomic<int> net_state{-1};  // -1 before any net.wifi.state event
     os::LargeUnique<net::RequestWatch> watch;
     std::unique_ptr<os::Timer> timer;
 
@@ -1042,12 +1041,12 @@ Result<void> AgentService::start() {
     if (std::optional<uint32_t> cut = s.deps.store.interrupted_turn())
         s.note(ui::StrId::AgentInterrupted, *cut);
 
-    s.sub = s.deps.bus.subscribe(core::topics::kNetWifiState,
-                                 [&s](const core::Event& e) { s.on_wifi(e); });
+    if (s.wifi != nullptr) {
+        s.wifi_sub = s.wifi->subscribe([&s](const net::WifiSnapshot& w) { s.on_wifi(w); });
+    }
     s.task = os::Task::spawn(task_config(s.cfg), [&s] { s.run(); });
     if (!s.task) {
-        s.deps.bus.unsubscribe(s.sub);
-        s.sub = 0;
+        s.wifi_sub.reset();
         s.reset_start();
         return Result<void>::err(ErrorCode::NoMemory, "cannot start wisp.agent");
     }
@@ -1073,10 +1072,7 @@ void AgentService::stop() {
         s.task->join();
         s.task.reset();
     }
-    if (s.sub != 0) {
-        s.deps.bus.unsubscribe(s.sub);
-        s.sub = 0;
-    }
+    s.wifi_sub.reset();
     if (s.timer) s.timer->stop();
 }
 
@@ -1133,6 +1129,8 @@ Result<void> AgentService::new_conversation_async(std::function<void(Result<void
 }
 
 void AgentService::set_confirm(ConfirmService* c) { impl_->confirm = c; }
+
+void AgentService::set_wifi(const core::StateCell<net::WifiSnapshot>* cell) { impl_->wifi = cell; }
 
 ConfirmFn AgentService::confirm_fn() {
     Impl* s = impl_.get();

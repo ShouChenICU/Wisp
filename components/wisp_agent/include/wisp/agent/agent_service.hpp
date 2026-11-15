@@ -36,9 +36,12 @@
 //
 // A model request is aborted (its RequestWatch, and its cancelled() check,
 // which also covers the waits between retries) when the user stops the
-// turn, when net.wifi.state leaves "connected", when no byte arrives for
-// stall_ms, or at the turn's time limit. A check timer runs every
-// kCheckMs during a turn for the last two. Text already received is kept.
+// turn, when the Wi-Fi cell (set_wifi()) is seen leaving Connected, when
+// no byte arrives for stall_ms, or at the turn's time limit. A check timer
+// runs every kCheckMs during a turn for the last two. A drop and a
+// reconnect that reach the subscription as one update abort nothing; a
+// link that died meanwhile ends by the stall check. Text already received
+// is kept.
 //
 // Queueing: one message runs and kMaxQueued more wait; past that submit()
 // is Busy. stop_turn() also drops the waiting ones.
@@ -102,6 +105,7 @@
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/llm_client.hpp"
 #include "wisp/net/request_watch.hpp"
+#include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
@@ -186,8 +190,8 @@ struct AgentDeps {
     core::WakeLockRegistry* locks = nullptr;
     core::NotificationService* notes = nullptr;  // the agent_done notice
     std::function<bool()> screen_off;            // empty: never off
-    // Whether the network was up before any net.wifi.state event arrived;
-    // after one, the latest event decides. Empty: up.
+    // Whether the network is up, asked only while no Wi-Fi cell is set
+    // (AgentService::set_wifi()). Empty: up.
     std::function<bool()> network_up;
     std::function<std::string()> lang;  // "zh" | "ja" | "en"; empty: "zh"
     std::function<uint64_t()> now_ms = os::now_ms;
@@ -266,6 +270,12 @@ public:
     // through; null (the default) refuses every request. Set it before
     // start(); it must outlive the service's task.
     void set_confirm(ConfirmService* c);
+    // WifiService's cell, which then decides whether the network is up
+    // (deps.network_up is not asked) and whose leaving Connected aborts a
+    // model request in flight. Null (the default): no cell. Set it before
+    // start(); stop() releases the subscription, so the cell must outlive
+    // only the started service (App stops the agent before networking).
+    void set_wifi(const core::StateCell<net::WifiSnapshot>* cell);
     // The ConfirmFn for the tools: on wisp.agent it puts the agent in
     // WaitingConfirm, emits Confirm(text), asks (cancelled by the turn's
     // stop or limits), emits Confirm("") and goes back to the tool state;

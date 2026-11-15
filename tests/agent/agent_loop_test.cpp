@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "support/agent_fixture.hpp"
+#include "support/bus_flood.hpp"
 #include "support/confirm_harness.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
@@ -111,6 +112,7 @@ protected:
         deps.context = context;
         svc = std::make_unique<AgentService>(std::move(deps), cfg);
         if (ch) svc->set_confirm(ch->confirm.get());
+        if (follow_wifi) svc->set_wifi(&h->wifi);
         listener = svc->add_listener([this](const AgentEvent& e) {
             std::lock_guard<std::mutex> lock(mu);
             events.push_back(e);
@@ -215,6 +217,8 @@ protected:
     // The device confirmation, for the tests that need one (before start()).
     std::unique_ptr<wisp::test::ConfirmHarness> ch;
     wisp::agent::ContextSource context;
+    // Hands the harness's Wi-Fi cell to the service (before start()).
+    bool follow_wifi = false;
     uint32_t listener = 0;
     std::mutex mu;
     std::vector<AgentEvent> events;
@@ -802,12 +806,13 @@ TEST_F(AgentLoop, LengthCutoffWithPartialToolCallIsBadArgs) {
 }
 
 TEST_F(AgentLoop, WifiLossMidStreamEndsTurnCleanly) {
+    follow_wifi = true;
     start();
     h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hel")}, .hold_after = 1});
     ASSERT_TRUE(svc->submit("go", Source::Web));
     ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
     const uint64_t t0 = wisp::os::now_ms();
-    h->bus.publish({"net.wifi.state", "net.wifi", 0, Map{{"state", "backoff"}}});
+    h->set_wifi(wisp::net::WifiState::Backoff);
     ASSERT_TRUE(wait_turns(1, 2000));
     EXPECT_LE(wisp::os::now_ms() - t0, 2000u);
     EXPECT_EQ(last_status(), "error");
@@ -827,12 +832,105 @@ TEST_F(AgentLoop, WifiLossMidStreamEndsTurnCleanly) {
     EXPECT_EQ(h->server.requests().size(), 1u);
     EXPECT_EQ(last_reason(), "network");
 
-    h->bus.publish({"net.wifi.state", "net.wifi", 0, Map{{"state", "connected"}}});
+    h->set_wifi(wisp::net::WifiState::Connected);
     ASSERT_TRUE(h->bus.wait_idle(1000));
     h->server.push(text_reply("back"));
     ASSERT_TRUE(svc->submit("third", Source::Web));
     ASSERT_TRUE(wait_turns(3));
     EXPECT_EQ(last_status(), "done");
+}
+
+// The cell decides alone: deps.network_up (still true here) is not asked,
+// and the request ends long before the stall check would end it.
+TEST_F(AgentLoop, LostWifiAbortsTheRequest) {
+    follow_wifi = true;
+    start({.stall_ms = 60000});
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hel")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
+    h->set_wifi(wisp::net::WifiState::Off);
+    ASSERT_TRUE(wait_turns(1, 2000));
+    EXPECT_EQ(h->server.held(), 0);
+    EXPECT_EQ(last_status(), "error");
+    EXPECT_EQ(last_reason(), "network_lost");
+    EXPECT_TRUE(h->network_up.load());
+}
+
+// The cell's value at start() counts before it ever changes, and its
+// first delivery (not connected, nothing in flight) leaves no abort
+// behind for a later turn.
+TEST_F(AgentLoop, KnowsTheNetworkAtStart) {
+    harness().set_wifi(wisp::net::WifiState::Backoff);
+    follow_wifi = true;
+    start();
+    ASSERT_TRUE(h->bus.wait_idle(1000));
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(h->server.requests().size(), 0u);
+    EXPECT_EQ(last_status(), "error");
+    EXPECT_EQ(last_reason(), "network");
+
+    h->set_wifi(wisp::net::WifiState::Connected);
+    h->server.push(text_reply("up"));
+    ASSERT_TRUE(svc->submit("again", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    EXPECT_EQ(h->server.requests().size(), 1u);
+    EXPECT_EQ(last_status(), "done");
+}
+
+// connected -> connecting -> connected while wisp.bus is held reaches the
+// service as one update, Connected: the request in flight goes on. The
+// stall check is out of reach (60 s), so only the subscription could end
+// it.
+TEST_F(AgentLoop, ReconnectBetweenRunsDoesNotAbort) {
+    follow_wifi = true;
+    start({.stall_ms = 60000});
+    h->server.push({.status = 200,
+                    .chunks = {FakeLlmServer::sse_text("Hel"), FakeLlmServer::sse_text("lo"),
+                               FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()},
+                    .hold_after = 1});
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        h->set_wifi(wisp::net::WifiState::Connecting);
+        h->set_wifi(wisp::net::WifiState::Connected);
+        flood.release();
+    }
+    ASSERT_TRUE(h->bus.wait_idle(1000));
+    EXPECT_EQ(count(Kind::TurnEnd), 0u);
+    EXPECT_EQ(h->server.held(), 1);
+    h->server.release();
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "done");
+    std::optional<Message> a = last_of(history(), Role::Assistant);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(str(a->text), "Hello");
+}
+
+// A link that died while the cell never left Connected (the drop and the
+// reconnect coalesced) still ends the stream, through the stall check.
+TEST_F(AgentLoop, DeadLinkStillEndsByStall) {
+    follow_wifi = true;
+    start({.stall_ms = 200});
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hel")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        h->set_wifi(wisp::net::WifiState::Connecting);
+        h->set_wifi(wisp::net::WifiState::Connected);
+        flood.release();
+    }
+    ASSERT_TRUE(wait_turns(1, 3000));
+    EXPECT_EQ(h->server.held(), 0);
+    EXPECT_EQ(last_status(), "error");
+    EXPECT_EQ(last_reason(), "network_lost");
+    std::optional<Message> a = last_of(history(), Role::Assistant);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(str(a->text), "Hel");
 }
 
 TEST_F(AgentLoop, StalledStreamTimesOut) {

@@ -630,7 +630,13 @@ Result<void> App::start() {
                                          : nullptr,
     });
     impl_->net->start();
-    if (impl_->agent) impl_->agent->attach_ws(impl_->net->ws_hub());
+    if (impl_->agent) {
+        impl_->agent->attach_ws(impl_->net->ws_hub());
+        // Before agent->start(); agent->stop() releases it before
+        // net.reset(). Without a WifiService, AgentDeps::network_up.
+        net::WifiService* wifi = impl_->net->wifi();
+        impl_->agent->service()->set_wifi(wifi != nullptr ? &wifi->wifi_cell() : nullptr);
+    }
 
     // The capsule, the panel and the banners, once everything their
     // device_status reads (NetWiring::wifi_state()) is set.
@@ -1167,8 +1173,9 @@ void App::build_agent(const hal::ScreenShape& shape) {
                 }
             },
         .screen_off = [impl] { return impl->power_manager && impl->power_manager->standby(); },
-        // Without a Wi-Fi service (the simulator without one) the host's
-        // network is assumed.
+        // Asked only while the agent has no Wi-Fi cell (see set_wifi() in
+        // App::start()): without a Wi-Fi service (the simulator without
+        // one) the host's network is assumed.
         .network_up =
             [impl] {
                 std::optional<net::WifiState> st =
