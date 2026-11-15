@@ -12,11 +12,15 @@
 #include <vector>
 
 #include "notification_router.hpp"
+#include "support/bus_flood.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/hal/device.hpp"
+#include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/scene/minute_ticker.hpp"
 #include "wisp/ui/clock_text.hpp"
 #include "wisp/ui/strings.hpp"
@@ -52,6 +56,18 @@ const char* kScene = R"(
 scene.on_notification = function(id) print("notified", id) end
 return ui.screen { ui.label { text = "scene body" } }
 )";
+
+// A background scene with one tool, so a tool call starts it headless.
+const char* kHeadlessTool = R"(
+wisp.tools.register("get", function() return 1 end)
+return ui.screen { ui.label { text = "tool scene" } }
+)";
+
+std::string tool_manifest(const std::string& id, const std::string& name) {
+    return R"({"id":")" + id + R"(","name":")" + name +
+           R"(","version":"1.0.0","schema_version":1,"background":true,)" +
+           R"("tools":[{"name":"get","description":"Get one"}]})";
+}
 
 lv_point_t center_of(lv_obj_t* obj) {
     lv_area_t a;
@@ -99,7 +115,6 @@ protected:
         shell = std::make_unique<StatusShell>(StatusShellDeps{
             .ui = *ui,
             .layer = *layer,
-            .bus = bus,
             .notes = *notes,
             .router = *router,
             .scenes = rt.get(),
@@ -118,8 +133,17 @@ protected:
             .repo = repo.get(),
             .submit_io =
                 [this](std::function<void()> job) { return worker.submit(std::move(job)); },
+            .power = &power,
+            .wifi = &wifi,
         });
         shell->start();
+    }
+
+    // Whether the panel is open, read on the UI thread.
+    bool panel_is_open() {
+        bool open = false;
+        on_ui([&] { open = layer->panel_open(); });
+        return open;
     }
 
     // The body of the panel's note from `source`/`id`, "" if none.
@@ -234,6 +258,11 @@ protected:
             2000);
     }
 
+    // The owners of the cells the shell follows, declared before it so its
+    // subscriptions are released first.
+    wisp::core::StateCell<wisp::hal::PowerLevel> power{bus, wisp::hal::PowerLevel::Active};
+    wisp::core::StateCell<wisp::net::WifiSnapshot> wifi{bus,
+                                                        wisp::net::WifiSnapshot{.enabled = true}};
     std::unique_ptr<NotificationService> notes;
     std::unique_ptr<NotificationRouter> router;
     std::unique_ptr<StatusShell> shell;
@@ -272,8 +301,8 @@ TEST_F(StatusShellTest, CountsWhatIsThereAtStart) {
     router = std::make_unique<NotificationRouter>(
         NotificationRouterDeps{.notes = *notes, .scenes = rt.get(), .ui = ui.get()});
     router->start();
-    shell = std::make_unique<StatusShell>(StatusShellDeps{
-        .ui = *ui, .layer = *layer, .bus = bus, .notes = *notes, .router = *router});
+    shell = std::make_unique<StatusShell>(
+        StatusShellDeps{.ui = *ui, .layer = *layer, .notes = *notes, .router = *router});
     shell->start();
     wait_counts(0, 1);
 }
@@ -408,14 +437,8 @@ TEST_F(StatusShellTest, PanelUpdatesWhileOpen) {
     EXPECT_TRUE(wait_until([&] { return panel_has("Second"); }, 2000));
     EXPECT_TRUE(panel_has("First"));
     // The screen going off closes it.
-    bus.publish({"power.state", "power", 0, {{"state", Value("standby")}}});
-    EXPECT_TRUE(wait_until(
-        [&] {
-            bool open = true;
-            on_ui([&] { open = layer->panel_open(); });
-            return !open;
-        },
-        2000));
+    power.set(wisp::hal::PowerLevel::Standby);
+    EXPECT_TRUE(wait_until([&] { return !panel_is_open(); }, 2000));
 }
 
 TEST_F(StatusShellTest, SystemNoticeRenderedInUiLanguage) {
@@ -534,6 +557,78 @@ TEST_F(StatusShellTest, StopUninstalls) {
     shell->stop();
 }
 
+// The shell follows its cells on the UI thread. In the "Flooded" tests
+// wisp.bus is held and flooded, so no scene.state, notification.* or
+// power.state event reaches anyone: what refreshes or closes the panel is
+// a cell's callback. The shell has no timer of its own and nothing else
+// rebuilds an open panel's model, so the LVGL timers may keep running.
+TEST_F(StatusShellTest, StandbyClosesThePanelFlooded) {
+    start_shell();
+    open_panel();
+    wisp::test::BusFlood flood(bus);
+    flood.hold();
+    power.set(wisp::hal::PowerLevel::Standby);
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return !panel_is_open(); }, 3000));
+    flood.release();
+}
+
+TEST_F(StatusShellTest, NewNoticeRefreshesThePanelFlooded) {
+    start_shell();
+    open_panel();
+    EXPECT_FALSE(panel_has("First"));
+    wisp::test::BusFlood flood(bus);
+    flood.hold();
+    post("a", "n1", "First");
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return panel_has("First"); }, 3000));
+    EXPECT_TRUE(
+        wait_until([&] { return log_has("status", "status: background=0 unread=1"); }, 3000));
+    flood.release();
+}
+
+// A headless scene sent to the background leaves the headless count and
+// joins the background list: the overview moves, and the open panel lists
+// the scene.
+TEST_F(StatusShellTest, HeadlessSceneSentToTheBackgroundIsListedFlooded) {
+    start_shell();
+    install("h", kHeadlessTool, {{"scene.json", tool_manifest("h", "Helper")}});
+    auto r = rt->call_tool("h", "get", "{}", 5000, {});
+    ASSERT_TRUE(r) << r.error().message;
+    ASSERT_TRUE(r.value().ok);
+    ASSERT_EQ(rt->status("h").state, SceneState::Headless);
+    open_panel();
+    EXPECT_FALSE(panel_has("Helper"));
+    wisp::test::BusFlood flood(bus);
+    flood.hold();
+    ASSERT_TRUE(rt->open_background("h"));
+    ASSERT_EQ(rt->status("h").state, SceneState::Background);
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return panel_has("Helper"); }, 3000));
+    flood.release();
+}
+
+// Started while the screen is off, the shell closes a panel left open at
+// once: the first call of its power cell delivers the current level.
+TEST_F(StatusShellTest, StartedInStandbyShowsNoPanel) {
+    start("circle");
+    on_ui([&] {
+        wisp::ui::PanelHandlers h;
+        h.on_open = [] {};
+        layer->set_panel_handlers(std::move(h));
+        layer->open_panel();
+        ASSERT_TRUE(layer->panel_open());
+    });
+    power.set(wisp::hal::PowerLevel::Standby);
+    router = std::make_unique<NotificationRouter>(
+        NotificationRouterDeps{.notes = *notes, .scenes = rt.get(), .ui = ui.get()});
+    router->start();
+    shell = std::make_unique<StatusShell>(StatusShellDeps{
+        .ui = *ui, .layer = *layer, .notes = *notes, .router = *router, .power = &power});
+    shell->start();
+    EXPECT_TRUE(wait_until([&] { return !panel_is_open(); }, 3000));
+}
+
 }  // namespace
 
 TEST_F(StatusShellTest, DisabledWifiHasNoPanelIndicator) {
@@ -542,7 +637,7 @@ TEST_F(StatusShellTest, DisabledWifiHasNoPanelIndicator) {
     open_panel();
     EXPECT_TRUE(panel_has(wisp::ui::tr(StrId::NetConnected)));
     wifi_off = true;
-    bus.publish(wisp::core::Event{"net.wifi.state", "net.wifi", 0, {}});
+    wifi.update([](wisp::net::WifiSnapshot& w) { w.enabled = false; });
     EXPECT_TRUE(wait_until([&] { return !panel_has(wisp::ui::tr(StrId::NetConnected)); }, 2000));
     on_ui([&] { EXPECT_TRUE(shell->panel_model().header.wifi.empty()); });
 }

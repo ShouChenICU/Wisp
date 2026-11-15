@@ -645,7 +645,6 @@ Result<void> App::start() {
         impl_->status_shell = os::make_large<StatusShell>(StatusShellDeps{
             .ui = *impl_->ui,
             .layer = *impl_->system_layer,
-            .bus = impl_->bus,
             .notes = *impl_->notifications,
             .router = *impl_->router,
             .scenes = scene_runtime,
@@ -659,6 +658,10 @@ Result<void> App::start() {
                                                      return scenes->worker().submit(std::move(job));
                                                  })
                                            : nullptr,
+            // Both owners go only after status_shell->stop(), the first
+            // step of App::stop().
+            .power = impl_->power_manager ? &impl_->power_manager->level_cell() : nullptr,
+            .wifi = impl_->net->wifi() != nullptr ? &impl_->net->wifi()->wifi_cell() : nullptr,
         });
         if (impl_->status_shell) {
             impl_->status_shell->start();

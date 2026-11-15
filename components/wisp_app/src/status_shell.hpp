@@ -5,10 +5,14 @@
 // the notification services. It only wires services together; what each
 // row or banner does is a call into one of them.
 //
-//   - Counts: scene.state, notification.* and power.state events (on the
-//     bus's dispatcher thread) queue one refresh on the UI thread, at most
-//     one at a time, which rebuilds the panel's model while it is open. A
-//     change of counts is logged "status: background=<n> unread=<m>".
+//   - Counts: the shell follows four state cells on the UI thread (the
+//     scenes overview, the notice summary, the power level and the Wi-Fi
+//     station). Each call refreshes: it re-reads the services, so one call
+//     that stands for several changes still shows the last, and rebuilds
+//     the panel's model while it is open. A change of counts is logged
+//     "status: background=<n> unread=<m>". The power level at Standby or
+//     DeepStandby closes the panel instead, also when the shell starts in
+//     standby (a cell's first call delivers its current value).
 //   - Panel: the model is built when it opens and on every refresh while
 //     it is open. Its header is the local time (ui::format_clock() in the
 //     Settings time format, "--:--" while the clock is unset), the battery and the Wi-Fi state from
@@ -39,9 +43,11 @@
 
 #include "notification_router.hpp"
 #include "wisp/base/value.hpp"
-#include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/hal/device.hpp"
+#include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -51,10 +57,11 @@ namespace wisp::app {
 struct StatusShellDeps {
     ui::UiRuntime& ui;
     ui::SystemLayer& layer;
-    core::EventBus& bus;
+    // Its summary() is followed.
     core::NotificationService& notes;
     NotificationRouter& router;
-    // Null: no scenes (none counted, no scene rows).
+    // Null: no scenes (none counted, no scene rows). Its overview() is
+    // followed.
     scene::SceneRuntime* scenes = nullptr;
     // The same as SceneRuntimeDeps::device_status: {"battery": {"percent",
     // "charging"} or nil, "wifi": WifiState name, "wifi_enabled": bool}.
@@ -74,6 +81,11 @@ struct StatusShellDeps {
     // storage worker. Either null or empty: such a scene reads as its id.
     core::SceneRepository* repo = nullptr;
     std::function<bool(std::function<void()>)> submit_io;
+    // The power level (PowerManager::level_cell()) and the Wi-Fi station
+    // (WifiService::wifi_cell()), followed; each must outlive the shell's
+    // stop(). Null: not followed (no standby closing; no Wi-Fi refresh).
+    const core::StateCell<hal::PowerLevel>* power = nullptr;
+    const core::StateCell<net::WifiSnapshot>* wifi = nullptr;
 };
 
 class StatusShell {
@@ -84,12 +96,13 @@ public:
     StatusShell(const StatusShell&) = delete;
     StatusShell& operator=(const StatusShell&) = delete;
 
-    // Subscribes to scene.state, notification.* and power.state, installs
-    // the panel handlers and the banner, and shows the counts there are
-    // now.
+    // Subscribes to its cells on the UI thread, installs the panel handlers
+    // and the banner, and shows the counts there are now.
     void start();
-    // Undoes start(), so the system layer and the router may go next: the
-    // panel handlers are removed on the UI thread, and a job posted
+    // Undoes start(), so the system layer, the router and the cells' owners
+    // may go next: no cell callback runs once it has returned (off the UI
+    // thread, releasing waits for one under way), the panel handlers are
+    // removed on the UI thread, and a job posted
     // earlier, a manifest read or a banner call still under way, or a tap
     // on a banner still up, does nothing once stop() has returned. Off the
     // UI thread it also waits for the UI jobs posted before it; on the UI
@@ -106,8 +119,9 @@ public:
 private:
     std::shared_ptr<State> state_;
     bool started_ = false;
-    // scene.state, notification.*, power.state.
-    core::SubscriptionId subs_[4] = {};
+    // The scenes overview, the notice summary, the power level, the Wi-Fi
+    // station.
+    core::CellSubscription subs_[4];
 };
 
 }  // namespace wisp::app

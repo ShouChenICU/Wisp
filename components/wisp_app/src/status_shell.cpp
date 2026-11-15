@@ -12,7 +12,6 @@
 
 #include "wisp/base/result.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/scene/minute_ticker.hpp"
@@ -49,8 +48,6 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     StatusShellDeps deps;
     // Set by stop(): a job or a tap that runs after it does nothing.
     std::atomic<bool> stopped{false};
-    // A refresh is posted and has not run yet.
-    std::atomic<bool> refresh_queued{false};
     // UI thread only: the counts last logged.
     struct Counts {
         int background = -1;
@@ -243,19 +240,6 @@ bool post_ui(const StatePtr& s, std::function<void(const StatePtr&)> fn) {
     });
 }
 
-// One refresh at a time: a burst of events coalesces into the one queued.
-void request_refresh(const StatePtr& s) {
-    if (s->refresh_queued.exchange(true)) return;
-    if (!post_ui(s, [](const StatePtr& st) {
-            st->refresh_queued.store(false);
-            st->refresh();
-        })) {
-        // The queue is full: the next event tries again.
-        s->refresh_queued.store(false);
-        WLOG_W(kTag, "status not refreshed: UI queue full");
-    }
-}
-
 }  // namespace
 
 StatusShell::StatusShell(StatusShellDeps deps)
@@ -271,21 +255,34 @@ void StatusShell::start() {
     State& st = *state_;
     st.stopped.store(false);
     StatePtr s = state_;
-    auto refresh = [s](const core::Event&) { request_refresh(s); };
-    subs_[0] = st.deps.bus.subscribe(core::topics::kSceneState, refresh);
-    subs_[1] = st.deps.bus.subscribe("notification.", refresh);
-    subs_[3] = st.deps.bus.subscribe("net.wifi.", refresh);
-    subs_[2] = st.deps.bus.subscribe(core::topics::kPowerState, [s](const core::Event& e) {
-        auto it = e.payload.find("state");
-        const bool off =
-            it != e.payload.end() && it->second.type() == Value::Type::String &&
-            (it->second.as_string() == "standby" || it->second.as_string() == "deep_standby");
-        if (off) {
-            post_ui(s, [](const StatePtr& st) { st->deps.layer.close_panel(); });
-        } else {
-            request_refresh(s);
-        }
-    });
+    // On the UI dispatcher, so each call runs on the UI thread and may
+    // touch the layer directly. stop() releases them before `stopped` is
+    // set and before any owner goes (App::stop() stops the shell first). A
+    // first call may come before the posted install below: refresh() then
+    // only logs the counts, as no panel of the shell's is open yet.
+    ui::UiRuntime* on = &st.deps.ui;
+    State* sp = s.get();
+    if (st.deps.scenes != nullptr) {
+        subs_[0] = st.deps.scenes->overview().subscribe(
+            [sp](const scene::SceneOverview&) { sp->refresh(); }, on);
+    }
+    subs_[1] =
+        st.deps.notes.summary().subscribe([sp](const core::NoticeSummary&) { sp->refresh(); }, on);
+    if (st.deps.power != nullptr) {
+        subs_[2] = st.deps.power->subscribe(
+            [sp](const hal::PowerLevel& level) {
+                // The screen going off closes the panel at once.
+                if (level == hal::PowerLevel::Standby || level == hal::PowerLevel::DeepStandby) {
+                    sp->deps.layer.close_panel();
+                } else {
+                    sp->refresh();
+                }
+            },
+            on);
+    }
+    if (st.deps.wifi != nullptr) {
+        subs_[3] = st.deps.wifi->subscribe([sp](const net::WifiSnapshot&) { sp->refresh(); }, on);
+    }
 
     // Called on the posting thread (the scene task for wisp.notify), so
     // the text is made on the UI thread, which may ask the runtime for
@@ -350,19 +347,18 @@ void StatusShell::stop() {
     if (!started_) return;
     started_ = false;
     State& st = *state_;
-    for (core::SubscriptionId& id : subs_) {
-        st.deps.bus.unsubscribe(id);
-        id = 0;
-    }
+    // Off the UI thread each release waits for a call under way: refresh()
+    // takes only the services' own short locks (the runtime's, the
+    // notification service's, device_status's reads), which no caller of
+    // stop() holds, and never waits for this thread. On the UI thread no
+    // call is under way. Either way none runs once this loop is done.
+    for (core::CellSubscription& sub : subs_) sub.reset();
     st.deps.router.set_banner(nullptr);
     // From here on nothing posted runs and no banner tap reaches the
     // router; a banner call still in flight posts a job that does nothing.
     st.stopped.store(true);
     StatePtr s = state_;
-    auto uninstall = [s] {
-        s->deps.layer.set_panel_handlers({});
-        s->refresh_queued.store(false);
-    };
+    auto uninstall = [s] { s->deps.layer.set_panel_handlers({}); };
     if (st.deps.ui.on_ui_thread()) {
         uninstall();
     } else {
