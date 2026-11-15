@@ -2,7 +2,10 @@
 
 Run `bash tools/ci.sh` before committing. This always checks formatting,
 layering, the event topic registry, the settings schema (`tools/check_settings.py`:
-no setting's default or range restated outside `wisp/core/settings_schema.hpp`),
+no code restates a setting's default or range outside `wisp/core/settings_schema.hpp`;
+it checks `components/`, `simulator/`, `boards/`, `drivers/`, `firmware/main/` and
+`web/app/` line by line, tests exempt, so a value restated a few lines away from the
+setting's name, or in a document, is not caught),
 comment rules, translations, asset
 budgets and generated files, builds the simulator and runs the C++ regression suite and admin API smoke test.
 Simulator smoke covers boot, missing peripherals, network access, scene execution,
