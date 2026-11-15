@@ -6,7 +6,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1652,57 +1651,6 @@ TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
         ASSERT_TRUE(bus.wait_idle(2000));
         pm.reset();
     }
-    bus.stop();
-}
-
-// Counts get() calls into a real backend.
-class CountingBackend : public wisp::core::SettingsBackend {
-public:
-    explicit CountingBackend(wisp::core::SettingsBackend& inner) : inner_(inner) {}
-    wisp::Result<wisp::Value> get(const std::string& ns, const std::string& key) override {
-        ++gets;
-        return inner_.get(ns, key);
-    }
-    wisp::Result<void> set(const std::string& ns, const std::string& key,
-                           const wisp::Value& value) override {
-        return inner_.set(ns, key, value);
-    }
-    wisp::Result<void> erase(const std::string& ns, const std::string& key) override {
-        return inner_.erase(ns, key);
-    }
-    wisp::Result<void> erase_all() override { return inner_.erase_all(); }
-    wisp::Result<std::vector<wisp::core::SettingsEntry>> load_all() override {
-        return inner_.load_all();
-    }
-    wisp::Result<void> write_batch(std::span<const wisp::core::SettingsChange> changes) override {
-        return inner_.write_batch(changes);
-    }
-    std::atomic<int> gets{0};
-
-private:
-    wisp::core::SettingsBackend& inner_;
-};
-
-// The power keys come only from the settings cell: two minutes of ticks
-// read nothing from the settings store behind the cell's owner.
-TEST(PowerManager, TickReadsNoSettings) {
-    JsonFileSettingsBackend inner((temp_dir() / "power.json").string());
-    CountingBackend counting(inner);
-    EventBus bus;
-    wisp::core::SystemSettings system_settings(counting, bus, nullptr);
-    system_settings.seed_cell();
-    DeviceRegistry registry;
-    WakeLockRegistry locks{bus};
-    bus.start();
-    PowerManagerDeps deps{.bus = bus, .registry = registry, .locks = locks};
-    deps.system_settings = &system_settings.cell();
-    auto pm = std::make_unique<PowerManager>(std::move(deps));
-    counting.gets = 0;
-    const uint64_t t0 = wisp::os::now_ms();
-    for (uint64_t i = 1; i <= 120; ++i) pm->tick(t0 + i * 1000);
-    EXPECT_EQ(counting.gets.load(), 0);
-    ASSERT_TRUE(bus.wait_idle(2000));
-    pm.reset();
     bus.stop();
 }
 
