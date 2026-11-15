@@ -6,6 +6,7 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "admin/admin_fixture.hpp"
@@ -466,6 +467,26 @@ TEST(Routes, SettingsLanguageRoundTrips) {
     EXPECT_EQ(error_code(bad), "invalid_argument");
     EXPECT_EQ(field(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), "language"),
               Value("ja"));
+}
+
+// The error bodies PUT /settings answers with, byte for byte (spec 3.10).
+TEST(Routes, SettingsErrorBodiesAreUnchanged) {
+    AdminFixture f;
+    const std::string token = f.token();
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {R"({"color":1})",
+         R"({"error":{"code":"invalid_argument","message":"unknown setting: color"}})"},
+        {R"({"volume":"30"})",
+         R"({"error":{"code":"invalid_argument","message":"invalid value: volume"}})"},
+        {R"({"brightness":5})",
+         R"({"error":{"code":"invalid_argument","message":"invalid value: brightness"}})"},
+        {"[1]", R"({"error":{"code":"invalid_argument","message":"body must be a JSON object"}})"},
+    };
+    for (const auto& [body, want] : cases) {
+        HttpResponse r = f.srv->handle(authed(token, Put, "/api/v1/settings", body));
+        EXPECT_EQ(r.status, 400) << body;
+        EXPECT_EQ(wisp::test::body_text(r), want) << body;
+    }
 }
 
 TEST(Routes, ClientsListMarksCurrent) {

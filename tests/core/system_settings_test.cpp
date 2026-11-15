@@ -4,17 +4,25 @@
 
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "support/bus_flood.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
+#include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+
+// Readable gtest failure output for Value and Map comparisons.
+namespace wisp {
+void PrintTo(const Value& v, std::ostream* os) { *os << to_json(v); }
+}  // namespace wisp
 
 using wisp::ErrorCode;
 using wisp::Map;
@@ -664,4 +672,117 @@ TEST(SystemSettings, AgentLimitsOutOfRangeInStoreReadAsDefaults) {
     auto v = fx.settings.get();
     EXPECT_EQ(v.agent_max_steps, 60);
     EXPECT_EQ(v.agent_turn_min, 15);
+}
+
+// The bytes GET /settings, PUT's reply and system.settings carry for the
+// defaults: keys, value types and values (spec 3.10).
+TEST(SettingsGolden, DefaultMapJson) {
+    EXPECT_EQ(
+        wisp::to_json(Value(wisp::core::to_map(SystemSettingsValues{}))),
+        R"({"agent_max_steps":60,"agent_turn_min":15,"brightness":200,"deep_after_s":300,)"
+        R"("language":"zh","notify_vol":60,"ntp_servers":"pool.ntp.org,ntp.aliyun.com",)"
+        R"("screen_off_s":60,"time_24h":true,"tts_mute":false,"utc_offset_min":480,"volume":60})");
+}
+
+// Each value's type, for a non-default set.
+TEST(SettingsGolden, NonDefaultMapTypes) {
+    SystemSettingsValues v;
+    v.brightness = 10;
+    v.volume = 0;
+    v.screen_off_s = 0;
+    v.language = "ja";
+    v.utc_offset_min = -210;
+    v.ntp_servers = "10.0.0.1";
+    v.deep_after_s = 3600;
+    v.notify_vol = 100;
+    v.tts_mute = true;
+    v.time_24h = false;
+    v.agent_max_steps = 200;
+    v.agent_turn_min = 2;
+    const Map m = wisp::core::to_map(v);
+    EXPECT_EQ(m.size(), 12u);
+    const std::vector<std::pair<const char*, int64_t>> ints = {
+        {"brightness", 10},       {"volume", 0},          {"screen_off_s", 0},
+        {"utc_offset_min", -210}, {"deep_after_s", 3600}, {"notify_vol", 100},
+        {"agent_max_steps", 200}, {"agent_turn_min", 2}};
+    for (const auto& [key, want] : ints) {
+        ASSERT_EQ(m.count(key), 1u) << key;
+        ASSERT_EQ(m.at(key).type(), Value::Type::Int) << key;
+        EXPECT_EQ(m.at(key).as_int(), want) << key;
+    }
+    for (const auto& [key, want] : std::vector<std::pair<const char*, const char*>>{
+             {"language", "ja"}, {"ntp_servers", "10.0.0.1"}}) {
+        ASSERT_EQ(m.count(key), 1u) << key;
+        ASSERT_EQ(m.at(key).type(), Value::Type::String) << key;
+        EXPECT_EQ(m.at(key).as_string(), want) << key;
+    }
+    for (const auto& [key, want] :
+         std::vector<std::pair<const char*, bool>>{{"tts_mute", true}, {"time_24h", false}}) {
+        ASSERT_EQ(m.count(key), 1u) << key;
+        ASSERT_EQ(m.at(key).type(), Value::Type::Bool) << key;
+        EXPECT_EQ(m.at(key).as_bool(), want) << key;
+    }
+}
+
+// A store written the way the current release writes it (the JSON file
+// backend's format, through core::Settings) reads back as these values;
+// a device upgraded from that release must read the same settings.
+TEST(SystemSettings, StoreWrittenByTheOldCodeReadsTheSame) {
+    {
+        Fixture fx;
+        ASSERT_TRUE(Settings(fx.backend, "display").set("brightness", int64_t{90}));
+        ASSERT_TRUE(Settings(fx.backend, "audio").set("volume", int64_t{35}));
+        ASSERT_TRUE(Settings(fx.backend, "power").set("screen_off_s", int64_t{120}));
+        ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "en"));
+        ASSERT_TRUE(Settings(fx.backend, "sys").set("tz_min", int64_t{330}));
+        ASSERT_TRUE(Settings(fx.backend, "sys").set("ntp", "a.example,b.example"));
+        ASSERT_TRUE(Settings(fx.backend, "power").set("deep_after_s", int64_t{1800}));
+        ASSERT_TRUE(Settings(fx.backend, "audio").set("notify_vol", int64_t{20}));
+        ASSERT_TRUE(Settings(fx.backend, "voice").set("tts_mute", true));
+        ASSERT_TRUE(Settings(fx.backend, "sys").set("time_24h", false));
+        ASSERT_TRUE(Settings(fx.backend, "agent").set("max_steps", int64_t{100}));
+        ASSERT_TRUE(Settings(fx.backend, "agent").set("turn_min", int64_t{30}));
+        const auto v = fx.settings.get();
+        EXPECT_EQ(v.brightness, 90);
+        EXPECT_EQ(v.volume, 35);
+        EXPECT_EQ(v.screen_off_s, 120);
+        EXPECT_EQ(v.language, "en");
+        EXPECT_EQ(v.utc_offset_min, 330);
+        EXPECT_EQ(v.ntp_servers, "a.example,b.example");
+        EXPECT_EQ(v.deep_after_s, 1800);
+        EXPECT_EQ(v.notify_vol, 20);
+        EXPECT_TRUE(v.tts_mute);
+        EXPECT_FALSE(v.time_24h);
+        EXPECT_EQ(v.agent_max_steps, 100);
+        EXPECT_EQ(v.agent_turn_min, 30);
+        EXPECT_EQ(wisp::core::to_map(v), (Map{{"brightness", Value(90)},
+                                              {"volume", Value(35)},
+                                              {"screen_off_s", Value(120)},
+                                              {"language", Value("en")},
+                                              {"utc_offset_min", Value(330)},
+                                              {"ntp_servers", Value("a.example,b.example")},
+                                              {"deep_after_s", Value(1800)},
+                                              {"notify_vol", Value(20)},
+                                              {"tts_mute", Value(true)},
+                                              {"time_24h", Value(false)},
+                                              {"agent_max_steps", Value(100)},
+                                              {"agent_turn_min", Value(30)}}));
+    }
+    {
+        Fixture fx;
+        ASSERT_TRUE(Settings(fx.backend, "display").set("brightness", int64_t{5}));
+        ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "fr"));
+        const auto v = fx.settings.get();
+        EXPECT_EQ(v.brightness, 200);
+        EXPECT_EQ(v.language, "zh");
+    }
+}
+
+// system.settings carries the same map GET /settings returns.
+TEST(SettingsGolden, EventPayloadIsTheMapOfTheStoredValues) {
+    Fixture fx;
+    ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
+    const auto changed = fx.changed();
+    ASSERT_FALSE(changed.empty());
+    EXPECT_EQ(changed.back(), wisp::core::to_map(fx.settings.get()));
 }
