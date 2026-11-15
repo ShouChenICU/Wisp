@@ -174,8 +174,6 @@ SystemSettingsValues SystemSettings::get() const {
     return values;
 }
 
-uint32_t SystemSettings::revision() const { return revision_.load(std::memory_order_acquire); }
-
 Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
     for (const auto& [name, value] : changes) {
         const KeySpec* spec = find_spec(name);
@@ -222,7 +220,6 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
         written.push_back(Undo{spec, std::move(previous)});
     }
 
-    revision_.fetch_add(1, std::memory_order_acq_rel);
     auto brightness = changes.find("brightness");
     if (brightness != changes.end() && apply_brightness_) {
         apply_brightness_(static_cast<uint8_t>(brightness->second.as_int()));

@@ -541,7 +541,7 @@ TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
     ASSERT_NE(default_language, "en");
     ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
     ASSERT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
-    const uint32_t revision = app.system_settings().revision();
+    const size_t stored = h.topic("system.settings").size();
 
     // Sees the reseed reach the cell's followers on the UI dispatcher.
     std::atomic<bool> reseed_seen{false};
@@ -552,7 +552,8 @@ TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
         app.ui());
     wisp::app::factory_reset(app);
     EXPECT_EQ(h.reboots.load(), 1);
-    EXPECT_EQ(app.system_settings().revision(), revision);
+    // The reseed is not a stored batch: no system.settings goes out.
+    EXPECT_EQ(h.topic("system.settings").size(), stored);
     ASSERT_TRUE(wait_until([&] { return reseed_seen.load(); }, 3000));
     // The probe may run before the duties' call for the reseed (a slot
     // already queued keeps its place): a fresh barrier comes after it.

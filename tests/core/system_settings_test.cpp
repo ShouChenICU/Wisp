@@ -250,21 +250,24 @@ TEST(SystemSettings, ReportsEachStoredBatch) {
     EXPECT_EQ(changed[1].at("language"), Value("ja"));
 }
 
-// revision() lets a poller notice a change without reading storage: it
-// moves on every stored batch and on nothing else.
-TEST(SystemSettings, RevisionMovesOnEachStoredBatch) {
+// Every stored batch that changes a value moves the cell and publishes
+// once; a rejected or an empty batch moves nothing and publishes nothing.
+TEST(SystemSettings, CellMovesOnEachStoredBatch) {
     Fixture fx;
-    uint32_t r0 = fx.settings.revision();
+    uint32_t r0 = fx.settings.cell().revision();
     ASSERT_TRUE(fx.settings.set({{"language", "en"}}));
-    uint32_t r1 = fx.settings.revision();
+    uint32_t r1 = fx.settings.cell().revision();
     EXPECT_NE(r1, r0);
+    EXPECT_EQ(fx.changed().size(), 1u);
 
     EXPECT_FALSE(fx.settings.set({{"language", "fr"}}));
     EXPECT_TRUE(fx.settings.set({}));
-    EXPECT_EQ(fx.settings.revision(), r1);
+    EXPECT_EQ(fx.settings.cell().revision(), r1);
+    EXPECT_EQ(fx.changed().size(), 1u);
 
     ASSERT_TRUE(fx.settings.set({{"volume", 10}}));
-    EXPECT_NE(fx.settings.revision(), r1);
+    EXPECT_NE(fx.settings.cell().revision(), r1);
+    EXPECT_EQ(fx.changed().size(), 2u);
 }
 
 TEST(SystemSettings, AppliesBrightnessImmediately) {
@@ -339,9 +342,10 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     ASSERT_TRUE(Settings(inner, "audio").set("volume", 40));
     FlakyBackend flaky(inner, /*fail_on_set=*/3);
     std::vector<uint8_t> applied;
+    Recorder recorder;
     EventBus bus;
+    recorder.attach(bus);
     SystemSettings settings(flaky, bus, [&](uint8_t level) { applied.push_back(level); });
-    uint32_t revision = settings.revision();
 
     // Written in key order: brightness, language, then screen_off_s fails.
     auto r = settings.set(
@@ -354,7 +358,8 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     EXPECT_EQ(v.screen_off_s, 60);
     EXPECT_EQ(v.language, "zh");
     EXPECT_TRUE(applied.empty());
-    EXPECT_EQ(settings.revision(), revision);
+    // Not a stored batch: nothing published.
+    EXPECT_TRUE(recorder.all(bus).empty());
     // Keys that never existed are removed again, not left at a default.
     EXPECT_EQ(inner.get("display", "brightness").error().code, ErrorCode::NotFound);
     EXPECT_EQ(inner.get("sys", "lang").error().code, ErrorCode::NotFound);
@@ -384,18 +389,16 @@ TEST(SystemSettings, CellFollowsEveryStoredBatch) {
 }
 
 // A batch that stores what is already there still publishes system.settings
-// (one event per stored batch, as before the cell) and still moves
-// revision(); only the cell stays put.
+// (one event per stored batch, as before the cell); only the cell stays
+// put.
 TEST(SystemSettings, UnchangedBatchPublishesButLeavesTheCell) {
     Fixture fx;
     const uint32_t before = fx.settings.cell().revision();
     ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
     const uint32_t cell_revision = fx.settings.cell().revision();
     EXPECT_NE(cell_revision, before);
-    const uint32_t revision = fx.settings.revision();
     ASSERT_TRUE(fx.settings.set({{"volume", 30}}));
     EXPECT_EQ(fx.settings.cell().revision(), cell_revision);
-    EXPECT_NE(fx.settings.revision(), revision);
     const auto changed = fx.changed();
     ASSERT_EQ(changed.size(), 2u);
     EXPECT_EQ(changed[0], changed[1]);

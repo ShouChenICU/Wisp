@@ -37,14 +37,12 @@
 // PowerManager's timeouts and the rest) read or follow cell(), so only
 // brightness needs an explicit "apply now" hook.
 // The whole snapshot lives in a state cell (cell()) that follows every
-// stored batch; consumers follow it. Its mirror publishes the
-// system.settings event (spec 8.3), from which the UI rebuilds its text,
-// with revision() as the fallback when that event is lost.
+// stored batch; consumers follow cell(). Its mirror publishes the
+// system.settings event (spec 8.3) for the admin console.
 //
 // Thread-safe: set() calls are serialized so concurrent batches cannot
 // interleave their writes or rollbacks.
 
-#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -144,13 +142,6 @@ public:
     // anyone follows the cell.
     void seed_cell();
 
-    // Moves (wrapping) every time a batch is stored, whether or not a value
-    // changed, before apply_brightness runs; rejected, empty and rolled-back
-    // batches leave it alone. Lets a poller that may have missed the
-    // system.settings event notice a change with one atomic load instead of
-    // reading storage each time.
-    uint32_t revision() const;
-
     // Keys are "brightness", "volume", "screen_off_s", "utc_offset_min",
     // "deep_after_s", "notify_vol", "agent_max_steps", "agent_turn_min" (integers), "language" and
     // "ntp_servers" (strings) and "tts_mute", "time_24h" (booleans). An unknown key,
@@ -167,7 +158,6 @@ private:
     EventBus& bus_;
     std::function<void(uint8_t)> apply_brightness_;
     os::Mutex mutex_;
-    std::atomic<uint32_t> revision_{0};
     // Declared after bus_ because its constructor takes it. Its owner
     // declares this object after the bus, so the cell is destroyed before
     // the bus object is (owner order, wisp/core/state_cell.hpp).
