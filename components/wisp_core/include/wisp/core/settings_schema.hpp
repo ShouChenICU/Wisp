@@ -389,9 +389,6 @@ WISP_SETTINGS(WISP_SETTING_FIELD_CHECK)
 static_assert(std::is_trivially_copyable_v<SettingsSnapshot>, "the settings cell copies it");
 static_assert(sizeof(SettingsSnapshot) <= 256, "StateCell's size limit (state_cell.hpp)");
 
-// host_list_syntax_ok() as the .cpp's callers use it.
-bool valid_host_list(std::string_view list, int32_t max_entries, int32_t max_entry_len);
-
 // The row's type and range, as SystemSettings::set() checks them.
 bool valid_setting(const SettingSpec& spec, const Value& v);
 

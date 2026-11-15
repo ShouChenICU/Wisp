@@ -26,10 +26,6 @@ bool is_enum_value(const SettingSpec& spec, std::string_view code) {
 
 }  // namespace
 
-bool valid_host_list(std::string_view list, int32_t max_entries, int32_t max_entry_len) {
-    return host_list_syntax_ok(list, max_entries, max_entry_len);
-}
-
 bool valid_setting(const SettingSpec& spec, const Value& v) {
     switch (spec.type) {
         case SettingType::Int:
@@ -40,7 +36,7 @@ bool valid_setting(const SettingSpec& spec, const Value& v) {
             return v.type() == Value::Type::String && is_enum_value(spec, v.as_string());
         case SettingType::HostList:
             return v.type() == Value::Type::String &&
-                   valid_host_list(v.as_string(), spec.min, spec.max);
+                   host_list_syntax_ok(v.as_string(), spec.min, spec.max);
     }
     return false;
 }
