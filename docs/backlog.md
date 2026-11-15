@@ -418,3 +418,26 @@ Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-p
 - Parked: the agent's `lua.run` reaches devices as holder `agent` without leaving a conversation note, unlike `device.call`.
 - Parked: the `device.call` activity line carries no device identity (it would need a per-tool key preference in `activity_target()`).
 - Parked: `tools/check_layering.py`'s comment stripper can report a false positive on a line with a digit separator and an apostrophe in its comment.
+
+## Settings schema: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and unit tests only so far; the ESP port edits (the output gain's name and comment) build for both boards (2026-11-15) but have not run on a device.
+
+- Upgrade from the current release with non-default settings stored (all twelve the web page writes, plus `power/low_batt_pct` if set by hand): every value reads back the same on the device and in `GET /settings`.
+- Speech, cue tones and notification sounds at volume 30, 60 and 100, before and after running the hardware diagnostics' mic loopback test, on each board: the same loudness before and after; the loudness at 60 acceptable with the output gain at 80 (`kOutputGainPercent`), or a new gain recorded in `docs/hardware/<board>.md`.
+- Brightness at boot equals the stored value; at 10 the panel is still readable; dim (30 % of the setting) and wake behave as before; a burst of slider moves on the settings page ends at the last value.
+- The Shell settings page on the 2.16 and the round 1.75 boards: rows, sliders, the longer screen-off and deep-standby choice pages; values following a change made on the web page or by voice while the page is open; a row put back when its write fails.
+- The web System page against the device: every card loads its ranges from `/settings/schema`; saving each card works.
+- `mem` at idle: internal free and largest block against `ram_budget.hpp`. Expected: the settings cell grows by about 60 bytes; one more UI-dispatcher subscription while the settings page is open and one for PowerManager's brightness follower (in PSRAM); nothing else in internal RAM.
+- The `wisp.scene` stack high-water mark: `DeviceInfo` now carries the whole settings snapshot (about 170 bytes) on that stack.
+- A factory reset ends with the defaults and the performance overlay off.
+- The agent mutes spoken replies, changes the deep-standby delay and sets the time zone when asked by voice, and the settings page shows each change.
+
+## Settings schema parked review findings
+
+- The agent's settings notes show raw numbers: `时区 480 → 540` for the time zone and `0` for "never" on the screen-off and deep-standby delays. The Shell already formats these by unit (`duration_text()`, `time_zone_text()`); the note could use the same formatting.
+- A settings-page slider hold that ends without `LV_EVENT_RELEASED` (`LV_EVENT_PRESS_LOST` is not handled) keeps showing the finger's value until that setting changes again.
+- A settings-page write still in flight across a language rebuild of the page shows the old value briefly, until the write completes.
+- The web page's "More settings" card shows an Enum key's raw codes as its choices, and gives an Int key that has choices a number field. No such key exists today.
+- `tools/check_settings.py` works line by line: a default or range restated two lines away from the key's name passes. Likely future false positives: unit conversions by 60 next to a seconds or minutes setting, and 255 (an 8-bit maximum) next to brightness; give such a line the `settings-literal-ok:` marker with its reason.
+- `SceneBackground.ErrorInBackgroundStopsAndNotifies` failed once under a loaded full run and passes 20 times alone; the same load-sensitive area as `SceneBackground.ExitClosesFromAnyState` (see the `close_slot()` finding under "State cells beside the events parked review findings").

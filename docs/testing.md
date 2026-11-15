@@ -1,7 +1,9 @@
 # Testing
 
 Run `bash tools/ci.sh` before committing. This always checks formatting,
-layering, the event topic registry, comment rules, translations, asset
+layering, the event topic registry, the settings schema (`tools/check_settings.py`:
+no setting's default or range restated outside `wisp/core/settings_schema.hpp`),
+comment rules, translations, asset
 budgets and generated files, builds the simulator and runs the C++ regression suite and admin API smoke test.
 Simulator smoke covers boot, missing peripherals, network access, scene execution,
 scene errors and an Agent conversation. Cheap unit tests remain enabled; test

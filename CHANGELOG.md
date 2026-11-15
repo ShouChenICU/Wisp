@@ -16,6 +16,8 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - The agent can read and control peripherals that describe themselves (a vibration motor, a light, a sensor): `device.list` shows each one's properties and commands, and `device.call` reads a property or runs a command (when the board has such a device; otherwise the two tools are not offered). Arguments are checked against the device's ranges, commands that must not repeat quickly are rate-limited, and nothing asks for confirmation. The activity line shows "Check peripherals" / "Use peripheral", and a command that changes something leaves a note in the conversation.
 - Scenes reach the same devices through `wisp.device.list()`, `wisp.device.get(id, prop)` and `wisp.device.call(id, cmd, args)`; `get` and `call` need the device's id in `scene.json`'s `permissions.device` (at most 8 ids); the agent's `lua.run` reaches every device.
 - The simulator has a vibration motor, `haptic.main` (`pulse`, `effect`, property `active`), that logs what it would do.
+- `GET /api/v1/settings/schema` describes every setting the admin page can change: its type, range, default, choices and label. The web System page takes its ranges and choices from it, and a setting the page has no card for appears in a "More settings" card at the end.
+- The agent can also mute spoken replies, change when deep standby starts and set the time zone (`settings.set`, without asking); `settings.get` and `settings.set` now cover nine settings.
 
 ### Changes
 
@@ -42,6 +44,13 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - The hardware diagnostics' scene list follows an SD card being inserted or removed, and dev-mode edits, at once instead of within 30 s; the shell's scene list, while open, now lists again on these too.
 - Internal: key presses and scene lifecycle steps reach their consumers through `ButtonService` listeners and edge inboxes instead of the event bus, which now has one subscriber on the device, the admin WebSocket. The `button.*` and `scene.state` events are still published unchanged.
 - Internal: the in-process `voice.state` event (not sent to the admin page) no longer carries the recording or speech `level` (read `VoiceService::level()`), and is published only when the voice state or its outcome changes, not for a repeated state.
+- The screen-off and deep-standby choices are the same on the device and the web page: the device's settings page gains 2 minutes for both.
+- Brightness shows the same percentage on the device and the web page, 0 % at its lowest level.
+- The device uses one wording per setting: the agent's notes use the settings page's names (zh: 提醒音量, 自动熄屏, 系统语言, and "语音播报 on → off" when spoken replies are muted).
+- A stored setting outside its range still reads as its default, and now logs one warning naming it at boot. A stored low-battery threshold (`power/low_batt_pct`, set only by hand) outside 5-50 % reads as the default, 15 %.
+- The agent's `settings.get` description is generated from the settings list, and the keys of `settings.set` follow that list's order (tool definitions are sent fresh each turn, so stored conversations are not affected).
+- Internal: every system setting is declared once, in `wisp/core/settings_schema.hpp`; the settings service, the REST routes, the agent tools, `wisp.device.info()`, the device's settings page and the web System page take keys, ranges, defaults, choices and labels from it. `tools/check_settings.py` (run by `tools/ci.sh`) fails when a default or range of a setting is written anywhere else. Host builds now fail on an aggregate member left without a default, as the firmware build does; the firmware builds for both boards with ESP-IDF v6.0.3.
+- Internal: the hardware diagnostics' performance overlay toggle saves through the settings service, so it also publishes `system.settings` (the payload is unchanged; the overlay is not in it).
 
 ### Fixes
 
@@ -56,8 +65,12 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - A failed settings save whose undo also failed no longer leaves screens and services showing values other than the ones stored.
 - A shell destroyed without being stopped no longer leaves its event subscriptions and conversation listeners behind.
 - Replacing a list's items no longer shows an empty list for a frame: the old rows stay on screen until the new ones arrive, and a tap on an old row in that moment does nothing.
+- The screen starts at the stored brightness, and at the default when the stored value is out of range (a stored value below 10 used to light the panel at that level while everything else reported 200).
+- Running the hardware diagnostics' mic loopback test no longer makes speech, cue tones and notification sounds quieter until the next restart; the loopback plays at the volume setting and no longer plays the unrecorded end of its buffer after a short recording.
+- The device's settings page shows changes made by voice or on the web page while it is open, and puts a row back when its change was not saved.
+- A brightness left in storage by a failed settings save reaches the screen.
 
-Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, the storage worker lanes, the state subscriber changes and the key and scene edge changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run", "Storage worker lanes: device checks not run", "State cell subscribers: device checks not run" and "State cell edges and cleanup: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run".
+Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, the storage worker lanes, the state subscriber changes, the key and scene edge changes and the settings schema (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run", "Storage worker lanes: device checks not run", "State cell subscribers: device checks not run", "State cell edges and cleanup: device checks not run" and "Settings schema: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run".
 
 ## 0.5.2 — 2026-11-14
 

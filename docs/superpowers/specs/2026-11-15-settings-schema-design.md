@@ -203,6 +203,8 @@ static_assert(std::is_trivially_copyable_v<SettingsSnapshot>);
 - `SystemSettingsValues` becomes an alias of `SettingsSnapshot` for the length of the migration and is then removed.
 - Size: 9 × `int32_t` + 3 × `bool` + 1-byte enum + 128-byte `FixedString` ≈ 168 bytes, within `StateCell`'s 256-byte limit (`state_cell.hpp:227`).
 
+> In the code: the snapshot's integer fields are `int`, not `int32_t`: on the ESP-IDF toolchains `int32_t` is `long`, so mixed-type `std::clamp`/`std::min` calls and `%d` formats on snapshot fields would break the device build only. The table's `min`, `max` and `def_int` stay `int32_t`.
+
 ### 3.4 `SystemSettings`
 
 Its public API stays (`get()`, `set()`, `cell()`, `seed_cell()`); its body becomes loops over `kSettingsSchema`:
@@ -212,6 +214,8 @@ Its public API stays (`get()`, `set()`, `cell()`, `seed_cell()`); its body becom
 - `to_map()` emits the rows flagged `kWeb`, in table order: the twelve keys of today, in today's order. It is the body of `GET /settings`, of `PUT`'s reply and of the `system.settings` payload, as today.
 - The `apply_brightness` hook goes (open decision 5): PowerManager follows `brightness` in the cell.
 - The constants `kDefault*`, `kMin*`, `kMax*`, `valid_screen_off_s()`, `valid_deep_after_s()` and `kDefaultNtpServers` (`system_settings.hpp:60-87`) are deleted. Code that needs a default reads `kSettingsSchema[id]` through a `constexpr` accessor (`setting_default_int(SettingId::Brightness)`), which is the only way the CI guard allows (section 4).
+
+> In the code: the surface is its own enum, `enum class SettingSurface : uint8_t { Internal, Agent, Web, DevicePage }` in `system_settings.hpp`, and `set(changes, from)` takes `SettingSurface::Internal` as its default argument, so internal callers pass nothing; the row flags are `inline constexpr uint8_t` constants named `kSettingAgent`, `kSettingScene`, `kSettingWeb`, `kSettingDevicePage` and `kSettingZeroNever`. `to_map()` returns a `std::map`, so "table order" has no meaning for it: its JSON keys come out in alphabetical order, as before.
 
 ### 3.5 Agent
 
@@ -223,11 +227,15 @@ Its public API stays (`get()`, `set()`, `cell()`, `seed_cell()`); its body becom
 - The note uses `ui::setting_label(spec.label)` (one label per key, decision 7); `text_of()` (`:48-53`) stays (it formats a value for the note).
 - `device.status` is unchanged. It carries no setting today (`tools_device.cpp:73-74`, `app.cpp:1210-1242`); `settings.get` is the agent's read path. The roadmap listed "`device.status` fields" as derived; there is nothing to derive (section 10).
 
+> In the code: the `tts_mute` note uses the settings page's label, "Spoken replies" (语音播报), and shows the value as the page does, inverted: `on`/`off` of spoken replies. After Approval 6 the agent has nine keys: `brightness`, `volume`, `screen_off_s`, `language`, `utc_offset_min`, `deep_after_s`, `notify_vol`, `tts_mute`, `time_24h`, in that order in `settings.set`'s enum.
+
 ### 3.6 Lua
 
 `wisp.device.info()` fills its settings fields from the rows flagged `kScene`, under `scene_name`: `lang` (the code string), `utc_offset`, `time_24h` (`bind_device.cpp:342-346`, `scene_runtime.cpp:2245-2262`). The names, types and values are unchanged. `DeviceInfo`'s three hand-kept fields and their defaults (`scene_api.hpp:189-191`) and the runtime's fallbacks (`scene_runtime.hpp:528-530`, `scene_runtime.cpp:2254-2255`) go; without a settings cell (tests) the runtime uses a default-constructed `SettingsSnapshot`, whose initializers are the table's defaults.
 
 What stays hand-written: which changes fire `"minute"` (time zone, `time_24h`) and `"lang"` (`scene_runtime.cpp:220-235`), and the API documentation prose (`schema.cpp:437-446`). Both describe behaviour, not values.
+
+> In the code: without a settings cell, `wisp.device.info()` reports the schema defaults (`zh`, 480, `true`), not `ui::lang()`.
 
 ### 3.7 REST and the web page
 
@@ -249,6 +257,8 @@ What stays hand-written: which changes fire `"minute"` (time zone, `time_24h`) a
 - `GET`/`PUT /settings` are unchanged in shape and error messages; `PUT` calls `set(changes, kWeb)`.
 - The web System page loads the schema once with the settings (`system.js:161-170`). Its constants `AGENT_STEPS_*`, `BRIGHTNESS_*`, `VOLUME_MAX`, `SCREEN_OFF`, `DEEP_AFTER`, `UTC_OFFSETS` (`system.js:75-95`) and the `?? 60` / `?? 15` / `!== false` fallbacks (`:317, 526, 719-720`) are replaced by schema reads; `wholeIn()` checks against the schema's range; the brightness percentage uses one formula with the Shell (decision 3). The cards, their order and their special controls (the time-server draft and `tidyServers`, the agent card's combined save) stay hand-written. A key flagged `kWeb` that no card places is rendered in a generic card at the end with a control chosen by type (number field, switch, select), so a new key is editable on the web before anyone writes a card for it.
 
+> In the code: the body of `GET /settings/schema` is built once, when `AdminServer` is constructed (it depends on nothing at run time), not per request; every request sends that same `os::LargeString`. The web page reads the schema again with every settings load, not once, and a schema that lacks a key one of its cards places counts as a failed load (the error card and retry).
+
 ### 3.8 The Shell settings page
 
 What is derived, what is not:
@@ -260,6 +270,8 @@ What is derived, what is not:
 The page subscribes to the settings cell on the UI dispatcher while it is open and redraws its values from each delivery (closes X10 and `docs/backlog.md:195`). A write still goes through `submit_io` (`settings_page.cpp:363-374`) with `kDevicePage`; a failed write is corrected by the next delivery instead of leaving the optimistic value on screen.
 
 The same rule applies to the diagnostics' performance-overlay toggle: it writes `perf_overlay` with `set(..., kInternal)` and SystemDuties reads it from the cell at start (`system_duties.cpp:137`, `self_check_screen.cpp:163, 435`).
+
+> In the code: while the page's own write of a key is in flight, deliveries keep the page's value for that key; when the write completes without storing (refused, failed, or the storage queue full), the row goes back to the cell's value. The overlay toggle calls `set()` without a surface, which defaults to `SettingSurface::Internal`.
 
 ### 3.9 Other consumers
 
@@ -313,6 +325,8 @@ False positives:
 - Expected markers after migration: none known. The port output gains are renamed so that no setting token appears on their lines; `pcm_player.cpp`'s `volume = 100` is "full scale" on a line that names `volume`, so it either gets a marker or its local is renamed `scale` — the plan picks one.
 - The checker's own test covers: a raw `get_int("brightness", 200)` fails; `kDefaultUtcOffsetMin = 480` fails; `x = 480` on a line with no setting token passes; `volume_{100}` fails without a marker and passes with one; a marker without a reason fails; a schema row added to the fixture header is picked up.
 
+> In the code (the plan's "Decisions" item 5): identifiers are split into lower-case words, and a row's tokens are its name, key, label and scene name as word sequences, plus the name without a trailing `s`/`min`/`pct` word when at least two words remain. Rule 2 applies to Int rows only and never matches `0`, `1`, or `100` on a `Percent` row; HostList `min`/`max` are not matched. Rule 3 matches each server of the HostList default anywhere, and an Enum default code only when it is assigned (`= "zh"`, `{"zh"}`, `?? 'zh'`, `|| 'zh'`). Rule 1 also catches a `set(` with a row's key as its first argument and a second argument. A comment-only line holds the tokens of the code line it documents, so a comment above a line is checked with it. A row of the list the parser cannot read fails the check. `firmware/main/` is scanned too. Three markers remain: the wisp's glow parameter in `wisp_shape.cpp`, the simulated panel's power-on level in `sim_board.hpp`, and the low-battery hysteresis in `power_monitor.cpp`.
+
 What the guard does not catch: a default copied under an unrelated name on a line with no setting token (`int fallback = 60;`). The table-walking tests (section 6) and review cover that; the roadmap asks for the known keys only.
 
 ## 5. Costs
@@ -359,6 +373,8 @@ Behaviour:
 - Shell page: every `kDevicePage` key has one row; a cell change while the page is open updates the row; a refused write shows the stored value after the next delivery; choice lists come from the table. Rendered on the three screen shapes with the existing settings-page screenshot preview (manual, AGENTS.md section 5).
 - `GET /settings/schema`: golden body; every `kWeb` row present and nothing else.
 - `tools/check_settings_test.py` (section 4).
+
+> In the code: no settings-page screenshot preview existed; a manual one, `SettingsPreview.DISABLED_PageAndChoice`, was added (the page from its top to its last row and the screen-off choice page at both ends, on the three shapes; `docs/testing.md`).
 
 The web page's use of the schema has no automated test (frontend tests are out of the roadmap's scope); it is checked by hand in the simulator: every card loads, a value outside a field's range is refused by the field, a fake extra `kWeb` row in a test build appears in the generic card.
 

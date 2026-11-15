@@ -301,6 +301,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | 概览 | `GET /device` | 是 | 能力清单、启动报告、运行时长、内存、电量 |
 | 外设 | `GET /devices` | 是 | 设备注册表：id、类别、状态、caps |
 | 设置 | `GET /settings`、`PUT /settings` | 是 | 经 `SystemSettings` 校验并立即生效 |
+| | `GET /settings/schema` | 是 | 设置的描述：键、类型、范围、默认值、选项（取自 `wisp/core/settings_schema.hpp` 的设置表，见 `2026-11-15-settings-schema-design.md` 3.7） |
 | Wi-Fi | `GET /wifi`、`GET /wifi/scan` | 是 | `GET /wifi`：`{state, ssid, ssid_hex, ip, rssi, reason, saved, ap}`，`saved` 的每项为 `{ssid, ssid_hex, auth_failed}`（`auth_failed` 见 4.2）；扫描结果每项为 `{ssid, ssid_hex, rssi, secured, saved}` |
 | | `POST /wifi/networks {ssid \| ssid_hex, password?}`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络；`ssid` 与 `ssid_hex` 必须且只能给一个，`ssid_hex` 不是偶数位十六进制时返回 400；`DELETE` 的路径段按 `%XX` 解码成原始字节 |
 | | `POST /wifi/networks/{ssid}/connect` | 是 | 用设备保存的密码连接这个已保存的网络，返回 202（与添加网络相同，连接在 net 任务上进行）；没有保存时返回 404 `not_found`。路径段与 `DELETE` 相同，按 `%XX` 解码成原始字节。与添加网络一样立即直接尝试它（不扫描、退避重置），即使它被标记为 `auth_failed` 也尝试一次，但不清除标记（只有重新输入密码才清除，见 4.2），也不写入任何东西；经配网热点调用时与添加网络一样算作这次配网的结果（见 4.3） |

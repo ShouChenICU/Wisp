@@ -862,4 +862,18 @@ Copied into `docs/backlog.md` by Task 18.
 
 ## Deviations
 
-(Execution-time rulings go here, one numbered entry each.)
+Rulings made during execution; each is narrower than or equal to the task text it adjusts.
+
+1. **The upgrade golden and the `language` type.** `SystemSettings.StoreWrittenByTheOldCodeReadsTheSame` compares `language` as `LangCode` (`LangCode::En`, and `LangCode::Zh` for the refused `"fr"`) once the field changed type; the expected stored and wire values did not change, and its `to_map()` check still pins the stored string.
+2. **The table refuses a mismatched field type at compile time.** Each row asserts that its C++ field type agrees with its `SettingType` (a field-type trait), and the primary `setting_init` template is deleted, so a wrong type fails on the host build rather than at link time on the device. A further check makes sure the largest valid host list fits its `FixedString` (`max_entries * max_entry_len + (max_entries - 1)`, exactly 127 today).
+3. **`SettingSurface` and `surface_flag()` live in `system_settings.hpp`**, next to `set()`, not in the schema header.
+4. **The agent's settings note for a HostList row** has a description text, although no agent key is a HostList today.
+5. **`Slot::lang` in the scene runtime became `core::LangCode`**, a reader of the language the plan's grep did not list.
+6. **`GET /settings/schema`**: `AdminServer` holds the body and the handler reaches it through `RequestContext::settings_schema`; a missing body answers 500; the route's test pins the whole body text.
+7. **Shell settings page layout.** "Never" moves to the end of a choice list only on a zero-means-never row. The row mapping, the ascending order of each row's choices and the rows with worded choices (24 h / 12 h, language names) are checked at compile time. A manual preview, `SettingsPreview.DISABLED_PageAndChoice`, renders the page and the screen-off choice page on the three shapes (`docs/testing.md`), and the shapes test also checks the seven-row screen-off choice page at both scroll ends.
+8. **Shell settings page following the cell.** A per-key count of writes in flight keeps the page's value for a key while its own write is in flight; a write that did not store (refused, failed, storage queue full) puts the row back when it completes; the page's 1 s refresh picks up a completion whose UI post was dropped; a delivery redraws only the rows whose value changed; a held slider is left alone.
+9. **Web System page.** The schema is fetched with every settings load, not once (after a firmware update the ranges may differ); a schema that lacks a key a card places is a failed load (error card and retry) instead of a render that throws.
+10. **Brightness.** PowerManager's follower is `follow_brightness()`, which skips a level already applied (so boot makes one panel call); the subscription is released in `~PowerManager()`, as PowerManager has no `stop()`; `Routes.SettingsPutValidatesAndApplies` reads the cell instead of the removed hook.
+11. **Loopback** plays back only the frames it recorded; before, a short recording also played the uninitialised tail of its buffer.
+12. **Tests of the consumers.** PowerManager's out-of-range test fills its cell through `SystemSettings::get()` and is renamed `StoredOutOfRangeTimeoutsReachPowerManagerAsDefaults`; AgentWiring reads its first turn limits from the cell.
+13. **The guard** (`tools/check_settings.py`): a comment line also counts as next to the code line it documents; every server of the NTP default is matched, not only the whole default text; JavaScript `|| 'zh'` is caught as well as `?? 'zh'`; the raw-store rule also catches a `set(` whose first argument is a row's key, but only with a second argument; `firmware/main/` is scanned too. Three markers remain, the ones "Decisions" item 5 expected. A row of the list the guard cannot parse fails the check instead of being skipped.
