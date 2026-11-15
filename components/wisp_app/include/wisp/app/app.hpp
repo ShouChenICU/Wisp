@@ -452,6 +452,7 @@ private:
     friend void request_firmware_confirm(App&);
     friend bool take_firmware_request(App&);
     friend std::optional<core::FirmwarePending> pending_firmware(App&);
+    friend const core::StateCell<core::FirmwareProgress>& firmware_progress(App&);
     friend bool start_firmware_install(App&);
     friend void decline_firmware(App&);
     friend void restart_for_firmware(App&);

@@ -31,6 +31,10 @@ std::optional<core::FirmwarePending> pending_firmware(App& app) {
     return fw != nullptr ? fw->pending() : std::nullopt;
 }
 
+const core::StateCell<core::FirmwareProgress>& firmware_progress(App& app) {
+    return app.impl_->firmware->progress_cell();
+}
+
 bool start_firmware_install(App& app) {
     App::Impl& impl = *app.impl_;
     std::lock_guard<os::Mutex> lock(impl.firmware_mutex);

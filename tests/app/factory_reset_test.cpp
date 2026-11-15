@@ -468,6 +468,41 @@ TEST(FactoryReset, SettingsCellHoldsTheDefaultsAfterReset) {
     EXPECT_EQ(h.topic("system.settings").size(), settings_events);
 }
 
+// The reseed moves the settings cell back to the default language, and
+// the system duties follow that cell on the UI thread. Their language sync
+// goes by SystemSettings::revision(), which only a set() moves, so the
+// screen keeps the language it shows until the restart rather than
+// switching to the default for its last moments.
+TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    const std::string default_language = app.system_settings().get().language;
+    ASSERT_NE(default_language, "en");
+    ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
+    ASSERT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
+    const uint32_t revision = app.system_settings().revision();
+
+    // Subscribed after the duties, so on the UI dispatcher its call for
+    // the reseed comes after theirs.
+    std::atomic<bool> reseed_seen{false};
+    wisp::core::CellSubscription sub = app.system_settings().cell().subscribe(
+        [&](const wisp::core::SystemSettingsValues& v) {
+            if (v.language == default_language) reseed_seen = true;
+        },
+        app.ui());
+    wisp::app::factory_reset(app);
+    EXPECT_EQ(h.reboots.load(), 1);
+    EXPECT_EQ(app.system_settings().revision(), revision);
+    ASSERT_TRUE(wait_until([&] { return reseed_seen.load(); }, 3000));
+    run_on_ui_blocking(app.ui(), [] {});
+    EXPECT_EQ(wisp::ui::lang(), Lang::En);
+    // Nor does the refresh timer's sync switch it (it ticks every 100 ms).
+    EXPECT_FALSE(wait_until([] { return wisp::ui::lang() != Lang::En; }, 300));
+    run_on_ui_blocking(app.ui(), [&] { sub.reset(); });
+    wisp::ui::set_lang(Lang::Zh);
+}
+
 TEST(FactoryReset, CancelPublishesCancelled) {
     UiNetOptions opts;
     opts.saved = {{"Home", "password1"}};

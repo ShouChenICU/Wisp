@@ -13,17 +13,19 @@
 //   - The system language (ui::lang()) following the stored one, so the
 //     cards and the dialogs reopen in a new language.
 //
-// Every event handler posts its work onto the UI thread, which reads the
-// services' current state rather than trusting a possibly stale payload;
-// a 100 ms lv_timer resyncs the network services and the pending
-// factory-reset and firmware requests once a second, for an event the bus
-// dropped.
+// The language, the cards and the dialogs follow their owners' state cells
+// (the system settings, the Wi-Fi and hotspot, the pairing code, the reset
+// status, the firmware progress), subscribed on the UiRuntime: each call
+// runs on the UI thread and re-reads the services' current state, so a
+// call that stands for several changes still ends on the last one. A
+// 100 ms lv_timer also resyncs the network services and the pending
+// factory-reset and firmware requests once a second.
 //
 // Threading: start() and stop() are UI thread only, like every member that
-// touches LVGL. The bus handlers run on the dispatcher thread and only
-// post; the WISP_PERF timer runs on its own os::Timer thread and reads
-// nothing that needs the UI thread. A post still queued when stop() runs
-// finds the duties stopped and does nothing (alive_).
+// touches LVGL. The power-key handler runs on the bus dispatcher thread and
+// only posts; the WISP_PERF timer runs on its own os::Timer thread and
+// reads nothing that needs the UI thread. A post still queued when stop()
+// runs finds the duties stopped and does nothing (alive_).
 
 #include <cstdint>
 #include <functional>
@@ -34,6 +36,8 @@
 #include "net_cards.hpp"
 #include "wisp/app/power_key_controller.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/firmware_update.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
@@ -88,14 +92,9 @@ private:
     void emit_perf_line();
 
     void on_button_event(const core::Event& e);
-    void on_settings_event(const core::Event& e);
-    // net.wifi.state / net.ap.state / net.pairing.code (connectivity spec
-    // 5.5) and system.factory_reset {state:"requested"}: each posts the
-    // matching sync onto the UI thread.
-    void on_net_event(const core::Event& e);
-    void on_reset_event(const core::Event& e);
-    // system.firmware: any state may open or close the update dialog.
-    void on_firmware_event(const core::Event& e);
+    // UI thread: the firmware progress cell's callback. Any phase may open
+    // or close the update dialog.
+    void on_firmware_progress(const core::FirmwareProgress& progress);
     // UI thread: opens, refreshes or closes the provisioning card to match
     // the Wi-Fi service.
     void sync_wifi();
@@ -173,10 +172,15 @@ private:
     std::unique_ptr<os::Timer> perf_timer_;
 
     core::SubscriptionId button_sub_ = 0;
-    core::SubscriptionId settings_sub_ = 0;
-    core::SubscriptionId net_sub_ = 0;
-    core::SubscriptionId reset_sub_ = 0;
-    core::SubscriptionId fw_sub_ = 0;
+    // On the UiRuntime; released by stop(), before App::stop() destroys
+    // the networking (Wi-Fi, hotspot, pairing) and the firmware service.
+    // Wi-Fi, hotspot and pairing stay empty without Wi-Fi.
+    core::CellSubscription settings_sub_;
+    core::CellSubscription wifi_sub_;
+    core::CellSubscription ap_sub_;
+    core::CellSubscription pairing_sub_;
+    core::CellSubscription reset_sub_;
+    core::CellSubscription fw_sub_;
 };
 
 }  // namespace wisp::app

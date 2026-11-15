@@ -14,7 +14,9 @@
 
 #include "app/ui_net_harness.hpp"
 #include "factory_reset.hpp"
+#include "firmware_confirm.hpp"
 #include "net_cards.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_firmware.hpp"
 #include "support/fake_http.hpp"
 #include "support/lvgl_probe.hpp"
@@ -79,6 +81,17 @@ protected:
                    lv_obj_send_event(btn, LV_EVENT_CLICKED, nullptr);
                    return "clicked";
                }) == "clicked";
+    }
+
+    // Stops the UI loop's LVGL timers, the duties' 100 ms refresh with its
+    // 1 s resync among them, while posted jobs and dispatch slots still
+    // run: from here on only a cell's callback can open or close a card
+    // or a dialog. Returns once the loop is in its paused branch (the
+    // blocking job runs there or right before it, never before another
+    // lv_timer_handler()).
+    void stop_lvgl_timers() {
+        h->app->ui()->set_paused(true);
+        run_on_ui_blocking(h->app->ui(), [] {});
     }
 
     void press(const char* topic) {
@@ -238,4 +251,96 @@ TEST_F(SystemDutiesTest, PerfLineEveryFiveSeconds) {
         EXPECT_EQ(v.find(k)->type(), wisp::Value::Type::Int) << k;
     }
     EXPECT_GT(v.find("wisp_fps")->as_double(), 0);
+}
+
+// The cards and dialogs follow their owners' cells on the UI thread. In
+// each test below `wisp.bus` is held and flooded, so no net.*,
+// system.factory_reset or system.firmware event reaches anyone, and the
+// LVGL timers are stopped, so the 1 s resync cannot run either: what
+// opens and closes the card or dialog is the cell's callback alone.
+TEST_F(SystemDutiesTest, HotspotCardFollowsTheCellFlooded) {
+    boot();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    auto ap = h->app->wifi()->start_provisioning(wisp::os::now_ms());
+    ASSERT_TRUE(ap);
+    const std::string ssid = ap.value().ssid;
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return top_says(ssid); }, 3000));
+
+    ASSERT_TRUE(h->app->wifi()->stop_provisioning());
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return !top_says(ssid); }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+TEST_F(SystemDutiesTest, PairingCardFollowsTheCellFlooded) {
+    boot();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    wisp::net::PairingService* pairing = h->app->pairing();
+    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    const std::string code = pairing->active_code(wisp::os::now_ms()).value_or("");
+    ASSERT_FALSE(code.empty());
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return top_says(wisp::app::spaced_code(code)); }, 3000));
+
+    pairing->cancel_code();
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return !top_says(wisp::app::spaced_code(code)); }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+TEST_F(SystemDutiesTest, ResetDialogOpensFlooded) {
+    boot();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    wisp::app::request_factory_reset(*h->app);
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return top_says("恢复出厂设置"); }, 3000));
+    EXPECT_EQ(msgboxes(), 1);
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+    // The late event and the resync find the request taken: one dialog.
+    h->app->bus().wait_idle(2000);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+}
+
+TEST_F(SystemDutiesTest, FirmwareDialogOpensFlooded) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    opts.with_firmware = true;
+    boot(opts);
+    const std::string token = pair_browser();
+    ASSERT_TRUE(wait_until([&] { return !top_says("配对请求"); }, 3000));
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    EXPECT_EQ(upload(token, "0.3.0"), 202);
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return top_says("固件更新"); }, 3000));
+    EXPECT_TRUE(top_says("0.2.0\n→ 0.3.0"));
+    EXPECT_EQ(msgboxes(), 1);
+
+    // Declined elsewhere (as the service's timeout would): the cell's
+    // "rejected" closes it.
+    wisp::app::decline_firmware(*h->app);
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
 }

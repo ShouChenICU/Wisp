@@ -17,7 +17,6 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/ui/strings.hpp"
@@ -31,12 +30,10 @@ namespace {
 
 constexpr const char* kTag = "system";
 constexpr uint32_t kUiRefreshMs = 100;
-// How often the refresh timer re-reads the network services (and the
-// pending factory-reset and firmware requests) even without an event: the
-// bus drops its oldest events when full, and a lost net.ap.state,
-// net.pairing.code, system.factory_reset or system.firmware must not leave
-// a card up (or missing) for good.
-// The reads are a few short lock-protected copies and an atomic.
+// How often the refresh timer re-reads the network services and the
+// pending factory-reset and firmware requests besides the cells'
+// callbacks. The reads are a few short lock-protected copies and an
+// atomic.
 constexpr uint64_t kNetResyncMs = 1000;
 
 }  // namespace
@@ -86,16 +83,25 @@ void SystemDuties::start() {
     if (PowerManager* pm = app_.power_manager()) {
         pm->set_power_key_owned(true);
     }
-    settings_sub_ = app_.bus().subscribe(core::topics::kSystemSettings,
-                                         [this](const core::Event& e) { on_settings_event(e); });
-    net_sub_ = app_.bus().subscribe("net.", [this](const core::Event& e) { on_net_event(e); });
-    reset_sub_ = app_.bus().subscribe(core::topics::kSystemFactoryReset,
-                                      [this](const core::Event& e) { on_reset_event(e); });
-    fw_sub_ = app_.bus().subscribe(core::topics::kSystemFirmware,
-                                   [this](const core::Event& e) { on_firmware_event(e); });
+    // On the UI dispatcher: each callback runs here, on the UI thread, and
+    // first with the cell's current value. The calls below still show what
+    // was announced before (networking starts first) at once, before the
+    // first callback runs; the callbacks then find nothing new.
+    settings_sub_ = app_.system_settings().cell().subscribe(
+        [this](const core::SystemSettingsValues&) { sync_system_language(); }, &ui_);
+    if (net::WifiService* wifi = app_.wifi()) {
+        wifi_sub_ =
+            wifi->wifi_cell().subscribe([this](const net::WifiSnapshot&) { sync_wifi(); }, &ui_);
+        ap_sub_ = wifi->ap_cell().subscribe([this](const net::ApSnapshot&) { sync_wifi(); }, &ui_);
+    }
+    if (net::PairingService* pairing = app_.pairing()) {
+        pairing_sub_ = pairing->pairing_cell().subscribe(
+            [this](const net::PairingSnapshot&) { sync_pairing(); }, &ui_);
+    }
+    reset_sub_ = reset_status(app_).subscribe([this](const ResetStatus&) { sync_reset(); }, &ui_);
+    fw_sub_ = firmware_progress(app_).subscribe(
+        [this](const core::FirmwareProgress& p) { on_firmware_progress(p); }, &ui_);
 
-    // Anything announced before the subscriptions above (networking starts
-    // first).
     sync_system_language();
     sync_wifi();
     sync_pairing();
@@ -116,15 +122,16 @@ void SystemDuties::start() {
 
 void SystemDuties::stop() {
     if (!alive_) return;
-    // Each handler is guaranteed not to run again once its unsubscribe
-    // returns (EventBus::unsubscribe()); whatever they already posted
-    // finds alive_ cleared below.
-    for (core::SubscriptionId* sub :
-         {&button_sub_, &settings_sub_, &net_sub_, &reset_sub_, &fw_sub_}) {
-        if (*sub != 0) {
-            app_.bus().unsubscribe(*sub);
-            *sub = 0;
-        }
+    // No handler runs again once its release returns (here on the UI
+    // thread a cell callback's release returns at once); whatever the
+    // power-key handler already posted finds alive_ cleared below.
+    if (button_sub_ != 0) {
+        app_.bus().unsubscribe(button_sub_);
+        button_sub_ = 0;
+    }
+    for (core::CellSubscription* sub :
+         {&settings_sub_, &wifi_sub_, &ap_sub_, &pairing_sub_, &reset_sub_, &fw_sub_}) {
+        sub->reset();
     }
     if (perf_timer_) {
         perf_timer_->stop();
@@ -216,57 +223,22 @@ void SystemDuties::on_button_event(const core::Event& e) {
     }
 }
 
-void SystemDuties::on_settings_event(const core::Event& e) {
-    if (e.payload.find("language") == e.payload.end()) {
-        return;
-    }
-    // The language itself is read back from SystemSettings on the UI
-    // thread rather than taken from the payload, so a stale event queued
-    // behind a newer change can never switch the screen back. If this
-    // post is dropped, the refresh timer's sync_system_language() still
-    // catches the change.
-    if (!post([this] { sync_system_language(); })) {
-        WLOG_W(kTag, "post(language change) dropped (post queue full)");
-    }
-}
-
-void SystemDuties::on_net_event(const core::Event& e) {
-    bool posted = true;
-    if (e.topic == core::topics::kNetWifiState || e.topic == core::topics::kNetApState) {
-        posted = post([this] { sync_wifi(); });
-    } else if (e.topic == core::topics::kNetPairingCode) {
-        posted = post([this] { sync_pairing(); });
-    }
-    if (!posted) {
-        WLOG_W(kTag, "post(%s) dropped (post queue full)", e.topic.c_str());
-    }
-}
-
-void SystemDuties::on_reset_event(const core::Event& e) {
-    auto it = e.payload.find("state");
-    if (it == e.payload.end() || it->second.type() != Value::Type::String ||
-        it->second.as_string() != "requested") {
-        return;
-    }
-    // The pending flag is taken on the UI thread, not here: if this post
-    // is dropped, the flag is still set for the periodic resync.
-    if (!post([this] { sync_reset(); })) {
-        WLOG_W(kTag, "post(factory reset dialog) dropped (post queue full)");
-    }
-}
-
-void SystemDuties::on_firmware_event(const core::Event&) {
-    // The state is re-read on the UI thread; a dropped post is made up for
-    // by the periodic resync.
-    if (!post([this] { sync_firmware(); })) {
-        WLOG_W(kTag, "post(firmware dialog) dropped (post queue full)");
-    }
+void SystemDuties::on_firmware_progress(const core::FirmwareProgress& progress) {
+    // The service moves this cell to "received" just before it raises the
+    // request flag that sync_firmware() takes, so a call running in between
+    // would find no flag and leave the dialog to the resync: "received"
+    // opens it itself. show_firmware_dialog() shows only what
+    // pending_firmware() still holds, once (fw_box_); the flag, taken
+    // later, then finds the dialog open or the image answered (an answer
+    // clears it).
+    if (progress.phase == core::FirmwareProgress::Phase::Received) show_firmware_dialog();
+    sync_firmware();
 }
 
 void SystemDuties::refresh_timer_cb(lv_timer_t* timer) {
     auto* self = static_cast<SystemDuties*>(lv_timer_get_user_data(timer));
-    // The fallback for a lost system.settings event: one atomic load per
-    // tick while nothing changes.
+    // Besides the settings cell's callback: one atomic load per tick while
+    // nothing changes.
     self->sync_system_language();
     const uint64_t now = os::now_ms();
     if (now - self->last_net_resync_ms_ >= kNetResyncMs) {

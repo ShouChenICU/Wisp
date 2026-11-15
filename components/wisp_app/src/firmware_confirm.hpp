@@ -6,8 +6,10 @@
 //
 // Flow: once an image is written and verified, the service calls
 // request_firmware_confirm(), which marks the request pending; the
-// system duties (system_duties.hpp) take it (take_firmware_request(), on the
-// system.firmware "received" event and on its periodic resync) and shows
+// system duties (system_duties.hpp) show it when the progress cell
+// (firmware_progress()) turns "received" and take it
+// (take_firmware_request(), on every move of that cell and on their
+// periodic resync), showing
 // "<current> → <new>" with Yes/No. "Yes" runs start_firmware_install(),
 // which confirms on a one-shot "wisp.fwup" task -- never on the UI thread,
 // as the platform re-verifies the image before switching the boot slot --
@@ -32,6 +34,12 @@ bool take_firmware_request(App& app);
 
 // What awaits the user's answer, if anything. Any thread.
 std::optional<core::FirmwarePending> pending_firmware(App& app);
+
+// The firmware service's progress cell (FirmwareUpdateService::
+// progress_cell()). Only between App::start() and App::stop(), which build
+// and destroy the service: followers release their subscription before
+// App::stop() resets it. Any thread.
+const core::StateCell<core::FirmwareProgress>& firmware_progress(App& app);
 
 // Confirms the pending image on the "wisp.fwup" task. True when the task
 // runs; false (the image is declined) when it cannot start. Any thread.
