@@ -310,6 +310,13 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator an
 - NOT RUN: a factory reset on the device ends with the settings at their defaults and the device rebooting (the settings cell is reseeded after the wipe job returns).
 - NOT RUN: the firmware for both boards has not been built on this branch; the ESP-side code was compiled on the host only where it is shared.
 
+## State cells beside the events parked review findings
+
+- Parked: `exit()`/`close()` of a scene can return before its slot leaves the background list: `close_slot()` answers `done` on the worker before the scene task erases the slot (`erase_slot()`), so a caller that reads `background_scenes()` or the scenes overview right after can still see the scene. Likely cause of the load-flaky `SceneBackground.ExitClosesFromAnyState`.
+- For the plan that moves subscribers onto the cells: once something follows the settings cell, the reseed after a factory-reset wipe becomes visible: the cell jumps to the defaults just before the reboot, so the UI language flips to the default and PowerManager adopts the default timeouts in those moments. Filter on the reset phase (`reset_status()` at `done`) or state the behaviour.
+- For the plan that moves subscribers onto the cells: dev-mode file edits and a card being inserted or removed do not move the scenes overview's `catalog`, so the self-check screen's periodic resync of the scene list cannot be dropped on `catalog` alone.
+- No test pins the `agent.state` payload for `waiting_confirm`.
+
 ## CI speed
 
 - `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.

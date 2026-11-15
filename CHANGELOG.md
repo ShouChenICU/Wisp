@@ -26,6 +26,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - A scene, or a `lua.run` script, may have at most 16 `wisp.http`, `wisp.http.download` and `wisp.files` calls waiting for results (`kMaxCallsInFlight`); one more raises the Lua error "too many calls waiting for results (at most 16)", which `pcall` catches, and a place frees once its callback has run. An entry file that starts more than 16 at load fails the install check.
 - Downloads run on their own worker (`wisp.shttp.dl`): a download that streams for minutes no longer holds up a scene's other requests or the agent's `http.fetch`. At most two downloads wait behind the one running; a download and an ordinary request of one scene may now complete in either order.
 - `scene.rollback` returns to the version from before the agent's turn: within one turn only a scene's first install keeps the installed version as the previous one, so two installs and an "undo" no longer land on the turn's own first attempt.
+- Internal: components keep the state others follow in state cells beside the unchanged events (the admin WebSocket and the scenes see the same topics, payloads and order). The simulator's `debug clock-advance` answers `clock-advance=no time sync` when the time sync service is not running, and in-process subscribers now see component names (`power_monitor`, `wifi_service`, `storage_manager`) instead of device ids as the source of mirrored events.
 
 ### Fixes
 
