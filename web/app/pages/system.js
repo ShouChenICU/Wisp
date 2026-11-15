@@ -165,7 +165,12 @@ export function SystemPage() {
   async function loadSettings() {
     try {
       const [s, sc] = await Promise.all([api('GET', '/settings'), api('GET', '/settings/schema')]);
-      if (!Array.isArray(sc?.keys)) throw Object.assign(new Error('no settings schema'), { code: 'unknown' });
+      // The cards read the spec of every key they place; a schema without
+      // one of them is a failed load, not a page that cannot render.
+      const names = new Set(Array.isArray(sc?.keys) ? sc.keys.map((k) => k?.name) : []);
+      if (![...PLACED].every((n) => names.has(n))) {
+        throw Object.assign(new Error('incomplete settings schema'), { code: 'unknown' });
+      }
       if (!alive.current) return;
       setSchema(sc);
       setSettings(s);
