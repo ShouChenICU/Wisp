@@ -460,6 +460,101 @@ TEST(AppScenes, SelfCheckListsNothingMoreOnceAListingIsShown) {
     EXPECT_EQ(b.rows(), "No scenes installed\n");
 }
 
+// While the listing a catalog move asked for cannot finish (the worker is
+// held), the diagnostics submit no second one: not on the refresh tick,
+// and not for a newer catalog move, which waits for the answer in
+// flight. Once the worker runs, the list shows what is installed.
+TEST(AppScenes, SelfCheckSubmitsOneListingWhileOneIsInFlight) {
+    Booted b;
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    ASSERT_TRUE(worker->submit([held] { held.wait(); }));
+    // Two other periodic askers queue one request each within two seconds
+    // and ask no more while it is unanswered: the diagnostics' storage
+    // measurement (1 s) and App's storage refresh (2 s, on wisp.fs when
+    // there is no card worker). Let them, so they are not counted.
+    const size_t base = worker->pending();
+    ASSERT_TRUE(wait_until([&] { return worker->pending() >= base + 2; }, 4000));
+    const size_t before = worker->pending();
+
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    rt->note_catalog_changed();
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    EXPECT_EQ(worker->pending(), before + 1);
+    rt->note_catalog_changed();
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    // Several retry periods of refresh ticks: nothing more is submitted.
+    EXPECT_FALSE(wait_until([&] { return worker->pending() > before + 1; }, 2500));
+
+    gate.set_value();
+    ASSERT_TRUE(worker->drain(3000));
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n", 5000)) << b.rows();
+}
+
+// An answer to a listing asked for before a newer catalog move is not
+// shown, and does not settle that move: the first listing runs before
+// the package lands (a worker job between the two), the newer move asks
+// again, and the list ends showing the package.
+TEST(AppScenes, SelfCheckDropsTheAnswerOfASupersededListing) {
+    Booted b;
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    ASSERT_TRUE(worker->submit([held] { held.wait(); }));
+    rt->note_catalog_changed();
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    // Queued behind that listing: the package lands after it has listed.
+    const std::string root = b.h.root;
+    ASSERT_TRUE(worker->submit([root] {
+        put_scene(root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    }));
+    rt->note_catalog_changed();
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+
+    gate.set_value();
+    ASSERT_TRUE(worker->drain(3000));
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n", 5000)) << b.rows();
+}
+
+// A listing the worker took but that never answers (here the code root
+// cannot be read, so list() fails) is asked for again, but only once it
+// is older than the in-flight bound (10 s), not on the 1 s retry period.
+// Wall time: the bound is a constant of the screen and no existing seam
+// shortens it.
+TEST(AppScenes, SelfCheckAsksAgainForAListingThatNeverAnswered) {
+    Booted b;
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    const fs::path code_root = fs::path(b.h.root) / "scenes";
+    fs::permissions(code_root, fs::perms::none);
+    rt->note_catalog_changed();
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    ASSERT_TRUE(worker->drain(3000));
+    fs::permissions(code_root, fs::perms::owner_all);
+
+    EXPECT_FALSE(b.wait_rows("时钟|1.0.0\n", 3000)) << b.rows();
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n", 12000)) << b.rows();
+}
+
 // Every row is a tap target at least 48 px tall, the whole row clickable,
 // with its name and state centred vertically in it.
 TEST(AppScenes, RowsAreTallEnoughToTap) {

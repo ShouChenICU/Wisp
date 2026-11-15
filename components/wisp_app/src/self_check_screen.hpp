@@ -129,14 +129,16 @@ private:
     // UI thread: the storage card and the live SD row from `status`.
     void show_storage(const core::StorageStatus& status);
     // UI thread: the scene list is needed afresh, at build and on each
-    // move of the overview's catalog; asks for it (ask_scene_list()) and
-    // owes it until an answer to this or a later ask is shown.
+    // move of the overview's catalog; asks for it (ask_scene_list()) unless
+    // an ask is in flight, and owes it until an answer to an ask made
+    // since is shown.
     void request_scene_list();
     // UI thread: asks the storage worker for the scene list; the "Scenes"
     // card takes it on the UI thread if no newer need came meanwhile.
     void ask_scene_list();
     // UI thread, on the refresh tick: asks again for a scene list that is
-    // owed (see scene_list_owed_), no more often than kSceneListRetryMs.
+    // owed (see scene_list_owed_): kSceneListRetryMs after a refused ask,
+    // kSceneListLostMs after one the worker took.
     void retry_scene_list(uint64_t now);
     // Any thread: lets the sampler drop the IMU while a scene is in front
     // (this screen is covered) and take it again once none is.
@@ -206,12 +208,16 @@ private:
     // failed listing and an answer dropped by a full UI queue all leave it
     // set, and nothing else would list again until the catalog moves.
     // scene_list_gen_ counts the needs: an answer to an ask made before
-    // the latest need is not taken, while the retries of one need settle
-    // it whichever answers first (a listing slower than the retry period
-    // still ends it). last_scene_list_ms_ is os::now_ms() at the latest
-    // ask. UI thread only.
+    // the latest need is not shown, and asks again. scene_list_ask_
+    // numbers the asks; scene_list_in_flight_ says whether the worker took
+    // the latest and its answer has not come, which holds back a newer
+    // need's ask and the 1 s retry (see kSceneListLostMs).
+    // last_scene_list_ms_ is os::now_ms() at the latest ask. UI thread
+    // only.
     bool scene_list_owed_ = false;
+    bool scene_list_in_flight_ = false;
     uint32_t scene_list_gen_ = 0;
+    uint32_t scene_list_ask_ = 0;
     uint64_t last_scene_list_ms_ = 0;
 
     SceneWiring* scenes_;
