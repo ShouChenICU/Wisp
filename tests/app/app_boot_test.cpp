@@ -1052,3 +1052,58 @@ TEST(AppBoot, NotificationVolumeFollowsStoredSettingsFlooded) {
     EXPECT_NEAR(static_cast<double>(at10) / at100, 0.1, 0.1 * 0.05);
     flood.release();
 }
+
+// App::stop() releases every state-cell subscription and every slot on
+// wisp.bus, with the hardware diagnostics and the status panel open (their
+// subscribers are released on other paths than the shell's own), and a
+// second start() builds the same set again. The UI runtime is destroyed in
+// stop(), so its attached() cannot be read afterwards: ~UiRuntime reports
+// a UI-dispatched subscription left over through dispatch_misuse(), which
+// aborts this test.
+TEST(AppBoot, StopReleasesEverySubscription) {
+    UiNetOptions opts = diag_opts();
+    opts.saved = {{"Home", "password1"}};
+    opts.with_power = true;
+    opts.with_sd = true;
+    opts.with_sntp = true;
+    opts.with_firmware = true;
+    opts.with_server = true;
+    opts.audio_out = std::make_shared<wisp::test::audio::FakeAudioOut>();
+    opts.extra_devices.push_back(std::make_shared<wisp::test::audio::FakeAudioIn>());
+    opts.extra_devices.push_back(std::make_shared<FakeButton>(
+        "button.vol_down", wisp::Properties{{"role", wisp::Value("talk")}}));
+    UiNetHarness h(opts);
+    wisp::core::EventBus& bus = h.app->bus();
+
+    // The counts once start() has returned and the first deliveries ran.
+    auto started = [&] {
+        EXPECT_TRUE(bus.wait_idle(2000));
+        return std::pair{bus.cell_subscriptions(), bus.attached()};
+    };
+
+    ASSERT_TRUE(h.app->start());
+    ASSERT_NE(h.app->ui(), nullptr);
+    ASSERT_NE(h.app->scenes(), nullptr);
+    ASSERT_NE(h.app->conversation(), nullptr);
+    ASSERT_NE(h.app->time_sync(), nullptr);
+    const auto first = started();
+    EXPECT_GT(first.first, 0u);
+
+    ASSERT_TRUE(h.open_diagnostics());
+    run_on_ui_blocking(h.app->ui(), [&] { h.app->system_layer()->open_panel(); });
+    bool panel = false;
+    run_on_ui_blocking(h.app->ui(), [&] { panel = h.app->system_layer()->panel_open(); });
+    ASSERT_TRUE(panel);
+    // The diagnostics' own subscriptions are on top of the shell's.
+    EXPECT_GT(bus.cell_subscriptions(), first.first);
+
+    h.app->stop();
+    EXPECT_EQ(bus.cell_subscriptions(), 0u);
+    EXPECT_EQ(bus.attached(), 0u);
+
+    ASSERT_TRUE(h.app->start());
+    EXPECT_EQ(started(), first);
+    h.app->stop();
+    EXPECT_EQ(bus.cell_subscriptions(), 0u);
+    EXPECT_EQ(bus.attached(), 0u);
+}
