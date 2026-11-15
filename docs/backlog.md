@@ -301,6 +301,15 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulat
 - For the plan that moves subscribers onto the cells: the factory-reset status cell (`reset_status()`) keeps its phase and `seq` across `App::stop()`/`start()`, as `reset_pending` does; its first subscriber needs it reset to idle in `stop()` (an `update()` keeping `seq`; the mirror publishes nothing for idle), or a dialog would reopen for the last run's request.
 - For the plan that moves subscribers onto the cells: the power supply cell changes on every battery-percent step (up to once a second), so a subscriber that only follows charging or low filters in its callback, or the cell gets a coarser twin; after a failed read the cell keeps the last good supply while `PowerMonitor::last_status()` is empty, so the cell alone does not show that the reading is stale; on a boot that is already low a subscriber may briefly see the first percent with `low` still false before the next delivery.
 
+## State cells beside the events: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator and unit tests only so far.
+
+- NOT RUN: `mem` at idle and in the worst case of AGENTS.md section 5 on both boards: internal free and largest block against `ram_budget.hpp`; this plan adds 14 cells, about 2.5 KB of internal RAM (14 locks of about 100 bytes plus about 1.1 KB of cell bodies in the 12 internally allocated owners), not the 1.4 KB the spec counted.
+- NOT RUN: the admin page's Overview, Network and System pages follow Wi-Fi, the hotspot, the SD card, charging, a time sync, a factory-reset request and a firmware upload exactly as before.
+- NOT RUN: a factory reset on the device ends with the settings at their defaults and the device rebooting (the settings cell is reseeded after the wipe job returns).
+- NOT RUN: the firmware for both boards has not been built on this branch; the ESP-side code was compiled on the host only where it is shared.
+
 ## CI speed
 
 - `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.
