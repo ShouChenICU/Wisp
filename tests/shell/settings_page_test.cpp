@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <fstream>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -60,7 +61,9 @@ protected:
             }
             writes.push_back(std::move(m));
         };
-        d.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
+        d.submit_io = [this](std::function<void()> job) {
+            return !queue_full && worker.submit(std::move(job));
+        };
         d.wifi_status = [] { return std::string("已连接 WispLab  10.0.0.7"); };
         d.admin_url = [] { return std::string("http://10.0.0.7:8900"); };
         d.firmware_version = [] { return std::string("0.4.2"); };
@@ -154,6 +157,8 @@ protected:
     std::vector<std::map<std::string, Value>> writes;
     bool all_on_worker = true;
     std::atomic<bool> refuse{false};
+    // The storage queue takes no job.
+    std::atomic<bool> queue_full{false};
     std::atomic<int> wifi_setups{0};
     std::atomic<int> diag_opens{0};
     std::atomic<int> restarts{0}, power_offs{0};
@@ -678,25 +683,72 @@ TEST_F(SettingsPageTest, ChangeWhileOpenIsShown) {
     EXPECT_TRUE(written().empty());
 }
 
-// A write the store refuses shows until the next delivery, which brings
-// the stored value back.
+// A write the store refuses shows until it has run; then the row is back
+// at the stored value, with no other change needed.
 TEST_F(SettingsPageTest, RefusedWriteShowsTheStoredValue) {
     boot();
     refuse = true;
+    // Held, so the row is seen while the write is in flight.
+    std::promise<void> gate;
+    ASSERT_TRUE(worker.submit([f = gate.get_future().share()] { f.wait(); }));
     tap_row(Row::ScreenOff);
     ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
     tap_choice(6);
     ASSERT_TRUE(back_on_settings());
-    ASSERT_EQ(written().size(), 1u);
-    settle();
     EXPECT_EQ(value_of(Row::ScreenOff), "从不");
-    // Another setting moves; screen_off_s is still what was stored.
-    wisp::core::SettingsSnapshot v = cell().get();
-    v.notify_vol = 70;
-    cell().set(v);
+    gate.set_value();
+    ASSERT_EQ(written().size(), 1u);
+    // The write's completion was posted before written()'s drain returned.
     settle();
     EXPECT_EQ(value_of(Row::ScreenOff), "1 分钟");
-    harness->on_ui([&] { EXPECT_EQ(text_of(page()->notify_value()), "70%"); });
+    harness->on_ui([&] { EXPECT_EQ(page()->values().screen_off_s, 60); });
+}
+
+// A write still in flight keeps its row when an earlier write's delivery
+// (a whole snapshot, older for that row) arrives.
+TEST_F(SettingsPageTest, EarlierDeliveryLeavesALaterWriteAlone) {
+    boot();
+    std::promise<void> first, second;
+    ASSERT_TRUE(worker.submit([f = first.get_future().share()] { f.wait(); }));
+    harness->on_ui([&] {
+        lv_slider_set_value(page()->volume(), 30, LV_ANIM_OFF);
+        lv_obj_send_event(page()->volume(), LV_EVENT_RELEASED, nullptr);
+    });
+    ASSERT_TRUE(worker.submit([f = second.get_future().share()] { f.wait(); }));
+    harness->on_ui([&] {
+        // Spoken replies off: tts_mute on.
+        lv_obj_remove_state(page()->speak(), LV_STATE_CHECKED);
+        lv_obj_send_event(page()->speak(), LV_EVENT_VALUE_CHANGED, nullptr);
+    });
+    first.set_value();
+    // The volume is stored and delivered; tts_mute is not stored yet.
+    ASSERT_TRUE(wisp::test::wait_until([&] { return cell().get().volume == 30; }, 2000));
+    settle();
+    harness->on_ui([&] {
+        EXPECT_FALSE(lv_obj_has_state(page()->speak(), LV_STATE_CHECKED));
+        EXPECT_TRUE(page()->values().tts_mute);
+        EXPECT_EQ(lv_slider_get_value(page()->volume()), 30);
+    });
+    EXPECT_FALSE(cell().get().tts_mute);
+    second.set_value();
+    ASSERT_EQ(written().size(), 2u);
+    settle();
+    harness->on_ui([&] {
+        EXPECT_FALSE(lv_obj_has_state(page()->speak(), LV_STATE_CHECKED));
+        EXPECT_EQ(page()->values(), cell().get());
+    });
+}
+
+// A write the storage queue does not take puts the row back at once.
+TEST_F(SettingsPageTest, WriteNotQueuedPutsTheRowBack) {
+    boot();
+    queue_full = true;
+    tap_row(Row::ScreenOff);
+    ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
+    tap_choice(6);
+    ASSERT_TRUE(back_on_settings());
+    EXPECT_EQ(value_of(Row::ScreenOff), "1 分钟");
+    EXPECT_TRUE(written().empty());
 }
 
 // Leaving the page releases its subscription; a change after that runs no

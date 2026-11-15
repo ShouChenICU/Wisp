@@ -245,12 +245,15 @@ std::string SettingsPage::duration_text(int seconds) {
 
 SettingsPage::SettingsPage(SettingsDeps deps) : deps_(std::move(deps)) {
     if (deps_.settings != nullptr) now_ = deps_.settings->get();
+    writes_->page = this;
 }
 
 SettingsPage::~SettingsPage() {
     // On the UI thread, the subscription's dispatcher: no delivery is under
     // way, and none comes after this.
     settings_sub_.reset();
+    // A completion still queued finds no page.
+    writes_->page = nullptr;
     if (timer_ != nullptr) lv_timer_delete(timer_);
     if (confirm_ != nullptr && deps_.layer != nullptr) deps_.layer->close_confirm(confirm_);
 }
@@ -414,13 +417,36 @@ void SettingsPage::build(lv_obj_t* list) {
 }
 
 void SettingsPage::follow(const core::SettingsSnapshot& v) {
-    if (v == now_) return;
-    now_ = v;
-    show_values();
+    const core::SettingsSnapshot next = merged(v);
+    if (next == now_) return;
+    const core::SettingsSnapshot before = now_;
+    now_ = next;
+    show_values(&before);
 }
 
-void SettingsPage::show_values() {
+bool SettingsPage::in_flight(SettingId id) const {
+    const size_t i = static_cast<size_t>(id);
+    return issued_[i] != writes_->done[i].load(std::memory_order_acquire);
+}
+
+core::SettingsSnapshot SettingsPage::merged(core::SettingsSnapshot v) const {
     for (const SettingRow& row : setting_rows()) {
+        if (in_flight(row.id))
+            (void)core::assign_setting(v, row.id, core::setting_value(now_, row.id));
+    }
+    return v;
+}
+
+void SettingsPage::resync() {
+    writes_->finished.store(false);
+    if (deps_.settings != nullptr) follow(deps_.settings->get());
+}
+
+void SettingsPage::show_values(const core::SettingsSnapshot* before) {
+    for (const SettingRow& row : setting_rows()) {
+        if (before != nullptr &&
+            core::setting_value(*before, row.id) == core::setting_value(now_, row.id))
+            continue;
         lv_obj_t* control = this->control(row.id);
         const Value v = core::setting_value(now_, row.id);
         switch (row.widget) {
@@ -450,6 +476,8 @@ void SettingsPage::show_values() {
 }
 
 void SettingsPage::refresh() {
+    // A write whose completion post was lost (or that had no post).
+    if (writes_->finished.load()) resync();
     for (auto kind : core::kModelKinds) {
         Row r = kind == core::ModelKind::Llm   ? Row::ModelLlm
                 : kind == core::ModelKind::Asr ? Row::ModelAsr
@@ -494,13 +522,42 @@ void SettingsPage::open(SettingId id) {
 void SettingsPage::write(std::map<std::string, Value> changes) {
     if (!deps_.set_settings) return;
     if (!deps_.submit_io) {
+        // Stored (or refused) by the time it returns.
         deps_.set_settings(std::move(changes));
+        resync();
         return;
     }
-    if (!deps_.submit_io([set = deps_.set_settings, changes = std::move(changes)]() mutable {
-            set(std::move(changes));
-        })) {
+    uint32_t ids = 0;
+    static_assert(static_cast<size_t>(SettingId::Count) <= 32, "ids is a 32-bit mask");
+    for (const auto& [key, value] : changes) {
+        if (const SettingSpec* spec = core::find_setting(key)) {
+            const SettingId id = core::setting_id_of(*spec);
+            ids |= uint32_t{1} << static_cast<unsigned>(id);
+            ++issued_[static_cast<size_t>(id)];
+        }
+    }
+    auto done = [ids](Writes& w) {
+        for (size_t i = 0; i < w.done.size(); ++i) {
+            if ((ids >> i) & 1) w.done[i].fetch_add(1, std::memory_order_release);
+        }
+    };
+    const bool queued = deps_.submit_io([set = deps_.set_settings, changes = std::move(changes),
+                                         writes = writes_, post = deps_.post, done]() mutable {
+        set(std::move(changes));
+        done(*writes);
+        writes->finished.store(true);
+        // Back on the UI thread; if this post is lost the refresh timer
+        // sees `finished`.
+        if (post) {
+            (void)post([writes] {
+                if (writes->page != nullptr) writes->page->resync();
+            });
+        }
+    });
+    if (!queued) {
         WLOG_W(kTag, "setting not saved (storage queue full)");
+        done(*writes_);
+        resync();
     }
 }
 

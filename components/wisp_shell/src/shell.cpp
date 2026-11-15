@@ -466,6 +466,8 @@ lv_obj_t* Shell::build_page(Page p) {
                 .power_off = posted(deps_.power_off),
                 .layer = &deps_.layer,
                 .submit_io = deps_.submit_io,
+                .post = [ui =
+                             &deps_.ui](std::function<void()> f) { return ui->post(std::move(f)); },
                 .open_model =
                     [this, alive = alive_](core::ModelKind kind) {
                         auto mode = kind == core::ModelKind::Llm   ? ConnectionKind::Llm

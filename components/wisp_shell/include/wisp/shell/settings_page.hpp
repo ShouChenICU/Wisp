@@ -35,16 +35,21 @@
 // SettingsDeps::submit_io job: SystemSettings::set() reaches flash. The
 // page follows the settings cell (SettingsDeps::settings) from build() until
 // it is destroyed: each delivery replaces what the page takes the settings
-// to be and redraws every setting control, so a change made by voice or on
-// the admin page shows at once. What the page wrote shows at once too and
-// stays until the next delivery replaces it: a refused write is corrected
-// by the next change of any setting. Two things a delivery leaves alone: a
-// slider the finger holds (its release writes the finger's value) and an
-// open choice page (built from the value when it opened; a pick writes the
-// pick). Without a cell the page shows the table's defaults and follows
-// nothing. The Wi-Fi status and the address are read again every
-// kRefreshMs. A language change rebuilds the page (the shell follows
-// ui::lang()).
+// to be and redraws the controls whose value moved, so a change made by
+// voice or on the admin page shows at once. What the page writes shows at
+// once too, and that setting keeps the page's value while its write is in
+// flight (a delivery of an earlier write, a whole snapshot, would otherwise
+// flip it back for a moment). Once the write has run (stored, refused or
+// failed) the job posts its completion (SettingsDeps::post) and the page
+// takes the cell's value again, so a write that did not store puts its row
+// back; a write the storage queue does not take puts it back at once. A
+// completion whose post is lost is picked up by the kRefreshMs timer.
+// Two things a delivery leaves alone: a slider the finger holds (its
+// release writes the finger's value) and an open choice page (built from
+// the value when it opened; a pick writes the pick). Without a cell the
+// page shows the table's defaults, follows nothing and keeps what it wrote.
+// The Wi-Fi status and the address are read again every kRefreshMs. A
+// language change rebuilds the page (the shell follows ui::lang()).
 //
 // A confirm dialog still open goes with the page (closed unanswered), so
 // its answer never reaches a page that is gone.
@@ -52,6 +57,7 @@
 // Threading: everything on the UI thread, the destructor included.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -97,6 +103,10 @@ struct SettingsDeps {
     ui::SystemLayer* layer = nullptr;
     // The storage worker; empty: set_settings runs here.
     std::function<bool(std::function<void()>)> submit_io;
+    // Runs a function on the UI thread soon (UiRuntime::post()); false if
+    // it was not taken. A write's completion comes back through it. Empty:
+    // completions wait for the refresh timer.
+    std::function<bool(std::function<void()>)> post;
     std::function<void(core::ModelKind)> open_model;
     std::function<std::string(core::ModelKind)> model_name;
 };
@@ -220,11 +230,18 @@ private:
     void add_slider(lv_obj_t* card, core::SettingId id);
     void add_switch(lv_obj_t* card, const SettingRow& row);
     void add_value_row(lv_obj_t* card, Row r, const char* icon, ui::StrId name, bool opens);
-    // Puts now_ on every setting control; a slider the finger holds keeps
-    // the finger's value.
-    void show_values();
+    // Puts now_ on every setting control (with `before`: on those whose
+    // value differs from it); a slider the finger holds keeps the finger's
+    // value.
+    void show_values(const core::SettingsSnapshot* before = nullptr);
     // A delivery of the settings cell.
     void follow(const core::SettingsSnapshot& v);
+    // Takes the cell's value again (follow() of a fresh get()) and marks
+    // the finished writes as seen. No cell: nothing.
+    void resync();
+    // `v` with the settings whose writes are in flight at now_'s values.
+    core::SettingsSnapshot merged(core::SettingsSnapshot v) const;
+    bool in_flight(core::SettingId id) const;
     void open(core::SettingId id);
     void ask(Row r);
     void write(std::map<std::string, Value> changes);
@@ -239,6 +256,17 @@ private:
     lv_timer_t* timer_ = nullptr;
     lv_obj_t* confirm_ = nullptr;
     std::string shown_wifi_, shown_address_;
+    // Writes handed to the storage worker, per setting (UI thread), and
+    // what the worker's jobs share with the page: how many of them have
+    // run, per setting, and the page while it lives (UI thread only: the
+    // destructor clears it, the posted completion reads it).
+    struct Writes {
+        std::array<std::atomic<uint16_t>, static_cast<size_t>(core::SettingId::Count)> done{};
+        std::atomic<bool> finished{false};
+        SettingsPage* page = nullptr;
+    };
+    std::array<uint16_t, static_cast<size_t>(core::SettingId::Count)> issued_{};
+    std::shared_ptr<Writes> writes_ = std::make_shared<Writes>();
     core::CellSubscription settings_sub_;
 };
 
