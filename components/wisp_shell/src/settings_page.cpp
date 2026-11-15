@@ -416,12 +416,38 @@ void SettingsPage::build(lv_obj_t* list) {
     }
 }
 
+namespace {
+
+// Copies the field of `id` from `from` into `to`; true if it changed. Field
+// by field, so following the cell needs no snapshot copy on the UI stack
+// (the UI task has the smallest stack margin) and no allocation (the
+// HostList text stays a FixedString).
+bool take_setting(core::SettingsSnapshot& to, const core::SettingsSnapshot& from, SettingId id) {
+    switch (id) {
+#define WISP_SETTING_TAKE(Id, name, ...)        \
+    case SettingId::Id:                         \
+        if (to.name == from.name) return false; \
+        to.name = from.name;                    \
+        return true;
+        WISP_SETTINGS(WISP_SETTING_TAKE)
+#undef WISP_SETTING_TAKE
+        case SettingId::Count:
+            break;
+    }
+    return false;
+}
+
+}  // namespace
+
 void SettingsPage::follow(const core::SettingsSnapshot& v) {
-    const core::SettingsSnapshot next = merged(v);
-    if (next == now_) return;
-    const core::SettingsSnapshot before = now_;
-    now_ = next;
-    show_values(&before);
+    // A setting whose write is in flight keeps the page's value until the
+    // write finishes (resync()).
+    uint32_t changed = 0;
+    for (size_t i = 0; i < static_cast<size_t>(SettingId::Count); ++i) {
+        const auto id = static_cast<SettingId>(i);
+        if (!in_flight(id) && take_setting(now_, v, id)) changed |= uint32_t{1} << i;
+    }
+    if (changed != 0) show_values(changed);
 }
 
 bool SettingsPage::in_flight(SettingId id) const {
@@ -429,24 +455,14 @@ bool SettingsPage::in_flight(SettingId id) const {
     return issued_[i] != writes_->done[i].load(std::memory_order_acquire);
 }
 
-core::SettingsSnapshot SettingsPage::merged(core::SettingsSnapshot v) const {
-    for (const SettingRow& row : setting_rows()) {
-        if (in_flight(row.id))
-            (void)core::assign_setting(v, row.id, core::setting_value(now_, row.id));
-    }
-    return v;
-}
-
 void SettingsPage::resync() {
     writes_->finished.store(false);
     if (deps_.settings != nullptr) follow(deps_.settings->get());
 }
 
-void SettingsPage::show_values(const core::SettingsSnapshot* before) {
+void SettingsPage::show_values(uint32_t changed) {
     for (const SettingRow& row : setting_rows()) {
-        if (before != nullptr &&
-            core::setting_value(*before, row.id) == core::setting_value(now_, row.id))
-            continue;
+        if (((changed >> static_cast<unsigned>(row.id)) & 1) == 0) continue;
         lv_obj_t* control = this->control(row.id);
         const Value v = core::setting_value(now_, row.id);
         switch (row.widget) {

@@ -230,17 +230,16 @@ private:
     void add_slider(lv_obj_t* card, core::SettingId id);
     void add_switch(lv_obj_t* card, const SettingRow& row);
     void add_value_row(lv_obj_t* card, Row r, const char* icon, ui::StrId name, bool opens);
-    // Puts now_ on every setting control (with `before`: on those whose
-    // value differs from it); a slider the finger holds keeps the finger's
-    // value.
-    void show_values(const core::SettingsSnapshot* before = nullptr);
-    // A delivery of the settings cell.
+    // Puts now_ on the setting controls whose bit (1 << SettingId) is set in
+    // `changed` (by default all); a slider the finger holds keeps the
+    // finger's value.
+    void show_values(uint32_t changed = ~uint32_t{0});
+    // A delivery of the settings cell: takes it into now_ in place, except
+    // the settings whose writes are in flight, and redraws what changed.
     void follow(const core::SettingsSnapshot& v);
     // Takes the cell's value again (follow() of a fresh get()) and marks
     // the finished writes as seen. No cell: nothing.
     void resync();
-    // `v` with the settings whose writes are in flight at now_'s values.
-    core::SettingsSnapshot merged(core::SettingsSnapshot v) const;
     bool in_flight(core::SettingId id) const;
     void open(core::SettingId id);
     void ask(Row r);
