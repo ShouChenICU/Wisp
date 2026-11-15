@@ -6,7 +6,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 ### Features
 
-- The serial `mem` command ends with a line `bus dropped=<n> cell_subs=<n>`: events the bus dropped on overflow and live state-cell subscriptions.
+- The serial `mem` command prints a line `bus dropped=<n> cell_subs=<n>` (events the bus dropped on overflow and live state-cell subscriptions), then one line per edge inbox, `inbox <name> overflows=<n>` (`scene_lifecycle`, `power_key`, `talk_key`): key presses and scene lifecycle steps dropped because their consumer fell behind.
 - Add a Stop button right of the wisp on the home screen while a turn runs, with a 48 px touch target on every screen shape.
 - The home screen says why a turn did not finish (stopped, a limit reached, no model, a refused key, no network, a lost connection, a server error, a conversation too long) in one short line, with the admin address where the fix is there. The full explanation stays in the conversation.
 - `docs.read` returns long topics in pages the agent reads on with `next_offset`.
@@ -35,6 +35,12 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - `scene.rollback` returns to the version from before the agent's turn: within one turn only a scene's first install keeps the installed version as the previous one, so two installs and an "undo" no longer land on the turn's own first attempt.
 - Devices are found by role instead of fixed ids: a board names its devices as it likes and marks each one's purpose in caps `role` (`main`, `internal`/`removable` storage, the `power` and `talk` keys). `WISP_MANIFEST` gains caps `role` on every device that has one, caps `schema` on a self-describing device and the class `other` for a device with no typed interface; the admin device page shows them. A board that registers a device without its `main` role, or gives one key both the `power` and `talk` roles, gets a warning at boot.
 - Internal: components keep the state others follow in state cells beside the unchanged events (the admin WebSocket and the scenes see the same topics, payloads and order). The simulator's `debug clock-advance` answers `clock-advance=no time sync` when the time sync service is not running, and in-process subscribers now see component names (`power_monitor`, `wifi_service`, `storage_manager`) instead of device ids as the source of mirrored events.
+- The device no longer wakes up periodically to re-read state it already follows: gone are the power manager's settings read every minute, the system duties' network, pairing, factory-reset and firmware re-read every second, the 100 ms checks of the screen language and of the diagnostics' time zone, and the diagnostics' scene relist every 30 s. The diagnostics still read the signal strength and the saved networks once a second, which nothing else reports.
+- The screen keeps its language after a factory reset is confirmed, until the restart, instead of switching to the default language for a moment.
+- After a factory reset that failed, a new reset request from the admin page opens the confirmation dialog again.
+- A firmware "Yes" installs only the image its dialog showed: an image declined or timed out meanwhile and replaced by a new upload is not installed by a late tap; the new one asks on its own.
+- The hardware diagnostics' scene list follows an SD card being inserted or removed, and dev-mode edits, at once instead of within 30 s.
+- Internal: key presses and scene lifecycle steps reach their consumers through `ButtonService` listeners and edge inboxes instead of the event bus, which now has one subscriber on the device, the admin WebSocket. The `button.*` and `scene.state` events are still published unchanged.
 - Internal: the in-process `voice.state` event (not sent to the admin page) no longer carries the recording or speech `level` (read `VoiceService::level()`), and is published only when the voice state or its outcome changes, not for a repeated state.
 
 ### Fixes
@@ -45,10 +51,13 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - A brief Wi-Fi drop that recovers before the agent sees it no longer ends a running request; a link that stays dead still ends it through the stall check.
 - A low-battery notice left over from the last run is dismissed when the device boots while charging, and plugging in USB power while already charging no longer dismisses it (only charging starting does).
 - Screens and services no longer stay out of date after a busy moment drops an event: the status panel, the hotspot and pairing cards, hardware diagnostics, scenes' visibility in standby, the time zone, time format and language that scenes see, and reminders after the clock is set all follow the current state.
+- Key presses are no longer lost when the device is busy: the power key still turns the screen off and on and opens the power-off dialog, releasing the talk key still ends the recording, and any key still wakes the screen from standby, however full the event queue and the UI's queue are. A short press of the talk key handled late is no longer taken for a hold.
+- A deleted scene always loses its notifications, its tools and its place in the scene list's order, even when the device is busy at that moment.
+- A failed settings save whose undo also failed no longer leaves screens and services showing values other than the ones stored.
 - A shell destroyed without being stopped no longer leaves its event subscriptions and conversation listeners behind.
 - Replacing a list's items no longer shows an empty list for a frame: the old rows stay on screen until the new ones arrive, and a tap on an old row in that moment does nothing.
 
-Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, the storage worker lanes and the state subscriber changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run", "Storage worker lanes: device checks not run" and "State cell subscribers: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run".
+Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, the storage worker lanes, the state subscriber changes and the key and scene edge changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run", "Storage worker lanes: device checks not run", "State cell subscribers: device checks not run" and "State cell edges and cleanup: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run".
 
 ## 0.5.2 — 2026-11-14
 

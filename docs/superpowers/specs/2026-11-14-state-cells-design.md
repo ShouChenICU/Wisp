@@ -299,7 +299,11 @@ Two uses in this phase:
    - TalkKey: inbox on `wisp.bus` (where its logic runs today); the hold is timed from the edge's timestamp instead of the dispatch time (`talk_key.cpp:63-68`).
    - SelfCheck's button test: listener with a plain post (a diagnostics display; a loss is harmless).
    `N = 8` per consumer. The `button.*` bus events stay as an observable mirror (no system consumer); phase I decides how scenes get key input.
+
+   > In the code: PowerManager's UI slot is a private counter cell (`StateCell<uint32_t>`, no mirror) that the listener increments; its follower on the UI dispatcher (`wisp.bus` without a screen) runs the activity callback, the undim and the wake, so the activity callback moves off the listener too. The talk key does not time the end of a hold from the edge: a late `up` ends the capture when it is handled. A short press stays a press however late it is handled: the listener stores the last `up`'s time and the hold timer starts no hold for a key already released; an `up` less than `kHoldStartMs` after its `down` drops a hold already begun; and when an overflow drops a press's `up`, the next `down` ends that press, dropping its hold when the two `down`s (or the stored `up`) show the press was short. Each listener pushes only the edges its consumer uses (the power key's `short`/`long`, the talk key's `down`/`up`).
 2. **Scene lifecycle.** `SceneRuntimeDeps::on_lifecycle` receives `SceneTransition{id, state}` for each state the runtime publishes, and SceneWiring adds its `deleted`. App feeds one inbox (`N = 32`, enough for restoring background scenes at boot) drained on `wisp.bus`, which runs today's handlers: recents `opened`/`forget` and `dismiss_source` (`app.cpp:287-304`), tool index refresh/remove (`agent_wiring.cpp:376-397`). Rejected: reconciling from the overview cell's `catalog` counter (reread every manifest and the notice list on each change): costs a full manifest walk per install and still cannot express "opened".
+
+   > In the code: the runtime and SceneWiring push through a mutex-guarded gate in App's `on_lifecycle`. The inbox is built before SceneWiring; `App::stop()` closes the gate and destroys the inbox right after the network stops and before the agent goes, so an edge after that (a delete still queued on `wisp.fs`) is dropped. All six states are carried, `stopped` and `background` included (an install reaches the tool index as `stopped`).
 
 Rejected for edges in general: a second, non-lossy bus lane (publishers would have to block or fail when it is full, and the publishers hold locks, section 3.2); synchronous listeners only (they would run consumer code, such as the talk key's microphone priming, on `wisp.button` and delay debouncing of the other keys).
 
@@ -373,9 +377,19 @@ inline constexpr Topic kAll[] = {
 
 Also deleted: `SystemSettings::revision()` and the `on_changed` constructor parameter (C8; the cell replaces both); `FirmwareUpdateService::Deps::publish` (the cell's mirror publishes). After this table the only device-side bus subscriber is `WsHub`.
 
+> In the code:
+> - SelfCheck keeps a 1 s read of the live network values no cell carries: the signal strength (an RSSI change alone moves no cell) and the saved networks (forgetting one that is not the current network moves no cell). The state the Wi-Fi and hotspot cells carry follows them at once.
+> - The scenes overview's `catalog` also moves on an SD card change (after SceneWiring's recount job marks the card's scenes) and on a dev-mode change the working directory's watcher reports; without that, deleting the 30 s relist would leave the diagnostics' list stale for those two cases. SelfCheck's build-time `follow_foreground()` and `request_scene_list()` stay: its overview follower acts only on a change from what it saw at subscription.
+> - The system duties hold the screen language while a confirmed factory reset runs and once it is `done`, so the reset's reseed of the settings cell to the defaults does not switch the screen before the restart; a failed or cancelled reset lets it follow again.
+> - "A confirmed reset is running" is App's `reset_running`, set before the `wisp.reset` task is spawned and cleared before `failed` is announced and when the task is joined (`factory_reset_running()`), so a failed reset lets a later request ask again; `App::stop()` moves the reset status cell back to idle, without an event, so the next start shows no request from the last run.
+> - A firmware "yes" is tied to the image the dialog showed (`FirmwarePending::upload`): an image declined or timed out meanwhile and replaced by a new upload is not installed by a late tap.
+> - Before PowerManager's Settings read went, `SystemSettings::set()`'s failure path reseeds the cell from storage when a batch's rollback fails, the one case that read had repaired (no event: the batch failed).
+
 ### 3.9 Diagnostics
 
-The serial `mem` command prints `bus dropped=<n>`, each inbox's `overflows`, and the number of live cell subscriptions. `dropped()` is otherwise never surfaced (section 1.1), so today nobody can tell whether drops happen on a device.
+The serial `mem` command prints `bus dropped=<n>`, each inbox's `overflows`, and the number of live cell subscriptions.
+
+> In the code: one line `bus dropped=<n> cell_subs=<n>`, then one line per inbox, `inbox <name> overflows=<n>` (`scene_lifecycle`, `power_key`, `talk_key`). `dropped()` is otherwise never surfaced (section 1.1), so today nobody can tell whether drops happen on a device.
 
 ## 4. Migration
 

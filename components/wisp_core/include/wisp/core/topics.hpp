@@ -14,10 +14,11 @@
 //   - Telemetry: like Notification, for counters and diagnostics.
 //   - InputEdge: the observable copy of edges whose consumers take them
 //     from an EdgeInbox, where every edge arrives.
-// The kinds describe where the state-cells migration ends; until each
-// owner and consumer has moved, today's code may still treat a topic as
-// it always has. scene.state is a Notification: no cell mirrors it (spec
-// 3.4: the scene overview cell and the lifecycle inbox serve consumers).
+// On the device every consumer follows the cell or takes the edges from
+// its inbox; the bus copies are for the admin console (where forwarded)
+// and an observable record.
+// scene.state is a Notification: no cell mirrors it (spec 3.4: the scene
+// overview cell and the lifecycle inbox serve consumers).
 //
 // `forwarded` says whether the admin WebSocket's "events" stream carries
 // the topic; admin::WsHub::forwards() decides that, and a test keeps the

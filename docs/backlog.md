@@ -291,7 +291,6 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulat
 - `WISP_PERF` on Home and in a scene: frame rate not below the baseline (the UI loop now checks an empty ready list once per iteration).
 - Deep standby for 10 minutes or more on both boards: light-sleep residency and wake counts against `docs/hardware/<board>.md` (the bus loop and the paused UI branch changed).
 - Factory reset and firmware confirm on the device: the admin page still shows `system.factory_reset` `done` and `system.firmware` `confirmed` before the reboot, now that `wait_idle()` also covers slots.
-- Parked for the later state-cell plans: an edge payload that carries a device id in a `FixedString<31>` must check `assign()`'s result, since ids are chosen by the board.
 - Parked: LeakSanitizer reports the glyph slot table in `a8_font.cpp` (kept for the whole process) in every UI test binary, so ASan runs of `ui_runtime_test` and `ui_cells_test` need `detect_leaks=0` or a suppression file.
 - Parked: `tools/check_topics.py` would report a dotted code identifier or file name (`` `wisp.fs` ``) in the first column of another table inside the "Event topics" section as a topic row; no such table exists there today.
 - Parked: no test fails if `UiRuntime`'s final drain after `stop()` were to run dispatch slots.
@@ -333,8 +332,21 @@ Notes for the next state-cell plan (removing the periodic compensations).
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
 - A standby and a wake handled inside one UI loop iteration coalesce to `Active` for the status shell, which then leaves the pull-down panel open across the blink. Power key presses are seconds apart, so this needs two posted jobs drained together.
 
+## State cell edges and cleanup: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-state-cells-4-edges-cleanup.md`. Simulator and unit tests only so far.
+
+- NOT RUN: the firmware for both boards has not been built on this branch (it now also contains the storage lanes and the device model part 1 from `main`); the ESP-side code was compiled on the host only where it is shared.
+- NOT RUN: `mem` at idle and in the worst case of AGENTS.md section 5 (STA+AP, two httpd, the WebSocket log stream, a TLS handshake, an OTA upload) on both boards: internal free and largest block against `ram_budget.hpp` (three inboxes add an `os::Mutex` each in internal RAM); the `wisp.bus`, `wisp_ui` and `wisp.button` stack high-water marks. Record them in `docs/hardware/<board>.md`.
+- NOT RUN: `WISP_PERF` during a spoken turn on Home and over a scene: the frame rate not below the baseline.
+- NOT RUN: the power key, the talk key and a button wake from standby and from deep standby, including during a voice turn and with a background scene busy; also a burst of power-key and talk-key presses in standby, then the `inbox ... overflows=` lines of `mem`.
+- NOT RUN: factory reset and firmware update from the web page: the dialog on the device, the page following the events, the restart.
+- NOT RUN: after a day of normal use, `mem`'s `bus dropped=` and every `inbox ... overflows=` line.
+
 ## State cell edges and cleanup parked review findings
 
+- `SelfCheckScreen.SamplerPausesInStandbyFlooded` proves the sampler's pause with real sleeps (1.1 s and 1.5 s) rather than a gate on the sampler's own clock reads.
+- `AdminFirmware.AcceptedVersionSurvivesAnImmediateAnswer` does not decide whether the decline lands before or after the route answers 202: making it deterministic needs a hook between the upload's end and the route's response.
 - After a settings batch whose rollback failed, the reseeded settings cell follows storage, but a brightness that reached storage that way is not applied to the panel and no `system.settings` event goes out, until the next stored batch or the reboot.
 
 ## Storage worker lanes: device checks not run
