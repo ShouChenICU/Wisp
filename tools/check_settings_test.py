@@ -94,6 +94,33 @@ class CheckSettingsTest(unittest.TestCase):
     def test_clean_tree_passes(self):
         self.assertEqual(self.code("int f() { return 3; }\n"), [])
 
+    def schema_error(self, header):
+        write(self.root, SCHEMA_HPP, header)
+        errors = check_settings.check(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertTrue(errors[0].startswith(SCHEMA_HPP + ":"), errors[0])
+        return errors[0]
+
+    def test_row_split_over_two_lines_is_an_error(self):
+        split = HEADER.replace('"audio",   "volume",       0,', '"audio",   \\\n    "volume", 0,')
+        self.assertNotEqual(split, HEADER)
+        self.schema_error(split)
+        with self.assertRaises(check_settings.SchemaError):
+            check_settings.load_rows(self.root)
+
+    def test_row_with_spaced_x_is_parsed_not_dropped(self):
+        write(self.root, SCHEMA_HPP, HEADER.replace("X(Volume,", " X (Volume,"))
+        self.assertIn("volume", [r.name for r in check_settings.load_rows(self.root)])
+        self.assert_one_finding("uint8_t volume = 60;\n")
+
+    def test_two_rows_on_one_line_are_an_error(self):
+        joined = HEADER.replace('"volume",        "") \\\nX(', '"volume",        "") X(')
+        self.assertNotEqual(joined, HEADER)
+        self.schema_error(joined)
+
+    def test_other_text_in_the_macro_body_is_an_error(self):
+        self.schema_error(HEADER.replace("X(Volume,", "Y(Volume,"))
+
     # Rule 1: raw store access.
 
     def test_raw_store_read_fails(self):
@@ -106,6 +133,12 @@ class CheckSettingsTest(unittest.TestCase):
     def test_settings_namespace_and_backend_access_fail(self):
         self.assert_one_finding('core::Settings audio(backend, "audio");\n')
         self.assert_one_finding('auto r = backend_.get("sys", "lang");\n', rel="components/x/b.cpp")
+
+    def test_raw_store_write_by_key_fails(self):
+        self.assert_one_finding('s.set("brightness", Value(200));\n')
+        self.assert_one_finding('settings_->set("tz_min", Value(int64_t{60}));\n')
+        # A one-argument set() of the same text is not a store write.
+        self.assertEqual(self.code('flags.set("brightness");\n'), [])
 
     def test_namespace_word_in_other_calls_passes(self):
         self.assertEqual(self.code('auto a = obj.get("audio");\nlog("display");\n'), [])
@@ -157,6 +190,16 @@ class CheckSettingsTest(unittest.TestCase):
                 "    std::function<int()> utc_offset_min;\n"
                 "};\n")
         self.assert_one_finding(text, line=3)
+
+    def test_star_line_outside_a_block_comment_is_code(self):
+        text = ("*out = 480;\n"
+                "int utc_offset_min = offset();\n")
+        self.assertEqual(self.code(text), [])
+        text = ("/* Minutes east of UTC.\n"
+                " * Empty: 480.\n"
+                " */\n"
+                "int utc_offset_min = offset();\n")
+        self.assert_one_finding(text, rel="components/x/b.cpp", line=2)
 
     def test_comment_does_not_borrow_tokens_from_its_own_block(self):
         text = ("// The agent's turn limits (agent_turn_min) apply from the next turn.\n"
@@ -221,7 +264,7 @@ class CheckSettingsTest(unittest.TestCase):
         self.assertEqual(self.code(text, rel="web/app/a.css"), [])
         self.assertEqual(check_settings.check(self.root), [])
         for top in ("simulator/src/a.cpp", "boards/b/board.cpp", "drivers/d/d.c",
-                    "web/app/x.js"):
+                    "firmware/main/main.cpp", "web/app/x.js"):
             errors = self.code(text, rel=top)
             self.assertTrue(any(e.startswith(top + ":") for e in errors), (top, errors))
             (self.root / top).unlink()

@@ -6,17 +6,20 @@ The rows come from the WISP_SETTINGS list of
 components/wisp_core/include/wisp/core/settings_schema.hpp: one `X(...)` row
 per line, 16 comma-separated fields (Id, name, C++ type, SettingType, ns,
 key, min, max, def_int, def_text, int_choices, enum_values, unit, flags,
-label, scene_name). The arrays a row names (choices, enum codes) are read
-from the same header. A row added there is covered without touching this
-script.
+label, scene_name). Every non-blank line of the macro body must be exactly
+one row, and the rows parsed must equal the X( calls in the body: a row the
+pattern cannot read is an error, never silently unguarded. The arrays a row
+names (choices, enum codes) are read from the same header. A row added
+there is covered without touching this script.
 
-Scanned: components/, simulator/, boards/, drivers/ (.cpp .hpp .c .h) and
-web/app/ (.js); not the schema header itself, nor any tests/ or third_party/
-directory. Comments are scanned too: a default restated in a comment drifts
+Scanned: components/, simulator/, boards/, drivers/, firmware/main/
+(.cpp .hpp .c .h) and web/app/ (.js); not the schema header itself, nor any
+tests/ or third_party/ directory. Comments are scanned too: a default restated in a comment drifts
 as surely as one in code. A finding is:
   1. Raw store access: a row's ns as a string literal in a `Settings(` call
      or as the first argument of a backend `get(`/`set(`/`erase(`, or a
-     row's key as the first argument of `get_int(`/`get_bool(`/`get_string(`.
+     row's key as the first argument of `get_int(`/`get_bool(`/`get_string(`,
+     or of a `set(` with a second argument.
   2. On a line holding a token of an Int row, an integer literal equal to
      that row's default, min or max; never 0 or 1, nor 100 on a Percent row
      (full scale is not a setting fact).
@@ -27,7 +30,8 @@ Identifiers are split into lower-case words (snake, camel and SCREAMING
 case); a row's tokens are its name, key, label and scene name as word
 sequences, plus the name without a trailing s/min/pct word when at least two
 words remain (screen_off, utc_offset; not turn). A token matches when its
-words appear in order inside one identifier.
+words appear in order inside one identifier. A comment-only line (// or a
+/* */ block) also holds the tokens of the code line its comment documents.
 
 A line ending in `// settings-literal-ok: <reason>` is skipped; an empty
 reason is itself a finding. Prints "path:line: message" per finding and then
@@ -43,7 +47,7 @@ import re
 import sys
 
 SCHEMA_HPP = "components/wisp_core/include/wisp/core/settings_schema.hpp"
-CODE_DIRS = ("components", "simulator", "boards", "drivers")
+CODE_DIRS = ("components", "simulator", "boards", "drivers", "firmware/main")
 CODE_SUFFIXES = {".cpp", ".hpp", ".c", ".h"}
 WEB_DIR = "web/app"
 WEB_SUFFIXES = {".js"}
@@ -51,7 +55,9 @@ SKIP_PARTS = {"tests", "third_party"}
 FIELDS = 16
 MARKER = "settings-literal-ok:"
 
-_ROW_RE = re.compile(r"^\s*X\((.*)\)\s*\\?\s*$")
+_ROW_RE = re.compile(r"^\s*X\s*\((.*)\)\s*\\?\s*$")
+_DEFINE_RE = re.compile(r"^\s*#\s*define\s+WISP_SETTINGS\s*\(\s*X\s*\)")
+_X_CALL_RE = re.compile(r"\bX\s*\(")
 _ARRAY_RE = re.compile(r"\b(k\w+)\s*\[\s*\]\s*=\s*\{([^}]*)\}")
 _INT_RE = re.compile(r"-?\d+")
 _STR_RE = re.compile(r'"([^"]*)"')
@@ -60,6 +66,7 @@ _WORD_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 _NUMBER_RE = re.compile(r"(?<!\w)(?<!\d\.)(-?)(\d+)[uUlL]{0,3}(?!\w|\.\d)")
 _MARKER_RE = re.compile(r"//\s*" + re.escape(MARKER) + r"(.*)$")
 _TYPED_GET_RE = re.compile(r"\bget_(?:int|bool|string)\s*\(\s*\"([^\"]*)\"")
+_KEY_SET_RE = re.compile(r"\bset\s*\(\s*\"([^\"]*)\"\s*,")
 _SETTINGS_CALL_RE = re.compile(r"\bSettings\b\s*(?:\w+\s*)?[({]([^;]*)")
 _BACKEND_RE = re.compile(r"(?:\.|->)\s*(?:get|set|erase)\s*\(\s*\"([^\"]*)\"\s*,")
 
@@ -148,11 +155,27 @@ def load_rows(root):
             raise SchemaError(f"{SCHEMA_HPP}:{line}: unknown values array {name}")
         return _STR_RE.findall(arrays[name])
 
+    # The macro body: from the line after `#define WISP_SETTINGS(X) \` to
+    # the first line without a trailing backslash. Every non-blank line in
+    # it must be exactly one row, so a row split over two lines or spelled
+    # in a way the pattern misses is an error rather than silently unguarded.
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if _DEFINE_RE.match(line)), None)
+    if start is None:
+        raise SchemaError(f"{SCHEMA_HPP}: no #define WISP_SETTINGS(X) found")
+    body = []
+    i = start
+    while lines[i].rstrip().endswith("\\") and i + 1 < len(lines):
+        i += 1
+        body.append((i + 1, lines[i]))
     rows = []
-    for number, line in enumerate(text.splitlines(), 1):
-        m = _ROW_RE.match(line)
-        if not m:
+    for number, line in body:
+        if not line.strip() or line.strip() == "\\":
             continue
+        m = _ROW_RE.match(line)
+        if not m or len(_X_CALL_RE.findall(line)) != 1:
+            raise SchemaError(f"{SCHEMA_HPP}:{number}: not exactly one X(...) settings row "
+                              f"on this line (one row per line, tools/check_settings.py)")
         f = _split_fields(m.group(1))
         if len(f) != FIELDS:
             raise SchemaError(f"{SCHEMA_HPP}:{number}: a settings row has {len(f)} fields, "
@@ -170,6 +193,10 @@ def load_rows(root):
         rows.append(row)
     if not rows:
         raise SchemaError(f"{SCHEMA_HPP}: no X(...) settings rows found")
+    calls = sum(len(_X_CALL_RE.findall(line)) for _n, line in body)
+    if calls != len(rows):
+        raise SchemaError(f"{SCHEMA_HPP}:{start + 1}: WISP_SETTINGS has {calls} X( rows, "
+                          f"parsed {len(rows)}")
     return rows
 
 
@@ -205,8 +232,8 @@ class _Matcher:
                 r"(?<![=!<>])=\s*" + q + r"|\{\s*" + q + r"\s*\}|(?:\?\?|\|\|)\s*" + q)
 
     def rows_on(self, line):
-        """The rows whose token appears inside an identifier of `line` (for a
-        comment line, of its whole comment block and the line it documents)."""
+        """The rows whose token appears inside an identifier of `line` (a
+        line's context, _contexts())."""
         found = {}
         for ident in _IDENT_RE.findall(line):
             w = words(ident)
@@ -221,6 +248,9 @@ class _Matcher:
         for m in _TYPED_GET_RE.finditer(line):
             if m.group(1) in self.keys:
                 reasons.append(f'raw store read of setting "{self.keys[m.group(1)].name}"')
+        for m in _KEY_SET_RE.finditer(line):
+            if m.group(1) in self.keys:
+                reasons.append(f'raw store write of setting "{self.keys[m.group(1)].name}"')
         raw_ns = [m.group(1) for m in _BACKEND_RE.finditer(line)]
         for m in _SETTINGS_CALL_RE.finditer(line):
             raw_ns += _STR_RE.findall(m.group(1))
@@ -263,8 +293,27 @@ def _files(root):
             yield rel.as_posix(), path
 
 
-def _is_comment(line):
-    return line.lstrip().startswith(("//", "/*", "*"))
+def _comment_lines(lines):
+    """Per line, whether it is comment only: it starts with // or /*, or
+    lies inside a /* ... */ block. A line starting with * outside a block
+    is code (`*out = 60;`)."""
+    out, in_block = [], False
+    for line in lines:
+        stripped = line.lstrip()
+        if in_block:
+            out.append(True)
+            in_block = "*/" not in line
+            continue
+        if stripped.startswith("/*"):
+            out.append(True)
+            in_block = "*/" not in stripped[2:]
+            continue
+        out.append(stripped.startswith("//"))
+        # A block opened after code on this line (`x; /* ...`) runs on.
+        opened = line.rfind("/*")
+        if opened >= 0 and "*/" not in line[opened + 2:] and "//" not in line[:opened]:
+            in_block = True
+    return out
 
 
 def _contexts(lines):
@@ -273,9 +322,10 @@ def _contexts(lines):
     "Empty: 480." above `utc_offset_min` counts as next to it. Not the whole
     block: long header comments name many settings and many numbers."""
     contexts = list(lines)
+    comment = _comment_lines(lines)
     documented = ""
     for k in range(len(lines) - 1, -1, -1):
-        if _is_comment(lines[k]):
+        if comment[k]:
             contexts[k] = lines[k] + "\n" + documented
         else:
             documented = lines[k]
