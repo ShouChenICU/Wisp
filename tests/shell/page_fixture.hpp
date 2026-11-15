@@ -121,6 +121,9 @@ public:
     ui::UiRuntime& ui() { return *ui_; }
     core::EventBus& bus() { return bus_; }
     core::StateCell<scene::SceneOverview>& scenes() { return scenes_; }
+    // A settings cell standing in for SystemSettings::cell(); the shell
+    // follows it only when the test hands it in (ShellDeps::settings).
+    core::StateCell<core::SettingsSnapshot>& settings() { return settings_; }
     const hal::ScreenShape& shape() const { return shape_; }
 
     lv_obj_t* active() {
@@ -185,6 +188,7 @@ private:
     core::EventBus bus_;
     // Before the shell, which follows it.
     core::StateCell<scene::SceneOverview> scenes_{bus_, scene::SceneOverview{}};
+    core::StateCell<core::SettingsSnapshot> settings_{bus_, core::SettingsSnapshot{}};
     std::unique_ptr<ui::SystemLayer> layer_;
     std::unique_ptr<shell::ShellDeps> deps_;
     std::unique_ptr<shell::Shell> shell_;

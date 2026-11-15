@@ -242,8 +242,10 @@ struct ShellDeps {
     std::function<Result<void>(const std::string&, bool with_data)> delete_scene;
     // The scene list's order; read on the listing task (any thread).
     SceneRecents* recents = nullptr;
-    // The system settings as last stored (memory, no flash).
-    std::function<core::SystemSettingsValues()> settings;
+    // The system settings as last stored (SystemSettings::cell()); the
+    // settings page follows it while open. Null: the table's defaults. It
+    // must outlive stop().
+    const core::StateCell<core::SettingsSnapshot>* settings = nullptr;
     // SystemSettings::set(), called inside a submit_io job.
     std::function<void(std::map<std::string, Value>)> set_settings;
     // The Wi-Fi status line, the admin address and the firmware version.

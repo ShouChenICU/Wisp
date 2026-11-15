@@ -33,10 +33,18 @@
 //
 // Every write goes through SettingsDeps::set_settings inside a
 // SettingsDeps::submit_io job: SystemSettings::set() reaches flash. The
-// values shown at build come from SettingsDeps::settings (a cache; without
-// one, the table's defaults), and the page keeps what it wrote since. The
-// Wi-Fi status and the address are read again every kRefreshMs. A language
-// change rebuilds the page (the shell follows ui::lang()).
+// page follows the settings cell (SettingsDeps::settings) from build() until
+// it is destroyed: each delivery replaces what the page takes the settings
+// to be and redraws every setting control, so a change made by voice or on
+// the admin page shows at once. What the page wrote shows at once too and
+// stays until the next delivery replaces it: a refused write is corrected
+// by the next change of any setting. Two things a delivery leaves alone: a
+// slider the finger holds (its release writes the finger's value) and an
+// open choice page (built from the value when it opened; a pick writes the
+// pick). Without a cell the page shows the table's defaults and follows
+// nothing. The Wi-Fi status and the address are read again every
+// kRefreshMs. A language change rebuilds the page (the shell follows
+// ui::lang()).
 //
 // A confirm dialog still open goes with the page (closed unanswered), so
 // its answer never reaches a page that is gone.
@@ -54,8 +62,10 @@
 
 #include "lvgl.h"
 #include "wisp/base/value.hpp"
+#include "wisp/core/dispatcher.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings_schema.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/shell/choice_page.hpp"
 #include "wisp/ui/strings.hpp"
@@ -67,7 +77,12 @@ class SystemLayer;
 namespace wisp::shell {
 
 struct SettingsDeps {
-    std::function<core::SystemSettingsValues()> settings;
+    // SystemSettings::cell(); it must outlive the page. Null: the table's
+    // defaults, nothing followed.
+    const core::StateCell<core::SettingsSnapshot>* settings = nullptr;
+    // Where the cell's deliveries run: the UI thread (the shell passes its
+    // UiRuntime). Null: nothing followed.
+    core::Dispatcher* dispatcher = nullptr;
     std::function<void(std::map<std::string, Value>)> set_settings;
     std::function<std::string()> wifi_status, admin_url, firmware_version;
     std::function<void()> start_wifi_setup;
@@ -128,7 +143,8 @@ public:
     static std::string duration_text(int seconds);
 
     explicit SettingsPage(SettingsDeps deps);
-    // Deletes the refresh timer; the controls go with their screen.
+    // Releases the cell's subscription, deletes the refresh timer; the
+    // controls go with their screen.
     ~SettingsPage();
 
     SettingsPage(const SettingsPage&) = delete;
@@ -204,7 +220,11 @@ private:
     void add_slider(lv_obj_t* card, core::SettingId id);
     void add_switch(lv_obj_t* card, const SettingRow& row);
     void add_value_row(lv_obj_t* card, Row r, const char* icon, ui::StrId name, bool opens);
+    // Puts now_ on every setting control; a slider the finger holds keeps
+    // the finger's value.
     void show_values();
+    // A delivery of the settings cell.
+    void follow(const core::SettingsSnapshot& v);
     void open(core::SettingId id);
     void ask(Row r);
     void write(std::map<std::string, Value> changes);
@@ -219,6 +239,7 @@ private:
     lv_timer_t* timer_ = nullptr;
     lv_obj_t* confirm_ = nullptr;
     std::string shown_wifi_, shown_address_;
+    core::CellSubscription settings_sub_;
 };
 
 }  // namespace wisp::shell

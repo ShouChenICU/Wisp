@@ -244,10 +244,13 @@ std::string SettingsPage::duration_text(int seconds) {
 }
 
 SettingsPage::SettingsPage(SettingsDeps deps) : deps_(std::move(deps)) {
-    if (deps_.settings) now_ = deps_.settings();
+    if (deps_.settings != nullptr) now_ = deps_.settings->get();
 }
 
 SettingsPage::~SettingsPage() {
+    // On the UI thread, the subscription's dispatcher: no delivery is under
+    // way, and none comes after this.
+    settings_sub_.reset();
     if (timer_ != nullptr) lv_timer_delete(timer_);
     if (confirm_ != nullptr && deps_.layer != nullptr) deps_.layer->close_confirm(confirm_);
 }
@@ -288,9 +291,6 @@ void SettingsPage::add_slider(lv_obj_t* card, SettingId id) {
     lv_obj_set_height(s, kSliderPx);
     lv_obj_set_flex_grow(s, 1);
     lv_slider_set_range(s, spec.min, spec.max);
-    const int v = std::clamp(static_cast<int>(core::setting_value(now_, id).as_int()),
-                             static_cast<int>(spec.min), static_cast<int>(spec.max));
-    lv_slider_set_value(s, v, LV_ANIM_OFF);
     lv_obj_set_ext_click_area(s, kSliderReachPx);
     // Dragging it sideways is the slider's, not a page drag.
     lv_obj_add_flag(s, detail::kNoSwipe);
@@ -300,13 +300,10 @@ void SettingsPage::add_slider(lv_obj_t* card, SettingId id) {
     lv_label_set_text(hi, icons.high);
     lv_obj_set_width(hi, kEndIconPx);
     lv_obj_set_style_text_align(hi, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(parts.value, percent_text(v, spec).c_str());
     parts.control = s;
 }
 
 void SettingsPage::add_switch(lv_obj_t* card, const SettingRow& row) {
-    const bool value = core::setting_value(now_, row.id).as_bool();
-    const bool on = row.widget == SettingWidget::InvertedSwitch ? !value : value;
     detail::ListRow r =
         detail::make_list_row(card, icons_of(row.id).icon, ui::tr(label_of(row.id)), false);
     lv_obj_set_flex_grow(r.name, 1);
@@ -314,7 +311,6 @@ void SettingsPage::add_switch(lv_obj_t* card, const SettingRow& row) {
     lv_obj_t* sw = lv_switch_create(r.row);
     lv_obj_set_size(sw, kSwitchW, kSwitchH);
     detail::fit_row(r.row, kSwitchH);
-    if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
     lv_obj_add_flag(sw, detail::kNoSwipe);
     lv_obj_add_event_cb(sw, &SettingsPage::event_cb, LV_EVENT_VALUE_CHANGED, this);
     settings_[static_cast<size_t>(row.id)].control = sw;
@@ -409,13 +405,47 @@ void SettingsPage::build(lv_obj_t* list) {
     timer_ = lv_timer_create(
         [](lv_timer_t* t) { static_cast<SettingsPage*>(lv_timer_get_user_data(t))->refresh(); },
         kRefreshMs, this);
+    // On the UI dispatcher only: the callback redraws controls. Its first
+    // call brings the value as it is then, which the page may already show.
+    if (deps_.settings != nullptr && deps_.dispatcher != nullptr) {
+        settings_sub_ = deps_.settings->subscribe(
+            [this](const core::SettingsSnapshot& v) { follow(v); }, deps_.dispatcher);
+    }
+}
+
+void SettingsPage::follow(const core::SettingsSnapshot& v) {
+    if (v == now_) return;
+    now_ = v;
+    show_values();
 }
 
 void SettingsPage::show_values() {
     for (const SettingRow& row : setting_rows()) {
-        if (row.widget != SettingWidget::Choice) continue;
-        lv_label_set_text(shown(row.id),
-                          option_text(row.id, core::setting_value(now_, row.id)).c_str());
+        lv_obj_t* control = this->control(row.id);
+        const Value v = core::setting_value(now_, row.id);
+        switch (row.widget) {
+            case SettingWidget::Slider: {
+                // Held: the value and its label follow the finger, and the
+                // release writes it.
+                if (lv_obj_has_state(control, LV_STATE_PRESSED)) break;
+                const SettingSpec& spec = core::setting_spec(row.id);
+                const int n = std::clamp(static_cast<int>(v.as_int()), static_cast<int>(spec.min),
+                                         static_cast<int>(spec.max));
+                lv_slider_set_value(control, n, LV_ANIM_OFF);
+                lv_label_set_text(shown(row.id), percent_text(n, spec).c_str());
+                break;
+            }
+            case SettingWidget::Switch:
+            case SettingWidget::InvertedSwitch: {
+                const bool on =
+                    row.widget == SettingWidget::InvertedSwitch ? !v.as_bool() : v.as_bool();
+                lv_obj_set_state(control, LV_STATE_CHECKED, on);
+                break;
+            }
+            case SettingWidget::Choice:
+                lv_label_set_text(shown(row.id), option_text(row.id, v).c_str());
+                break;
+        }
     }
 }
 

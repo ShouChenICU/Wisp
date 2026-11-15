@@ -812,7 +812,7 @@ Result<void> App::start() {
                 return impl->scenes->ask_delete(id, with_data);
             },
             .recents = impl_->recents.get(),
-            .settings = [impl] { return impl->system_settings.cell().get(); },
+            .settings = &impl->system_settings.cell(),
             .set_settings =
                 [impl](std::map<std::string, Value> changes) {
                     if (auto r =

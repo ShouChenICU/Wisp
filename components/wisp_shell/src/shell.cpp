@@ -442,6 +442,7 @@ lv_obj_t* Shell::build_page(Page p) {
             };
             settings_ = std::make_unique<SettingsPage>(SettingsDeps{
                 .settings = deps_.settings,
+                .dispatcher = &deps_.ui,
                 .set_settings = deps_.set_settings,
                 .wifi_status = deps_.wifi_status,
                 .admin_url = deps_.admin_url,

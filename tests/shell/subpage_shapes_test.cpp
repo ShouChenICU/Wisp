@@ -97,13 +97,12 @@ protected:
         };
         // The long-press card at its tallest, with "delete its data too".
         d.scene_has_data = [](const std::string&) { return true; };
-        d.settings = [] {
-            wisp::core::SystemSettingsValues v{};
-            v.brightness = 200;
-            v.volume = 60;
-            v.screen_off_s = 60;
-            return v;
-        };
+        wisp::core::SettingsSnapshot v{};
+        v.brightness = 200;
+        v.volume = 60;
+        v.screen_off_s = 60;
+        h->settings().set(v);
+        d.settings = &h->settings();
         d.set_settings = [](std::map<std::string, wisp::Value>) {};
         d.delete_scene = [](const std::string&, bool) { return wisp::Result<void>::ok(); };
         d.wifi_status = [] { return std::string("已连接 WispLab  10.0.0.7"); };

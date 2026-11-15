@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "shell/page_fixture.hpp"
+#include "support/cell_barrier.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/shell/choice_page.hpp"
 #include "wisp/shell/home.hpp"
@@ -39,11 +40,25 @@ protected:
         harness = std::make_unique<wisp::test::PageHarness>(shape, w, h);
         ASSERT_TRUE(harness->started());
         auto& d = harness->deps();
-        d.settings = [this] { return stored; };
+        cell().set(stored);
+        d.settings = &cell();
+        // As SystemSettings::set(): a stored change reaches the cell. With
+        // `refuse` the write is recorded and not stored.
         d.set_settings = [this](std::map<std::string, Value> m) {
             std::lock_guard<std::mutex> lock(mu);
-            writes.push_back(std::move(m));
             all_on_worker = all_on_worker && worker.on_worker();
+            if (!refuse) {
+                wisp::core::SettingsSnapshot v = cell().get();
+                for (const auto& [key, value] : m) {
+                    const wisp::core::SettingSpec* spec = wisp::core::find_setting(key);
+                    ASSERT_NE(spec, nullptr) << key;
+                    ASSERT_TRUE(
+                        wisp::core::assign_setting(v, wisp::core::setting_id_of(*spec), value))
+                        << key;
+                }
+                cell().set(v);
+            }
+            writes.push_back(std::move(m));
         };
         d.submit_io = [this](std::function<void()> job) { return worker.submit(std::move(job)); };
         d.wifi_status = [] { return std::string("已连接 WispLab  10.0.0.7"); };
@@ -69,6 +84,8 @@ protected:
     }
 
     void TearDown() override {
+        // A write still queued sets the harness's cell.
+        (void)worker.drain(2000);
         harness.reset();
         worker.stop();
     }
@@ -87,6 +104,12 @@ protected:
         return v;
     }
 
+    wisp::core::StateCell<wisp::core::SettingsSnapshot>& cell() { return harness->settings(); }
+    // Every delivery of the cell so far has run on the UI thread.
+    void settle() {
+        ASSERT_TRUE(wisp::test::cell_barrier(cell(), &harness->ui()));
+        harness->on_ui([] {});
+    }
     SettingsPage* page() { return harness->shell().settings_page(); }
     wisp::shell::ChoicePage* choice() { return harness->shell().choice_page(); }
     std::vector<std::map<std::string, Value>> written() {
@@ -130,6 +153,7 @@ protected:
     std::mutex mu;
     std::vector<std::map<std::string, Value>> writes;
     bool all_on_worker = true;
+    std::atomic<bool> refuse{false};
     std::atomic<int> wifi_setups{0};
     std::atomic<int> diag_opens{0};
     std::atomic<int> restarts{0}, power_offs{0};
@@ -534,7 +558,6 @@ TEST_F(SettingsPageTest, LanguageChangeRetextsThePages) {
     int32_t y = 0;
     harness->on_ui([&] { y = lv_obj_get_scroll_y(page()->list()); });
     // What the system duties do with the system.settings event.
-    stored.language = wisp::core::LangCode::En;
     harness->on_ui([&] { wisp::ui::set_lang(wisp::ui::Lang::En); });
     ASSERT_TRUE(harness->ui_until(
         [&] { return page() != nullptr && text_of(page()->heading(0)) == "Display & sound"; }));
@@ -629,6 +652,149 @@ TEST_F(SettingsPageTest, NoRestartOrPowerOffWithoutThePlatform) {
     EXPECT_EQ(page()->row(Row::Restart), nullptr);
     EXPECT_EQ(page()->row(Row::PowerOff), nullptr);
     EXPECT_NE(page()->row(Row::Diagnostics), nullptr);
+}
+
+// A change stored elsewhere (by voice, on the admin page) shows on the
+// open page at once, on every kind of control.
+TEST_F(SettingsPageTest, ChangeWhileOpenIsShown) {
+    boot();
+    wisp::core::SettingsSnapshot v = cell().get();
+    v.volume = 25;
+    v.screen_off_s = 300;
+    v.language = wisp::core::LangCode::Ja;
+    v.tts_mute = true;
+    v.time_24h = false;
+    cell().set(v);
+    settle();
+    harness->on_ui([&] {
+        EXPECT_EQ(lv_slider_get_value(page()->volume()), 25);
+        EXPECT_EQ(text_of(page()->volume_value()), "25%");
+        EXPECT_EQ(text_of(page()->value(Row::ScreenOff)), "5 分钟");
+        EXPECT_EQ(text_of(page()->value(Row::Language)), "日本語");
+        EXPECT_EQ(text_of(page()->value(Row::TimeFormat)), "12 小时制");
+        EXPECT_FALSE(lv_obj_has_state(page()->speak(), LV_STATE_CHECKED));
+        EXPECT_EQ(page()->values(), v);
+    });
+    EXPECT_TRUE(written().empty());
+}
+
+// A write the store refuses shows until the next delivery, which brings
+// the stored value back.
+TEST_F(SettingsPageTest, RefusedWriteShowsTheStoredValue) {
+    boot();
+    refuse = true;
+    tap_row(Row::ScreenOff);
+    ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
+    tap_choice(6);
+    ASSERT_TRUE(back_on_settings());
+    ASSERT_EQ(written().size(), 1u);
+    settle();
+    EXPECT_EQ(value_of(Row::ScreenOff), "从不");
+    // Another setting moves; screen_off_s is still what was stored.
+    wisp::core::SettingsSnapshot v = cell().get();
+    v.notify_vol = 70;
+    cell().set(v);
+    settle();
+    EXPECT_EQ(value_of(Row::ScreenOff), "1 分钟");
+    harness->on_ui([&] { EXPECT_EQ(text_of(page()->notify_value()), "70%"); });
+}
+
+// Leaving the page releases its subscription; a change after that runs no
+// page code. Opened again, it follows again.
+TEST_F(SettingsPageTest, ClosingThePageReleasesItsSubscription) {
+    boot();
+    settle();
+    const uint32_t open = harness->bus().cell_subscriptions();
+    harness->show(Page::Home);
+    EXPECT_EQ(page(), nullptr);
+    EXPECT_EQ(harness->bus().cell_subscriptions(), open - 1);
+    wisp::core::SettingsSnapshot v = cell().get();
+    v.volume = 10;
+    cell().set(v);
+    settle();
+    harness->show(Page::Settings);
+    ASSERT_NE(page(), nullptr);
+    EXPECT_EQ(harness->bus().cell_subscriptions(), open);
+    v.volume = 35;
+    cell().set(v);
+    settle();
+    harness->on_ui([&] { EXPECT_EQ(text_of(page()->volume_value()), "35%"); });
+}
+
+// A delivery while the finger holds a slider leaves that slider to the
+// finger (the rest of the page follows); the release writes the finger's
+// value.
+TEST_F(SettingsPageTest, HeldSliderKeepsTheFingersValue) {
+    boot();
+    lv_point_t start{}, end{};
+    harness->on_ui([&] {
+        lv_obj_t* s = page()->volume();
+        lv_obj_update_layout(s);
+        const lv_area_t a = coords_of(s);
+        const int32_t y = (a.y1 + a.y2) / 2;
+        start = {a.x1 + (a.x2 - a.x1) * 60 / 100, y};
+        end = {a.x1 + (a.x2 - a.x1) * 90 / 100, y};
+    });
+    for (int i = 0; i <= 8; ++i) {
+        const int32_t x = start.x + (end.x - start.x) * i / 8;
+        harness->feed({{static_cast<int16_t>(x), static_cast<int16_t>(start.y), 0}});
+    }
+    int held = 0;
+    harness->on_ui([&] { held = lv_slider_get_value(page()->volume()); });
+    ASSERT_GT(held, 75);
+    wisp::core::SettingsSnapshot v = cell().get();
+    v.volume = 5;
+    v.screen_off_s = 300;
+    cell().set(v);
+    // Read right behind the page's delivery, on the UI thread: LVGL puts
+    // the finger's value back at its next touch read, so a later look
+    // could not tell a slider the delivery moved from one it left alone.
+    std::atomic<int> right_after{-1};
+    {
+        wisp::core::CellSubscription probe = cell().subscribe(
+            [&](const wisp::core::SettingsSnapshot&) {
+                right_after = lv_slider_get_value(page()->volume());
+            },
+            &harness->ui());
+        ASSERT_TRUE(wisp::test::wait_until([&] { return right_after.load() != -1; }, 2000));
+    }
+    EXPECT_EQ(right_after.load(), held);
+    harness->on_ui([&] {
+        EXPECT_EQ(lv_slider_get_value(page()->volume()), held);
+        EXPECT_EQ(text_of(page()->volume_value()), std::to_string(held) + "%");
+        EXPECT_EQ(text_of(page()->value(Row::ScreenOff)), "5 分钟");
+    });
+    harness->feed({});
+    const auto w = written();
+    ASSERT_EQ(w.size(), 1u);
+    EXPECT_EQ(w[0].at("volume").as_int(), held);
+    settle();
+    harness->on_ui([&] { EXPECT_EQ(lv_slider_get_value(page()->volume()), held); });
+    EXPECT_EQ(cell().get().volume, held);
+}
+
+// A delivery while a choice page is open redraws the settings page under
+// it and leaves the choice page as it opened; the pick is what is written.
+TEST_F(SettingsPageTest, OpenChoicePageIsLeftAlone) {
+    boot();
+    tap_row(Row::ScreenOff);
+    ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
+    wisp::core::SettingsSnapshot v = cell().get();
+    v.screen_off_s = 300;
+    cell().set(v);
+    settle();
+    harness->on_ui([&] {
+        ASSERT_NE(choice(), nullptr);
+        EXPECT_EQ(choice()->current(), 2);
+        EXPECT_EQ(text_of(page()->value(Row::ScreenOff)), "5 分钟");
+    });
+    tap_choice(0);
+    ASSERT_TRUE(back_on_settings());
+    const auto w = written();
+    ASSERT_EQ(w.size(), 1u);
+    EXPECT_EQ(w[0].at("screen_off_s"), Value(int64_t{15}));
+    settle();
+    EXPECT_EQ(value_of(Row::ScreenOff), "15 秒");
 }
 
 namespace {
