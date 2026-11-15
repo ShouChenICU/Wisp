@@ -47,7 +47,6 @@ PowerManager::PowerManager(PowerManagerDeps deps)
     : bus_(deps.bus),
       registry_(deps.registry),
       locks_(deps.locks),
-      settings_(std::move(deps.settings)),
       display_(std::move(deps.display)),
       storage_(deps.storage),
       power_monitor_(deps.power_monitor),
@@ -59,7 +58,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       on_activity_(std::move(deps.on_activity)),
       level_cell_(bus_, hal::PowerLevel::Active, &power_state_mirror),
       last_activity_ms_(os::now_ms()) {
-    read_settings();
+    // Without the cell (tests) the timeouts keep their defaults.
     if (deps.system_settings != nullptr) {
         // The cell's value now, so the first tick() (possibly before the
         // subscription's first call) already uses it; that first call then
@@ -217,11 +216,6 @@ void PowerManager::undim() {
     }
 }
 
-void PowerManager::read_settings() {
-    apply_settings(settings_.get_int("screen_off_s", core::kDefaultScreenOffS),
-                   settings_.get_int("deep_after_s", core::kDefaultDeepAfterS));
-}
-
 void PowerManager::apply_settings(int64_t screen_off_s, int64_t deep_after_s) {
     const int64_t off_s =
         valid_or(screen_off_s, core::valid_screen_off_s, core::kDefaultScreenOffS);
@@ -233,17 +227,6 @@ void PowerManager::apply_settings(int64_t screen_off_s, int64_t deep_after_s) {
 
 void PowerManager::tick(uint64_t now_ms) {
     last_tick_ms_.store(now_ms);
-    // Read here, on the timer task; Settings::get_int/get_bool only read
-    // the in-memory cache (CachedSettingsBackend, AGENTS.md 5), so this
-    // never touches flash. The settings cell already brings every stored
-    // change; this re-read is the older fallback and agrees with it,
-    // except after a batch whose rollback failed left storage ahead of the
-    // cell (docs/backlog.md), where it applies what storage holds.
-    if (ticks_since_read_.fetch_add(1) + 1 >= kSettingsRefreshTicks) {
-        ticks_since_read_.store(0);
-        read_settings();
-    }
-
     // A screen lock counts as continuous activity, so the idle clock starts
     // only once the lock goes.
     if (locks_.held(core::WakeLockKind::Screen)) {

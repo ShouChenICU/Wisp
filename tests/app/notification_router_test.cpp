@@ -13,13 +13,11 @@
 #include <string>
 #include <vector>
 
-#include "support/fake_settings_backend.hpp"
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 
@@ -75,16 +73,11 @@ protected:
             d.notifications = notes.get();
             d.locks = &locks;
         };
-        // In memory, as the settings cache is in the app: the fixture's
-        // worker is the flash thread, and PowerManager reads its settings
-        // on this one.
-        settings_backend = std::make_unique<wisp::test::FakePlatformBackend>();
         // Headless: transitions run on the caller's thread.
         power = std::make_unique<PowerManager>(wisp::app::PowerManagerDeps{
             .bus = bus,
             .registry = registry,
             .locks = locks,
-            .settings = wisp::core::Settings(*settings_backend, "power"),
             .display = nullptr,
         });
         out = std::make_shared<CountingAudioOut>(pace_ms);
@@ -140,7 +133,6 @@ protected:
     uint32_t pace_ms = 0;
     wisp::core::WakeLockRegistry locks{bus};
     std::unique_ptr<NotificationService> notes;
-    std::unique_ptr<wisp::test::FakePlatformBackend> settings_backend;
     std::unique_ptr<PowerManager> power;
     std::shared_ptr<CountingAudioOut> out;
     std::unique_ptr<wisp::core::TonePlayer> tones;

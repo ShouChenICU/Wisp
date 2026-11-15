@@ -55,14 +55,12 @@
 // included, so there a device's set_power() must not take or release a
 // wake lock (no board ships headless).
 //
-// Settings: with PowerManagerDeps::system_settings the power keys follow
-// that cell (applied by the constructor from get(), then by a subscription
-// on wisp.bus); with or without it the "power" namespace is also re-read
-// every kSettingsRefreshTicks ticks (on the shared timer task, never on
-// the UI task). The re-read goes through core::Settings::get_int, which
-// reads the in-memory cache when the backend is a
-// core::CachedSettingsBackend (App's is), so it does not touch flash. A stored value
-// core::SystemSettings::set() would refuse reads as its default, as
+// Settings: the timeouts come only from PowerManagerDeps::system_settings,
+// applied by the constructor from the cell's get() and then by a
+// subscription on wisp.bus; PowerManager reads no settings store itself.
+// Without the cell (tests) they stay at their defaults. A value in the
+// cell that core::SystemSettings::set() would refuse (the cell carries
+// what is stored, hand-edited values included) counts as its default, as
 // SystemSettings::get() reports it.
 //
 // Any button edge resets the idle clock and, while the screen is off,
@@ -91,7 +89,6 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/power_monitor.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -114,7 +111,6 @@ struct PowerManagerDeps {
     core::EventBus& bus;
     core::DeviceRegistry& registry;
     core::WakeLockRegistry& locks;
-    core::Settings settings;                // namespace "power"
     std::shared_ptr<hal::Display> display;  // brightness only; may be null
     // The rest may be null or empty: each is skipped when missing.
     core::StorageManager* storage = nullptr;
@@ -137,7 +133,8 @@ struct PowerManagerDeps {
     // (an alarm stops, spec 5.1). Keep it short and non-blocking.
     std::function<void()> on_activity;
     // SystemSettings::cell(): the power keys follow it. Null in tests that
-    // need no settings changes; then only the periodic re-read sees them.
+    // need no settings: then the timeouts are the defaults
+    // (core::kDefaultScreenOffS, core::kDefaultDeepAfterS).
     // Must outlive the PowerManager.
     const core::StateCell<core::SystemSettingsValues>* system_settings = nullptr;
 };
@@ -146,8 +143,6 @@ class PowerManager {
 public:
     static constexpr uint32_t kDimLeadMs = 10000;
     static constexpr int kDimPercent = 30;
-    // tick() re-reads the power settings from Settings this often.
-    static constexpr uint32_t kSettingsRefreshTicks = 60;
 
     explicit PowerManager(PowerManagerDeps deps);
 
@@ -185,10 +180,10 @@ public:
     // Active (posted to the UI task when there is one).
     void note_activity();
 
-    // Called about once a second (App's "wisp.power" timer): re-reads the
-    // settings every kSettingsRefreshTicks ticks, then moves Active -> Dim
-    // -> Standby -> DeepStandby by the idle clock and the deep timer, and
-    // back on locks, retries Busy devices and updates light sleep. `now_ms`
+    // Called about once a second (App's "wisp.power" timer): moves Active
+    // -> Dim -> Standby -> DeepStandby by the idle clock and the deep timer,
+    // and back on locks, retries Busy devices and updates light sleep. It
+    // reads no settings (they come from the cell). `now_ms`
     // is os::now_ms() in production; the work itself is posted to the UI
     // task when there is one (a transition can block for the panel's sleep
     // delay and must not hold up the shared timer task), and rechecked
@@ -279,7 +274,6 @@ private:
     core::EventBus& bus_;
     core::DeviceRegistry& registry_;
     core::WakeLockRegistry& locks_;
-    core::Settings settings_;
     std::shared_ptr<hal::Display> display_;
     core::StorageManager* storage_;
     core::PowerMonitor* power_monitor_;
@@ -312,16 +306,13 @@ private:
     std::atomic<bool> power_key_owned_{false};
     std::atomic<bool> light_sleep_on_{false};
 
-    // Reads the power keys into the cached values below.
-    void read_settings();
     // Stores the cached values from seconds, treating values
     // SystemSettings::set() would refuse as their defaults.
     void apply_settings(int64_t screen_off_s, int64_t deep_after_s);
-    // Ticks since the last read_settings().
-    std::atomic<uint32_t> ticks_since_read_{0};
-    // Cached so UI-task work never reads Settings.
-    std::atomic<int64_t> screen_off_ms_{60000};   // 0: never
-    std::atomic<int64_t> deep_after_ms_{300000};  // 0: never
+    // From the settings cell, so tick() and UI-task work read atomics.
+    // The defaults stand without a cell. 0: never.
+    std::atomic<int64_t> screen_off_ms_{core::kDefaultScreenOffS * 1000};
+    std::atomic<int64_t> deep_after_ms_{core::kDefaultDeepAfterS * 1000};
     // The deep timer had run out at the last tick-driven evaluation; lock
     // changes, which have no clock of their own, go by this.
     std::atomic<bool> deep_due_{false};

@@ -33,8 +33,9 @@
 // agent_max_steps and agent_turn_min are the agent's per-turn limits, tool
 // calls and minutes (agent-core spec 3.6); App hands them to AgentService,
 // which applies them from the next turn on.
-// The consumers (App at boot, the audio path, PowerManager::tick()) read
-// these keys fresh, so only brightness needs an explicit "apply now" hook.
+// App reads them at boot; afterwards the consumers (the audio path,
+// PowerManager's timeouts and the rest) read or follow cell(), so only
+// brightness needs an explicit "apply now" hook.
 // The whole snapshot lives in a state cell (cell()) that follows every
 // stored batch; consumers follow it. Its mirror publishes the
 // system.settings event (spec 8.3), from which the UI rebuilds its text,

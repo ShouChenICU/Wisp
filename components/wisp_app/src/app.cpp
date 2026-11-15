@@ -477,7 +477,6 @@ Result<void> App::start() {
         .bus = impl_->bus,
         .registry = impl_->registry,
         .locks = impl_->wakelocks,
-        .settings = core::Settings(*impl_->platform.settings, "power"),
         .display = display,
         .storage = &impl_->storage,
         .power_monitor = impl_->power_monitor.get(),

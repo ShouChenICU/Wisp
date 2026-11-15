@@ -132,7 +132,6 @@ struct Rig {
             .bus = bus,
             .registry = registry,
             .locks = locks,
-            .settings = wisp::core::Settings(*backend, "power"),
             .display = nullptr,
         });
 

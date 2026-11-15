@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -108,8 +109,10 @@ struct Fixture {
                      const std::string& power_key_id = "button.power") {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
-        Settings power_settings(*backend, "power");
-        power_settings.set("screen_off_s", screen_off_s);
+        // As SystemSettings seeds its cell from storage at boot.
+        SystemSettingsValues stored;
+        stored.screen_off_s = static_cast<int>(screen_off_s);
+        settings_cell.seed(stored);
 
         bus.start();
         // An exact-topic subscribe, not a "power."-prefix one -- these
@@ -169,7 +172,6 @@ struct Fixture {
             .bus = bus,
             .registry = registry,
             .locks = locks,
-            .settings = Settings(*backend, "power"),
             .display = display,
             .storage = with_storage ? storage.get() : nullptr,
             .power_monitor = with_power_monitor ? power_monitor.get() : nullptr,
@@ -182,6 +184,7 @@ struct Fixture {
                     if (!ui->on_ui_thread()) activity_off_ui = true;
                     ++activity_calls;
                 },
+            .system_settings = &settings_cell,
         });
     }
 
@@ -255,9 +258,13 @@ struct Fixture {
     }
 
     std::string settings_path;
+    // PowerMonitor's settings.
     std::unique_ptr<JsonFileSettingsBackend> backend;
 
     EventBus bus;
+    // SystemSettings::cell() as App hands it over; declared before pm,
+    // which subscribes to it and must release that first.
+    StateCell<SystemSettingsValues> settings_cell{bus, SystemSettingsValues{}};
     DeviceRegistry registry;
     WakeLockRegistry locks{bus};
 
@@ -876,15 +883,10 @@ TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
     EventBus bus;
     DeviceRegistry registry;
     WakeLockRegistry locks(bus);
-    auto backend =
-        std::make_unique<JsonFileSettingsBackend>((temp_dir() / "headless.json").string());
     auto display = std::make_shared<FakeDisplay>("display.main", 480, 480);
     registry.add(display);
-    PowerManager pm(PowerManagerDeps{.bus = bus,
-                                     .registry = registry,
-                                     .locks = locks,
-                                     .settings = Settings(*backend, "power"),
-                                     .display = display});
+    PowerManager pm(
+        PowerManagerDeps{.bus = bus, .registry = registry, .locks = locks, .display = display});
     pm.set_brightness(70);
     EXPECT_EQ(display->brightness(), 70);
 
@@ -897,8 +899,7 @@ TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
 
     // Headless PowerManager owns no display at all: set_brightness is a no-op.
     DeviceRegistry empty;
-    PowerManager no_display(PowerManagerDeps{
-        .bus = bus, .registry = empty, .locks = locks, .settings = Settings(*backend, "power")});
+    PowerManager no_display(PowerManagerDeps{.bus = bus, .registry = empty, .locks = locks});
     no_display.set_brightness(10);
 }
 
@@ -1096,10 +1097,7 @@ struct Headless {
             states_.push_back(e.payload.at("state").as_string());
         });
 
-        PowerManagerDeps deps{.bus = bus,
-                              .registry = registry,
-                              .locks = locks,
-                              .settings = Settings(*backend, "power")};
+        PowerManagerDeps deps{.bus = bus, .registry = registry, .locks = locks};
         deps.system_settings = &settings_cell;
         deps.before_deep_standby = [this] {
             if (before_deep) before_deep();
@@ -1153,7 +1151,7 @@ struct Headless {
         bus.wait_idle(2000);
     }
     // Copies the stored power keys into the cell as they are, out-of-range
-    // values included: PowerManager reads them as read_settings() does.
+    // values included, as SystemSettings::get() does.
     void copy_store_to_cell() {
         Settings power(*backend, "power");
         SystemSettingsValues v = settings_cell.get();
@@ -1589,8 +1587,8 @@ TEST(PowerManager, NoStateEventAtConstruction) {
     EXPECT_TRUE(h.states().empty());
 }
 
-// The power keys are read once and again only when the settings cell
-// changes, not from flash on every tick.
+// The power keys come from the settings cell only: a value stored without
+// reaching the cell changes nothing until the cell carries it.
 TEST(PowerManager, SettingsAreCachedUntilSystemSettingsChanges) {
     Headless h(/*screen_off_s=*/60);
     ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));
@@ -1603,24 +1601,9 @@ TEST(PowerManager, SettingsAreCachedUntilSystemSettingsChanges) {
     EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
 }
 
-// A change stored without reaching the settings cell takes effect at the
-// periodic re-read.
-TEST(PowerManager, DroppedSettingsEventIsCaughtUpByThePeriodicReread) {
-    Headless h(/*screen_off_s=*/60);
-    ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));  // cell not told
-    uint64_t t0 = h.start_idle();
-    for (uint32_t i = 1; i < PowerManager::kSettingsRefreshTicks; ++i) {
-        h.pm->tick(t0 + 5050);
-        ASSERT_EQ(h.pm->level(), PowerLevel::Active) << "tick " << i;  // still 60 s
-    }
-    h.pm->tick(t0 + 5050);
-    EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
-}
-
-// Ten batches land while wisp.bus is held and events are dropped; once
-// it runs again the subscription applies the last of them. Storage keeps
-// 60 s and the single tick is far from the periodic re-read, so only the
-// cell can have brought 15 s.
+// A PowerManager held while ten changes pass ends at the tenth: ten
+// batches land while wisp.bus is held and events are dropped; once it runs
+// again the subscription applies the last of them (15 s).
 TEST(PowerManager, ScreenOffFollowsTheSettingsCellFlooded) {
     Headless h(/*screen_off_s=*/60);
     uint64_t t0 = h.start_idle();
@@ -1641,12 +1624,11 @@ TEST(PowerManager, ScreenOffFollowsTheSettingsCellFlooded) {
     EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
 }
 
-// What the cell held before PowerManager was built applies from its first
-// tick: wisp.bus is held from before construction until after that tick,
-// so no delivery can have run, only the constructor's get(). Storage keeps
-// the 60 s default, so the periodic re-read cannot have done it either.
+// A PowerManager built after a change shows it: what the cell held before
+// PowerManager was built applies from its first tick. wisp.bus is held from
+// before construction until after that tick, so no delivery can have run,
+// only the constructor's get().
 TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
-    JsonFileSettingsBackend backend((temp_dir() / "power.json").string());
     EventBus bus;
     SystemSettingsValues stored;
     stored.screen_off_s = 20;
@@ -1657,10 +1639,7 @@ TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
     {
         wisp::test::BusFlood flood(bus);
         flood.hold();
-        PowerManagerDeps deps{.bus = bus,
-                              .registry = registry,
-                              .locks = locks,
-                              .settings = Settings(backend, "power")};
+        PowerManagerDeps deps{.bus = bus, .registry = registry, .locks = locks};
         deps.system_settings = &settings;
         auto pm = std::make_unique<PowerManager>(std::move(deps));
         pm->note_activity();
@@ -1673,6 +1652,57 @@ TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
         ASSERT_TRUE(bus.wait_idle(2000));
         pm.reset();
     }
+    bus.stop();
+}
+
+// Counts get() calls into a real backend.
+class CountingBackend : public wisp::core::SettingsBackend {
+public:
+    explicit CountingBackend(wisp::core::SettingsBackend& inner) : inner_(inner) {}
+    wisp::Result<wisp::Value> get(const std::string& ns, const std::string& key) override {
+        ++gets;
+        return inner_.get(ns, key);
+    }
+    wisp::Result<void> set(const std::string& ns, const std::string& key,
+                           const wisp::Value& value) override {
+        return inner_.set(ns, key, value);
+    }
+    wisp::Result<void> erase(const std::string& ns, const std::string& key) override {
+        return inner_.erase(ns, key);
+    }
+    wisp::Result<void> erase_all() override { return inner_.erase_all(); }
+    wisp::Result<std::vector<wisp::core::SettingsEntry>> load_all() override {
+        return inner_.load_all();
+    }
+    wisp::Result<void> write_batch(std::span<const wisp::core::SettingsChange> changes) override {
+        return inner_.write_batch(changes);
+    }
+    std::atomic<int> gets{0};
+
+private:
+    wisp::core::SettingsBackend& inner_;
+};
+
+// The power keys come only from the settings cell: two minutes of ticks
+// read nothing from the settings store behind the cell's owner.
+TEST(PowerManager, TickReadsNoSettings) {
+    JsonFileSettingsBackend inner((temp_dir() / "power.json").string());
+    CountingBackend counting(inner);
+    EventBus bus;
+    wisp::core::SystemSettings system_settings(counting, bus, nullptr);
+    system_settings.seed_cell();
+    DeviceRegistry registry;
+    WakeLockRegistry locks{bus};
+    bus.start();
+    PowerManagerDeps deps{.bus = bus, .registry = registry, .locks = locks};
+    deps.system_settings = &system_settings.cell();
+    auto pm = std::make_unique<PowerManager>(std::move(deps));
+    counting.gets = 0;
+    const uint64_t t0 = wisp::os::now_ms();
+    for (uint64_t i = 1; i <= 120; ++i) pm->tick(t0 + i * 1000);
+    EXPECT_EQ(counting.gets.load(), 0);
+    ASSERT_TRUE(bus.wait_idle(2000));
+    pm.reset();
     bus.stop();
 }
 
@@ -1815,7 +1845,6 @@ TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
     ASSERT_TRUE(bus.start());
     DeviceRegistry registry;
     WakeLockRegistry locks{bus};
-    JsonFileSettingsBackend backend((temp_dir() / "activity.json").string());
     auto display = std::make_shared<FakeDisplay>("display.main", 320, 240);
     auto touch = std::make_shared<FakeTouch>("touch.main");
     UiRuntime ui(display, touch);
@@ -1827,7 +1856,6 @@ TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
             .bus = bus,
             .registry = registry,
             .locks = locks,
-            .settings = Settings(backend, "power"),
             .display = display,
             .ui = &ui,
             .buttons = &buttons,
