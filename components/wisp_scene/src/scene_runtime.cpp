@@ -218,8 +218,8 @@ Result<void> SceneRuntime::start() {
     if (deps_.settings != nullptr) {
         struct Seen {
             int utc_offset_min = 0;
-            bool time_24h = true;
-            ui::Lang lang = ui::Lang::Zh;
+            bool time_24h = false;
+            ui::Lang lang = {};
         };
         const Seen first = deps_.settings->read([](const core::SystemSettingsValues& v) {
             return Seen{v.utc_offset_min, v.time_24h, ui::to_lang(v.language)};

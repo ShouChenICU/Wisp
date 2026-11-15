@@ -807,6 +807,12 @@ TEST(SystemSettings, InvalidStoredValueLogsOnceAtSeed) {
     ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "fr"));
     CaptureSink sink;
     wisp::log::add_sink(&sink);
+    // A failed ASSERT returns early; the sink must not stay registered
+    // after it is destroyed.
+    struct Unregister {
+        CaptureSink* sink;
+        ~Unregister() { wisp::log::remove_sink(sink); }
+    } unregister{&sink};
 
     (void)fx.settings.get();
     EXPECT_TRUE(sink.invalid().empty());
@@ -821,7 +827,6 @@ TEST(SystemSettings, InvalidStoredValueLogsOnceAtSeed) {
 
     fx.settings.seed_cell();
     EXPECT_EQ(sink.invalid().size(), 4u);
-    wisp::log::remove_sink(&sink);
 }
 
 // system.settings carries the same map GET /settings returns.

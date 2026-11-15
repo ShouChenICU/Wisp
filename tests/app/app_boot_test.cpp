@@ -480,13 +480,17 @@ TEST(AppBoot, SettingsCellIsSeededFromStorage) {
 // The stored language is the screen's from the first frame, and the cell
 // every follower (scenes, the agent) reads holds the same code.
 TEST(AppBoot, StoredLanguageReachesTheScreenScenesAndAgent) {
+    // The UI language is process-wide: put it back even when an ASSERT
+    // stops the test early, or later tests start in Japanese.
+    struct ResetLang {
+        ~ResetLang() { wisp::ui::set_lang(wisp::ui::Lang::Zh); }
+    } reset_lang;
     auto h = make_app({.with_display = true});
     ASSERT_TRUE(wisp::core::Settings(*h.app.platform().settings, "sys").set("lang", "ja"));
     ASSERT_TRUE(h.app.start());
     EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Ja);
     EXPECT_EQ(h.app.system_settings().cell().get().language, wisp::core::LangCode::Ja);
     h.app.stop();
-    wisp::ui::set_lang(wisp::ui::Lang::Zh);
 }
 
 // The App's bus has the default capacity (64 events), so 200 events
