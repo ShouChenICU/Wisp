@@ -7,15 +7,17 @@
 //   - builds PairingService (and, with a "net.wifi" device, WifiService)
 //     and init()s them through run_io -- WifiService::init() only loads
 //     the saved list and user enable flag; disabled state shuts the radio off;
-//   - subscribes to power.state, net.wifi.state and net.ap.state, only to
-//     wake the task: each tick it applies PowerManager::level() to
-//     WifiService::set_power_level() and reads which interfaces are up from
-//     WifiService, so a dropped or late event cannot leave the radio or the
-//     servers in the wrong state;
+//   - follows PowerManager::level_cell(), PowerMonitor::supply() and
+//     WifiService's wifi_cell()/ap_cell() on wisp.bus, only to wake the
+//     task: each tick it applies PowerManager::level() to
+//     WifiService::set_power_level(), reads the supply and which interfaces
+//     are up itself, so a late wake cannot leave the radio or the servers
+//     in the wrong state;
 //   - with the scenes' SceneHttp, builds the NetworkWindow (scene-device
 //     spec 4.4) that the task ticks with the same level before the Wi-Fi
-//     service, so requests start waiting before the radio goes off; the
-//     system.time event tells the window a sync attempt has finished;
+//     service, so requests start waiting before the radio goes off; a move
+//     of TimeSyncService::result_cell()'s attempt count tells the window a
+//     sync attempt has finished;
 //   - system wake locks (scene-device spec 4.3): the task holds
 //     "system.hotspot" (network) while the setup hotspot is up, and the
 //     "wisp.ntp" worker "system.ntp" (network) for each sync attempt;
@@ -33,9 +35,9 @@
 // kNetTickMs) and the only thread that
 // starts or stops the HTTP servers once start() has returned. It has its
 // own task rather than an os::Timer because tick() may block for a ~3 s
-// scan, and on ESP every Timer shares one dispatch task. Event handlers
-// only wake the task, so no blocking server call ever runs on the
-// EventBus dispatcher. A server whose start() failed is retried with a
+// scan, and on ESP every Timer shares one dispatch task. Cell callbacks
+// only wake the task, so no blocking server or driver call ever runs on
+// the wisp.bus dispatcher. A server whose start() failed is retried with a
 // backoff (kStartRetryMinMs doubling up to kStartRetryMaxMs) while its
 // interface stays up.
 //
@@ -55,10 +57,11 @@
 // "wisp.netcfg" worker. It never accesses flash directly. stop() joins
 // this worker before destroying the services its jobs use.
 //
-// stop() joins the task, stops both servers (their on_close callbacks run
-// while they join connection threads; nothing here holds a lock then),
-// unsubscribes and destroys the AdminServer before the services it
-// routes to. App calls it before tearing down PowerManager.
+// stop() first releases the cell subscriptions (wifi_state() then reads
+// nullopt), joins the task, stops both servers (their on_close callbacks
+// run while they join connection threads; nothing here holds a lock then)
+// and destroys the AdminServer before the services it routes to. App calls
+// it before tearing down PowerManager and PowerMonitor.
 
 #include <atomic>
 #include <cstdint>
@@ -85,6 +88,7 @@
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -95,6 +99,7 @@
 #include "wisp/net/scene_http.hpp"
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::app {
@@ -190,9 +195,11 @@ public:
     bool submit_settings(std::function<void()> job);
 
     net::WifiService* wifi() const { return wifi_.get(); }
-    // The Wi-Fi state as of the "wisp.net" task's last tick (nullopt
-    // without a WifiService): one atomic load, never a lock, for readers
-    // that must not wait (the scene task's wisp.device.info()).
+    // The Wi-Fi state as WifiService's cell holds it (nullopt without a
+    // WifiService, and from the start of stop()): the cell's lock, held
+    // only for memory work, never WifiService's, for readers that must not
+    // wait (the scene task's wisp.device.info()). Readers stop before
+    // stop() destroys the service.
     std::optional<net::WifiState> wifi_state() const;
     // WifiService::connection_expected(): a connection is being made or
     // will be (deep standby only holds the radio off until a network wake
@@ -240,9 +247,10 @@ private:
     bool has_assets_ = false;
     std::unique_ptr<admin::AdminServer> admin_;
 
-    std::vector<core::SubscriptionId> subscriptions_;
-    // static_cast<int>(net::WifiState), or -1 without a WifiService.
-    std::atomic<int> wifi_state_{-1};
+    // On wisp.bus; released first in stop(), before any cell they follow.
+    os::LargeVector<core::CellSubscription> subscriptions_;
+    // wifi_->wifi_cell() while wifi_ exists, else null (wifi_state()).
+    std::atomic<const core::StateCell<net::WifiSnapshot>*> wifi_cell_{nullptr};
     std::atomic<bool> network_expected_{false};
     std::atomic<bool> sta_up_{false};
     std::atomic<bool> ap_up_{false};

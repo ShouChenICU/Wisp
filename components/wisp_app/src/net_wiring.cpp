@@ -8,7 +8,6 @@
 #include "wisp/app/ram_budget.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/wifi.hpp"
@@ -67,8 +66,8 @@ void NetWiring::start() {
         if (auto r = run_io([this, now] { return wifi_->init(now); }); !r) {
             WLOG_W(kTag, "wifi: %s", r.error().message.c_str());
         }
+        wifi_cell_.store(&wifi_->wifi_cell());
         const net::WifiState state = wifi_->status().state;
-        wifi_state_.store(static_cast<int>(state));
         network_expected_.store(wifi_->connection_expected());
         deps_.report.set_note("net", state == net::WifiState::Connecting ? "connecting" : "off");
 
@@ -83,20 +82,19 @@ void NetWiring::start() {
             });
         }
 
-        // Only for a prompt reaction: run() reads the state itself, the
-        // level from PowerManager, so a late event cannot flip it.
-        for (const char* topic :
-             {core::topics::kPowerState, core::topics::kNetWifiState, core::topics::kNetApState}) {
-            subscriptions_.push_back(
-                deps_.bus.subscribe(topic, [this](const core::Event&) { wake_.give(); }));
+        // Only for a prompt reaction: run() polls the level, the supply and
+        // the interfaces itself every kNetTickMs, so the callbacks just wake
+        // it (no Wi-Fi driver call on wisp.bus). Their first call, with the
+        // current value, is one extra wake.
+        auto wake = [this](const auto&) { wake_.give(); };
+        if (deps_.power_manager != nullptr) {
+            subscriptions_.push_back(deps_.power_manager->level_cell().subscribe(wake));
         }
-        if (window_) {
-            subscriptions_.push_back(
-                deps_.bus.subscribe(core::topics::kSystemTime, [this](const core::Event&) {
-                    window_->note_time_result();
-                    wake_.give();
-                }));
+        if (deps_.power_monitor != nullptr) {
+            subscriptions_.push_back(deps_.power_monitor->supply().subscribe(wake));
         }
+        subscriptions_.push_back(wifi_->wifi_cell().subscribe(wake));
+        subscriptions_.push_back(wifi_->ap_cell().subscribe(wake));
     } else {
         deps_.report.set_note("net", "missing");
     }
@@ -123,6 +121,18 @@ void NetWiring::start() {
             WLOG_E(kTag, "cannot start the wisp.ntp task; network time is off");
             time_sync_.reset();
         }
+    }
+    if (window_ && time_sync_) {
+        // A finished attempt moves `attempts`; the first call (the value
+        // as it stands) and any other change are not one.
+        subscriptions_.push_back(time_sync_->result_cell().subscribe(
+            [this, seen = time_sync_->result_cell().get().attempts](
+                const core::TimeSyncResult& result) mutable {
+                if (result.attempts == seen) return;
+                seen = result.attempts;
+                window_->note_time_result();
+                wake_.give();
+            }));
     }
 
     if (!platform.assets.empty()) {
@@ -197,6 +207,10 @@ void NetWiring::start() {
 }
 
 void NetWiring::stop() {
+    // First: the cells' owners (PowerManager, PowerMonitor, and ours below)
+    // go after this, and wifi_state() readers have stopped by now.
+    wifi_cell_.store(nullptr);
+    subscriptions_.clear();
     {
         std::lock_guard lock(settings_mutex_);
         settings_accepting_ = false;
@@ -232,14 +246,11 @@ void NetWiring::stop() {
         serving_ = false;
     }
     start_retry_.reset();
-    for (core::SubscriptionId id : subscriptions_) deps_.bus.unsubscribe(id);
-    subscriptions_.clear();
     hotspot_lock_.release();
     powered_lock_.release();
     window_.reset();
     sta_up_.store(false);
     ap_up_.store(false);
-    wifi_state_.store(-1);
     network_expected_.store(false);
     admin_.reset();
     time_sync_.reset();
@@ -254,9 +265,9 @@ bool NetWiring::flush_admin_ws(uint32_t timeout_ms) {
 }
 
 std::optional<net::WifiState> NetWiring::wifi_state() const {
-    const int state = wifi_state_.load();
-    if (state < 0) return std::nullopt;
-    return static_cast<net::WifiState>(state);
+    const core::StateCell<net::WifiSnapshot>* cell = wifi_cell_.load();
+    if (cell == nullptr) return std::nullopt;
+    return cell->read([](const net::WifiSnapshot& s) { return s.state; });
 }
 
 void NetWiring::run() {
@@ -271,7 +282,6 @@ void NetWiring::run() {
             wifi_->set_power_level(level, now);  // no-op if unchanged
             wifi_->tick(now);
             const net::WifiState state = wifi_->status().state;
-            wifi_state_.store(static_cast<int>(state));
             network_expected_.store(wifi_->connection_expected());
             sta_up_.store(state == net::WifiState::Connected);
             ap_up_.store(wifi_->ap_status().active);
@@ -314,9 +324,13 @@ void NetWiring::run_settings() {
 }
 
 void NetWiring::reconcile_external_power() {
+    // The supply cell keeps the last good sample through a failed read, so
+    // a read that failed (last_status() nullopt) still counts as unknown:
+    // unknown power must not hold Wi-Fi on.
     bool plugged = false;
-    if (reports_external_power_ && deps_.power_monitor != nullptr && wifi_->enabled()) {
-        if (auto sample = deps_.power_monitor->last_status()) plugged = sample->usb_present;
+    if (reports_external_power_ && deps_.power_monitor != nullptr && wifi_->enabled() &&
+        deps_.power_monitor->last_status()) {
+        plugged = deps_.power_monitor->supply().get().usb_present;
     }
     if (deps_.wakelocks == nullptr || plugged == powered_lock_.held()) return;
     if (plugged) {

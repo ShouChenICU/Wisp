@@ -16,6 +16,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -155,11 +156,16 @@ struct Rig {
             .power_manager = pm.get(),
             .wakelocks = &locks,
             .scene_http = http.get(),
-            .now_ms = [this] { return wisp::os::now_ms() + skew.load(); },
+            .now_ms =
+                [this] {
+                    park_here();
+                    return wisp::os::now_ms() + skew.load();
+                },
         });
     }
 
     ~Rig() {
+        resume();  // a failed test may have left the loop parked
         net.reset();
         http.reset();
         pm.reset();
@@ -179,6 +185,25 @@ struct Rig {
         });
     }
 
+    // The "wisp.net" loop reads its clock first thing on every turn: with
+    // `park` set, the next turn stops there until resume(), so a test can
+    // look at NetWiring between two ticks. start() also reads the clock,
+    // so set it only after start().
+    void park_here() {
+        if (!park.load()) return;
+        parked.give();
+        (void)resumed.take(10000);
+    }
+    // Returns once the loop is parked.
+    bool hold_loop() {
+        park = true;
+        return parked.take(5000);
+    }
+    void resume() {
+        park = false;
+        resumed.give();
+    }
+
     size_t result_count() {
         std::lock_guard<std::mutex> lock(results_mutex);
         return results.size();
@@ -187,6 +212,9 @@ struct Rig {
     // Added to the "wisp.net" loop's clock: moves it past the network
     // window's 15 minutes.
     std::atomic<uint64_t> skew{0};
+    std::atomic<bool> park{false};
+    wisp::os::Semaphore parked{1, 0};
+    wisp::os::Semaphore resumed{1, 0};
     std::string dir = wisp::test::temp_dir().string();
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
@@ -402,6 +430,40 @@ TEST(NetWiring, ExternalPowerKeepsNetworkWithoutWakingScreenAndUserOffWins) {
     r.power->set_status({.battery_percent = 100, .usb_present = false});
     r.monitor->sample();
     ASSERT_TRUE(wait_until([&] { return !holds(r.locks, "system.powered_wifi"); }, 5000));
+}
+
+// wifi_state() reads WifiService's cell, not a copy the loop refreshes:
+// a change made between two ticks (here the user turning Wi-Fi off while
+// the loop is parked) shows at once.
+TEST(NetWiring, WifiStateReadsTheCell) {
+    Rig r;
+    r.net->start();
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    ASSERT_TRUE(r.hold_loop());
+    ASSERT_TRUE(r.net->wifi()->set_enabled(false, wisp::os::now_ms()));
+    EXPECT_EQ(r.net->wifi_state(), wisp::net::WifiState::Off);
+    r.resume();
+    r.net->stop();
+    EXPECT_EQ(r.net->wifi_state(), std::nullopt);
+}
+
+// The powered-Wi-Fi lock follows PowerMonitor::supply(): plugging in
+// takes it, unplugging releases it. The loop also reconciles every
+// kNetTickMs, so this pins the outcome, not which of the two got there.
+TEST(NetWiring, ExternalPowerFollowsTheSupplyCell) {
+    Rig r(true);
+    r.net->start();
+    ASSERT_TRUE(
+        wait_until([&] { return r.net->wifi_state() == wisp::net::WifiState::Connected; }, 5000));
+    EXPECT_FALSE(holds(r.locks, "system.powered_wifi"));
+    r.power->set_status({.battery_percent = 80, .charging = true, .usb_present = true});
+    r.monitor->sample();
+    ASSERT_TRUE(r.monitor->supply().get().usb_present);
+    EXPECT_TRUE(wait_until([&] { return holds(r.locks, "system.powered_wifi"); }, 5000));
+    r.power->set_status({.battery_percent = 80, .usb_present = false});
+    r.monitor->sample();
+    EXPECT_TRUE(wait_until([&] { return !holds(r.locks, "system.powered_wifi"); }, 5000));
 }
 
 TEST(NetWiring, SettingsWorkerIsSeparateAndStopsBeforeServices) {

@@ -475,9 +475,9 @@ Result<void> App::start() {
     // admin routes can be handed it.
     // wisp.device.info() and the panel's header. Runs on the scene task
     // and the UI thread, neither of which may touch flash: PowerMonitor's
-    // last sample (a copy under its lock) and the net task's Wi-Fi snapshot
-    // (an atomic) and the service's cached enabled flag, never a read of
-    // the power chip, Settings or a file. Both
+    // last sample (a copy under its lock), NetWiring::wifi_state() (the
+    // Wi-Fi cell, memory only) and the service's cached enabled flag,
+    // never a read of the power chip, Settings or a file. Both
     // pointers are set before the runtime and the status shell start and
     // reset only after they have stopped.
     std::function<Value()> device_status;
@@ -573,8 +573,9 @@ Result<void> App::start() {
                         impl->net ? impl->net->wifi_state() : std::nullopt;
                     return !st || *st == net::WifiState::Connected;
                 },
-            // Cached like network_up (the "wisp.net" task's last tick):
-            // wisp.voice never calls into the WifiService.
+            // An atomic the "wisp.net" task writes each tick (network_up
+            // reads the Wi-Fi cell): wisp.voice never calls into the
+            // WifiService.
             .network_expected = [impl] { return impl->net && impl->net->network_expected(); },
             .screen_on = [impl] { return impl->power_manager && !impl->power_manager->standby(); },
         });
@@ -632,7 +633,7 @@ Result<void> App::start() {
     if (impl_->agent) impl_->agent->attach_ws(impl_->net->ws_hub());
 
     // The capsule, the panel and the banners, once everything their
-    // device_status reads (the net task's Wi-Fi snapshot) is set.
+    // device_status reads (NetWiring::wifi_state()) is set.
     if (impl_->ui && impl_->system_layer) {
         App::Impl* impl = impl_.get();
         impl_->status_shell = os::make_large<StatusShell>(StatusShellDeps{

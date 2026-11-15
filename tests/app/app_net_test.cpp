@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/fake_http.hpp"
 #include "support/fake_wifi.hpp"
@@ -398,6 +399,35 @@ TEST(AppNet, DeepStandbyReachesWifiServiceWhenTheEventIsLost) {
     h.app->bus().unsubscribe(block);
     EXPECT_TRUE(off);
     EXPECT_TRUE(back);
+}
+
+// The same with the cell: deep standby entered while wisp.bus is held and
+// flooded, so power.state and the level cell's wake both wait for the
+// release. The net task also polls PowerManager::level() every
+// NetWiring::kNetTickMs, so this proves that Wi-Fi converges, not which of
+// the two woke it.
+TEST(AppNet, DeepStandbyReachesWifiServiceFlooded) {
+    NetHarness h({.saved = {{"Home", "password1"}}});
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(
+        wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
+    {
+        wisp::test::BusFlood flood(h.app->bus());
+        flood.hold();
+        enter_deep_standby(*h.app->power_manager());
+        flood.flood(256);
+        flood.release();
+    }
+    EXPECT_TRUE(wait_until([&] { return h.app->wifi()->status().state == WifiState::Off; }, 3000));
+    {
+        wisp::test::BusFlood flood(h.app->bus());
+        flood.hold();
+        h.app->power_manager()->exit_standby();
+        flood.flood(256);
+        flood.release();
+    }
+    EXPECT_TRUE(
+        wait_until([&] { return h.app->wifi()->status().state == WifiState::Connected; }, 3000));
 }
 
 // PowerManager is the only source of truth for the power level: a stale or
