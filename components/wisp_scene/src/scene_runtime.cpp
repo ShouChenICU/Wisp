@@ -30,6 +30,9 @@ constexpr const char* kTag = "scene";
 // every valid scene id fits the overview whole.
 static_assert(std::is_trivially_copyable_v<SceneOverview>);
 static_assert(decltype(SceneOverview::foreground)::capacity() >= core::kMaxSceneIdBytes);
+// An edge inbox copies transitions as bytes; every valid scene id fits.
+static_assert(std::is_trivially_copyable_v<SceneTransition>);
+static_assert(decltype(SceneTransition::id)::capacity() >= core::kMaxSceneIdBytes);
 // How long open(), close(), reload() and check_sources() wait for the
 // scene task, and how long they wait for room in its queue.
 constexpr uint32_t kWaitMs = 10000;
@@ -86,6 +89,24 @@ os::LargeUnique<SceneMessage> make_message(std::string id, uint32_t instance, ms
 }
 
 }  // namespace
+
+const char* transition_name(SceneTransition::State state) {
+    switch (state) {
+        case SceneTransition::State::Stopped:
+            return "stopped";
+        case SceneTransition::State::Running:
+            return "running";
+        case SceneTransition::State::Background:
+            return "background";
+        case SceneTransition::State::Error:
+            return "error";
+        case SceneTransition::State::Headless:
+            return "headless";
+        case SceneTransition::State::Deleted:
+            return "deleted";
+    }
+    return "stopped";
+}
 
 // Lets callbacks that may outlive the runtime (worker jobs, store timers)
 // reach it while it exists.
@@ -667,15 +688,24 @@ void SceneRuntime::set_status(const std::string& id, core::SceneState state, std
     s.error = std::move(error);
 }
 
-void SceneRuntime::publish(const std::string& id, const char* state) {
+void SceneRuntime::publish(const std::string& id, SceneTransition::State state) {
+    const char* name = transition_name(state);
     // Logged as well, so whoever reads only the log (the serial console,
     // the simulator's smoke tests) can follow a scene too.
-    WLOG_I(kTag, "%s: %s", id.c_str(), state);
+    WLOG_I(kTag, "%s: %s", id.c_str(), name);
     core::Event e;
     e.topic = core::topics::kSceneState;
     e.source = "scene";
-    e.payload = {{"id", Value(id)}, {"state", Value(state)}};
+    e.payload = {{"id", Value(id)}, {"state", Value(name)}};
     deps_.bus.publish(std::move(e));
+    if (deps_.on_lifecycle) {
+        SceneTransition t;
+        t.state = state;
+        // A longer id is one no scene can have (core::valid_scene_id()):
+        // an open of it fails to load and is published as "error", but
+        // there is nothing a follower could hold for it.
+        if (t.id.assign(id)) deps_.on_lifecycle(t);
+    }
 }
 
 void SceneRuntime::schedule(uint32_t ms, std::function<void()> fn) {
@@ -945,7 +975,7 @@ void SceneRuntime::handle(SceneMessage& m) {
                 close_slot(*s);
             } else {
                 set_status(m.scene_id, core::SceneState::Stopped, "");
-                publish(m.scene_id, "stopped");
+                publish(m.scene_id, SceneTransition::State::Stopped);
             }
         } else {
             Value args = s != nullptr ? s->args : Value();
@@ -1230,7 +1260,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
             std::string text = "cannot load: " + open.error.message;
             WLOG_E(scene_tag(id).c_str(), "%s", text.c_str());
             set_status(id, core::SceneState::Error, text);
-            publish(id, "error");
+            publish(id, SceneTransition::State::Error);
             refused("cannot load");
         }
         done(Result<void>::err(open.error.code, open.error.message));
@@ -1317,7 +1347,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
         if (!run_step(s, s.scene->hook("on_state", "background"))) return failed();
         s.restoring = false;
         set_status(id, core::SceneState::Background, "");
-        publish(id, "background");
+        publish(id, SceneTransition::State::Background);
         done(Result<void>::ok());
         return;
     }
@@ -1335,7 +1365,7 @@ void SceneRuntime::finish_open(SceneMessage& m) {
 
     if (!run_step(s, start_scene(s))) return failed();
     set_status(id, core::SceneState::Running, "");
-    publish(id, "running");
+    publish(id, SceneTransition::State::Running);
     if (visible_) {
         s.shown = true;
         if (!run_step(s, s.scene->hook("on_show"))) return failed();
@@ -1899,7 +1929,7 @@ void SceneRuntime::fault(Slot& s, const ScriptError& err) {
     }
     set_status(s.id, core::SceneState::Error, text);
     WLOG_E(scene_tag(s.id).c_str(), "%s", text.c_str());
-    publish(s.id, "error");
+    publish(s.id, SceneTransition::State::Error);
     tool_answer(std::move(call));
     if (&s != front_) {
         // Spec 3.2: no panel for a scene nobody is looking at, a system
@@ -1996,7 +2026,7 @@ void SceneRuntime::to_background(Slot& s, std::shared_ptr<SceneWaiter> done, con
     }
     if (!run_step(s, s.scene->hook("on_state", "background"))) return finish();
     set_status(s.id, core::SceneState::Background, "");
-    publish(s.id, "background");
+    publish(s.id, SceneTransition::State::Background);
     if (s.store) s.store->flush();
     // Spec 3.5: one too many there now closes the least recently in front
     // (never this one, the most recent; it may go for the budget when
@@ -2054,7 +2084,7 @@ void SceneRuntime::resume(Slot& s, std::shared_ptr<SceneWaiter> waiter) {
     }
     if (!run_step(s, s.scene->hook("on_state", "foreground"))) return failed();
     set_status(id, core::SceneState::Running, "");
-    publish(id, "running");
+    publish(id, SceneTransition::State::Running);
     done(Result<void>::ok());
 }
 
@@ -2113,7 +2143,7 @@ void SceneRuntime::close_slot(Slot& s, std::shared_ptr<SceneWaiter> done) {
     if (in_front) forget_front();
     if (was_running) {
         set_status(s.id, core::SceneState::Stopped, "");
-        publish(s.id, "stopped");
+        publish(s.id, SceneTransition::State::Stopped);
     }
     tool_answer(std::move(call));
     if (s.store) {

@@ -620,6 +620,60 @@ TEST_F(SceneRuntimeTest, OnInstalledReloadsOrPublishesStopped) {
     EXPECT_EQ(rt->status("a").state, SceneState::Running);
 }
 
+// SceneRuntimeDeps::on_lifecycle hears every scene.state the runtime
+// publishes, in the same order; an id no scene can have (too long) is
+// published but not reported.
+TEST_F(SceneRuntimeTest, LifecycleCallbackSeesEveryPublishedState) {
+    using State = wisp::scene::SceneTransition::State;
+    // Shared with the callback: TearDown() stops the runtime, which may
+    // still report, after this test's locals are gone.
+    struct Seen {
+        std::mutex mu;
+        std::vector<StateEvent> edges;
+    };
+    auto seen = std::make_shared<Seen>();
+    configure_deps = [seen](wisp::scene::SceneRuntimeDeps& d) {
+        d.on_lifecycle = [seen](const wisp::scene::SceneTransition& t) {
+            std::lock_guard<std::mutex> lock(seen->mu);
+            seen->edges.push_back({t.id.str(), wisp::scene::transition_name(t.state)});
+        };
+    };
+    start();
+    install("a", kCounter,
+            {{"scene.json",
+              R"({"id":"a","name":"A","version":"1.0.0","schema_version":1,"background":true})"}});
+    install("bad", "error('at load')");
+    install("t", "wisp.tools.register('get', function() return 1 end)\nreturn ui.screen {}",
+            {{"scene.json", R"({"id":"t","name":"T","version":"1.0.0","schema_version":1,)"
+                            R"("tools":[{"name":"get","description":"Get one"}]})"}});
+
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->close("a"));  // it declares "background"
+    ASSERT_EQ(rt->status("a").state, SceneState::Background);
+    ASSERT_TRUE(rt->open("a"));
+    ASSERT_TRUE(rt->exit("a"));
+    EXPECT_FALSE(rt->open("bad"));
+    const std::string too_long(wisp::core::kMaxSceneIdBytes + 1, 'x');
+    EXPECT_FALSE(rt->open(too_long));
+    auto called = rt->call_tool("t", "get", "{}", 5000, {});
+    ASSERT_TRUE(called) << called.error().message;
+    ASSERT_TRUE(called.value().ok) << called.value().error;
+
+    const std::vector<StateEvent> expected = {
+        {"a", "running"}, {"a", "background"}, {"a", "running"},
+        {"a", "stopped"}, {"bad", "error"},    {"t", "headless"},
+    };
+    std::vector<StateEvent> published = events();
+    ASSERT_EQ(published.size(), expected.size() + 1);
+    EXPECT_EQ(published[5], (StateEvent{too_long, "error"}));
+    published.erase(published.begin() + 5);
+    EXPECT_EQ(published, expected);
+    std::lock_guard<std::mutex> lock(seen->mu);
+    EXPECT_EQ(seen->edges, expected);
+    // Every state but Deleted (SceneWiring's) has a name the bus uses.
+    EXPECT_STREQ(wisp::scene::transition_name(State::Deleted), "deleted");
+}
+
 // The scenes overview (spec 3.4 of the state-cells design) answers what
 // foreground() and background_scenes() answer.
 TEST_F(SceneRuntimeTest, OverviewFollowsTheForegroundAndTheBackground) {

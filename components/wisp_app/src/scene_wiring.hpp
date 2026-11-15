@@ -59,7 +59,8 @@
 // confirmation on the device. "Yes" closes the scene if it is up --
 // close_async(), whose callback comes once its last store flush is on disk
 // -- then removes the package (and the data, if asked) on the worker and
-// publishes scene.state {id, "deleted"}; "no" does nothing. The steps
+// publishes scene.state {id, "deleted"} (and reports it through
+// SceneWiringDeps::on_lifecycle); "no" does nothing. The steps
 // after "yes" are delete_scene(), which the agent's scene.delete calls
 // directly once it has asked the user itself.
 
@@ -114,6 +115,11 @@ struct SceneWiringDeps {
     bool sd_own_worker = kSdOwnWorker;
     // kFilesProbeMs; a field so that tests need not wait it out.
     uint32_t files_probe_ms = kFilesProbeMs;
+    // SceneRuntimeDeps::on_lifecycle for the runtime build_runtime() makes,
+    // and also called with Deleted right after remove() publishes
+    // "deleted", on wisp.fs (headless too: deletes need no runtime).
+    // Same contract: it may only hand the edge on. Empty: none.
+    os::LargeFunction<void(const scene::SceneTransition&)> on_lifecycle;
 };
 
 // One installed scene as the self-check card lists it.
@@ -275,7 +281,8 @@ private:
     // user with a system notice (the admin page already got its 202). The
     // scene stays as it is; nothing is retried behind the user's back.
     void delete_failed(const std::string& id, const std::string& name, const char* why);
-    void publish(const std::string& id, const char* state);
+    // scene.state, then deps_.on_lifecycle.
+    void publish(const std::string& id, scene::SceneTransition::State state);
     // On wisp.fs, after the card came or went: marks the card's scenes,
     // queues their recounts on the card's worker and the orphan log here.
     void recount_card(core::SceneFiles& files);

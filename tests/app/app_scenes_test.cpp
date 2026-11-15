@@ -772,6 +772,68 @@ TEST(AppScenes, DeleteSceneWithoutDialog) {
     bus.stop();
 }
 
+// SceneWiringDeps::on_lifecycle hears the runtime's edges and the delete's
+// own Deleted, after the scene's "stopped" and in the order the bus has
+// them.
+TEST(AppScenes, DeleteReportsDeletedAfterStopped) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    wisp::ui::UiRuntime& ui = *b.h.app->ui();
+
+    // A bus of its own, as in DeleteSceneWithoutDialog.
+    wisp::core::EventBus bus;
+    ASSERT_TRUE(bus.start());
+    // Shared with the callbacks, which run on the scene task and wisp.fs.
+    struct Seen {
+        std::mutex mu;
+        std::vector<std::string> published;
+        std::vector<std::string> reported;
+    };
+    auto seen = std::make_shared<Seen>();
+    bus.subscribe("scene.state", [seen](const wisp::core::Event& e) {
+        std::lock_guard<std::mutex> lock(seen->mu);
+        if (e.payload.at("id").as_string() == "counter")
+            seen->published.push_back(e.payload.at("state").as_string());
+    });
+    wisp::app::Platform platform;
+    wisp::app::SceneWiringDeps deps{platform, bus, b.h.app->storage()};
+    deps.on_lifecycle = [seen](const wisp::scene::SceneTransition& t) {
+        std::lock_guard<std::mutex> lock(seen->mu);
+        if (t.id == std::string_view("counter"))
+            seen->reported.push_back(wisp::scene::transition_name(t.state));
+    };
+    wisp::app::SceneWiring wiring(std::move(deps));
+    wiring.start_storage();
+    ASSERT_NE(wiring.repository(), nullptr);
+    std::unique_ptr<wisp::ui::SystemLayer> layer;
+    const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
+    run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
+    wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
+    wiring.start_runtime(nullptr);
+    ASSERT_TRUE(wiring.runtime()->open("counter"));
+
+    auto done = std::make_shared<std::promise<wisp::Result<void>>>();
+    wiring.delete_scene("counter", false,
+                        [done](wisp::Result<void> r) { done->set_value(std::move(r)); });
+    auto f = done->get_future();
+    ASSERT_EQ(f.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_TRUE(f.get());
+    // `done` runs after remove() has reported.
+    ASSERT_TRUE(bus.wait_idle(3000));
+    const std::vector<std::string> expected{"running", "stopped", "deleted"};
+    {
+        std::lock_guard<std::mutex> lock(seen->mu);
+        EXPECT_EQ(seen->reported, expected);
+        EXPECT_EQ(seen->published, expected);
+    }
+
+    wiring.stop_runtime();
+    run_on_ui_blocking(&ui, [&] { layer.reset(); });
+    wiring.stop();
+    bus.stop();
+}
+
 // A delete the user confirmed that cannot go ahead (the storage worker's
 // queue is full) is not dropped in silence: a system notice says so, the
 // scene stays, and a later delete works.

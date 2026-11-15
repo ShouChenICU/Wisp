@@ -197,7 +197,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .files = files_.get(),
                                .supply = supply,
                                .settings = settings,
-                               .devices = devices};
+                               .devices = devices,
+                               .on_lifecycle = deps_.on_lifecycle};
     if (auto system = deps_.storage.write_root(core::Area::System)) {
         rt.background_list_path = system.value() + "/scenes/background.json";
     } else {
@@ -474,16 +475,22 @@ Result<void> SceneWiring::remove(const std::string& id, const std::string& name,
                           std::string(core::notice::kSceneDeleteFailed) + ":" + name,
                           core::DismissReason::Dismiss);
     }
-    publish(id, "deleted");
+    publish(id, scene::SceneTransition::State::Deleted);
     return removed;
 }
 
-void SceneWiring::publish(const std::string& id, const char* state) {
+void SceneWiring::publish(const std::string& id, scene::SceneTransition::State state) {
     core::Event e;
     e.topic = core::topics::kSceneState;
     e.source = "scene";
-    e.payload = {{"id", Value(id)}, {"state", Value(state)}};
+    e.payload = {{"id", Value(id)}, {"state", Value(scene::transition_name(state))}};
     deps_.bus.publish(std::move(e));
+    if (deps_.on_lifecycle) {
+        scene::SceneTransition t;
+        t.state = state;
+        // The repository removed it, so the id is a valid one and fits.
+        if (t.id.assign(id)) deps_.on_lifecycle(t);
+    }
 }
 
 bool SceneWiring::list_async(std::function<void(std::vector<SceneEntry>)> on_ui) {

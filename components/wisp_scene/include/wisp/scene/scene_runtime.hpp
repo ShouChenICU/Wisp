@@ -399,6 +399,20 @@ struct BackgroundScene {
     bool operator==(const BackgroundScene&) const = default;
 };
 
+// One scene lifecycle edge (spec 3.5 of the state-cells design): what
+// scene.state says, for a consumer that must see every one. Trivially
+// copyable, so it travels through a core::EdgeInbox.
+struct SceneTransition {
+    enum class State : uint8_t { Stopped, Running, Background, Error, Headless, Deleted };
+    // Every scene's id fits: core::valid_scene_id() allows at most
+    // core::kMaxSceneIdBytes.
+    FixedString<32> id;
+    State state = State::Stopped;
+};
+
+// The "state" text of scene.state for `state` ("stopped", "running", ...).
+const char* transition_name(SceneTransition::State state);
+
 // What SceneRuntime::overview() holds (spec 3.4 of the state-cells
 // design): a summary beside scene.state, which stays as it is.
 struct SceneOverview {
@@ -544,6 +558,13 @@ struct SceneRuntimeDeps {
     // wisp.device.list/get/call; null: list() returns {}, get() and call()
     // nil, "unavailable". Must outlive the runtime.
     core::DeviceService* devices = nullptr;
+    // Every scene.state the runtime publishes, right after the bus has it,
+    // in the same order; empty: none. An id too long for SceneTransition
+    // names no scene (an open of it fails to load) and is not reported.
+    // Called on the scene task, possibly from deep inside a scene's
+    // lifecycle (no runtime lock is held, but the task must not wait):
+    // it may only hand the edge on, e.g. push it into a core::EdgeInbox.
+    os::LargeFunction<void(const SceneTransition&)> on_lifecycle;
 };
 
 struct SceneRuntimeConfig {
@@ -844,7 +865,8 @@ private:
     void answer(const std::string& id, SceneMessage& m);
     bool push(os::LargeUnique<SceneMessage> msg, uint32_t timeout_ms);
     void set_status(const std::string& id, core::SceneState state, std::string error);
-    void publish(const std::string& id, const char* state);
+    // scene.state, the log line and deps_.on_lifecycle.
+    void publish(const std::string& id, SceneTransition::State state);
     // SceneStoreDeps::schedule: runs `fn` on the scene task after `ms`.
     void schedule(uint32_t ms, std::function<void()> fn);
 

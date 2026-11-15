@@ -240,7 +240,7 @@ void SceneRuntime::finish_headless(SceneMessage& m, const PendingLoad& load) {
         std::string text = "cannot load: " + open.error.message;
         WLOG_E(("scene." + id).c_str(), "%s", text.c_str());
         set_status(id, core::SceneState::Error, text);
-        publish(id, "error");
+        publish(id, SceneTransition::State::Error);
         fail("load_failed", std::move(text));
         return;
     }
@@ -289,7 +289,7 @@ void SceneRuntime::finish_headless(SceneMessage& m, const PendingLoad& load) {
     }
     s.scene->batch().clear();
     set_status(id, core::SceneState::Headless, "");
-    publish(id, "headless");
+    publish(id, SceneTransition::State::Headless);
     for (ToolRun& r : tool_runs_) {
         if (r.job == job) r.loading = false;
     }
