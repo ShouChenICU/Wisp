@@ -914,6 +914,25 @@ TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
     no_display.set_brightness(10);
 }
 
+// A direct set_brightness() moves what the cell follower takes as shown:
+// a later delivery of the cell's earlier value (here A -> B -> A coalesced
+// into one A) puts the panel back at the cell's value.
+TEST(PowerManager, DirectSetBrightnessThenTheCellsValueAgain) {
+    Fixture f;
+    f.settle_ui();
+    const int cell_level = f.settings_cell.get().brightness;
+    f.run_on_ui([&] { f.pm->set_brightness(80); });
+    ASSERT_EQ(f.display->brightness(), 80);
+    {
+        wisp::test::UiHold hold(f.ui.get());
+        f.settings_cell.update([](SettingsSnapshot& v) { v.brightness = 150; });
+        f.settings_cell.update([&](SettingsSnapshot& v) { v.brightness = cell_level; });
+        hold.release();
+    }
+    f.settle_ui();
+    EXPECT_EQ(f.display->brightness(), cell_level);
+}
+
 // A burst of brightness changes while both the bus and the UI are stuck
 // reaches the panel as its last value, in at most one step per follower
 // call: the follower runs on the UI dispatcher, needs no post-queue slot
@@ -938,9 +957,10 @@ TEST(PowerManager, BrightnessFollowsTheCellFlooded) {
     EXPECT_LE(f.display->set_brightness_calls() - calls_before, 2);
 }
 
-// What SystemSettings::set() does after a batch whose rollback failed: the
-// cell is reseeded from storage without an event. A brightness stored that
-// way still reaches the panel.
+// A seed (no event, as SystemSettings::set() reseeds the cell after a
+// batch whose rollback failed) still reaches the panel through the
+// follower. The reseed itself is SystemSettings'
+// FailedRollbackReseedsTheCellFromStorage (tests/core/system_settings_test.cpp).
 TEST(PowerManager, ReseededBrightnessReachesThePanel) {
     Fixture f;
     f.settle_ui();

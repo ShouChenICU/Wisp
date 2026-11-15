@@ -590,6 +590,9 @@ void PowerManager::set_brightness(uint8_t level) {
         }
         return;
     }
+    // What the follower compares with: its next delivery that differs from
+    // this level is shown, even the cell's value from before this call.
+    followed_brightness_ = level;
     apply_brightness(level);
 }
 

@@ -199,9 +199,11 @@ public:
 
     // Sets the panel brightness: applied right away while the panel is on
     // (the dimmed share of it at Dim), remembered while it is off and
-    // applied on wake -- changing brightness never wakes the screen. With a
-    // UI the cell follower calls it there; any caller must be on the UI task
-    // (a call from elsewhere is ignored, logged once). Without a UI
+    // applied on wake -- changing brightness never wakes the screen. No
+    // production code calls it: with a UI the panel follows the settings
+    // cell (follow_brightness()), and the follower's next delivery that
+    // differs from `level` replaces it. With a UI a caller must be on the UI
+    // task (a call from elsewhere is ignored, logged once); without one
     // (headless, tests) it runs on the caller's thread. Callers must stop
     // calling this before the PowerManager is destroyed.
     void set_brightness(uint8_t level);
@@ -273,8 +275,8 @@ private:
     // show_brightness() and dim_brightness() need it held. On the UI task
     // (or headless).
     void apply_brightness(int level);
-    // The cell follower's body: apply_brightness() for a level it has not
-    // applied yet.
+    // The cell follower's body: apply_brightness() for a level other than
+    // followed_brightness_ (the last one it or set_brightness() applied).
     void follow_brightness(int level);
     void show_brightness(int level);
     int dim_brightness() const;
@@ -350,8 +352,10 @@ private:
     // What the setting asks for, and what the panel was last told.
     int user_brightness_ = core::setting_default_int(core::SettingId::Brightness);
     int shown_brightness_ = core::setting_default_int(core::SettingId::Brightness);
-    // The cell's level the follower last applied (the constructor's before
-    // its first call); touched only by the constructor and the follower.
+    // The level the follower or set_brightness() last applied (the
+    // constructor's before either runs); touched by the constructor and
+    // then on the UI task only (headless: set_brightness()'s caller, and no
+    // follower runs).
     int followed_brightness_ = core::setting_default_int(core::SettingId::Brightness);
 
     std::atomic<bool> tick_eval_queued_{false};
