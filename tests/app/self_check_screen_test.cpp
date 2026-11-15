@@ -14,6 +14,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,7 +25,9 @@
 #include <utility>
 #include <vector>
 
+#include "app/ui_net_harness.hpp"
 #include "self_check_layout.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/font_image.hpp"
 #include "support/lvgl_probe.hpp"
@@ -44,6 +48,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
+#include "wisp/scene/scene_runtime.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/ui/fonts.hpp"
 #include "wisp/ui/strings.hpp"
@@ -91,6 +96,9 @@ struct BoardExtras {
     // The board's name() and Platform::target.
     std::string name = "fake-full";
     std::string target;
+    // Registered as "clock.main" when set; otherwise a FakeClock of the
+    // board's own.
+    std::shared_ptr<FakeClock> clock;
 };
 
 class FullFakeBoard : public wisp::app::Board {
@@ -121,7 +129,7 @@ public:
         registry.add(imu_);
         registry.add(std::make_shared<FakeButton>("button.power"));
         registry.add(power_);
-        registry.add(std::make_shared<FakeClock>("clock.main"));
+        registry.add(extras_.clock ? extras_.clock : std::make_shared<FakeClock>("clock.main"));
         if (sd_) {
             registry.add(sd_);
             if (!sd_->online()) {
@@ -489,11 +497,10 @@ TEST(SelfCheckScreen, ImuSamplingStopsDuringStandbyAndResumesOnWake) {
 
     run_on_ui_blocking(h.app.ui(), [&] { pm->enter_standby(); });
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
-    // pm->standby() flips synchronously inside enter_standby(), but
-    // SelfCheck's own standby_ flag (consulted by sample_loop(), which
-    // runs on its own task) only catches up once the EventBus dispatcher
-    // has actually delivered the "power.state" event to on_power_event()
-    // -- asynchronously, on the bus's own dispatcher task. Without
+    // pm->standby() flips synchronously inside enter_standby(), but the
+    // IMU pause (SensorService) and the sampler's standby flag only catch
+    // up once wisp.bus has run the power level cell's callbacks --
+    // asynchronously, on the bus's own dispatcher task. Without
     // waiting for that dispatch to finish first, there's a race where
     // sample_loop() still takes one more real IMU read() between the
     // wait_until() above and the snapshot below, making this assertion
@@ -1874,4 +1881,168 @@ TEST(SelfCheckScreen, TitleUsesLargeFontInCurrentLanguage) {
     }
 
     h.app.stop();
+}
+
+// The screen follows its owners' cells. The tests below stop every LVGL
+// timer of the UI loop (the screen's 100 ms refresh, with its 1 s network
+// resync, its 30 s scene resync and its settings poll), while posted jobs
+// and dispatch slots still run, and hold and flood wisp.bus where an event
+// could otherwise do it: what changes the screen is a cell's callback.
+namespace {
+
+using wisp::test::UiNetHarness;
+using wisp::test::UiNetOptions;
+
+// Returns once the UI loop is in its paused branch (the blocking job runs
+// there or right before it, never before another lv_timer_handler()).
+void stop_lvgl_timers(wisp::app::App& app) {
+    app.ui()->set_paused(true);
+    run_on_ui_blocking(app.ui(), [] {});
+}
+
+bool on_diagnostics(UiNetHarness& h, const std::string& needle) {
+    return !run_on_ui_thread(h.app->ui(), [&] {
+                return find_label_text_containing(lv_screen_active(), needle.c_str());
+            }).empty();
+}
+
+std::vector<std::string> imu_holders(wisp::app::App& app) {
+    std::vector<std::string> out;
+    for (const auto& e : app.occupancy().list()) out.push_back(e.holder);
+    return out;
+}
+
+}  // namespace
+
+// The sampler follows the power level cell on wisp.bus. power.state is
+// dropped while the bus is held; once it runs again the cell's callback
+// stops the once-a-second power and clock reads. Their absence can only be
+// seen over time: a read in flight when the callback ran may still finish
+// within one cadence, after which none comes for longer than one.
+TEST(SelfCheckScreen, SamplerPausesInStandbyFlooded) {
+    auto clock = std::make_shared<FakeClock>("clock.main");
+    BoardExtras extras;
+    extras.clock = clock;
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
+              "rounded_rect", /*with_sd=*/false, /*display_size=*/480, std::move(extras));
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(wait_until([&] { return clock->reads.load() > 0; }, 3000));
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(pm, nullptr);
+
+    {
+        wisp::test::BusFlood flood(h.app.bus());
+        flood.hold();
+        run_on_ui_blocking(h.app.ui(), [&] { pm->enter_standby(); });
+        ASSERT_TRUE(pm->standby());
+        flood.flood(256);
+        flood.release();
+    }
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    wisp::os::sleep_ms(1100);
+    const int settled = clock->reads.load();
+    wisp::os::sleep_ms(1500);
+    EXPECT_EQ(clock->reads.load(), settled);
+
+    run_on_ui_blocking(h.app.ui(), [&] { pm->exit_standby(); });
+    EXPECT_TRUE(wait_until([&] { return clock->reads.load() > settled; }, 3000));
+    h.app.stop();
+}
+
+// The network section follows the Wi-Fi and hotspot cells, with net.*
+// dropped and the 1 s resync stopped.
+TEST(SelfCheckScreen, NetSectionFollowsTheCell) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.open_diagnostics());
+    ASSERT_TRUE(wait_until([&] { return on_diagnostics(h, "Set up Wi-Fi"); }, 3000));
+    stop_lvgl_timers(*h.app);
+    wisp::test::BusFlood flood(h.app->bus());
+    flood.hold();
+
+    ASSERT_TRUE(h.app->wifi()->add_network("Home", "password1", wisp::os::now_ms()));
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Connected Home"); }, 5000));
+
+    ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Stop setup"); }, 3000));
+
+    ASSERT_TRUE(h.app->wifi()->stop_provisioning());
+    flood.flood(256);
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Set up Wi-Fi"); }, 3000));
+
+    flood.release();
+    h.app->ui()->set_paused(false);
+}
+
+// Closing a faulted scene's error panel publishes no scene.state; it moves
+// the scenes overview's foreground, and the screen takes the IMU back at
+// once rather than at its 30 s scene resync (stopped here).
+TEST(SelfCheckScreen, ClosingAFaultedPanelIsFollowedAtOnce) {
+    UiNetOptions opts;
+    opts.imu = std::make_shared<FakeImu>("imu.main");
+    UiNetHarness h(opts);
+    const std::filesystem::path dir = std::filesystem::path(h.root) / "scenes" / "bad";
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "scene.json")
+        << R"({"id":"bad","name":"Bad","version":"1.0.0","schema_version":1})";
+    std::ofstream(dir / "main.lua") << R"(return ui.screen {
+  ui.button { ref = "go", text = "go", on_click = function() error("boom") end },
+}
+)";
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.open_diagnostics());
+    const std::vector<std::string> selfcheck = {"system.selfcheck"};
+    ASSERT_TRUE(wait_until([&] { return imu_holders(*h.app) == selfcheck; }, 3000));
+    wisp::scene::SceneRuntime* rt = h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+
+    ASSERT_TRUE(rt->open("bad"));
+    ASSERT_TRUE(wait_until(
+        [&] {
+            return run_on_ui_thread(h.app->ui(), [] {
+                       return find_button_with_label(lv_screen_active(), "go") != nullptr
+                                  ? std::string("yes")
+                                  : std::string();
+                   }) == "yes";
+        },
+        3000));
+    ASSERT_TRUE(wait_until([&] { return imu_holders(*h.app).empty(); }, 3000));
+    ASSERT_TRUE(rt->click_ref("go"));
+    ASSERT_TRUE(
+        wait_until([&] { return rt->status("bad").state == wisp::core::SceneState::Error; }, 3000));
+
+    stop_lvgl_timers(*h.app);
+    ASSERT_EQ(run_on_ui_thread(h.app->ui(),
+                               [] {
+                                   lv_obj_t* back = find_button_with_label(
+                                       lv_layer_top(), wisp::ui::tr(StrId::SceneBack));
+                                   if (back == nullptr) return std::string("none");
+                                   lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+                                   return std::string("ok");
+                               }),
+              "ok");
+    ASSERT_TRUE(wait_until([&] { return !rt->foreground(); }, 3000));
+    EXPECT_EQ(rt->status("bad").state, wisp::core::SceneState::Error);
+    EXPECT_TRUE(wait_until([&] { return imu_holders(*h.app) == selfcheck; }, 3000));
+    h.app->ui()->set_paused(false);
+}
+
+// The time sync row follows the settings cell's time zone, with the
+// 100 ms settings poll stopped.
+TEST(SelfCheckScreen, TimeZoneFollowsTheCell) {
+    UiNetOptions opts;
+    opts.with_sntp = true;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.open_diagnostics());
+    ASSERT_TRUE(h.app->wifi()->add_network("Home", "password1", wisp::os::now_ms()));
+    // 00:00 UTC is 08:00 at the default UTC+8.
+    ASSERT_TRUE(wait_until([&] { return on_diagnostics(h, "Synced 08:00"); }, 5000));
+    stop_lvgl_timers(*h.app);
+
+    ASSERT_TRUE(h.app->system_settings().set({{"utc_offset_min", -210}}));
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Synced 20:30"); }, 3000));
+    h.app->ui()->set_paused(false);
 }

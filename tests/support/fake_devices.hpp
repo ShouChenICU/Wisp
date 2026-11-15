@@ -457,6 +457,7 @@ public:
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
     wisp::Result<int64_t> get_unix() override {
+        reads.fetch_add(1);
         return wisp::Result<int64_t>::ok(unix_seconds_.load());
     }
 
@@ -464,6 +465,9 @@ public:
         unix_seconds_.store(seconds);
         return wisp::Result<void>::ok();
     }
+
+    // How many times get_unix() was called.
+    std::atomic<int> reads{0};
 
 private:
     wisp::hal::DeviceInfo info_;

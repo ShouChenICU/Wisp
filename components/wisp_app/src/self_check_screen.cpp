@@ -1,5 +1,5 @@
 // The self-check screen (spec 8), the hardware diagnostics: page framing,
-// lifecycle, bus subscriptions and timers. See self_check.hpp for who
+// lifecycle, cell and bus subscriptions and timers. See self_check.hpp for who
 // builds and tears it down.
 
 #include "self_check_screen.hpp"
@@ -20,7 +20,6 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -36,12 +35,13 @@ namespace {
 
 constexpr uint32_t kUiRefreshMs = 100;
 // How often the refresh timer re-reads the network state into the network
-// section even without an event: the bus drops its oldest events when
-// full. The reads are a few short lock-protected copies.
+// section besides the Wi-Fi and hotspot cells. The reads are a few short
+// lock-protected copies.
 constexpr uint64_t kNetResyncMs = 1000;
-// How often the scene list is read again without a scene.state event, for
-// one the bus dropped. Each is a walk of the scene packages on the storage
-// worker, so far apart; a state change shows within one refresh anyway
+// How often the scene list is read again besides the overview's catalog
+// counter, which a dev-mode file edit or a card coming or going does not
+// move. Each is a walk of the scene packages on the storage worker, so far
+// apart; a state change shows within one refresh anyway
 // (SceneSection::update_states()).
 constexpr uint64_t kSceneResyncMs = 30000;
 // How often storage is measured, on the storage worker. A request whose
@@ -69,23 +69,15 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
       sampler_(app.sensors(), power_, clock_) {}
 
 SelfCheck::~SelfCheck() {
-    // Unsubscribe from "power.state" before anything else, so the
-    // sampler's standby flag can't change from this point on --
-    // EventBus::unsubscribe()'s own contract guarantees the handler never
-    // runs again once this returns.
-    if (power_sub_ != 0) {
-        app_.bus().unsubscribe(power_sub_);
-        power_sub_ = 0;
-    }
-    // Whatever the handlers below already posted finds alive_ cleared by
-    // the teardown at the end of this destructor.
-    if (net_sub_ != 0) {
-        app_.bus().unsubscribe(net_sub_);
-        net_sub_ = 0;
-    }
-    if (scene_sub_ != 0) {
-        app_.bus().unsubscribe(scene_sub_);
-        scene_sub_ = 0;
+    // The power level first, so the sampler's standby flag can't change
+    // from this point on: the release waits for a set_standby() in
+    // progress on wisp.bus, nothing more. Then the UI-thread ones, before
+    // the widgets they update go below; on the UI thread (the shell's
+    // close) each returns at once, from App::stop()'s thread it waits for
+    // a callback in progress.
+    for (core::CellSubscription* sub :
+         {&power_sub_, &wifi_sub_, &ap_sub_, &scene_sub_, &settings_sub_}) {
+        sub->reset();
     }
 
     // Thread-agnostic: nothing the sampler touches requires the UI thread.
@@ -131,14 +123,7 @@ void SelfCheck::build() {
 
     sampler_.start();
     subscribe_buttons();
-    subscribe_power();
-    subscribe_net();
-    // Every scene.state (installed, opened, closed, failed, deleted) lists
-    // the scenes again, and says whether a scene now covers this screen.
-    scene_sub_ = app_.bus().subscribe(core::topics::kSceneState, [this](const core::Event&) {
-        request_scene_list();
-        follow_foreground();
-    });
+    subscribe_cells();
     follow_foreground();
     request_scene_list();
     last_scene_list_ms_ = os::now_ms();
@@ -286,31 +271,52 @@ void SelfCheck::on_button_event(const core::Event& e) {
     }
 }
 
-void SelfCheck::subscribe_power() {
-    // Lets the sampler (running on its own thread, not the UI task) stop
-    // polling the IMU while in standby without reaching into PowerManager
-    // itself.
-    power_sub_ = app_.bus().subscribe(core::topics::kPowerState,
-                                      [this](const core::Event& e) { on_power_event(e); });
-}
-
-void SelfCheck::on_power_event(const core::Event& e) {
-    auto it = e.payload.find("state");
-    // Both standby levels have the screen off; dim keeps it on.
-    const bool off = it != e.payload.end() && (it->second.as_string() == "standby" ||
-                                               it->second.as_string() == "deep_standby");
-    sampler_.set_standby(off);
-}
-
-void SelfCheck::subscribe_net() {
-    net_sub_ = app_.bus().subscribe("net.", [this](const core::Event& e) { on_net_event(e); });
-}
-
-void SelfCheck::on_net_event(const core::Event& e) {
-    if (e.topic != core::topics::kNetWifiState && e.topic != core::topics::kNetApState) return;
-    if (!post([this] { sync_net(); })) {
-        WLOG_W("self_check", "post(%s) dropped (post queue full)", e.topic.c_str());
+void SelfCheck::subscribe_cells() {
+    // Each callback runs first with its cell's current value, which the
+    // calls in build() right after already show, so it changes nothing.
+    if (PowerManager* pm = app_.power_manager()) {
+        // On wisp.bus: the sampler (running on its own thread, not the UI
+        // task) slows its reads in standby without reaching into
+        // PowerManager itself. Both standby levels have the screen off;
+        // dim keeps it on.
+        power_sub_ = pm->level_cell().subscribe([this](const hal::PowerLevel& level) {
+            sampler_.set_standby(level >= hal::PowerLevel::Standby);
+        });
     }
+    // The rest on the UI thread, where the widgets are. Each owner writes
+    // what the callback reads before it moves its cell: WifiService its
+    // status under the lock it sets the cells under, SceneRuntime
+    // foreground() under the lock it updates the overview under (the
+    // catalog after the packages are stored), SystemSettings the stored
+    // values and revision() before the cell.
+    if (net::WifiService* wifi = app_.wifi()) {
+        wifi_sub_ =
+            wifi->wifi_cell().subscribe([this](const net::WifiSnapshot&) { sync_net(); }, ui_);
+        ap_sub_ = wifi->ap_cell().subscribe([this](const net::ApSnapshot&) { sync_net(); }, ui_);
+    }
+    scene::SceneRuntime* rt = scenes_ != nullptr ? scenes_->runtime() : nullptr;
+    if (rt != nullptr) {
+        // An install, a replace or a delete lists the scenes again; the
+        // scene in front changing (also the close of a faulted scene's
+        // error panel, which publishes no scene.state) says whether this
+        // screen is covered. The other fields moving does neither.
+        const scene::SceneOverview now = rt->overview().get();
+        scene_sub_ = rt->overview().subscribe(
+            [this, catalog = now.catalog,
+             foreground = now.foreground](const scene::SceneOverview& o) mutable {
+                if (o.catalog != catalog) {
+                    catalog = o.catalog;
+                    request_scene_list();
+                }
+                if (o.foreground != foreground) {
+                    foreground = o.foreground;
+                    follow_foreground();
+                }
+            },
+            ui_);
+    }
+    settings_sub_ = app_.system_settings().cell().subscribe(
+        [this](const core::SystemSettingsValues&) { sync_settings(); }, ui_);
 }
 
 void SelfCheck::sync_net() { net_section_.refresh(os::now_ms()); }
@@ -390,11 +396,6 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     if (now - self->last_scene_list_ms_ >= kSceneResyncMs) {
         self->last_scene_list_ms_ = now;
         self->request_scene_list();
-        // Closing a faulted foreground scene's error panel runs no
-        // on_close and publishes no scene.state (close_slot() only
-        // publishes "stopped" for a scene that was actually running), so
-        // the subscription above can miss it; this catches up with
-        // foreground() either way.
         self->follow_foreground();
     }
     if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();

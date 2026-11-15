@@ -39,6 +39,7 @@
 #include "self_check_tests.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -98,12 +99,9 @@ private:
 
     void subscribe_buttons();
     void on_button_event(const core::Event& e);
-    void subscribe_power();
-    void on_power_event(const core::Event& e);
-    // net.wifi.state / net.ap.state (connectivity spec 5.5): posts
-    // sync_net() onto the UI thread.
-    void subscribe_net();
-    void on_net_event(const core::Event& e);
+    // UI thread: follows the power level, Wi-Fi, hotspot, scenes overview
+    // and settings cells (see the members below).
+    void subscribe_cells();
     // UI thread: re-reads the Wi-Fi state into the network section.
     void sync_net();
     // UI thread: the time sync row follows the stored time zone. One
@@ -214,11 +212,22 @@ private:
 
     SelfCheckSampler sampler_;
 
-    // --- Bus subscriptions. ---
+    // --- Subscriptions, all released by ~SelfCheck() on the UI thread,
+    // before App::stop() resets their owners. ---
     core::SubscriptionId button_sub_ = 0;
-    core::SubscriptionId power_sub_ = 0;
-    core::SubscriptionId net_sub_ = 0;
-    core::SubscriptionId scene_sub_ = 0;
+    // PowerManager::level_cell(), on wisp.bus: the sampler's standby flag
+    // (memory only), off the UI thread.
+    core::CellSubscription power_sub_;
+    // WifiService::wifi_cell() and ap_cell(), on the UI thread: sync_net().
+    // None without Wi-Fi.
+    core::CellSubscription wifi_sub_;
+    core::CellSubscription ap_sub_;
+    // SceneRuntime::overview(), on the UI thread: the scene list on a
+    // catalog move, follow_foreground() on a foreground change. None
+    // without a scene runtime.
+    core::CellSubscription scene_sub_;
+    // SystemSettings::cell(), on the UI thread: sync_settings().
+    core::CellSubscription settings_sub_;
 };
 
 }  // namespace wisp::app

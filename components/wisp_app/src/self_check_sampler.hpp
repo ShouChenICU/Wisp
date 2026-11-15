@@ -58,7 +58,7 @@ public:
     // running.
     void stop();
 
-    // Follows PowerManager's standby (the "power.state" event) for the
+    // Follows PowerManager's standby (its level cell, on wisp.bus) for the
     // battery/clock reads; the service pauses the IMU on its own.
     void set_standby(bool standby);
 

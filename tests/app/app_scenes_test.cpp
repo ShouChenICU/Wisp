@@ -461,10 +461,10 @@ TEST(AppScenes, SelfCheckLetsTheImuGoWhileASceneIsInFront) {
 // screen, which stays covered. Closing that panel (the back button, not a
 // reload) never runs on_close or publishes scene.state: close_slot() only
 // publishes "stopped" for a scene that was actually running, and a faulted
-// slot's VM is already gone. follow_foreground() is normally driven by
-// scene.state, so without another event the self-check screen would read
-// as covered, and the IMU stays dropped, until the periodic scene resync
-// catches up.
+// slot's VM is already gone. It does clear the scenes overview's
+// foreground, which the self-check screen follows, so it takes the IMU
+// back; SelfCheckScreen.ClosingAFaultedPanelIsFollowedAtOnce shows it does
+// without its periodic scene resync.
 TEST(AppScenes, SelfCheckResyncsAfterAFaultedPanelCloses) {
     UiNetOptions opts;
     auto imu = std::make_shared<wisp::test::FakeImu>("imu.main");
@@ -516,9 +516,7 @@ TEST(AppScenes, SelfCheckResyncsAfterAFaultedPanelCloses) {
     ASSERT_TRUE(wait_until([&] { return !rt->foreground(); }, 3000));
     EXPECT_EQ(rt->status("bad").state, wisp::core::SceneState::Error);
 
-    // The periodic scene resync picks up what the missing scene.state
-    // event could not: the self-check screen re-checks foreground() and
-    // takes the IMU back.
+    // The self-check screen re-checks foreground() and takes the IMU back.
     EXPECT_TRUE(wait_until([&] { return holders() == selfcheck; }, 35000));
     EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 3000));
 }
