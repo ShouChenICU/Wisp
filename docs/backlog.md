@@ -310,7 +310,7 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator an
 ## State cells beside the events parked review findings
 
 - Parked: `exit()`/`close()` of a scene can return before its slot leaves the background list: `close_slot()` answers `done` on the worker before the scene task erases the slot (`erase_slot()`), so a caller that reads `background_scenes()` or the scenes overview right after can still see the scene. Likely cause of the load-flaky `SceneBackground.ExitClosesFromAnyState`.
-- For the plan that moves subscribers onto the cells: once something follows the settings cell, the reseed after a factory-reset wipe becomes visible: the cell jumps to the defaults just before the reboot, so the UI language flips to the default and PowerManager adopts the default timeouts in those moments. Filter on the reset phase (`reset_status()` at `done`) or state the behaviour.
+- The reseed after a factory-reset wipe moves the settings cell to the defaults just before the reboot, so PowerManager adopts the default timeouts in those moments (the system duties keep the screen language: they ignore the language once the reset is confirmed or `done`).
 - For the plan that moves subscribers onto the cells: dev-mode file edits and a card being inserted or removed do not move the scenes overview's `catalog`, so the self-check screen's periodic resync of the scene list cannot be dropped on `catalog` alone.
 - No test pins the `agent.state` payload for `waiting_confirm`.
 

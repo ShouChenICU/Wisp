@@ -369,8 +369,9 @@ Result<void> App::start() {
     }
 
     // Step 4: UI (or headless). The device UI language comes first so the
-    // first frame is already in it; later changes arrive as the
-    // system.settings event (see the self-check screen).
+    // first frame is already in it; the system duties follow the settings
+    // cell for later changes (their first delivery finds this language and
+    // changes nothing).
     if (auto lang = ui::parse_lang(impl_->system_settings.get().language)) {
         ui::set_lang(*lang);
     }

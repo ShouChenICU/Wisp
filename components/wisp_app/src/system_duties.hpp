@@ -10,8 +10,11 @@
 //   - The factory-reset and firmware-update confirm dialogs, on the system
 //     layer; with the power-off dialog, one at a time.
 //   - The WISP_PERF line every 5 s (docs/architecture.md).
-//   - The system language (ui::lang()) following the stored one, so the
-//     cards and the dialogs reopen in a new language.
+//   - The system language (ui::lang()) following the settings cell, so the
+//     cards and the dialogs reopen in a new language. Once a factory reset
+//     is confirmed here or announced done, the reset reseeds the cell to
+//     the defaults: the screen keeps its language until the restart. A
+//     reset that failed or was cancelled lets it follow again.
 //
 // The language, the cards and the dialogs follow their owners' state cells
 // (the system settings, the Wi-Fi and hotspot, the pairing code, the reset
@@ -19,8 +22,8 @@
 // runs on the UI thread and re-reads the services' current state, so a
 // call that stands for several changes still ends on the last one, and
 // the first call shows what was announced before start(). Nothing
-// re-reads the services on a timer: a 100 ms lv_timer only runs the
-// cards' countdowns (and the language sync).
+// re-reads the services or the settings on a timer: a 100 ms lv_timer
+// only runs the cards' countdowns.
 //
 // The power key's short and long presses reach the duties through a
 // ButtonService listener and an EdgeInbox on the UiRuntime ("power_key"),
@@ -49,7 +52,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 
 #include "lvgl.h"
@@ -60,6 +62,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/state_cell.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
@@ -149,10 +152,15 @@ private:
     void sync_firmware();
     void show_firmware_dialog();
     void close_firmware_dialog();
-    // Brings ui::lang() (the system UI's language) in line with the stored
-    // language, reopening the open network cards and confirm dialog in it
-    // if it changed. UI thread only.
-    void sync_system_language();
+    // UI thread: the settings cell's callback. Brings ui::lang() (the
+    // system UI's language) in line with `values`' language, reopening the
+    // open network cards and confirm dialog in it if it changed -- unless
+    // reset_holds_language().
+    void sync_system_language(const core::SystemSettingsValues& values);
+    // Whether a factory reset confirmed here (still running) or announced
+    // done owns the settings cell's next values: its reseed to the
+    // defaults must not switch the screen before the restart.
+    bool reset_holds_language() const;
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();
     void close_confirm_dialog();
@@ -189,10 +197,6 @@ private:
     ProvisioningCard setup_card_;
     PairingCard pair_card_;
 
-    // SystemSettings::revision() as of the last sync_system_language();
-    // empty until the first one, which always reads the stored language.
-    // UI thread only.
-    std::optional<uint32_t> language_revision_;
     // The power-off confirmation's box while it is open.
     lv_obj_t* msgbox_ = nullptr;
     // The factory-reset confirmation, kept apart from the power-off dialog

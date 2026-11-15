@@ -23,17 +23,20 @@
 #include "support/cell_barrier.hpp"
 #include "support/fake_firmware.hpp"
 #include "support/fake_http.hpp"
+#include "support/fake_settings_backend.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/shell/shell.hpp"
+#include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_layer.hpp"
 
 using wisp::net::Method;
@@ -153,6 +156,13 @@ protected:
             rest = rest.subspan(n);
         }
         return start->sink->on_end().status;
+    }
+
+    // ui::lang() is process-wide: what a test switched it to goes with
+    // the App that switched it.
+    void TearDown() override {
+        h.reset();
+        wisp::ui::set_lang(wisp::ui::Lang::Zh);
     }
 
     std::unique_ptr<UiNetHarness> h;
@@ -610,5 +620,105 @@ TEST_F(SystemDutiesTest, PairingCodeIssuedBeforeStartShowsTheCard) {
     EXPECT_TRUE(wait_until([&] { return top_says(wisp::app::spaced_code(code)); }, 3000));
 
     flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// A language stored while the duties were stopped is applied at their
+// start: the settings cell's first delivery, with the bus held and no
+// LVGL timer running. The pairing card opened meanwhile shows in it.
+TEST_F(SystemDutiesTest, LanguageChangedBeforeStartIsShown) {
+    boot();
+    stop_duties();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    ASSERT_TRUE(h->app->system_settings().set({{"language", "en"}}));
+    wisp::net::PairingService* pairing = h->app->pairing();
+    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    flood.flood(256);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Zh);
+
+    start_duties();
+    EXPECT_TRUE(wait_until([] { return wisp::ui::lang() == wisp::ui::Lang::En; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return top_says("Reject"); }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// Ten language changes while the UI task is held: the duties end on the
+// last one, from the settings cell alone (bus held, no LVGL timer).
+TEST_F(SystemDutiesTest, LanguageEndsAtTheLastOfTenChangesWithTheUiHeld) {
+    boot();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+    {
+        UiHold hold(h->app->ui());
+        for (int i = 0; i < 10; ++i) {
+            ASSERT_TRUE(h->app->system_settings().set({{"language", i % 2 == 0 ? "en" : "ja"}}));
+        }
+        flood.flood(256);
+        hold.release();
+    }
+    EXPECT_TRUE(wait_until([] { return wisp::ui::lang() == wisp::ui::Lang::Ja; }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(h->app->system_settings().cell(), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Ja);
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// The duties' 100 ms timer reads no setting. With the settings cache
+// unavailable every SystemSettings read reaches the backend, and fifty
+// ticks of the duties' timer reach it zero times.
+TEST_F(SystemDutiesTest, NoSettingsReadOnTimerTicks) {
+    auto backend = std::make_shared<wisp::test::FakePlatformBackend*>(nullptr);
+    UiNetOptions opts;
+    opts.settings_backend = [backend] {
+        auto b = std::make_unique<wisp::test::FakePlatformBackend>();
+        b->fail_load = true;
+        *backend = b.get();
+        return b;
+    };
+    boot(opts);
+    ASSERT_NE(*backend, nullptr);
+    wisp::test::FakePlatformBackend& counting = **backend;
+    // A read does reach the backend.
+    {
+        std::lock_guard<std::mutex> lock(counting.m);
+        counting.gets = 0;
+    }
+    (void)h->app->system_settings().get();
+    {
+        std::lock_guard<std::mutex> lock(counting.m);
+        ASSERT_GT(counting.gets, 0);
+        counting.gets = 0;
+    }
+
+    stop_lvgl_timers();
+    wisp::app::SystemDuties* duties = wisp::app::system_duties(*h->app);
+    ASSERT_NE(duties, nullptr);
+    int ticks = 0;
+    run_on_ui_blocking(h->app->ui(), [&] {
+        lv_timer_t* timer = lv_timer_get_next(nullptr);
+        while (timer != nullptr && lv_timer_get_user_data(timer) != duties) {
+            timer = lv_timer_get_next(timer);
+        }
+        if (timer == nullptr) return;
+        for (int i = 0; i < 50; ++i) {
+            lv_timer_ready(timer);
+            lv_timer_handler();
+            ++ticks;
+        }
+    });
+    EXPECT_EQ(ticks, 50);
+    {
+        std::lock_guard<std::mutex> lock(counting.m);
+        EXPECT_EQ(counting.gets, 0);
+    }
     h->app->ui()->set_paused(false);
 }

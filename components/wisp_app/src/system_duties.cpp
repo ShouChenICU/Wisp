@@ -113,7 +113,7 @@ void SystemDuties::start() {
     // start(). The calls below still show the rest at once; their
     // callbacks then find nothing new.
     settings_sub_ = app_.system_settings().cell().subscribe(
-        [this](const core::SystemSettingsValues&) { sync_system_language(); }, &ui_);
+        [this](const core::SystemSettingsValues& v) { sync_system_language(v); }, &ui_);
     if (net::WifiService* wifi = app_.wifi()) {
         wifi_sub_ =
             wifi->wifi_cell().subscribe([this](const net::WifiSnapshot&) { sync_wifi(); }, &ui_);
@@ -123,11 +123,17 @@ void SystemDuties::start() {
         pairing_sub_ = pairing->pairing_cell().subscribe(
             [this](const net::PairingSnapshot&) { sync_pairing(); }, &ui_);
     }
-    reset_sub_ = reset_status(app_).subscribe([this](const ResetStatus&) { sync_reset(); }, &ui_);
+    // A reset that failed or was cancelled after its confirmation lets the
+    // language follow again: what was stored meanwhile is shown now.
+    reset_sub_ = reset_status(app_).subscribe(
+        [this](const ResetStatus&) {
+            sync_reset();
+            sync_system_language(app_.system_settings().cell().get());
+        },
+        &ui_);
     fw_sub_ = firmware_progress(app_).subscribe(
         [this](const core::FirmwareProgress& p) { on_firmware_progress(p); }, &ui_);
 
-    sync_system_language();
     sync_reset();
     sync_firmware();
     refresh_timer_ = lv_timer_create(&SystemDuties::refresh_timer_cb, kUiRefreshMs, this);
@@ -245,9 +251,6 @@ void SystemDuties::on_firmware_progress(const core::FirmwareProgress& progress) 
 
 void SystemDuties::refresh_timer_cb(lv_timer_t* timer) {
     auto* self = static_cast<SystemDuties*>(lv_timer_get_user_data(timer));
-    // Besides the settings cell's callback: one atomic load per tick while
-    // nothing changes.
-    self->sync_system_language();
     // The cards' own countdowns: a pairing code's expiry and the success
     // view's timer move no cell.
     const uint64_t now = os::now_ms();
@@ -309,16 +312,22 @@ void SystemDuties::sync_pairing() {
     wake_screen();
 }
 
-void SystemDuties::sync_system_language() {
-    // The revision is read before the value: a change stored in between
-    // moves it again, so the next sync reads the value once more.
-    uint32_t revision = app_.system_settings().revision();
-    if (language_revision_ == revision) {
-        return;
-    }
-    language_revision_ = revision;
-    std::optional<ui::Lang> lang = ui::parse_lang(app_.system_settings().get().language);
-    if (!lang || *lang == ui::lang()) {
+bool SystemDuties::reset_holds_language() const {
+    // The current phase, not the last one this object was called with: the
+    // reseed's delivery may run before or after the reset status's, and
+    // "done" is set before the reseed, so it always finds "done" here.
+    const ResetStatus::Phase phase = reset_status(app_).get().phase;
+    return phase == ResetStatus::Phase::Done ||
+           (reset_confirmed_ && phase == ResetStatus::Phase::Requested);
+}
+
+void SystemDuties::sync_system_language(const core::SystemSettingsValues& values) {
+    // The first delivery usually finds the language App::start() applied
+    // before the first frame, and changes nothing. A reseed of the cell
+    // (after a batch's failed rollback) is followed like any change: the
+    // screen shows what is stored.
+    std::optional<ui::Lang> lang = ui::parse_lang(values.language);
+    if (!lang || *lang == ui::lang() || reset_holds_language()) {
         return;
     }
     // The system UI (the network cards and the system layer's dialogs)
