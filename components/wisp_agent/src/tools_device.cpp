@@ -195,7 +195,7 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
                 if (!r) return fail(r.error());
                 const ui::Lang lang = lang_of(ctx);
                 // set() accepted the key, so it is an agent row; every agent
-                // row has a device label (DeviceTools tests).
+                // row has a device label (SettingLabels tests).
                 const core::SettingSpec* spec = core::find_setting(key);
                 const std::optional<ui::StrId> label =
                     spec != nullptr ? ui::setting_label(spec->label) : std::nullopt;

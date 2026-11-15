@@ -193,10 +193,11 @@ TEST(SettingsSchema, ValidationPerRow) {
     }
 }
 
-TEST(SettingsSchema, FlagsReproduceTodaysExposure) {
+TEST(SettingsSchema, AgentFlags) {
     using V = std::vector<std::string_view>;
     EXPECT_EQ(names_with(kSettingAgent),
-              (V{"brightness", "volume", "screen_off_s", "language", "notify_vol", "time_24h"}));
+              (V{"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
+                 "deep_after_s", "notify_vol", "tts_mute", "time_24h"}));
     EXPECT_EQ(names_with(kSettingWeb),
               (V{"brightness", "volume", "screen_off_s", "language", "utc_offset_min",
                  "ntp_servers", "deep_after_s", "notify_vol", "tts_mute", "time_24h",

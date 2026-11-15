@@ -856,7 +856,6 @@ TEST(SystemSettings, SurfaceRefusesKeysOutsideItsFlags) {
     };
     refused({{"low_batt_pct", 20}}, SettingSurface::Web, "low_batt_pct");
     refused({{"perf_overlay", true}}, SettingSurface::Web, "perf_overlay");
-    refused({{"deep_after_s", 600}}, SettingSurface::Agent, "deep_after_s");
     refused({{"agent_max_steps", 100}}, SettingSurface::Agent, "agent_max_steps");
     refused({{"ntp_servers", "a.b"}}, SettingSurface::Agent, "ntp_servers");
     refused({{"agent_max_steps", 100}}, SettingSurface::DevicePage, "agent_max_steps");

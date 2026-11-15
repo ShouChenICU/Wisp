@@ -91,15 +91,16 @@ TEST_F(DeviceTools, StatusShape) {
     EXPECT_EQ(submitted, 0);
 }
 
-TEST_F(DeviceTools, SettingsGetListsSixKeys) {
+TEST_F(DeviceTools, SettingsGetListsNineKeys) {
     ToolOutput out = call("settings_get", "");
     ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
     const Value* s = out.result.find("settings");
     ASSERT_NE(s, nullptr);
     std::vector<std::string> keys;
     for (const auto& [k, v] : s->as_map()) keys.push_back(k);
-    EXPECT_EQ(keys, (std::vector<std::string>{"brightness", "language", "notify_vol",
-                                              "screen_off_s", "time_24h", "volume"}));
+    EXPECT_EQ(keys, (std::vector<std::string>{"brightness", "deep_after_s", "language",
+                                              "notify_vol", "screen_off_s", "time_24h", "tts_mute",
+                                              "utc_offset_min", "volume"}));
     EXPECT_TRUE(s->find("time_24h")->as_bool());
     EXPECT_EQ(s->find("brightness")->as_int(), 200);
     EXPECT_EQ(s->find("language")->as_string(), "zh");
@@ -111,7 +112,9 @@ TEST_F(DeviceTools, SettingsGetDescriptionIsGenerated) {
     EXPECT_EQ(std::string(get->description),
               "The settings the agent may change: brightness (10 to 255), volume (percent, 0 to "
               "100), screen_off_s (seconds, 0 never, or 15 to 3600), language (zh, ja, en), "
-              "notify_vol (percent, 0 to 100), time_24h (true: 24-hour clock, false: 12-hour).");
+              "utc_offset_min (minutes east of UTC, -720 to 840), deep_after_s (seconds, 0 never, "
+              "or 60 to 3600), notify_vol (percent, 0 to 100), tts_mute (true: replies are "
+              "shown but not spoken), time_24h (true: 24-hour clock, false: 12-hour).");
 }
 
 TEST_F(DeviceTools, SettingsSetSchemaListsTheAgentKeys) {
@@ -128,7 +131,8 @@ TEST_F(DeviceTools, SettingsSetSchemaListsTheAgentKeys) {
     std::vector<std::string> keys;
     for (const Value& v : values->as_list()) keys.push_back(v.as_string());
     EXPECT_EQ(keys, (std::vector<std::string>{"brightness", "volume", "screen_off_s", "language",
-                                              "notify_vol", "time_24h"}));
+                                              "utc_offset_min", "deep_after_s", "notify_vol",
+                                              "tts_mute", "time_24h"}));
     EXPECT_EQ(wisp::to_json(*props->find("value")), R"({"type":["integer","string","boolean"]})");
     EXPECT_EQ(wisp::to_json(*schema.value().find("required")), R"(["key","value"])");
 }
@@ -165,6 +169,26 @@ TEST_F(DeviceTools, SettingsSetValidatesLikeTheWebPage) {
     EXPECT_EQ(vol.note, "Volume 60 → 30");
 }
 
+TEST_F(DeviceTools, AgentChangesMuteDeepStandbyAndTimeZone) {
+    ToolOutput mute = call("settings_set", R"({"key":"tts_mute","value":true})");
+    ASSERT_TRUE(mute.ok) << wisp::to_json(mute.result);
+    EXPECT_EQ(mute.note, "语音播报 on → off");
+    EXPECT_TRUE(settings->get().tts_mute);
+
+    ToolOutput deep = call("settings_set", R"({"key":"deep_after_s","value":600})");
+    ASSERT_TRUE(deep.ok) << wisp::to_json(deep.result);
+    EXPECT_EQ(deep.note, "深度待机 300 → 600");
+    EXPECT_TRUE(call("settings_set", R"({"key":"deep_after_s","value":0})").ok);
+    EXPECT_EQ(str(call("settings_set", R"({"key":"deep_after_s","value":30})").result, "error"),
+              "invalid_value");
+
+    ToolOutput tz = call("settings_set", R"({"key":"utc_offset_min","value":540})");
+    ASSERT_TRUE(tz.ok) << wisp::to_json(tz.result);
+    EXPECT_EQ(tz.note, "时区 480 → 540");
+    EXPECT_EQ(str(call("settings_set", R"({"key":"utc_offset_min","value":900})").result, "error"),
+              "invalid_value");
+}
+
 TEST_F(DeviceTools, SettingsRunOnTheWorker) {
     ASSERT_TRUE(call("settings_get", "").ok);
     ASSERT_TRUE(call("settings_set", R"({"key":"notify_vol","value":10})").ok);
@@ -175,6 +199,10 @@ TEST_F(DeviceTools, SettingsRunOnTheWorker) {
     EXPECT_EQ(backend.gets_off_thread, 0);
     EXPECT_FALSE(backend.off_thread);
     EXPECT_EQ(settings->get().notify_vol, 10);
+    // settings.get sees the write.
+    ToolOutput again = call("settings_get", "");
+    ASSERT_TRUE(again.ok);
+    EXPECT_EQ(again.result.find("settings")->find("notify_vol")->as_int(), 10);
 }
 
 TEST_F(DeviceTools, NotifyListWrapsSceneText) {
