@@ -324,13 +324,14 @@ void NetWiring::run_settings() {
 }
 
 void NetWiring::reconcile_external_power() {
-    // The supply cell keeps the last good sample through a failed read, so
-    // a read that failed (last_status() nullopt) still counts as unknown:
-    // unknown power must not hold Wi-Fi on.
+    // last_status() rather than the supply cell: the cell keeps the last
+    // good sample through a failed read, while last_status() is nullopt
+    // then, and unknown power must not hold Wi-Fi on. Both are written in
+    // one critical section of the monitor, so one read is enough.
     bool plugged = false;
-    if (reports_external_power_ && deps_.power_monitor != nullptr && wifi_->enabled() &&
-        deps_.power_monitor->last_status()) {
-        plugged = deps_.power_monitor->supply().get().usb_present;
+    if (reports_external_power_ && deps_.power_monitor != nullptr && wifi_->enabled()) {
+        const auto status = deps_.power_monitor->last_status();
+        plugged = status && status->usb_present;
     }
     if (deps_.wakelocks == nullptr || plugged == powered_lock_.held()) return;
     if (plugged) {
