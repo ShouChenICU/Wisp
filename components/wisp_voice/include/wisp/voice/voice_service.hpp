@@ -272,8 +272,10 @@ public:
     // The state, the last outcome and their count. It moves when the state
     // changes or an outcome is published, not for a level; voice.state is
     // still published as before, level included. Followers must release
-    // their subscription before the service is destroyed (App::stop()
-    // resets it before the bus stops; wisp/core/state_cell.hpp).
+    // their subscription before the service is destroyed
+    // (wisp/core/state_cell.hpp). App::stop() destroys it before the shell
+    // stops, right after handing the shell set_conversation(nullptr) on the
+    // UI thread, so a follower in the shell releases it there.
     const core::StateCell<VoiceStatus>& status_cell() const { return status_; }
     // 0..100: the level the latest voice.state carried while listening or
     // speaking, 0 in any other state. Any thread; an atomic, so it is
