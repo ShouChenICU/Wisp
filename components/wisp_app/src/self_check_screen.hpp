@@ -106,7 +106,8 @@ private:
     // UI thread: follows the power level, Wi-Fi, hotspot, scenes overview
     // and settings cells (see the members below).
     void subscribe_cells();
-    // UI thread: re-reads the Wi-Fi state into the network section.
+    // UI thread: re-reads the Wi-Fi state into the network section, for
+    // the cells' callbacks and the live values (see kNetLiveReadMs).
     void sync_net();
     // UI thread: the time sync row follows the stored time zone. One
     // atomic load while nothing changed.
@@ -131,7 +132,8 @@ private:
     // UI thread: the storage card and the live SD row from `status`.
     void show_storage(const core::StorageStatus& status);
     // Any thread: asks the storage worker for the scene list; the "Scenes"
-    // card takes it on the UI thread.
+    // card takes it on the UI thread. At build and on each move of the
+    // overview's catalog.
     void request_scene_list();
     // Any thread: lets the sampler drop the IMU while a scene is in front
     // (this screen is covered) and take it again once none is.
@@ -190,10 +192,9 @@ private:
     // UI thread only.
     int utc_offset_min_ = 480;
     bool time_24h_ = true;
-    // os::now_ms() of the last periodic network resync (see kNetResyncMs).
-    uint64_t last_net_resync_ms_ = 0;
-    // os::now_ms() of the last periodic scene list (see kSceneResyncMs).
-    uint64_t last_scene_list_ms_ = 0;
+    // os::now_ms() of the last read of the live network values (see
+    // kNetLiveReadMs).
+    uint64_t last_net_read_ms_ = 0;
     // os::now_ms() of the last storage request (see kStorageResyncMs), and
     // whether its answer is still on the way.
     uint64_t last_storage_ms_ = 0;

@@ -36,16 +36,13 @@ namespace wisp::app {
 namespace {
 
 constexpr uint32_t kUiRefreshMs = 100;
-// How often the refresh timer re-reads the network state into the network
-// section besides the Wi-Fi and hotspot cells. The reads are a few short
+// How often the refresh timer reads the live network values into the
+// network section: the signal strength and the saved networks are in no
+// cell (the Wi-Fi cell moves on a state change, not on an RSSI change, and
+// forgetting a network that is not the current one moves nothing). The
+// state the cells carry follows them at once. The reads are a few short
 // lock-protected copies.
-constexpr uint64_t kNetResyncMs = 1000;
-// How often the scene list is read again besides the overview's catalog
-// counter, which a dev-mode file edit or a card coming or going does not
-// move. Each is a walk of the scene packages on the storage worker, so far
-// apart; a state change shows within one refresh anyway
-// (SceneSection::update_states()).
-constexpr uint64_t kSceneResyncMs = 30000;
+constexpr uint64_t kNetLiveReadMs = 1000;
 // How often storage is measured, on the storage worker. A request whose
 // answer never came (the UI queue was full) is given up after
 // kStorageRetryMs.
@@ -135,14 +132,15 @@ void SelfCheck::build() {
     sampler_.start();
     subscribe_buttons();
     subscribe_cells();
+    // The overview's follower acts only on a change from what it saw when
+    // it subscribed, so the list and the covered flag start here.
     follow_foreground();
     request_scene_list();
-    last_scene_list_ms_ = os::now_ms();
     request_storage();
-    // The network state as it is now (networking started long before).
-    sync_net();
     sync_settings();
-    last_net_resync_ms_ = os::now_ms();
+    // The network section read the network when it was built, and the
+    // Wi-Fi and hotspot cells' first deliveries read it again.
+    last_net_read_ms_ = os::now_ms();
 
     refresh_timer_ = lv_timer_create(&SelfCheck::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -315,8 +313,9 @@ void SelfCheck::on_button_edge(const core::ButtonEdge& e) {
 }
 
 void SelfCheck::subscribe_cells() {
-    // Each callback runs first with its cell's current value, which the
-    // calls in build() right after already show, so it changes nothing.
+    // Each callback runs first with its cell's current value: the network
+    // section reads the network again, the rest changes nothing (build()
+    // shows the same values right after).
     if (PowerManager* pm = app_.power_manager()) {
         // On wisp.bus: the sampler (running on its own thread, not the UI
         // task) slows its reads in standby without reaching into
@@ -432,14 +431,9 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
     self->sync_settings();
     self->refresh_ui();
     const uint64_t now = os::now_ms();
-    if (now - self->last_net_resync_ms_ >= kNetResyncMs) {
-        self->last_net_resync_ms_ = now;
+    if (now - self->last_net_read_ms_ >= kNetLiveReadMs) {
+        self->last_net_read_ms_ = now;
         self->sync_net();
-    }
-    if (now - self->last_scene_list_ms_ >= kSceneResyncMs) {
-        self->last_scene_list_ms_ = now;
-        self->request_scene_list();
-        self->follow_foreground();
     }
     if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();
     self->net_section_.tick(now);
@@ -488,9 +482,8 @@ void SelfCheck::refresh_time_sync() {
 }
 
 void SelfCheck::follow_foreground() {
-    // Read live from the runtime, so the start and the periodic resync,
-    // which have no overview in hand, give the same answer as the
-    // overview cell's callback.
+    // Read live from the runtime, so the start, which has no overview in
+    // hand, gives the same answer as the overview cell's callback.
     scene::SceneRuntime* rt = app_.scenes();
     sampler_.set_covered(rt != nullptr && rt->foreground().has_value());
 }

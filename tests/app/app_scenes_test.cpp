@@ -329,6 +329,47 @@ TEST(AppScenes, SelfCheckListsInstalledScenes) {
     EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n计数器|1.0.0\n")) << b.rows();
 }
 
+// The diagnostics opened after a scene was installed list it: the screen
+// lists the scenes when it is built, whatever the catalog did before.
+TEST(AppScenes, SelfCheckOpenedAfterAnInstallListsIt) {
+    Booted b;
+    ASSERT_TRUE(b.h.start("scene."));
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    const uint32_t before = rt->overview().get().catalog;
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    rt->note_catalog_changed();
+    ASSERT_NE(rt->overview().get().catalog, before);
+
+    ASSERT_TRUE(b.h.open_diagnostics());
+    run_on_ui_blocking(b.h.app->ui(), [&] { b.screen = lv_screen_active(); });
+    b.h.app->ui()->set_paused(true);
+    run_on_ui_blocking(b.h.app->ui(), [] {});
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n")) << b.rows();
+    b.h.app->ui()->set_paused(false);
+}
+
+// With every LVGL timer stopped (so no periodic relist could do it), the
+// diagnostics' scene list follows a card coming in: the catalog moves, and
+// the list is read again, here showing a package that appeared on disk
+// without an install.
+TEST(AppScenes, SelfCheckListFollowsACardChange) {
+    UiNetOptions opts;
+    opts.with_sd = true;
+    Booted b(opts);
+    b.h.sd->online_flag = false;
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    b.h.app->ui()->set_paused(true);
+    run_on_ui_blocking(b.h.app->ui(), [] {});
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+
+    b.h.sd->online_flag = true;
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*b.h.app); }, 3000));
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n")) << b.rows();
+    b.h.app->ui()->set_paused(false);
+}
+
 // Every row is a tap target at least 48 px tall, the whole row clickable,
 // with its name and state centred vertically in it.
 TEST(AppScenes, RowsAreTallEnoughToTap) {
@@ -2159,6 +2200,32 @@ TEST(AppScenes, DevModeChangeMovesTheCatalog) {
     ASSERT_TRUE(wait_until([&] { return rt->overview().get().catalog != before + 1; }, 5000));
     EXPECT_EQ(rt->overview().get().catalog, before + 2);
     EXPECT_EQ(rt->status("clock").state, wisp::core::SceneState::Stopped);
+}
+
+// Dev mode, with every LVGL timer stopped: a scene added to the working
+// directory shows in the diagnostics' list once the watcher reports it.
+TEST(AppScenes, SelfCheckListFollowsADevModeChange) {
+    const fs::path work = fs::path(wisp::test::temp_dir()) / "work";
+    const fs::path data = fs::path(wisp::test::temp_dir()) / "data";
+    auto put = [&](const std::string& id, const std::string& name) {
+        fs::create_directories(work / id);
+        std::ofstream(work / id / "scene.json") << R"({"id":")" << id << R"(","name":")" << name
+                                                << R"(","version":"1.0.0","schema_version":1})";
+        std::ofstream(work / id / "main.lua") << "return ui.screen { ui.label { text = 'x' } }";
+    };
+    put("clock", "时钟");
+    UiNetOptions opts;
+    opts.scenes_dir = work.string();
+    opts.scenes_data_dir = data.string();
+    Booted b(opts);
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("时钟|1.0.0\n")) << b.rows();
+    b.h.app->ui()->set_paused(true);
+    run_on_ui_blocking(b.h.app->ui(), [] {});
+
+    put("alarm", "闹钟");
+    EXPECT_TRUE(b.wait_rows("闹钟|1.0.0\n时钟|1.0.0\n", 5000)) << b.rows();
+    b.h.app->ui()->set_paused(false);
 }
 
 // Spec 3.6: once boot completes, the scenes the list names come up in the

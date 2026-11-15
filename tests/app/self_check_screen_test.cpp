@@ -28,10 +28,12 @@
 #include "app/ui_net_harness.hpp"
 #include "self_check_layout.hpp"
 #include "support/bus_flood.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
 #include "support/font_image.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
+#include "support/ui_hold.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/app/board.hpp"
@@ -1947,9 +1949,9 @@ TEST(SelfCheckScreen, TitleUsesLargeFontInCurrentLanguage) {
 }
 
 // The screen follows its owners' cells. The tests below stop every LVGL
-// timer of the UI loop (the screen's 100 ms refresh, with its 1 s network
-// resync, its 30 s scene resync and its settings poll), while posted jobs
-// and dispatch slots still run, and hold and flood wisp.bus where an event
+// timer of the UI loop (the screen's 100 ms refresh, with its 1 s read of
+// the live network values and its settings poll), while posted jobs and
+// dispatch slots still run, and hold and flood wisp.bus where an event
 // could otherwise do it: what changes the screen is a cell's callback.
 namespace {
 
@@ -2013,7 +2015,7 @@ TEST(SelfCheckScreen, SamplerPausesInStandbyFlooded) {
 }
 
 // The network section follows the Wi-Fi and hotspot cells, with net.*
-// dropped and the 1 s resync stopped.
+// dropped and the 1 s live read stopped.
 TEST(SelfCheckScreen, NetSectionFollowsTheCell) {
     UiNetHarness h;
     ASSERT_TRUE(h.start());
@@ -2039,9 +2041,38 @@ TEST(SelfCheckScreen, NetSectionFollowsTheCell) {
     h.app->ui()->set_paused(false);
 }
 
+// Ten Wi-Fi and hotspot changes while the UI task is held (and net.*
+// dropped, the LVGL timers stopped): the section ends at the last, shown
+// once the UI runs again.
+TEST(SelfCheckScreen, NetSectionEndsAtTheLastOfTenChangesWithTheUiHeld) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.open_diagnostics());
+    ASSERT_TRUE(wait_until([&] { return on_diagnostics(h, "Set up Wi-Fi"); }, 3000));
+    stop_lvgl_timers(*h.app);
+    wisp::test::BusFlood flood(h.app->bus());
+    flood.hold();
+    {
+        wisp::test::UiHold hold(h.app->ui());
+        for (int i = 0; i < 5; ++i) {
+            ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+            ASSERT_TRUE(h.app->wifi()->stop_provisioning());
+        }
+        ASSERT_TRUE(h.app->wifi()->start_provisioning(wisp::os::now_ms()));
+        flood.flood(256);
+    }
+    EXPECT_TRUE(wait_until([&] { return on_diagnostics(h, "Stop setup"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(h.app->wifi()->ap_cell(), h.app->ui()));
+    EXPECT_TRUE(on_diagnostics(h, "Stop setup"));
+    ASSERT_TRUE(h.app->wifi()->stop_provisioning());
+    flood.release();
+    h.app->ui()->set_paused(false);
+}
+
 // Closing a faulted scene's error panel publishes no scene.state; it moves
 // the scenes overview's foreground, and the screen takes the IMU back at
-// once rather than at its 30 s scene resync (stopped here).
+// once, through the overview's callback alone (no timer runs here, and none
+// relists or re-reads the foreground any more).
 TEST(SelfCheckScreen, ClosingAFaultedPanelIsFollowedAtOnce) {
     UiNetOptions opts;
     opts.imu = std::make_shared<FakeImu>("imu.main");
