@@ -18,6 +18,7 @@
 
 #include "app/ui_net_harness.hpp"
 #include "firmware_confirm.hpp"
+#include "power_sampling.hpp"
 #include "storage_io.hpp"
 #include "support/bus_flood.hpp"
 #include "support/fake_audio.hpp"
@@ -429,13 +430,12 @@ wisp::hal::PowerStatus battery_at(int percent, bool charging = false, bool usb =
     return s;
 }
 
-// Sets `power`'s status and returns once PowerMonitor has sampled it: the
-// sample that called status() next may have read the old one, so this
-// waits for the one after it.
-void sample_at(wisp::test::FakePower& power, const wisp::hal::PowerStatus& status) {
+// Sets `power`'s status and has PowerMonitor sample it now, instead of
+// waiting for its 1 s timer.
+void sample_at(wisp::app::App& app, wisp::test::FakePower& power,
+               const wisp::hal::PowerStatus& status) {
     power.set_status(status);
-    const int from = power.status_calls.load();
-    ASSERT_TRUE(wait_until([&] { return power.status_calls.load() >= from + 2; }, 5000));
+    wisp::app::sample_power_now(app);
 }
 
 TEST(AppNotifications, BatteryLowPostsSystemNotice) {
@@ -462,20 +462,23 @@ TEST(AppNotifications, BatteryLowKeepsOneNoticeAndChargingClearsIt) {
     ASSERT_TRUE(h.app.start());
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
-    sample_at(*power, battery_at(12));
+    sample_at(h.app, *power, battery_at(12));
     ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
-    sample_at(*power, battery_at(25));
-    sample_at(*power, battery_at(9));
+    sample_at(h.app, *power, battery_at(25));
+    // One delivery per sample: back-to-back samples would coalesce into one
+    // follower call and hide the dip above the hysteresis.
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    sample_at(h.app, *power, battery_at(9));
     ASSERT_TRUE(wait_until([&] { return notes->unread()[0].arg == "9"; }, 2000));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     ASSERT_EQ(notes->unread_count(), 1u);
     EXPECT_EQ(notes->unread()[0].arg, "9");
 
     // USB without charging: the supply moves, the notice stays.
-    sample_at(*power, battery_at(9, /*charging=*/false, /*usb=*/true));
+    sample_at(h.app, *power, battery_at(9, /*charging=*/false, /*usb=*/true));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     EXPECT_EQ(notes->unread_count(), 1u);
-    sample_at(*power, battery_at(9, /*charging=*/true, /*usb=*/true));
+    sample_at(h.app, *power, battery_at(9, /*charging=*/true, /*usb=*/true));
     EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
 }
 
@@ -490,11 +493,11 @@ TEST(AppNotifications, LowBatteryNoticeFollowsTheSupplyFlooded) {
     ASSERT_TRUE(h.app.start());
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
-    sample_at(*power, battery_at(50));
+    sample_at(h.app, *power, battery_at(50));
 
     wisp::test::BusFlood flood(h.app.bus());
     flood.hold();
-    for (int pct : {14, 12, 10}) sample_at(*power, battery_at(pct));
+    for (int pct = 19; pct >= 10; --pct) sample_at(h.app, *power, battery_at(pct));
     flood.flood(200);
     EXPECT_EQ(notes->unread_count(), 0u);
     flood.release();
@@ -516,7 +519,7 @@ TEST(AppNotifications, BatteryLowAtBootPostsOneNotice) {
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
     ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 5000));
-    sample_at(*power, battery_at(8));
+    sample_at(h.app, *power, battery_at(8));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     ASSERT_EQ(notes->unread_count(), 1u);
     EXPECT_EQ(notes->unread()[0].arg, "9");
@@ -531,11 +534,11 @@ TEST(AppNotifications, ChargingDismissesTheNotice) {
     ASSERT_TRUE(h.app.start());
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
-    sample_at(*power, battery_at(12));
+    sample_at(h.app, *power, battery_at(12));
     ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
-    sample_at(*power, battery_at(12, /*charging=*/true, /*usb=*/true));
+    sample_at(h.app, *power, battery_at(12, /*charging=*/true, /*usb=*/true));
     ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
-    sample_at(*power, battery_at(13, /*charging=*/true, /*usb=*/true));
+    sample_at(h.app, *power, battery_at(13, /*charging=*/true, /*usb=*/true));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     EXPECT_EQ(notes->unread_count(), 0u);
 }
@@ -551,7 +554,7 @@ TEST(AppNotifications, ChargingAndLowAtBootKeepsTheNotice) {
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
     ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 5000));
-    sample_at(*power, battery_at(9, /*charging=*/true, /*usb=*/true));
+    sample_at(h.app, *power, battery_at(9, /*charging=*/true, /*usb=*/true));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     EXPECT_EQ(notes->unread_count(), 1u);
 }
@@ -1016,7 +1019,8 @@ TEST(AppBoot, NotificationVolumeFollowsStoredSettingsFlooded) {
     ASSERT_TRUE(h.app->bus().wait_idle(2000));
 
     // Posts a tone and returns the loudest sample it wrote.
-    auto tone_peak = [&](int closes_before) {
+    auto tone_peak = [&] {
+        const int closes_before = out->closes();
         const size_t from = out->samples().size();
         wisp::core::Notification n;
         n.source = wisp::core::kAgentSource;
@@ -1029,13 +1033,15 @@ TEST(AppBoot, NotificationVolumeFollowsStoredSettingsFlooded) {
         for (size_t i = from; i < s.size(); ++i) peak = std::max(peak, std::abs(int{s[i]}));
         return peak;
     };
-    const int at100 = tone_peak(0);
+    const int at100 = tone_peak();
     ASSERT_GT(at100, 0);
 
     wisp::test::BusFlood flood(h.app->bus());
     flood.hold();
     ASSERT_TRUE(h.app->system_settings().set({{"notify_vol", wisp::Value(10)}}));
-    const int at10 = tone_peak(1);
+    const int at10 = tone_peak();
+    // The tone player scales by `* volume / 100` in integers, which
+    // truncates; the tolerance covers it.
     EXPECT_NEAR(static_cast<double>(at10) / at100, 0.1, 0.1 * 0.05);
     flood.release();
 }

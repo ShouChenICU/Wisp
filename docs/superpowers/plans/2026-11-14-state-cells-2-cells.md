@@ -416,7 +416,7 @@ TEST(FirmwareConfirm, ConfirmedReachesTheBusBeforeTheRestart)
 namespace wisp::scene {
 struct SceneOverview {
     FixedString<32> foreground;     // the scene in front; empty when none (kMaxSceneIdBytes)
-    uint16_t background_count = 0;  // background and headless scenes running
+    uint16_t background_count = 0;  // entries of background_scenes() only; the headless scene is counted apart (deviation 11)
     uint32_t catalog = 0;           // moves on every install, replace and delete
     bool operator==(const SceneOverview&) const = default;
 };

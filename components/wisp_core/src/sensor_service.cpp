@@ -187,14 +187,23 @@ void SensorService::set_paused(uint32_t handle, bool paused) {
 
 void SensorService::set_standby(bool standby) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    if (standby_ == standby) return;
+    // PowerManager powers every IMU up as the device wakes (its caps say
+    // "standby": "off"); with nothing to read it goes back down. This also
+    // runs when the flag does not change: a standby that began and ended
+    // between two deliveries arrives as "false" while the flag is already
+    // false, and the IMU was woken all the same.
+    const auto power_down_if_idle = [&] {
+        if (!standby_ && rate_.load() == 0 && imu_) imu_->set_power(hal::PowerLevel::Standby);
+    };
+    if (standby_ == standby) {
+        power_down_if_idle();
+        return;
+    }
     standby_ = standby;
     for (auto& s : subs_) restart_locked(*s);
     if (!standby) read_ok_.store(true);
     apply_locked();
-    // PowerManager powers every IMU up as the device wakes (its caps say
-    // "standby": "off"); with nothing to read it goes back down.
-    if (!standby && rate_.load() == 0 && imu_) imu_->set_power(hal::PowerLevel::Standby);
+    power_down_if_idle();
 }
 
 uint32_t SensorService::imu_rate() const { return rate_.load(); }

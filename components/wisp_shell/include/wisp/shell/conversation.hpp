@@ -170,7 +170,7 @@ struct ConversationDeps {
     core::EventBus& bus;
     agent::AgentService& agent;
     voice::VoiceService& voice;
-    std::function<bool()> tts_mute;        // cached voice/tts_mute; empty: false
+    std::function<bool()> tts_mute;        // read from the settings cell at each use; empty: false
     std::function<Readiness()> readiness;  // empty: complete
     // TurnView's started_ms/ended_ms; empty: os::now_ms (the screens'
     // clock).

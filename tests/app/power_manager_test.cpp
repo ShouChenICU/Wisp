@@ -1462,8 +1462,10 @@ TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
                               .settings = Settings(backend, "power")};
         deps.system_settings = &settings;
         auto pm = std::make_unique<PowerManager>(std::move(deps));
-        uint64_t t0 = wisp::os::now_ms();
         pm->note_activity();
+        // After the activity stamp: the idle time can only be longer than
+        // the 20 s, however long the thread was preempted in between.
+        uint64_t t0 = wisp::os::now_ms();
         pm->tick(t0 + 20050);
         EXPECT_EQ(pm->level(), PowerLevel::Standby);
         flood.release();

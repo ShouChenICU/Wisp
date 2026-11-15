@@ -25,7 +25,7 @@
 // releases it. Paused subscriptions still hold it.
 //
 // Standby: set_standby(true) (PowerManager's standby or deep_standby, via
-// power.state) pauses everything and powers the IMU down; false resumes
+// its level) pauses everything and powers the IMU down; false resumes
 // what is not paused on its own.
 //
 // Threads: every method may be called from any thread except the
@@ -123,7 +123,7 @@ public:
     // A paused subscription gets nothing and does not keep the IMU on;
     // samples it had not been given yet are dropped.
     void set_paused(uint32_t handle, bool paused);
-    // power.state: standby and deep_standby pause everything.
+    // PowerManager's level: standby and deep_standby pause everything.
     void set_standby(bool standby);
     // 0 while the IMU is off.
     uint32_t imu_rate() const;

@@ -177,6 +177,18 @@ TEST(SensorService, StandbyPausesAll) {
     EXPECT_FALSE(imu->powered());
 }
 
+TEST(SensorService, StandbyEndWhileAwakePowersIdleImuDown) {
+    // A standby that began and ended between two deliveries arrives as
+    // "false" while the service is already awake.
+    OccupancyRegistry occ;
+    auto imu = std::make_shared<FakeImu>("imu.main");
+    SensorService idle(imu, occ);
+    imu->set_power(wisp::hal::PowerLevel::Active);
+    ASSERT_TRUE(imu->powered());
+    idle.set_standby(false);
+    EXPECT_FALSE(imu->powered());
+}
+
 TEST(SensorService, PausedHandleGetsNothing) {
     Fixture f;
     Seen paused, live;

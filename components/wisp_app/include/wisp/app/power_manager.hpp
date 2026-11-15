@@ -57,8 +57,10 @@
 // Settings: with PowerManagerDeps::system_settings the power keys follow
 // that cell (applied by the constructor from get(), then by a subscription
 // on wisp.bus); with or without it the "power" namespace is also re-read
-// every kSettingsRefreshTicks ticks (on the shared timer task, which may
-// touch flash), never on the UI task. A stored value
+// every kSettingsRefreshTicks ticks (on the shared timer task, never on
+// the UI task). The re-read goes through core::Settings::get_int, which
+// reads the in-memory cache when the backend is a
+// core::CachedSettingsBackend (App's is), so it does not touch flash. A stored value
 // core::SystemSettings::set() would refuse reads as its default, as
 // SystemSettings::get() reports it.
 //
@@ -283,9 +285,8 @@ private:
     // go_to() calls so far, guarded by transition_mutex_: a transition that
     // released the lock can tell another one ran meanwhile.
     uint64_t transitions_ = 0;
-    // Set only under transition_mutex_. Declared after bus_, which its
-    // constructor uses; PowerManager itself is destroyed before the bus
-    // stops (App::stop()). Starts at Active without an event: nothing
+    // Set only under transition_mutex_. Declared after bus_ because its
+    // constructor takes the bus. Starts at Active without an event: nothing
     // announced a level at boot before the cell either.
     core::StateCell<hal::PowerLevel> level_cell_;
     std::atomic<uint64_t> last_activity_ms_;

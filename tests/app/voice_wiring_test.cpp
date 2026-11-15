@@ -326,7 +326,7 @@ TEST(AppVoice, MuteFollowsStoredSettingsFlooded) {
 // The reply's volume is read from the settings cell when its speech
 // starts: samples of 1000 at volume 30 are written as 300, though the
 // change's system.settings event was lost.
-TEST(AppVoice, VolumeFollowsStoredSettings) {
+TEST(AppVoice, VolumeFollowsStoredSettingsFlooded) {
     VoiceApp v(/*with_mic=*/true);
     ASSERT_TRUE(v.start());
     wisp::shell::ConversationController* conv = v.h->app->conversation();

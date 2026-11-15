@@ -17,6 +17,7 @@
 #include "loopback.hpp"
 #include "net_cards.hpp"
 #include "net_section.hpp"
+#include "power_sampling.hpp"
 #include "self_check.hpp"
 #include "storage_io.hpp"
 #include "wisp/agent/context.hpp"
@@ -97,6 +98,16 @@ ui::Lang lang_of(const core::SystemSettings& settings) {
     return settings.cell().read([](const core::SystemSettingsValues& v) {
         return ui::parse_lang(v.language).value_or(ui::Lang::Zh);
     });
+}
+
+uint8_t notify_vol_of(const core::SystemSettings& settings) {
+    return settings.cell().read([](const core::SystemSettingsValues& v) {
+        return static_cast<uint8_t>(std::clamp(v.notify_vol, 0, 100));
+    });
+}
+
+bool time_24h_of(const core::SystemSettings& settings) {
+    return settings.cell().read([](const core::SystemSettingsValues& v) { return v.time_24h; });
 }
 
 }  // namespace
@@ -513,12 +524,7 @@ Result<void> App::start() {
             .tones = impl_->tones.get(),
             .scenes = scene_runtime,
             .locks = &impl_->wakelocks,
-            .notify_volume =
-                [impl] {
-                    return impl->system_settings.cell().read([](const auto& v) {
-                        return static_cast<uint8_t>(std::clamp(v.notify_vol, 0, 100));
-                    });
-                },
+            .notify_volume = [impl] { return notify_vol_of(impl->system_settings); },
             .ui = impl_->ui.get(),
             .reminders = impl_->reminders.get(),
             .submit_io = impl_->reminders && scenes != nullptr
@@ -638,11 +644,7 @@ Result<void> App::start() {
             .scenes = scene_runtime,
             .device_status = std::move(device_status),
             .utc_offset_min = [impl] { return utc_offset_of(impl->system_settings); },
-            .time_24h =
-                [impl] {
-                    return impl->system_settings.cell().read(
-                        [](const auto& v) { return v.time_24h; });
-                },
+            .time_24h = [impl] { return time_24h_of(impl->system_settings); },
             .wall_s = [impl] { return impl->wall_now(); },
             .repo = scenes != nullptr ? scenes->repository() : nullptr,
             .submit_io = scenes != nullptr ? std::function<bool(std::function<void()>)>(
@@ -1238,6 +1240,10 @@ bool queue_storage_refresh(App& app) {
     }
     impl->refresh_pending.store(false);
     return false;
+}
+
+void sample_power_now(App& app) {
+    if (app.impl_->power_monitor) app.impl_->power_monitor->sample();
 }
 
 core::DeviceRegistry& App::registry() { return impl_->registry; }

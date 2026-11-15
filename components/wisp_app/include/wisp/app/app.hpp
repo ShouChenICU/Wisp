@@ -458,6 +458,8 @@ private:
     friend void join_firmware_install(App&);
     // src/storage_io.hpp.
     friend bool queue_storage_refresh(App&);
+    // src/power_sampling.hpp.
+    friend void sample_power_now(App&);
     // The console task (src/console_task.hpp) lives on Impl.
     friend void start_console(App&);
     friend void stop_console(App&);

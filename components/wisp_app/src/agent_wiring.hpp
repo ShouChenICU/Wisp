@@ -19,7 +19,7 @@
 // flash).
 //
 // The per-turn limits follow Settings' agent_max_steps and agent_turn_min
-// (the system.settings event), from the next turn on.
+// (the settings cell), from the next turn on.
 //
 // Everything the agent reads about the device while it runs (the context
 // source, device.status) comes from cached values: wisp.agent may have its

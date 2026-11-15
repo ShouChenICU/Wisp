@@ -58,6 +58,7 @@ UI-dispatcher subscriptions are all released before `ui->stop()`; `~UiRuntime` a
 2. **Cells whose owners are built later arrive through setters or start parameters:** `AgentService::set_wifi()` before `start()` (NetWiring is built after the agent), `ReminderScheduler::start(time)`, `SceneRuntime::attach_time_sync()` before `start()`, `SceneWiring::start_runtime(power)`. Spec 3.8 names the cells, not how they get there.
 3. **NetWiring's `wifi_state_` snapshot is replaced in this plan's NetWiring task** (spec 4 lists it under step 5): that task rewrites the same lines, and the snapshot has no other writer.
 4. **`voice.state` loses `level` in this plan's last task** (spec 4 lists it under step 5): as soon as Home and the talk overlay read `VoiceService::level()`, nothing reads it, and keeping it would keep the bus's main load (spec 1.2) for nothing.
+5. **Battery notices follow the supply cell's edges.** A `battery_low` notice persisted from the last run is now dismissed when the device boots charging (the follower starts from "not charging" and sees the first sample's charging edge). A USB-only change while already charging no longer dismisses it: only `charging` turning true does.
 
 ---
 
