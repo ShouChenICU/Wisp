@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "support/bus_flood.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/event_bus.hpp"
@@ -458,15 +459,40 @@ TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
     std::vector<uint8_t> applied;
     SystemSettings settings(flaky, bus, [&](uint8_t level) { applied.push_back(level); });
     recorder.attach(bus);
-    // brightness is written, volume fails, erasing brightness again fails.
-    auto r = settings.set({{"brightness", 100}, {"volume", 10}});
-    ASSERT_FALSE(r);
-    EXPECT_EQ(r.error().code, ErrorCode::IoError);
+    // A follower on wisp.bus, held while the batch fails: it is handed the
+    // reseed once released. Released before the settings (its cell) go.
+    std::mutex follower_mutex;
+    std::vector<SystemSettingsValues> followed;
+    wisp::core::CellSubscription follower = settings.cell().subscribe(
+        [&](const SystemSettingsValues& v) {
+            std::lock_guard<std::mutex> lock(follower_mutex);
+            followed.push_back(v);
+        },
+        &bus);
+    ASSERT_TRUE(bus.wait_idle(2000));
+    {
+        wisp::test::BusFlood flood(bus);
+        flood.hold();
+        // brightness is written, volume fails, erasing brightness again
+        // fails.
+        auto r = settings.set({{"brightness", 100}, {"volume", 10}});
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, ErrorCode::IoError);
+        flood.flood(512);
+        flood.release();
+    }
     EXPECT_EQ(settings.get().brightness, 100);
     EXPECT_EQ(settings.get().volume, SystemSettingsValues{}.volume);
     EXPECT_TRUE(settings.cell().get() == settings.get());
     EXPECT_TRUE(applied.empty());
     EXPECT_TRUE(recorder.all(bus).empty());
+    {
+        std::lock_guard<std::mutex> lock(follower_mutex);
+        ASSERT_FALSE(followed.empty());
+        EXPECT_EQ(followed.back().brightness, 100);
+        EXPECT_TRUE(followed.back() == settings.get());
+    }
+    follower.reset();
 }
 
 // The seed takes what is stored without announcing it: at boot nothing has

@@ -30,6 +30,7 @@
 #include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
+#include "support/ui_hold.hpp"
 #include "support/wait.hpp"
 #include "ui_net_harness.hpp"
 #include "wisp/agent/tool_registry.hpp"
@@ -367,6 +368,38 @@ TEST(AppScenes, SelfCheckListFollowsACardChange) {
     b.h.sd->online_flag = true;
     ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*b.h.app); }, 3000));
     EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n")) << b.rows();
+    b.h.app->ui()->set_paused(false);
+}
+
+// With the UI task held, the scenes catalog moves ten times while a
+// package lands on disk between the moves; once released, the diagnostics
+// list it, as the store holds it then. Every LVGL timer is stopped, so
+// only the overview's follower can have listed it.
+TEST(AppScenes, SelfCheckListEndsAtTheLastOfTenCatalogMovesWithTheUiHeld) {
+    Booted b;
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    b.h.app->ui()->set_paused(true);
+    run_on_ui_blocking(b.h.app->ui(), [] {});
+    {
+        wisp::test::UiHold hold(b.h.app->ui());
+        for (int i = 0; i < 10; ++i) {
+            if (i == 5) {
+                put_scene(b.h.root, "clock", "时钟",
+                          "return ui.screen { ui.label { text = 'tick' } }");
+            }
+            rt->note_catalog_changed();
+        }
+    }
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n")) << b.rows();
+    // Settled: the follower has had the last value, and the listing it
+    // asked for has come back.
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    ASSERT_TRUE(b.h.app->storage_worker()->drain(3000));
+    run_on_ui_blocking(b.h.app->ui(), [] {});
+    EXPECT_EQ(b.rows(), "时钟|1.0.0\n");
     b.h.app->ui()->set_paused(false);
 }
 
@@ -971,7 +1004,7 @@ TEST(AppNotifications, DeletedSceneLosesItsNotices) {
     // Both edges were pushed into an idle inbox before close() returned.
     ASSERT_TRUE(wisp::test::slot_barrier(b.h.app->bus(), &b.h.app->bus()));
     EXPECT_EQ(notes->unread_count(), 2u);
-    confirm_delete(b.h, token, "pomodoro");
+    ASSERT_NO_FATAL_FAILURE(confirm_delete(b.h, token, "pomodoro"));
     EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
 }
 
@@ -1003,7 +1036,7 @@ TEST(AppScenes, DeleteDismissesNoticesAndForgetsFlooded) {
     {
         wisp::test::BusFlood flood(b.h.app->bus());
         flood.hold();
-        confirm_delete(b.h, token, "counter");
+        ASSERT_NO_FATAL_FAILURE(confirm_delete(b.h, token, "counter"));
         ASSERT_TRUE(wait_until(
             [&] { return !fs::exists(fs::path(b.h.root) / "scenes" / "counter"); }, 3000));
         // remove() has reported "deleted" by the time its job is done.
@@ -2169,19 +2202,36 @@ TEST(AppScenes, DevModeReloadsTheSceneInFront) {
 
 // Dev mode: a change the watcher reports moves the catalog once per poll
 // that reports it, whichever scene changed (here one not in front, which is
-// not reloaded), so a follower lists the working directory again.
+// not reloaded), so a follower lists the working directory again. Each
+// change is one rename, so the watcher sees it in a single step; it reports
+// a change once the files have held still for a whole poll, so one change
+// is one report however the polls fall.
 TEST(AppScenes, DevModeChangeMovesTheCatalog) {
     const fs::path work = fs::path(wisp::test::temp_dir()) / "work";
     const fs::path data = fs::path(wisp::test::temp_dir()) / "data";
-    auto put = [&](const std::string& id, const std::string& name) {
-        fs::create_directories(work / id);
-        std::ofstream(work / id / "scene.json", std::ios::trunc)
+    const fs::path staging = fs::path(wisp::test::temp_dir()) / "staging";
+    auto manifest = [](const fs::path& dir, const std::string& id, const std::string& name) {
+        std::ofstream(dir / "scene.json", std::ios::trunc)
             << R"({"id":")" << id << R"(","name":")" << name
             << R"(","version":"1.0.0","schema_version":1})";
-        std::ofstream(work / id / "main.lua", std::ios::trunc)
-            << "return ui.screen { ui.label { text = 'x' } }";
     };
-    put("clock", "clock");
+    // A whole new scene, moved into the working directory at once.
+    auto add = [&](const std::string& id, const std::string& name) {
+        fs::create_directories(staging / id);
+        manifest(staging / id, id, name);
+        std::ofstream(staging / id / "main.lua") << "return ui.screen { ui.label { text = 'x' } }";
+        fs::rename(staging / id, work / id);
+    };
+    // A new manifest for an existing scene, written aside (a name starting
+    // with '.' is not watched) and renamed over the old one.
+    auto rename_scene = [&](const std::string& id, const std::string& name) {
+        fs::create_directories(staging / id);
+        manifest(staging / id, id, name);
+        fs::rename(staging / id / "scene.json", work / id / ".scene.json.tmp");
+        fs::rename(work / id / ".scene.json.tmp", work / id / "scene.json");
+    };
+    fs::create_directories(work);
+    add("clock", "clock");
     UiNetOptions opts;
     opts.scenes_dir = work.string();
     opts.scenes_data_dir = data.string();
@@ -2191,13 +2241,18 @@ TEST(AppScenes, DevModeChangeMovesTheCatalog) {
     ASSERT_NE(rt, nullptr);
     const uint32_t before = rt->overview().get().catalog;
 
-    put("clock", "alarm");
+    rename_scene("clock", "alarm");
     ASSERT_TRUE(wait_until([&] { return rt->overview().get().catalog != before; }, 5000));
     EXPECT_EQ(rt->overview().get().catalog, before + 1);
 
     // A second change is a second move, not more: the first was counted once.
-    put("timer", "timer");
+    add("timer", "timer");
     ASSERT_TRUE(wait_until([&] { return rt->overview().get().catalog != before + 1; }, 5000));
+    EXPECT_EQ(rt->overview().get().catalog, before + 2);
+    // Nothing moves it again: more than two further polls (500 ms apart),
+    // then whatever poll they queued has run on the worker.
+    EXPECT_FALSE(wait_until([&] { return rt->overview().get().catalog != before + 2; }, 1200));
+    ASSERT_TRUE(b.h.app->storage_worker()->drain(3000));
     EXPECT_EQ(rt->overview().get().catalog, before + 2);
     EXPECT_EQ(rt->status("clock").state, wisp::core::SceneState::Stopped);
 }

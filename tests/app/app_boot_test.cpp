@@ -333,14 +333,22 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     // 1 s tick (real time, far behind these) leaves Standby and
     // DeepStandby alone; at Dim it may return to Active, which the
     // assertions there hold for too, so this follower (on wisp.bus, as
-    // App's are) shows that Dim itself was delivered. Released before
-    // stop() destroys PowerManager.
+    // App's are) shows that Dim itself was delivered. That tick can also
+    // return to Active before wisp.bus runs the follower, which then
+    // gets only the coalesced Active; the cell's mirror published "dim"
+    // under the cell's lock in either case, so the recorded event counts
+    // too. Both are released before stop() destroys PowerManager.
     std::atomic<bool> saw_dim{false};
     wisp::core::CellSubscription dim_follower = pm->level_cell().subscribe(
         [&](const wisp::hal::PowerLevel& l) {
             if (l == wisp::hal::PowerLevel::Dim) saw_dim.store(true);
         },
         &h.app.bus());
+    const auto dim_event_sub =
+        h.app.bus().subscribe(wisp::core::topics::kPowerState, [&](const wisp::core::Event& e) {
+            auto it = e.payload.find("state");
+            if (it != e.payload.end() && it->second.as_string() == "dim") saw_dim.store(true);
+        });
     const uint64_t t0 = wisp::os::now_ms();
     const uint64_t off_ms = static_cast<uint64_t>(wisp::core::kDefaultScreenOffS) * 1000;
     const uint64_t deep_ms = static_cast<uint64_t>(wisp::core::kDefaultDeepAfterS) * 1000;
@@ -380,6 +388,7 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     EXPECT_TRUE(devices->get("haptic.main", "level"));
 
     dim_follower.reset();
+    h.app.bus().unsubscribe(dim_event_sub);
     h.app.stop();
     EXPECT_EQ(h.app.devices(), nullptr);
 }
