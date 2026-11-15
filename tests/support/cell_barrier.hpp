@@ -34,6 +34,13 @@ template <class T>
 // Waits until every slot already queued on `on` (an inbox's run, a cell
 // subscription's call) has run: a throwaway cell's fresh subscription goes
 // behind them. The same caveat applies to posts those runs made.
+//
+// An edge pushed into an EdgeInbox that already holds edges (its run
+// queued or running) schedules nothing itself: the run's end_run()
+// schedules the next one later, so a barrier made in that window can run
+// before that edge is delivered. The barrier covers an edge only when its
+// push found the inbox idle, or when no push followed the start of the
+// run that delivers it.
 [[nodiscard]] inline bool slot_barrier(core::EventBus& bus, core::Dispatcher* on,
                                        uint32_t ms = 2000) {
     core::StateCell<int> cell(bus, 0);

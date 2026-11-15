@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <span>
@@ -190,16 +191,17 @@ namespace {
 
 // Holds the UI task inside a posted job until release(): posts queue up
 // behind it and no slot runs meanwhile. With fill(), every further post
-// fails.
+// fails. The job shares the semaphores: after release() the UI task may
+// still be inside take() when this object goes.
 class UiHold {
 public:
     explicit UiHold(wisp::ui::UiRuntime* ui) : ui_(ui) {
-        held_ = ui_->post([this] {
-            entered_.give();
-            gate_.take(wisp::os::kForever);
+        held_ = ui_->post([gates = gates_] {
+            gates->entered.give();
+            gates->gate.take(wisp::os::kForever);
         });
         EXPECT_TRUE(held_);
-        if (held_) EXPECT_TRUE(entered_.take(3000));
+        if (held_) EXPECT_TRUE(gates_->entered.take(3000));
     }
     ~UiHold() { release(); }
     UiHold(const UiHold&) = delete;
@@ -214,14 +216,17 @@ public:
     void release() {
         if (held_) {
             held_ = false;
-            gate_.give();
+            gates_->gate.give();
         }
     }
 
 private:
+    struct Gates {
+        wisp::os::Semaphore entered{1, 0};
+        wisp::os::Semaphore gate{1, 0};
+    };
     wisp::ui::UiRuntime* ui_;
-    wisp::os::Semaphore entered_{1, 0};
-    wisp::os::Semaphore gate_{1, 0};
+    std::shared_ptr<Gates> gates_ = std::make_shared<Gates>();
     bool held_ = false;
 };
 

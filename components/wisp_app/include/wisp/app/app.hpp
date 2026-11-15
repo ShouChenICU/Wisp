@@ -425,11 +425,13 @@ public:
     // and live state-cell subscriptions; then one line per edge inbox,
     // "inbox <name> overflows=<n>" (edges it dropped), joined with "\n", no
     // trailing newline. With a screen: "inbox power_key" (the system
-    // duties, between start() and stop()). Reads atomics only, so the
-    // thread that calls start() and stop() and the console task (which
-    // runs between them) may call it; it is what the firmware `mem`
-    // command appends to the heap report. Anything later added to the
-    // report must keep that promise.
+    // duties, between start() and stop()). It reads counters (atomics) and
+    // the pointer to the system duties, which start() builds and stop()
+    // destroys, so only the thread that calls start() and stop() and the
+    // console task may call it: the console starts after the duties are
+    // built and stops before they are destroyed. It is what the firmware
+    // `mem` command appends to the heap report. Anything later added to
+    // the report must keep to the same rule.
     std::string dispatch_report() const;
 
     // Writes what still waits for flash before the device restarts, powers

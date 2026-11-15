@@ -717,14 +717,15 @@ TEST(PowerManager, ButtonWakesFromStandbyWithAFullUiQueue) {
     ASSERT_TRUE(f.ui->paused());
 
     // The paused loop takes this job and blocks in it; then every post
-    // fails.
-    wisp::os::Semaphore entered{1, 0};
-    wisp::os::Semaphore gate{1, 0};
-    ASSERT_TRUE(f.ui->post([&] {
-        entered.give();
-        gate.take(wisp::os::kForever);
+    // fails. The job shares the semaphores: after gate->give() the UI task
+    // may still be inside take() when this test returns.
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(f.ui->post([entered, gate] {
+        entered->give();
+        gate->take(wisp::os::kForever);
     }));
-    ASSERT_TRUE(entered.take(2000));
+    ASSERT_TRUE(entered->take(2000));
     size_t filled = 0;
     while (f.ui->post([] {})) ++filled;
     ASSERT_GT(filled, 0u);
@@ -737,7 +738,7 @@ TEST(PowerManager, ButtonWakesFromStandbyWithAFullUiQueue) {
     f.buttons->emit_for_test("button.vol_up", ButtonEdge::Kind::Up, 100'000);
     EXPECT_TRUE(f.pm->standby());  // the follower waits for the UI task
 
-    gate.give();
+    gate->give();
     EXPECT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
     EXPECT_FALSE(f.ui->paused());
     EXPECT_EQ(f.pm->level(), PowerLevel::Active);

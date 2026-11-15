@@ -210,8 +210,8 @@ extern "C" void app_main() {
     // longest wait and job (wisp::app::storage_report).
     platform.console_commands.push_back(
         {"mem",
-         "mem                          heap, task stacks, bus drops, cell subscriptions and "
-         "storage queues",
+         "mem                          heap, task stacks, bus drops, cell subscriptions, "
+         "inbox overflows and storage queues",
          [](wisp::app::App& app, const std::vector<std::string>& args) -> std::string {
              if (args.size() != 1) return "error: usage: mem";
              return wisp::port::esp::mem_report() + "\n" + app.dispatch_report() + "\n" +

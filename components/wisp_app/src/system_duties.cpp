@@ -87,8 +87,10 @@ void SystemDuties::start() {
     alive_ = std::make_shared<bool>(true);
 
     if (power_key_inbox_) {
-        // On wisp.button under ButtonService's lock: a compare and a push.
-        // Down and up edges would only take room in the ring.
+        // On wisp.button under ButtonService's lock: a compare and a push
+        // (which, on an overflow, also logs the inbox's rate-limited
+        // warning there). Down and up edges would only take room in the
+        // ring.
         power_key_listener_ = app_.buttons().add_listener([this](const core::ButtonEdge& e) {
             if (e.kind != core::ButtonEdge::Kind::Short && e.kind != core::ButtonEdge::Kind::Long) {
                 return;

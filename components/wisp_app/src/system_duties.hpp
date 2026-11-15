@@ -26,7 +26,17 @@
 // neither of which needs the bus or a free post: every press is handled,
 // in order, also with wisp.bus flooded, the post queue full or the UI
 // loop paused in standby. An overflow of the inbox is counted (App's
-// dispatch_report()) and logged.
+// dispatch_report()) and logged; the inbox logs that warning (rate-limited)
+// on wisp.button, under ButtonService's lock, from inside the listener's
+// push.
+//
+// Order against PowerManager's wake: its follower (a cell, coalescing,
+// moved by every edge of every key) and this inbox both run on the UI
+// dispatcher, each in the place its first pending edge gave it, not edge
+// by edge across the two. "Power key off, another key, power key on"
+// pressed within one UI stall: the follower, queued by the first press's
+// down edge, runs first and finds the screen still on (the other key's
+// wake does nothing), then the inbox runs off, on: the screen ends on.
 //
 // Threading: start() and stop() are UI thread only, like every member that
 // touches LVGL. The listener runs on wisp.button and only pushes into the
