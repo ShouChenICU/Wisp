@@ -1597,7 +1597,7 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     s.has_battery = now.has_battery;
     s.battery = now.battery;
     s.charging = now.charging;
-    s.lang = now.lang;
+    s.lang = now.settings.language;
     slots_.push_back(std::move(slot));
     return &s;
 }
@@ -2249,18 +2249,8 @@ DeviceInfo SceneRuntime::device_info() const {
     i.safe = hal::safe_rect(deps_.shape);
     i.status_area = ui::SystemLayer::status_area(deps_.shape);
     // Also called off the scene task (check_build.cpp): a cell read is
-    // memory only, from any thread.
-    std::optional<ui::Lang> lang;
-    i.utc_offset_min = deps_.utc_offset_min;
-    i.time_24h = true;
-    if (deps_.settings != nullptr) {
-        deps_.settings->read([&](const core::SystemSettingsValues& v) {
-            lang = ui::to_lang(v.language);
-            i.utc_offset_min = v.utc_offset_min;
-            i.time_24h = v.time_24h;
-        });
-    }
-    std::snprintf(i.lang, sizeof(i.lang), "%s", ui::lang_code(lang ? *lang : ui::lang()));
+    // memory only, from any thread. Without the cell: the schema's defaults.
+    if (deps_.settings != nullptr) i.settings = deps_.settings->get();
     if (auto t = wall_now()) {
         i.has_time = true;
         i.time = *t;
@@ -2378,8 +2368,8 @@ void SceneRuntime::device_event(uint32_t instance, DeviceEvent ev, const DeviceI
         s->battery = info.battery;
         s->charging = info.charging;
     } else if (ev == DeviceEvent::Lang) {
-        if (s->lang == info.lang) return;
-        s->lang = info.lang;
+        if (s->lang == info.settings.language) return;
+        s->lang = info.settings.language;
     } else if (!minute_ticks(*s)) {
         // A "minute" for a new time zone; the screen coming on sends one.
         return;

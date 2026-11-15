@@ -15,6 +15,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "scene_api.hpp"
@@ -339,11 +340,21 @@ void push_device_info(lua_State* L, const DeviceInfo& i) {
     set_int(L, "x2", i.status_area.x2);
     set_int(L, "y2", i.status_area.y2);
     lua_setfield(L, -2, "status_area");
-    lua_pushstring(L, i.lang);
-    lua_setfield(L, -2, "lang");
-    set_int(L, "utc_offset", i.utc_offset_min);
-    lua_pushboolean(L, i.time_24h ? 1 : 0);
-    lua_setfield(L, -2, "time_24h");
+    for (const core::SettingSpec& spec : core::kSettingsSchema) {
+        if ((spec.flags & core::kSettingScene) == 0) continue;
+        core::visit_setting(i.settings, core::setting_id_of(spec), [&](auto v) {
+            using T = decltype(v);
+            if constexpr (std::is_same_v<T, bool>) {
+                lua_pushboolean(L, v ? 1 : 0);
+            } else if constexpr (std::is_same_v<T, int>) {
+                lua_pushinteger(L, static_cast<lua_Integer>(v));
+            } else {
+                lua_pushlstring(L, v.data(), v.size());
+            }
+        });
+        // scene_name is a literal of the table: NUL-terminated.
+        lua_setfield(L, -2, spec.scene_name.data());
+    }
     if (i.has_time) set_int(L, "time", i.time);
     if (i.has_battery) set_int(L, "battery", i.battery);
     lua_pushboolean(L, i.charging ? 1 : 0);

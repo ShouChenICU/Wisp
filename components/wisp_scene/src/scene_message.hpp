@@ -252,7 +252,7 @@ struct SceneRuntime::Slot {
     bool has_battery = false;
     int64_t battery = 0;
     bool charging = false;
-    std::string lang;
+    core::LangCode lang{};  // set at open
 };
 
 // run_lua()'s VM on the scene task (scene_runtime_lua.cpp). `api` is

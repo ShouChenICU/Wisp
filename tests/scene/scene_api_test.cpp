@@ -13,6 +13,7 @@
 #include "support/wait.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/scene/minute_ticker.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -625,21 +626,75 @@ scene.on_show = function() print(i.lang, i.utc_offset, tostring(i.time_24h)) end
 }
 
 // Without a settings cell (a runtime built without SystemSettings) info()
-// reports SceneRuntimeDeps::utc_offset_min, ui::lang() and 24-hour time.
+// reports the schema's defaults, not ui::lang().
 TEST_F(SceneApiTest, InfoWithoutASettingsCell) {
     follow_cells = false;
-    auto base = configure_deps;
-    configure_deps = [base](wisp::scene::SceneRuntimeDeps& d) {
-        base(d);
-        d.utc_offset_min = 330;
-    };
+    wisp::ui::set_lang(wisp::ui::Lang::En);
     start();
     install("cfg", std::string(R"(
 local i = wisp.device.info()
 scene.on_show = function() print(i.lang, i.utc_offset, tostring(i.time_24h)) end
 )") + kScreen);
     ASSERT_TRUE(rt->open("cfg"));
-    EXPECT_EQ(scene_log("cfg"), (std::vector<std::string>{"zh\t330\ttrue"}));
+    EXPECT_EQ(scene_log("cfg"), (std::vector<std::string>{"zh\t480\ttrue"}));
+}
+
+// The settings in info() are the table's kSettingScene rows, each under its
+// scene_name with the cell's value; every other key is one of info()'s own.
+TEST_F(SceneApiTest, InfoSettingsFieldsAreTheSceneRows) {
+    using wisp::core::kSettingScene;
+    using wisp::core::kSettingsSchema;
+    wall = kNoon;
+    change_settings([](wisp::core::SystemSettingsValues& v) {
+        v.language = wisp::core::LangCode::Ja;
+        v.utc_offset_min = -570;
+        v.time_24h = false;
+    });
+    const wisp::core::SettingsSnapshot snap = settings_cell.get();
+    start();
+    install("keys", std::string(R"(
+local keys = {}
+for k in pairs(wisp.device.info()) do keys[#keys + 1] = k end
+table.sort(keys)
+local i = wisp.device.info()
+for _, k in ipairs(keys) do print(k, type(i[k]), tostring(i[k])) end
+)") + kScreen);
+    ASSERT_TRUE(rt->open("keys"));
+    const std::vector<std::string> own = {"battery",   "charging", "corner_radius", "height",
+                                          "safe_area", "shape",    "status_area",   "time",
+                                          "width",     "wifi"};
+    std::vector<std::string> settings_seen;
+    std::vector<std::string> own_seen;
+    for (const std::string& line : scene_log("keys")) {
+        const std::string key = line.substr(0, line.find('\t'));
+        const wisp::core::SettingSpec* row = nullptr;
+        for (const wisp::core::SettingSpec& spec : kSettingsSchema) {
+            if ((spec.flags & kSettingScene) != 0 && spec.scene_name == key) row = &spec;
+        }
+        if (row == nullptr) {
+            own_seen.push_back(key);
+            continue;
+        }
+        settings_seen.push_back(key);
+        const Value v = wisp::core::setting_value(snap, wisp::core::setting_id_of(*row));
+        std::string want = key;
+        if (v.type() == Value::Type::Int) {
+            want += "\tnumber\t" + std::to_string(v.as_int());
+        } else if (v.type() == Value::Type::Bool) {
+            want += std::string("\tboolean\t") + (v.as_bool() ? "true" : "false");
+        } else {
+            want += "\tstring\t" + std::string(v.as_string());
+        }
+        EXPECT_EQ(line, want);
+    }
+    std::vector<std::string> scene_rows;
+    for (const wisp::core::SettingSpec& spec : kSettingsSchema) {
+        if ((spec.flags & kSettingScene) != 0) scene_rows.emplace_back(spec.scene_name);
+    }
+    std::sort(scene_rows.begin(), scene_rows.end());
+    EXPECT_EQ(settings_seen, scene_rows);
+    EXPECT_EQ(settings_seen, (std::vector<std::string>{"lang", "time_24h", "utc_offset"}));
+    EXPECT_EQ(own_seen, own);
 }
 
 }  // namespace

@@ -13,8 +13,10 @@
 //       table by timer id; the runtime runs the ids TimerSet::due() hands
 //       out with run_timer(), each with a fresh time budget.
 //   wisp.device.info() -> {width, height, shape, corner_radius, safe_area =
-//       {x1, y1, x2, y2}, lang, utc_offset, time, battery, charging, wifi};
-//       time and battery are nil when unknown; utc_offset is in minutes
+//       {x1, y1, x2, y2}, lang, utc_offset, time_24h, time, battery,
+//       charging, wifi}; the settings among them are the kSettingScene
+//       rows of settings_schema.hpp under their scene_name; time and
+//       battery are nil when unknown; utc_offset is in minutes
 //       east of UTC; corner_radius is the rounded rect's radius, half the
 //       smaller side for a circle, 0 for a rect.
 //   wisp.device.row_span(y) -> x1, x2: the visible columns of screen row
@@ -161,6 +163,7 @@
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/core/sensor_service.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -186,9 +189,9 @@ struct DeviceInfo {
     hal::Area safe;
     // Legacy status indicator geometry, retained for saved scenes.
     hal::Area status_area;
-    char lang[4] = "zh";
-    int32_t utc_offset_min = 480;
-    bool time_24h = true;
+    // The settings cell's value; default-constructed (the schema's
+    // defaults) without one. info() shows its kSettingScene rows.
+    core::SettingsSnapshot settings{};
     bool has_time = false;
     int64_t time = 0;  // seconds since the epoch
     bool has_battery = false;

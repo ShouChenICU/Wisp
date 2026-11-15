@@ -202,18 +202,18 @@
 // scene last saw, checked on each change of the supply's charging or USB
 // state and each minute (a percent step alone waits for the minute);
 // "lang" when the settings' language differs from the one the scene last
-// saw, checked on each change of it and each minute. info().lang is the
-// settings cell's language (ui::set_lang() runs on the UI thread and may
-// lag it), ui::lang() without the cell. info().utc_offset is the cell's
-// utc_offset_min, SceneRuntimeDeps::utc_offset_min without it; when it
-// changes, "minute" fires at once for every scene whose minute ticks,
-// since the local time a scene shows has moved. A finished time-sync
-// attempt that synced (net::TimeSyncService) fires it the same way, the
-// wall clock itself may have moved, unless the minute the clock now reads
-// already fired. info().time_24h (the Settings time format) is the cell's
-// time_24h, true without it; a change fires "minute" the same way. The
-// values at start are the ones the runtime starts from: no event for
-// them.
+// saw, checked on each change of it and each minute. info()'s settings
+// are the settings cell's kSettingScene rows (settings_schema.hpp), each
+// under its scene_name (lang, utc_offset, time_24h), and the schema's
+// defaults without the cell; info().lang is the cell's language, not
+// ui::lang() (ui::set_lang() runs on the UI thread and may lag it). When
+// utc_offset changes, "minute" fires at once for every scene whose minute
+// ticks, since the local time a scene shows has moved. A finished
+// time-sync attempt that synced (net::TimeSyncService) fires it the same
+// way, the wall clock itself may have moved, unless the minute the clock
+// now reads already fired. A change of time_24h (the Settings time
+// format) fires "minute" the same way. The values at start are the ones
+// the runtime starts from: no event for them.
 //
 // Results: every VM (a scene's, the agent's run) has a CompletionBox
 // (completion_box.hpp), made with the VM. A finished wisp.http or
@@ -525,9 +525,6 @@ struct SceneRuntimeDeps {
     // Wall clock, seconds since the epoch; empty: std::time(). Called on
     // the scene task, same rule.
     std::function<int64_t()> wall_clock;
-    // The time zone wisp.device.info().utc_offset reports (minutes east of
-    // UTC) when there is no `settings` cell.
-    int utc_offset_min = 480;
     // wisp.power; null: keep_screen_on() returns nil, "unavailable". Must
     // outlive the runtime.
     core::WakeLockRegistry* locks = nullptr;
@@ -551,10 +548,11 @@ struct SceneRuntimeDeps {
     // (file header). null: the minute checks only. Followed from start()
     // to stop(); must outlive that.
     const core::StateCell<core::PowerSupply>* supply = nullptr;
-    // SystemSettings::cell(): info()'s lang, utc_offset and time_24h, and
-    // the "minute" and "lang" their changes fire. null: the fallbacks in
-    // the file header. Read on the scene task and by device_info()'s other
-    // callers (memory only); followed from start() to stop().
+    // SystemSettings::cell(): the settings in info() (its kSettingScene
+    // rows), and the "minute" and "lang" their changes fire. null: info()
+    // reports the schema's defaults and no setting fires an event. Read
+    // on the scene task and by device_info()'s other callers (memory
+    // only); followed from start() to stop().
     const core::StateCell<core::SystemSettingsValues>* settings = nullptr;
     // wisp.device.list/get/call; null: list() returns {}, get() and call()
     // nil, "unavailable". Must outlive the runtime.
