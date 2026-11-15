@@ -17,7 +17,6 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -60,9 +59,20 @@ SystemDuties::SystemDuties(App& app)
       }),
       pair_card_([this] {
           if (net::PairingService* pairing = app_.pairing()) pairing->cancel_code();
-      }) {}
+      }) {
+    if (!power_key_id_.empty()) {
+        power_key_inbox_ = os::make_large<core::EdgeInbox<core::ButtonEdge, 8>>(
+            "power_key", ui_, [this](const core::ButtonEdge& e) { on_power_key(e); });
+        if (!power_key_inbox_) WLOG_E(kTag, "no memory for the power key's inbox");
+    }
+}
 
-SystemDuties::~SystemDuties() = default;
+SystemDuties::~SystemDuties() {
+    // First, while every member its handler reads is alive: off the UI
+    // thread this waits for a run in progress. stop() has removed the
+    // listener, its only producer.
+    power_key_inbox_.reset();
+}
 
 bool SystemDuties::post(std::function<void()> fn) {
     return ui_.post([alive = alive_, fn = std::move(fn)] {
@@ -76,8 +86,17 @@ void SystemDuties::start() {
     if (alive_) return;
     alive_ = std::make_shared<bool>(true);
 
-    button_sub_ = app_.bus().subscribe(core::topics::kButtonPrefix,
-                                       [this](const core::Event& e) { on_button_event(e); });
+    if (power_key_inbox_) {
+        // On wisp.button under ButtonService's lock: a compare and a push.
+        // Down and up edges would only take room in the ring.
+        power_key_listener_ = app_.buttons().add_listener([this](const core::ButtonEdge& e) {
+            if (e.kind != core::ButtonEdge::Kind::Short && e.kind != core::ButtonEdge::Kind::Long) {
+                return;
+            }
+            if (e.id.view() != power_key_id_) return;
+            power_key_inbox_->push(e);
+        });
+    }
     // From here on, this object's PowerKeyController is the *only* thing
     // that decides what a power-key event does to the screen --
     // PowerManager's own generic "any button wakes standby" handler
@@ -130,11 +149,13 @@ void SystemDuties::start() {
 void SystemDuties::stop() {
     if (!alive_) return;
     // No handler runs again once its release returns (here on the UI
-    // thread a cell callback's release returns at once); whatever the
-    // power-key handler already posted finds alive_ cleared below.
-    if (button_sub_ != 0) {
-        app_.bus().unsubscribe(button_sub_);
-        button_sub_ = 0;
+    // thread a cell callback's release returns at once). The listener goes
+    // first: once removed nothing pushes into the power-key inbox, which
+    // stays for the next start() and is destroyed with this object. Edges
+    // still waiting in it run after stop() and find alive_ cleared below.
+    if (power_key_listener_ != 0) {
+        app_.buttons().remove_listener(power_key_listener_);
+        power_key_listener_ = 0;
     }
     for (core::CellSubscription* sub :
          {&settings_sub_, &wifi_sub_, &ap_sub_, &pairing_sub_, &reset_sub_, &fw_sub_}) {
@@ -193,41 +214,24 @@ void SystemDuties::emit_perf_line() {
     app_.platform().emit_line("WISP_PERF " + to_json(Value(payload)));
 }
 
-void SystemDuties::on_button_event(const core::Event& e) {
-    if (power_key_id_.empty() || e.source != power_key_id_) return;
-    // on_button_event() itself runs on the EventBus dispatcher thread, but
-    // PowerKeyController is not thread-safe against concurrent callers --
-    // on_power_off_answer() also drives it, from the UI thread, via
-    // on_confirm(). Posting the *whole* decision (on_short()/on_long()
-    // included, not just the resulting Action) onto the UI thread is what
-    // makes every PowerKeyController call happen on one single thread.
-    std::string topic = e.topic;
-    // A dropped post() here silently loses whatever power-key action
-    // (screen off/on) this event was about to decide -- log it so that
-    // isn't invisible (see event_bus.hpp for why this must not block
-    // waiting for a slot instead).
-    if (!post([this, topic] {
-            // PowerManager::standby() -- not any state PowerKeyController
-            // tracks itself -- is the single source of truth for "is the
-            // screen on"; read it fresh right before deciding, on this
-            // same UI thread (the only thread that ever calls into
-            // PowerManager's enter_standby()/exit_standby() on the power
-            // key's behalf, so there is no race between this read and
-            // handle_power_key_action() below acting on the result).
-            PowerManager* pm = app_.power_manager();
-            bool screen_on = pm == nullptr || !pm->standby();
-            PowerKeyController::Action action = PowerKeyController::Action::None;
-            // ButtonService names the topics after the key's id.
-            if (topic == power_key_id_ + ".short") {
-                action = power_key_.on_short(screen_on);
-            } else if (topic == power_key_id_ + ".long") {
-                action = power_key_.on_long(screen_on);
-            }
-            if (action != PowerKeyController::Action::None) {
-                handle_power_key_action(action);
-            }
-        })) {
-        WLOG_W(kTag, "post(power key action) dropped (post queue full)");
+void SystemDuties::on_power_key(const core::ButtonEdge& edge) {
+    // A press that waited in the inbox while stop() ran does nothing.
+    if (!alive_) return;
+    // On the UI thread, like on_power_off_answer(), the other caller of
+    // PowerKeyController, which is not thread-safe. PowerManager::standby()
+    // -- not any state PowerKeyController tracks itself -- is the single
+    // source of truth for "is the screen on"; read it fresh right before
+    // deciding, on this same UI thread (the only thread that ever calls
+    // into PowerManager's enter_standby()/exit_standby() on the power
+    // key's behalf, so there is no race between this read and
+    // handle_power_key_action() below acting on the result).
+    PowerManager* pm = app_.power_manager();
+    const bool screen_on = pm == nullptr || !pm->standby();
+    const PowerKeyController::Action action = edge.kind == core::ButtonEdge::Kind::Short
+                                                  ? power_key_.on_short(screen_on)
+                                                  : power_key_.on_long(screen_on);
+    if (action != PowerKeyController::Action::None) {
+        handle_power_key_action(action);
     }
 }
 

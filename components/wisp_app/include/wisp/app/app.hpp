@@ -421,9 +421,13 @@ public:
     // stop(). Its members are called on the UI thread only.
     shell::Shell* shell();
 
-    // One line, "bus dropped=<n> cell_subs=<n>" (no trailing newline): events
-    // the bus dropped on overflow and live state-cell subscriptions. Reads
-    // atomics only, so any thread may call it; it is what the firmware `mem`
+    // "bus dropped=<n> cell_subs=<n>": events the bus dropped on overflow
+    // and live state-cell subscriptions; then one line per edge inbox,
+    // "inbox <name> overflows=<n>" (edges it dropped), joined with "\n", no
+    // trailing newline. With a screen: "inbox power_key" (the system
+    // duties, between start() and stop()). Reads atomics only, so the
+    // thread that calls start() and stop() and the console task (which
+    // runs between them) may call it; it is what the firmware `mem`
     // command appends to the heap report. Anything later added to the
     // report must keep that promise.
     std::string dispatch_report() const;

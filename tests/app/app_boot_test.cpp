@@ -288,7 +288,8 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
     static_cast<FakeButton&>(*key).standby_poll = 20;
     wisp::app::PowerManager* pm = h.app.power_manager();
     ASSERT_NE(pm, nullptr);
-    h.app.bus().publish(wisp::core::Event{"button.side.short", "button.side"});
+    h.app.buttons().emit_for_test("button.side", wisp::core::ButtonEdge::Kind::Short,
+                                  wisp::os::now_us());
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
     // ... in standby only the power-role key is polled, and it still is
     // under its own id; its down alone does not wake the screen (the
@@ -476,6 +477,21 @@ TEST(AppBoot, DispatchReportShowsBusDropsAndCellSubscriptions) {
     EXPECT_EQ(h.app.dispatch_report(),
               "bus dropped=" + std::to_string(h.app.bus().dropped()) +
                   " cell_subs=" + std::to_string(h.app.bus().cell_subscriptions()));
+}
+
+// With a screen the system duties add their power-key inbox's line; it
+// goes with them.
+TEST(AppBoot, DispatchReportListsThePowerKeyInbox) {
+    auto h = make_app({.with_display = true});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_TRUE(std::regex_match(
+        h.app.dispatch_report(),
+        std::regex("^bus dropped=[0-9]+ cell_subs=[0-9]+\ninbox power_key overflows=0$")))
+        << h.app.dispatch_report();
+    h.app.stop();
+    EXPECT_TRUE(std::regex_match(h.app.dispatch_report(),
+                                 std::regex("^bus dropped=[0-9]+ cell_subs=[0-9]+$")))
+        << h.app.dispatch_report();
 }
 
 // stop() must be safe (and a no-op) even if start() never succeeded --

@@ -17,12 +17,16 @@
 #include "firmware_confirm.hpp"
 #include "net_cards.hpp"
 #include "support/bus_flood.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_firmware.hpp"
 #include "support/fake_http.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/button_service.hpp"
+#include "wisp/core/log.hpp"
+#include "wisp/core/topics.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -38,6 +42,7 @@ using wisp::test::run_on_ui_thread;
 using wisp::test::UiNetHarness;
 using wisp::test::UiNetOptions;
 using wisp::test::wait_until;
+using Kind = wisp::core::ButtonEdge::Kind;
 
 namespace {
 
@@ -94,8 +99,17 @@ protected:
         run_on_ui_blocking(h->app->ui(), [] {});
     }
 
-    void press(const char* topic, const char* source = "button.power") {
-        h->app->bus().publish(wisp::core::Event{topic, source});
+    // An edge of `key`, through the path a real one takes (ButtonService's
+    // listeners, then its bus event).
+    void press(Kind kind, const char* key = "button.power") {
+        h->app->buttons().emit_for_test(key, kind, wisp::os::now_us());
+    }
+
+    // Every inbox run already queued on the UI has run, and every post it
+    // made too.
+    void settle_ui() {
+        ASSERT_TRUE(wisp::test::slot_barrier(h->app->bus(), h->app->ui()));
+        run_on_ui_blocking(h->app->ui(), [] {});
     }
 
     std::string pair_browser() {
@@ -142,17 +156,17 @@ TEST_F(SystemDutiesTest, PowerKeyWithoutSelfCheck) {
     wisp::app::PowerManager* pm = h->app->power_manager();
     ASSERT_NE(pm, nullptr);
 
-    press("button.power.short");
+    press(Kind::Short);
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
-    press("button.power.short");
+    press(Kind::Short);
     ASSERT_TRUE(wait_until([&] { return !pm->standby(); }, 3000));
 
-    press("button.power.long");
+    press(Kind::Long);
     ASSERT_TRUE(wait_until([&] { return top_says("关机"); }, 3000));
     EXPECT_EQ(msgboxes(), 1);
     on_home();
     // A short press while the question is up cancels it.
-    press("button.power.short");
+    press(Kind::Short);
     ASSERT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
     EXPECT_FALSE(pm->standby());
 }
@@ -164,13 +178,153 @@ TEST_F(SystemDutiesTest, PowerKeyWithAnotherIdTurnsTheScreenOff) {
     ASSERT_NE(pm, nullptr);
 
     // Another key's short press is not the power key's.
-    press("button.vol_up.short", "button.vol_up");
-    h->app->bus().wait_idle(1000);
-    run_on_ui_blocking(h->app->ui(), [] {});
+    press(Kind::Short, "button.vol_up");
+    settle_ui();
     EXPECT_FALSE(pm->standby());
 
-    press("button.side.short", "button.side");
+    press(Kind::Short, "button.side");
     EXPECT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
+}
+
+namespace {
+
+// Holds the UI task inside a posted job until release(): posts queue up
+// behind it and no slot runs meanwhile. With fill(), every further post
+// fails.
+class UiHold {
+public:
+    explicit UiHold(wisp::ui::UiRuntime* ui) : ui_(ui) {
+        held_ = ui_->post([this] {
+            entered_.give();
+            gate_.take(wisp::os::kForever);
+        });
+        EXPECT_TRUE(held_);
+        if (held_) EXPECT_TRUE(entered_.take(3000));
+    }
+    ~UiHold() { release(); }
+    UiHold(const UiHold&) = delete;
+    UiHold& operator=(const UiHold&) = delete;
+
+    // Fills the post queue; how many posts it took.
+    size_t fill() {
+        size_t n = 0;
+        while (ui_->post([] {})) ++n;
+        return n;
+    }
+    void release() {
+        if (held_) {
+            held_ = false;
+            gate_.give();
+        }
+    }
+
+private:
+    wisp::ui::UiRuntime* ui_;
+    wisp::os::Semaphore entered_{1, 0};
+    wisp::os::Semaphore gate_{1, 0};
+    bool held_ = false;
+};
+
+// Collects the inbox overflow warnings.
+struct OverflowWarnings : wisp::LogSink {
+    OverflowWarnings() { wisp::log::add_sink(this); }
+    ~OverflowWarnings() override { wisp::log::remove_sink(this); }
+    OverflowWarnings(const OverflowWarnings&) = delete;
+    OverflowWarnings& operator=(const OverflowWarnings&) = delete;
+    void write(const wisp::LogRecord& rec) override {
+        if (std::string_view(rec.msg).find("edge inbox power_key overflowed") !=
+            std::string_view::npos)
+            ++count;
+    }
+    std::atomic<size_t> count{0};
+};
+
+}  // namespace
+
+// The power key needs neither the bus nor a free post: with wisp.bus held
+// and flooded its short press turns the screen off, and in standby (the UI
+// loop paused) with the post queue full the next one turns it back on.
+// Nothing is counted as an overflow.
+TEST_F(SystemDutiesTest, PowerKeyWorksFlooded) {
+    boot();
+    wisp::app::PowerManager* pm = h->app->power_manager();
+    ASSERT_NE(pm, nullptr);
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+    flood.flood(256);
+
+    press(Kind::Short);
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
+    ASSERT_TRUE(h->app->ui()->paused());
+
+    {
+        UiHold hold(h->app->ui());
+        ASSERT_GT(hold.fill(), 0u);
+        press(Kind::Short);
+        EXPECT_TRUE(pm->standby());  // the inbox runs on the UI task
+        hold.release();
+        EXPECT_TRUE(wait_until([&] { return !pm->standby(); }, 3000));
+    }
+    EXPECT_NE(h->app->dispatch_report().find("\ninbox power_key overflows=0"), std::string::npos)
+        << h->app->dispatch_report();
+    flood.release();
+}
+
+// Edges that wait together run in the order they came: a short press then
+// a long press turn the screen off, then on with the power-off question
+// (the other order would ask first and cancel the question).
+TEST_F(SystemDutiesTest, PowerKeyEdgesKeepTheirOrder) {
+    boot();
+    wisp::app::PowerManager* pm = h->app->power_manager();
+    ASSERT_NE(pm, nullptr);
+    std::mutex mu;
+    std::vector<std::string> states;
+    const auto sub =
+        h->app->bus().subscribe(wisp::core::topics::kPowerState, [&](const wisp::core::Event& e) {
+            auto it = e.payload.find("state");
+            if (it == e.payload.end()) return;
+            std::lock_guard<std::mutex> lock(mu);
+            states.push_back(it->second.as_string());
+        });
+    {
+        UiHold hold(h->app->ui());
+        press(Kind::Short);
+        press(Kind::Long);
+        hold.release();
+    }
+    ASSERT_TRUE(wait_until([&] { return top_says("关机"); }, 3000));
+    EXPECT_EQ(msgboxes(), 1);
+    EXPECT_FALSE(pm->standby());
+    ASSERT_TRUE(h->app->bus().wait_idle(2000));
+    h->app->bus().unsubscribe(sub);
+    std::lock_guard<std::mutex> lock(mu);
+    EXPECT_EQ(states, (std::vector<std::string>{"standby", "active"}));
+}
+
+// More edges than the inbox holds while the UI task is held: the oldest
+// are dropped, counted in dispatch_report() and logged. Down and up edges
+// take no room (the duties act on short and long presses only).
+TEST_F(SystemDutiesTest, PowerKeyInboxOverflowIsReported) {
+    boot();
+    OverflowWarnings warnings;
+    {
+        UiHold hold(h->app->ui());
+        for (int i = 0; i < 20; ++i) {
+            press(Kind::Down);
+            press(Kind::Up);
+        }
+        EXPECT_NE(h->app->dispatch_report().find("\ninbox power_key overflows=0"),
+                  std::string::npos);
+        for (int i = 0; i < 10; ++i) press(Kind::Short);
+        hold.release();
+    }
+    settle_ui();
+    EXPECT_NE(h->app->dispatch_report().find("\ninbox power_key overflows=2"), std::string::npos)
+        << h->app->dispatch_report();
+    EXPECT_EQ(warnings.count.load(), 1u);
+    // The eight short presses kept toggled the screen an even number of
+    // times.
+    EXPECT_FALSE(h->app->power_manager()->standby());
 }
 
 // A factory reset and a firmware update both ask over the home screen.

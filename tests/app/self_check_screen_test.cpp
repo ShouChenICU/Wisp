@@ -39,6 +39,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/occupancy.hpp"
@@ -941,7 +942,8 @@ TEST(SelfCheckScreen, SystemLanguageChangeLeavesThePageAndRetextsTheDialog) {
     EXPECT_FALSE(find_on_screen("デバイス").empty());
     EXPECT_TRUE(find_on_screen("Devices").empty());
 
-    h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    h.app.buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Long,
+                                  wisp::os::now_us());
     auto has_button = [&](const char* text) {
         return run_on_ui_thread(h.app.ui(), [text] {
                    return find_button_with_label(lv_layer_top(), text) != nullptr
@@ -1221,10 +1223,10 @@ TEST(SelfCheckScreen, MeasuresStorageOffTheUiThread) {
 // uses a deliberately small 220x220 circular display (safe width well
 // under LV_DPI_DEF*2) to actually exercise the clamp. A long press on
 // button.power while the screen is on opens the dialog (see
-// PowerKeyController::on_long()); publishing that event directly on the
-// bus drives exactly the same on_button_event()/PowerKeyController path a
-// real press would, without needing the ButtonService's own debounce
-// timing.
+// PowerKeyController::on_long()); emitting that edge through
+// ButtonService::emit_for_test() drives exactly the same listener, inbox
+// and PowerKeyController path a real press would, without needing the
+// ButtonService's own debounce timing.
 TEST(SystemDutiesTest, ConfirmDialogWidthClampedToSafeArea) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0, "circle",
               /*with_sd=*/false, /*display_size=*/220);
@@ -1236,7 +1238,8 @@ TEST(SystemDutiesTest, ConfirmDialogWidthClampedToSafeArea) {
     // synchronisation.
     ASSERT_TRUE(h.wait_for_flushes(0));
 
-    h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    h.app.buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Long,
+                                  wisp::os::now_us());
 
     int32_t width = -1;
     ASSERT_TRUE(wait_until(
@@ -1285,7 +1288,8 @@ TEST(SystemDutiesTest, RequestsPlatformPowerOffAndTurnsPanelOffWhenPowerOffFails
     ASSERT_TRUE(h.wait_for_flushes(5));
     h.power->set_fail_power_off(true);
 
-    h.app.bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    h.app.buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Long,
+                                  wisp::os::now_us());
     ASSERT_TRUE(wait_until(
         [&] {
             return run_on_ui_thread(h.app.ui(), [] {

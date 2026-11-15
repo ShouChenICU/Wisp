@@ -21,11 +21,19 @@
 // 100 ms lv_timer also resyncs the network services and the pending
 // factory-reset and firmware requests once a second.
 //
+// The power key's short and long presses reach the duties through a
+// ButtonService listener and an EdgeInbox on the UiRuntime ("power_key"),
+// neither of which needs the bus or a free post: every press is handled,
+// in order, also with wisp.bus flooded, the post queue full or the UI
+// loop paused in standby. An overflow of the inbox is counted (App's
+// dispatch_report()) and logged.
+//
 // Threading: start() and stop() are UI thread only, like every member that
-// touches LVGL. The power-key handler runs on the bus dispatcher thread and
-// only posts; the WISP_PERF timer runs on its own os::Timer thread and
-// reads nothing that needs the UI thread. A post still queued when stop()
-// runs finds the duties stopped and does nothing (alive_).
+// touches LVGL. The listener runs on wisp.button and only pushes into the
+// inbox, whose handler runs on the UI thread; the WISP_PERF timer runs on
+// its own os::Timer thread and reads nothing that needs the UI thread. A
+// post still queued when stop() runs finds the duties stopped and does
+// nothing (alive_).
 
 #include <cstdint>
 #include <functional>
@@ -36,12 +44,15 @@
 #include "lvgl.h"
 #include "net_cards.hpp"
 #include "wisp/app/power_key_controller.hpp"
+#include "wisp/core/button_service.hpp"
+#include "wisp/core/edge_inbox.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::ui {
@@ -62,7 +73,7 @@ public:
     // object.
     explicit SystemDuties(App& app);
     // Requires stop() first when started (its LVGL objects are only
-    // released on the UI thread).
+    // released on the UI thread, and it removes the button listener).
     ~SystemDuties();
 
     SystemDuties(const SystemDuties&) = delete;
@@ -82,6 +93,12 @@ public:
     // key does (the settings page asks first itself).
     void power_off() { do_power_off(); }
 
+    // Any thread while this object exists: the power-key inbox's dropped
+    // edges since construction (an atomic).
+    uint32_t power_key_overflows() const {
+        return power_key_inbox_ ? power_key_inbox_->overflows() : 0;
+    }
+
 private:
     // Runs `fn` on the UI thread unless stop() has run by then. False when
     // the post queue was full.
@@ -92,7 +109,9 @@ private:
 
     void emit_perf_line();
 
-    void on_button_event(const core::Event& e);
+    // UI thread: the power-key inbox's handler, once per short or long
+    // press, in order.
+    void on_power_key(const core::ButtonEdge& edge);
     // UI thread: the firmware progress cell's callback. Any phase may open
     // or close the update dialog.
     void on_firmware_progress(const core::FirmwareProgress& progress);
@@ -143,11 +162,19 @@ private:
     std::shared_ptr<hal::Display> display_;
     std::shared_ptr<hal::Power> power_;
     // The id of the key with role power, resolved once: the registry does
-    // not change after boot. Empty: no power key, button events are
+    // not change after boot. Empty: no power key, button edges are
     // ignored.
     std::string power_key_id_;
 
     PowerKeyController power_key_;
+    // Built with this object, so dispatch_report() never races its
+    // creation; its handler runs only once start() added the listener.
+    // Null without a power key or when Mem::Large is exhausted (the key
+    // then does nothing). Destroyed first by the destructor, after stop()
+    // removed the only producer.
+    os::LargeUnique<core::EdgeInbox<core::ButtonEdge, 8>> power_key_inbox_;
+    // App's ButtonService listener; 0 while stopped.
+    uint32_t power_key_listener_ = 0;
     ProvisioningCard setup_card_;
     PairingCard pair_card_;
 
@@ -176,7 +203,6 @@ private:
     lv_timer_t* refresh_timer_ = nullptr;
     std::unique_ptr<os::Timer> perf_timer_;
 
-    core::SubscriptionId button_sub_ = 0;
     // On the UiRuntime; released by stop(), before App::stop() destroys
     // the networking (Wi-Fi, hotspot, pairing) and the firmware service.
     // Wi-Fi, hotspot and pairing stay empty without Wi-Fi.

@@ -205,8 +205,9 @@ extern "C" void app_main() {
     }
     // `mem`: heap figures and every task's stack, for the internal-RAM
     // budget in AGENTS.md section 5 (wisp/port/esp/mem_report.hpp), then
-    // the bus drops and cell subscriptions (App::dispatch_report()) and
-    // each storage lane's longest wait and job (wisp::app::storage_report).
+    // the bus drops, cell subscriptions and edge inbox overflows
+    // (App::dispatch_report(), one or more lines) and each storage lane's
+    // longest wait and job (wisp::app::storage_report).
     platform.console_commands.push_back(
         {"mem",
          "mem                          heap, task stacks, bus drops, cell subscriptions and "

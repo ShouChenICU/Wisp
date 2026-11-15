@@ -1111,10 +1111,11 @@ void App::stop() {
     // own stop() tears down its internal Timer; see power_monitor.hpp.
     impl_->power_monitor.reset();
 
-    // State-cell and inbox owners rely on this order: shell -> duties ->
-    // power manager -> ui -> bus, so UI-dispatched subscriptions are
-    // released before the UI runtime goes and cells and inboxes before
-    // the bus (state_cell.hpp).
+    // State-cell, inbox and button-listener owners rely on this order:
+    // shell -> duties -> power manager -> buttons -> ui -> bus, so button
+    // listeners are removed before ButtonService stops, UI-dispatched
+    // subscriptions and inboxes are released before the UI runtime goes
+    // and cells and inboxes before the bus (state_cell.hpp).
     impl_->buttons.stop();
     if (impl_->ui) {
         impl_->ui->stop();
@@ -1374,8 +1375,16 @@ core::SystemSettings& App::system_settings() { return impl_->system_settings; }
 const Platform& App::platform() const { return impl_->platform; }
 
 std::string App::dispatch_report() const {
-    return "bus dropped=" + std::to_string(impl_->bus.dropped()) +
-           " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
+    std::string report = "bus dropped=" + std::to_string(impl_->bus.dropped()) +
+                         " cell_subs=" + std::to_string(impl_->bus.cell_subscriptions());
+    // One line per inbox. The duties are built before the console task
+    // starts and destroyed after it stops (start(), stop()), so the
+    // console's `mem` never races them.
+    if (impl_->duties) {
+        report +=
+            "\ninbox power_key overflows=" + std::to_string(impl_->duties->power_key_overflows());
+    }
+    return report;
 }
 
 }  // namespace wisp::app

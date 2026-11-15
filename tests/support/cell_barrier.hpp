@@ -31,4 +31,13 @@ template <class T>
     return ok;
 }
 
+// Waits until every slot already queued on `on` (an inbox's run, a cell
+// subscription's call) has run: a throwaway cell's fresh subscription goes
+// behind them. The same caveat applies to posts those runs made.
+[[nodiscard]] inline bool slot_barrier(core::EventBus& bus, core::Dispatcher* on,
+                                       uint32_t ms = 2000) {
+    core::StateCell<int> cell(bus, 0);
+    return cell_barrier(cell, on, ms);
+}
+
 }  // namespace wisp::test

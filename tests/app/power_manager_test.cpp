@@ -12,12 +12,14 @@
 
 #include "dev/sim_devices.hpp"
 #include "support/bus_flood.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
 #include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_key_controller.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/edge_inbox.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/power_monitor.hpp"
@@ -224,6 +226,14 @@ struct Fixture {
         done->take(wisp::os::kForever);
     }
 
+    // Every slot already queued on the UI (an inbox's run, a follower's
+    // call) has run, and every post it made too: drain_ui() alone can
+    // return between a post and the slots that run after it.
+    void settle_ui() {
+        ASSERT_TRUE(wisp::test::slot_barrier(bus, ui.get()));
+        drain_ui();
+    }
+
     // Runs `fn` on the UI task and blocks until it has returned. Needed
     // for any direct enter_standby()/exit_standby() call from a test:
     // spec 5.3 requires every Display call to come from the UI thread
@@ -286,58 +296,61 @@ private:
     std::vector<Event> power_events;
 };
 
-// A minimal replica of self_check_screen.cpp's own
-// PowerManager/PowerKeyController
-// integration glue (on_button_event()/handle_power_key_action()), just
-// enough to exercise the fix end to end without building the full
-// self-check LVGL screen. Must stay in sync with that file's actual
-// wiring: PowerKeyController::on_short(bool)/on_long(bool) is handed the
-// *live* `!pm.standby()` read fresh on the UI thread, and
+// A minimal replica of SystemDuties' own PowerManager/PowerKeyController
+// wiring (system_duties.cpp: a ButtonService listener pushing the key's
+// short and long presses into an EdgeInbox on the UI, whose handler calls
+// handle_power_key_action()), just enough to exercise the fix end to end
+// without building the duties' LVGL dialogs. Must stay in sync with that
+// file's actual wiring: PowerKeyController::on_short(bool)/on_long(bool)
+// is handed the *live* `!pm.standby()` read fresh on the UI thread, and
 // PowerManager::set_power_key_owned(true) hands this wiring (not
-// PowerManager's own generic "any button wakes it" subscriber)
-// exclusive control over what the power key (`key`) does.
+// PowerManager's own generic "any button wakes it" listener) exclusive
+// control over what the power key (`key`) does.
 class PowerKeyWiring {
 public:
-    PowerKeyWiring(EventBus& bus, UiRuntime& ui, PowerManager& pm, std::string key = "button.power")
-        : bus_(bus), ui_(ui), pm_(pm), key_(std::move(key)) {
+    PowerKeyWiring(ButtonService& buttons, UiRuntime& ui, PowerManager& pm,
+                   std::string key = "button.power")
+        : buttons_(buttons),
+          pm_(pm),
+          key_(std::move(key)),
+          inbox_("power_key", ui, [this](const ButtonEdge& e) { on_edge(e); }) {
         pm_.set_power_key_owned(true);
-        sub_ = bus_.subscribe("button.", [this](const Event& e) {
-            if (e.source != key_) {
-                return;
+        listener_ = buttons_.add_listener([this](const ButtonEdge& e) {
+            if (e.id.view() != key_) return;
+            if (e.kind == ButtonEdge::Kind::Short || e.kind == ButtonEdge::Kind::Long) {
+                inbox_.push(e);
             }
-            std::string topic = e.topic;
-            ui_.post([this, topic] {
-                bool screen_on = !pm_.standby();
-                PowerKeyController::Action action = PowerKeyController::Action::None;
-                if (topic == key_ + ".short") {
-                    action = pkc_.on_short(screen_on);
-                } else if (topic == key_ + ".long") {
-                    action = pkc_.on_long(screen_on);
-                }
-                switch (action) {
-                    case PowerKeyController::Action::ScreenOff:
-                        pm_.enter_standby();
-                        break;
-                    case PowerKeyController::Action::ScreenOn:
-                    case PowerKeyController::Action::ScreenOnAndConfirm:
-                        pm_.exit_standby();
-                        break;
-                    default:
-                        break;
-                }
-            });
         });
     }
 
-    ~PowerKeyWiring() { bus_.unsubscribe(sub_); }
+    // The listener goes before the inbox it pushes into.
+    ~PowerKeyWiring() { buttons_.remove_listener(listener_); }
 
 private:
-    EventBus& bus_;
-    UiRuntime& ui_;
+    // On the UI task, in edge order.
+    void on_edge(const ButtonEdge& e) {
+        bool screen_on = !pm_.standby();
+        PowerKeyController::Action action =
+            e.kind == ButtonEdge::Kind::Short ? pkc_.on_short(screen_on) : pkc_.on_long(screen_on);
+        switch (action) {
+            case PowerKeyController::Action::ScreenOff:
+                pm_.enter_standby();
+                break;
+            case PowerKeyController::Action::ScreenOn:
+            case PowerKeyController::Action::ScreenOnAndConfirm:
+                pm_.exit_standby();
+                break;
+            default:
+                break;
+        }
+    }
+
+    ButtonService& buttons_;
     PowerManager& pm_;
-    std::string key_;
+    const std::string key_;
     PowerKeyController pkc_;
-    wisp::core::SubscriptionId sub_ = 0;
+    wisp::core::EdgeInbox<ButtonEdge, 8> inbox_;
+    uint32_t listener_ = 0;
 };
 
 // Simulates one physical short press on `btn` (down, then up+short after
@@ -613,7 +626,7 @@ TEST(PowerManager, AnyButtonEventWhileInStandbyWakesIt) {
 // -- correctly, ScreenOn -- and nothing then reverses it.
 TEST(PowerManager, AutoScreenOffThenPowerKeyPressWakesWithoutFlashingBackOff) {
     Fixture f(/*screen_off_s=*/15);
-    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+    PowerKeyWiring wiring(*f.buttons, *f.ui, *f.pm);
 
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
@@ -643,7 +656,7 @@ TEST(PowerManager, AutoScreenOffThenPowerKeyPressWakesWithoutFlashingBackOff) {
 // correctly turn it back off.
 TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOff) {
     Fixture f;
-    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+    PowerKeyWiring wiring(*f.buttons, *f.ui, *f.pm);
 
     // Screen starts on; a power-key short press turns it off.
     press_short(*f.buttons, *f.btn);
@@ -669,7 +682,7 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
 TEST(PowerManager, PowerKeyOwnershipFollowsTheRoleKey) {
     Fixture f(/*screen_off_s=*/60, /*with_storage=*/true, /*with_power_monitor=*/true,
               /*edge_power=*/false, "button.side");
-    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm, "button.side");
+    PowerKeyWiring wiring(*f.buttons, *f.ui, *f.pm, "button.side");
 
     press_short(*f.buttons, *f.btn);
     ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
@@ -781,16 +794,14 @@ TEST(PowerManager, ButtonActivitySilencesAlarmsOnTheUi) {
 // needing a second press.
 TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyShortWakes) {
     Fixture f(/*screen_off_s=*/15);
-    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+    PowerKeyWiring wiring(*f.buttons, *f.ui, *f.pm);
 
     // Open the power-off confirm dialog with a long press while active.
     press_long(*f.buttons, *f.btn);
-    // Wait for the bus to have dispatched (and, inside that dispatch,
-    // posted to the UI task) the resulting on_long() decision, so it is
-    // guaranteed to already be queued -- and so guaranteed to run --
-    // ahead of the auto-standby tick() below's own posted job (the UI
-    // task's post queue is FIFO).
-    f.bus.wait_idle(1000);
+    // Wait for the wiring's inbox to have run the resulting on_long()
+    // decision on the UI task, so it comes before the auto-standby
+    // tick() below's own posted job.
+    f.settle_ui();
 
     // Idle out into automatic standby while the dialog is still "open".
     f.pm->note_activity();
@@ -806,10 +817,10 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyShortWakes) {
 // Same scenario, but the wake comes from a long press instead.
 TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
     Fixture f(/*screen_off_s=*/15);
-    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+    PowerKeyWiring wiring(*f.buttons, *f.ui, *f.pm);
 
     press_long(*f.buttons, *f.btn);
-    f.bus.wait_idle(1000);
+    f.settle_ui();
 
     f.pm->note_activity();
     uint64_t t0 = wisp::os::now_ms();
@@ -1888,19 +1899,19 @@ TEST(PowerManager, StandbyUsesPerDeviceCadenceAndMonitorStaysIndependent) {
 
 TEST(PowerManager, OwnedEdgePowerStaysEventDrivenAcrossPendingDebounceAndWake) {
     Fixture f(60, true, true, true);
-    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm);
+    PowerKeyWiring wiring(*f.buttons, *f.ui, *f.pm);
     f.input->key_power(true, 0);
     f.buttons->poll(10);  // pending debounce when standby begins
     f.run_on_ui([&] { f.pm->enter_standby(); });
     f.buttons->poll(20);
+    f.settle_ui();
     ASSERT_TRUE(f.bus.wait_idle(1000));
-    f.drain_ui();
     EXPECT_TRUE(f.pm->standby());  // owned down must not light the panel
     EXPECT_FALSE(f.display->powered());
     f.input->key_power(false, 60000);
     f.buttons->poll(80);
+    f.settle_ui();
     ASSERT_TRUE(f.bus.wait_idle(1000));
-    f.drain_ui();
     EXPECT_FALSE(f.pm->standby());
     EXPECT_EQ(f.power_event_count(), 2u);  // standby + exactly one wake
     f.buttons->poll(1000);

@@ -25,6 +25,7 @@
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/button_service.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -663,7 +664,8 @@ TEST(FactoryReset, RequestDuringPowerOffDialogIsCancelled) {
     ASSERT_TRUE(h.start("system."));
     const std::string token = pair_browser(h);
 
-    h.app->bus().publish(wisp::core::Event{"button.power.long", "button.power"});
+    h.app->buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Long,
+                                   wisp::os::now_us());
     ASSERT_TRUE(wait_until([&] { return dialog_says(h, "关机"); }, 3000));
     ASSERT_EQ(msgboxes(h), 1);
 
@@ -695,8 +697,9 @@ TEST(FactoryReset, PowerKeyDuringResetDialogIsIgnored) {
     EXPECT_EQ(post_reset(h, token).status, 202);
     ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
 
-    h.app->bus().publish(wisp::core::Event{"button.power.long", "button.power"});
-    h.app->bus().wait_idle(2000);
+    h.app->buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Long,
+                                   wisp::os::now_us());
+    ASSERT_TRUE(wisp::test::slot_barrier(h.app->bus(), h.app->ui()));
     run_on_ui_blocking(h.app->ui(), [] {});
     EXPECT_EQ(msgboxes(h), 1);
     EXPECT_TRUE(dialog_says(h, "恢复出厂设置"));
@@ -704,7 +707,8 @@ TEST(FactoryReset, PowerKeyDuringResetDialogIsIgnored) {
 
     wisp::app::PowerManager* pm = h.app->power_manager();
     ASSERT_NE(pm, nullptr);
-    h.app->bus().publish(wisp::core::Event{"button.power.short", "button.power"});
+    h.app->buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Short,
+                                   wisp::os::now_us());
     ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 3000));
     // The reset question is still waiting for an answer.
     EXPECT_EQ(msgboxes(h), 1);
