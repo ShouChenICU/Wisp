@@ -842,7 +842,10 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
 
 TEST(PowerManager, SetBrightnessWhileActiveAppliesImmediately) {
     Fixture f;
-    // With a UI, set_brightness() is a UI-thread call (the cell follower's).
+    // Past the follower's first delivery, which would otherwise put the
+    // cell's level back over a direct call made before it.
+    f.settle_ui();
+    // With a UI, set_brightness() is a UI-thread call.
     f.run_on_ui([&] { f.pm->set_brightness(80); });
     EXPECT_EQ(f.display->brightness(), 80);
     EXPECT_EQ(f.display->set_brightness_calls(), 1);
@@ -867,6 +870,7 @@ TEST(PowerManager, OffThreadSetBrightnessIsIgnored) {
 
 TEST(PowerManager, BrightnessChangedInStandbyAppliesOnWake) {
     Fixture f;
+    f.settle_ui();  // past the follower's first delivery (see above)
     f.run_on_ui([&] { f.pm->enter_standby(); });
     ASSERT_TRUE(f.pm->standby());
     int power_calls = f.display->set_power_calls();
