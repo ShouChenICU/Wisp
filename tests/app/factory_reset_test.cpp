@@ -17,6 +17,7 @@
 
 #include "app/ui_net_harness.hpp"
 #include "storage_io.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_http.hpp"
 #include "support/fake_settings_backend.hpp"
 #include "support/lvgl_probe.hpp"
@@ -483,8 +484,7 @@ TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
     ASSERT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
     const uint32_t revision = app.system_settings().revision();
 
-    // Subscribed after the duties, so on the UI dispatcher its call for
-    // the reseed comes after theirs.
+    // Sees the reseed reach the cell's followers on the UI dispatcher.
     std::atomic<bool> reseed_seen{false};
     wisp::core::CellSubscription sub = app.system_settings().cell().subscribe(
         [&](const wisp::core::SystemSettingsValues& v) {
@@ -495,6 +495,9 @@ TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
     EXPECT_EQ(h.reboots.load(), 1);
     EXPECT_EQ(app.system_settings().revision(), revision);
     ASSERT_TRUE(wait_until([&] { return reseed_seen.load(); }, 3000));
+    // The probe may run before the duties' call for the reseed (a slot
+    // already queued keeps its place): a fresh barrier comes after it.
+    ASSERT_TRUE(wisp::test::cell_barrier(app.system_settings().cell(), app.ui()));
     run_on_ui_blocking(app.ui(), [] {});
     EXPECT_EQ(wisp::ui::lang(), Lang::En);
     // Nor does the refresh timer's sync switch it (it ticks every 100 ms).

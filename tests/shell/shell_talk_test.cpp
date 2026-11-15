@@ -11,13 +11,12 @@
 #include <gtest/gtest.h>
 
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "shell/shell_fixture.hpp"
 #include "support/bus_flood.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
@@ -89,42 +88,22 @@ protected:
             .scenes = scenes_.get(),
         });
         on_ui([&] { shell_->start(); });
-        voice_probe_ = conv->voice_status().subscribe(
-            [this](const wisp::voice::VoiceStatus& v) {
-                std::lock_guard<std::mutex> lock(probe_mu_);
-                voice_seen_ = v;
-            },
-            ui_.get());
-        scenes_probe_ = scenes_->subscribe(
-            [this](const wisp::scene::SceneOverview& o) {
-                std::lock_guard<std::mutex> lock(probe_mu_);
-                scenes_seen_ = o;
-            },
-            ui_.get());
     }
 
     // Until the shell has looked at the voice and scene cells as they are
-    // now, and the update_talk() its call posted has run. Each probe
-    // follows its cell on the UI thread, subscribed after the shell, so its
-    // call runs after the shell's (the cell schedules them in that order,
-    // the UI runs them first in, first out); the post the shell made then
-    // runs before the round trip's. Round trips alone do not tell: one
-    // drain of the UI's post queue may run them all before the slots' pass.
+    // now, and the update_talk() its call posted has run. A fresh barrier
+    // subscription on each cell, on the UI dispatcher, has its first call
+    // after the shell's (support/cell_barrier.hpp says why a long-lived
+    // probe would not do); the post the shell made then runs before the
+    // round trip's. Round trips alone do not tell: one drain of the UI's
+    // post queue may run them all before the slots' pass.
     void settle_cells() {
-        const wisp::voice::VoiceStatus v = conv->voice_status().get();
-        const wisp::scene::SceneOverview o = scenes_->get();
-        ASSERT_TRUE(wait_until(
-            [&] {
-                std::lock_guard<std::mutex> lock(probe_mu_);
-                return voice_seen_ == v && scenes_seen_ == o;
-            },
-            2000));
+        ASSERT_TRUE(wisp::test::cell_barrier(conv->voice_status(), ui_.get()));
+        ASSERT_TRUE(wisp::test::cell_barrier(*scenes_, ui_.get()));
         on_ui([] {});
     }
 
     void TearDown() override {
-        voice_probe_.reset();
-        scenes_probe_.reset();
         if (shell_ != nullptr) on_ui([&] { shell_->stop(); });
         shell_.reset();
         scenes_.reset();
@@ -188,10 +167,6 @@ protected:
     // which follows it.
     std::unique_ptr<wisp::core::StateCell<wisp::scene::SceneOverview>> scenes_;
     std::unique_ptr<wisp::shell::Shell> shell_;
-    wisp::core::CellSubscription voice_probe_, scenes_probe_;
-    std::mutex probe_mu_;
-    std::optional<wisp::voice::VoiceStatus> voice_seen_;
-    std::optional<wisp::scene::SceneOverview> scenes_seen_;
 
     int leaves = 0;
     bool refuse = false;

@@ -12,13 +12,13 @@
 #include <future>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "shell/page_fixture.hpp"
 #include "support/agent_fixture.hpp"
+#include "support/cell_barrier.hpp"
 #include "wisp/shell/scene_recents.hpp"
 
 using wisp::shell::Page;
@@ -95,19 +95,12 @@ protected:
             return wisp::Result<void>::ok();
         };
         harness->boot();
-        probe = harness->scenes().subscribe(
-            [this](const wisp::scene::SceneOverview& o) {
-                std::lock_guard<std::mutex> lock(mu);
-                probe_seen = o;
-            },
-            &harness->ui());
         settle_overview();
     }
 
     void TearDown() override {
         // A listing still queued posts to the harness's UI runtime.
         (void)agent.worker.drain(5000);
-        probe.reset();
         harness.reset();
         recents.reset();
     }
@@ -118,20 +111,15 @@ protected:
     void catalog_moved() {
         harness->scenes().update([](wisp::scene::SceneOverview& o) { ++o.catalog; });
     }
-    // Until the shell's call for the overview as it is now has run. The
-    // probe follows the same cell on the same dispatcher, subscribed after
-    // the shell, so its call runs after the shell's: the cell schedules
-    // them in that order and the dispatcher runs them first in, first out.
+    // Until the shell's call for the overview as it is now has run, and
+    // what it posted to the UI thread. A fresh barrier subscription on the
+    // same cell and dispatcher has its first call after the shell's
+    // (support/cell_barrier.hpp says why a long-lived probe would not do).
     // Round trips on the UI thread alone do not tell: one drain of its post
     // queue may run them all before the slots' pass.
     void settle_overview() {
-        const wisp::scene::SceneOverview now = harness->scenes().get();
-        ASSERT_TRUE(wisp::test::wait_until(
-            [&] {
-                std::lock_guard<std::mutex> lock(mu);
-                return probe_seen == now;
-            },
-            2000));
+        ASSERT_TRUE(wisp::test::cell_barrier(harness->scenes(), &harness->ui()));
+        harness->on_ui([] {});
     }
     void open_page(size_t want) {
         harness->show(Page::Scenes);
@@ -155,9 +143,6 @@ protected:
     std::vector<std::string> icon_reads;
     std::atomic<bool> on_worker_listing{false};
     std::atomic<int> listings{0};
-    // What the probe last saw of harness->scenes() (settle_overview()).
-    wisp::core::CellSubscription probe;
-    std::optional<wisp::scene::SceneOverview> probe_seen;
     std::atomic<bool> on_worker_has_data{false};
 };
 

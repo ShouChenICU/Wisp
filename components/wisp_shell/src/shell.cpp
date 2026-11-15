@@ -129,6 +129,9 @@ void Shell::start() {
                 // Posted: the screen that replaces a closing scene may still
                 // be loading.
                 request_talk();
+                // A coalesced swap of one background scene for another
+                // leaves the foreground and the count unchanged: the marks
+                // then wait for the next listing.
                 const bool listed = o.catalog != catalog || o.foreground != foreground ||
                                     o.background_count != background;
                 catalog = o.catalog;
