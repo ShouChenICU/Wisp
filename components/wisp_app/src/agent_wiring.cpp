@@ -478,25 +478,17 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             .context = std::move(context_with_memory),
         },
         deps_.config);
-    // The per-turn limits from Settings, then whatever the settings page
-    // stores (each change applies from the next turn on). Subscribed
-    // before the seed is read, so a change stored in between is not lost.
-    agent::AgentService* service = service_.get();
-    settings_sub_ =
-        deps_.bus.subscribe(core::topics::kSystemSettings, [service](const core::Event& e) {
-            auto steps = e.payload.find("agent_max_steps");
-            auto minutes = e.payload.find("agent_turn_min");
-            apply_turn_limits(
-                *service,
-                steps != e.payload.end() && steps->second.type() == Value::Type::Int
-                    ? steps->second.as_int()
-                    : 0,
-                minutes != e.payload.end() && minutes->second.type() == Value::Type::Int
-                    ? minutes->second.as_int()
-                    : 0);
-        });
+    // The per-turn limits from Settings, applied now so the first turn
+    // has them, then whatever the settings page stores (each change applies
+    // from the next turn on). The subscription's first call delivers the
+    // same values again; coalesced changes deliver only the latest, which
+    // is all the next turn reads.
     const core::SystemSettingsValues now = deps_.settings.get();
     apply_turn_limits(*service_, now.agent_max_steps, now.agent_turn_min);
+    settings_sub_ = deps_.settings.cell().subscribe(
+        [service = service_.get()](const core::SystemSettingsValues& v) {
+            apply_turn_limits(*service, v.agent_max_steps, v.agent_turn_min);
+        });
     service_->set_confirm(confirm_.get());
     const agent::ConfirmFn confirm = service_->confirm_fn();
     tool_index_observer_ =
@@ -571,7 +563,9 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
 
 AgentWiring::~AgentWiring() {
     stop();
-    deps_.bus.unsubscribe(settings_sub_);
+    // Before service_ goes; the cell's owner (App::Impl::system_settings)
+    // outlives this wiring.
+    settings_sub_.reset();
 }
 
 Result<void> AgentWiring::start() {

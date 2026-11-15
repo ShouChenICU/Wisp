@@ -51,6 +51,7 @@
 #include "wisp/core/reminders.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
@@ -305,7 +306,7 @@ private:
     std::unique_ptr<AgentApiAdapter> adapter_;
     std::unique_ptr<AgentWsBridge> bridge_;
     bool tools_ok_ = true;
-    core::SubscriptionId settings_sub_ = 0;
+    core::CellSubscription settings_sub_;  // SystemSettings::cell(), on wisp.bus
 
     os::Mutex hub_mu_;
     admin::WsHub* hub_ = nullptr;

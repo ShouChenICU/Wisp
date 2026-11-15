@@ -9,6 +9,7 @@
 #include <string>
 
 #include "app/ui_net_harness.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_http.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
@@ -158,4 +159,42 @@ TEST(AppAgent, TurnLimitsFollowTheSettings) {
         with_token(make_req(Method::Put, "/api/v1/settings", R"({"agent_turn_min":0})"), token)));
     EXPECT_EQ(bad.status, 400);
     EXPECT_EQ(h.app->agent()->turn_limits().turn_ms, 3u * 60000);
+}
+
+// The limits follow the settings cell, not system.settings: a change
+// stored while wisp.bus is held, its event then pushed out of the full
+// queue, still reaches the agent once the bus runs again.
+TEST(AppAgent, TurnLimitsFollowTheSettingsCellFlooded) {
+    UiNetHarness h(with_server(true));
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->agent(), nullptr);
+    const uint64_t dropped = h.app->bus().dropped();
+    {
+        wisp::test::BusFlood flood(h.app->bus());
+        flood.hold();
+        ASSERT_TRUE(h.app->system_settings().set(
+            {{"agent_max_steps", Value(8)}, {"agent_turn_min", Value(3)}}));
+        flood.flood(200);
+        flood.release();
+    }
+    ASSERT_TRUE(h.app->bus().wait_idle(2000));
+    EXPECT_GT(h.app->bus().dropped(), dropped);
+    EXPECT_TRUE(wait_until(
+        [&] {
+            auto l = h.app->agent()->turn_limits();
+            return l.max_steps == 8 && l.turn_ms == 3u * 60000;
+        },
+        5000));
+}
+
+// Limits stored before the App starts apply from its first turn.
+TEST(AppAgent, LimitsStoredBeforeStartApply) {
+    UiNetHarness h(with_server(true));
+    wisp::core::Settings agent(*h.app->platform().settings, "agent");
+    ASSERT_TRUE(agent.set("max_steps", Value(12)));
+    ASSERT_TRUE(agent.set("turn_min", Value(7)));
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->agent(), nullptr);
+    EXPECT_EQ(h.app->agent()->turn_limits().max_steps, 12u);
+    EXPECT_EQ(h.app->agent()->turn_limits().turn_ms, 7u * 60000);
 }
