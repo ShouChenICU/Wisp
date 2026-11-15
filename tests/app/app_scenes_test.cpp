@@ -403,6 +403,63 @@ TEST(AppScenes, SelfCheckListEndsAtTheLastOfTenCatalogMovesWithTheUiHeld) {
     b.h.app->ui()->set_paused(false);
 }
 
+// The listing a catalog move asks for is refused (the worker's lane is
+// full); once the worker has room the diagnostics list the scenes on
+// their own, with no further catalog move.
+TEST(AppScenes, SelfCheckListRecoversFromARefusedListing) {
+    Booted b;
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+
+    std::promise<void> gate;
+    std::shared_future<void> held = gate.get_future().share();
+    ASSERT_TRUE(worker->submit([held] { held.wait(); }));
+    // The held job runs; these fill the lane behind it.
+    int filled = 0;
+    while (worker->submit([] {})) ++filled;
+    ASSERT_GT(filled, 0);
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    rt->note_catalog_changed();
+    const uint32_t catalog = rt->overview().get().catalog;
+    // The follower has run: its listing was refused.
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    EXPECT_EQ(b.rows(), "No scenes installed\n");
+
+    gate.set_value();
+    ASSERT_TRUE(worker->drain(3000));
+    EXPECT_TRUE(b.wait_rows("时钟|1.0.0\n", 5000)) << b.rows();
+    EXPECT_EQ(rt->overview().get().catalog, catalog);
+}
+
+// Once a listing has been shown, the diagnostics list nothing more until
+// the catalog moves: a package that appears on disk behind the
+// repository's back stays unlisted while storage is measured (once a
+// second, on the same refresh tick) three more times.
+TEST(AppScenes, SelfCheckListsNothingMoreOnceAListingIsShown) {
+    std::atomic<int> measured{0};
+    UiNetOptions opts;
+    opts.with_sd = true;
+    Booted b(opts);
+    b.h.sd->on_capacity = [&measured] { ++measured; };
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.wait_rows("No scenes installed\n")) << b.rows();
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    ASSERT_TRUE(wisp::test::cell_barrier(rt->overview(), b.h.app->ui()));
+    ASSERT_TRUE(b.h.app->storage_worker()->drain(3000));
+    const uint32_t catalog = rt->overview().get().catalog;
+
+    put_scene(b.h.root, "clock", "时钟", "return ui.screen { ui.label { text = 'tick' } }");
+    const int seen = measured.load();
+    ASSERT_TRUE(wait_until([&] { return measured.load() >= seen + 3; }, 6000));
+    ASSERT_EQ(rt->overview().get().catalog, catalog);
+    EXPECT_EQ(b.rows(), "No scenes installed\n");
+}
+
 // Every row is a tap target at least 48 px tall, the whole row clickable,
 // with its name and state centred vertically in it.
 TEST(AppScenes, RowsAreTallEnoughToTap) {

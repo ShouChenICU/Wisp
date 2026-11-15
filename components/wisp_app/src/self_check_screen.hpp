@@ -128,10 +128,16 @@ private:
     void request_storage();
     // UI thread: the storage card and the live SD row from `status`.
     void show_storage(const core::StorageStatus& status);
-    // Any thread: asks the storage worker for the scene list; the "Scenes"
-    // card takes it on the UI thread. At build and on each move of the
-    // overview's catalog.
+    // UI thread: the scene list is needed afresh, at build and on each
+    // move of the overview's catalog; asks for it (ask_scene_list()) and
+    // owes it until an answer to this or a later ask is shown.
     void request_scene_list();
+    // UI thread: asks the storage worker for the scene list; the "Scenes"
+    // card takes it on the UI thread if no newer need came meanwhile.
+    void ask_scene_list();
+    // UI thread, on the refresh tick: asks again for a scene list that is
+    // owed (see scene_list_owed_), no more often than kSceneListRetryMs.
+    void retry_scene_list(uint64_t now);
     // Any thread: lets the sampler drop the IMU while a scene is in front
     // (this screen is covered) and take it again once none is.
     void follow_foreground();
@@ -195,6 +201,18 @@ private:
     bool storage_pending_ = false;
     // The last answer, shown again in a new page language.
     std::optional<core::StorageStatus> last_storage_;
+    // Whether the scene list owes a listing: from request_scene_list()
+    // until an answer to an ask made since is shown. A refused job, a
+    // failed listing and an answer dropped by a full UI queue all leave it
+    // set, and nothing else would list again until the catalog moves.
+    // scene_list_gen_ counts the needs: an answer to an ask made before
+    // the latest need is not taken, while the retries of one need settle
+    // it whichever answers first (a listing slower than the retry period
+    // still ends it). last_scene_list_ms_ is os::now_ms() at the latest
+    // ask. UI thread only.
+    bool scene_list_owed_ = false;
+    uint32_t scene_list_gen_ = 0;
+    uint64_t last_scene_list_ms_ = 0;
 
     SceneWiring* scenes_;
     // Cleared by the UI-thread teardown: a post, a scene list or a

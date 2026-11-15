@@ -48,6 +48,11 @@ constexpr uint64_t kNetLiveReadMs = 1000;
 // kStorageRetryMs.
 constexpr uint64_t kStorageResyncMs = 1000;
 constexpr uint64_t kStorageRetryMs = 10000;
+// A scene list still owed (a refused job, a failed listing, an answer the
+// full UI queue dropped, or one still on its way behind a slow job) is
+// asked for again on the refresh tick, no more often than this: while the
+// diagnostics are open, at most one listing a second.
+constexpr uint64_t kSceneListRetryMs = 1000;
 // Between the root column's safe-area padding and its content, and
 // between its children.
 constexpr int32_t kInnerPad = 8;
@@ -436,6 +441,7 @@ void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {
         self->sync_net();
     }
     if (now - self->last_storage_ms_ >= kStorageResyncMs) self->request_storage();
+    self->retry_scene_list(now);
     self->net_section_.tick(now);
 }
 
@@ -490,11 +496,27 @@ void SelfCheck::follow_foreground() {
 
 void SelfCheck::request_scene_list() {
     if (scenes_ == nullptr) return;
+    // A new need: an answer to a request made before it may predate what
+    // moved, so only the requests from here on can settle it.
+    ++scene_list_gen_;
+    scene_list_owed_ = true;
+    ask_scene_list();
+}
+
+void SelfCheck::ask_scene_list() {
+    last_scene_list_ms_ = os::now_ms();
     // The callback runs on the UI thread, where alive_ is also cleared.
-    scenes_->list_async([this, alive = alive_](std::vector<SceneEntry> entries) {
-        if (!*alive) return;
-        scenes_section_.set_entries(std::move(entries));
-    });
+    (void)scenes_->list_async(
+        [this, alive = alive_, gen = scene_list_gen_](std::vector<SceneEntry> entries) {
+            if (!*alive || gen != scene_list_gen_) return;
+            scene_list_owed_ = false;
+            scenes_section_.set_entries(std::move(entries));
+        });
+}
+
+void SelfCheck::retry_scene_list(uint64_t now) {
+    if (!scene_list_owed_) return;
+    if (now - last_scene_list_ms_ >= kSceneListRetryMs) ask_scene_list();
 }
 
 void SelfCheck::open_scene(const std::string& id) {
