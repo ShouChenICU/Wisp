@@ -116,6 +116,11 @@ public:
         return opens_ > 0 && pos_ >= hold_pos_;
     }
 
+    // Real time: scripted reads take as long as the audio they return, and
+    // leave the virtual clock alone, so the script plays at a live mic's
+    // pace (a level that changes as a screen watches it).
+    void set_real_time(bool on) { real_time_ = on; }
+
     void set_fail_open(bool fail) { fail_open_ = fail; }
     // While closed, read() waits at the gate (polling, so open_reads()
     // always lets it through); read_waiting(): one waits there now.
@@ -150,7 +155,11 @@ public:
             read_frames_ += scripted;
         }
         if (scripted > 0) {
-            if (virtual_ms_ != nullptr) virtual_ms_->fetch_add(scripted * 1000 / kRate);
+            if (real_time_.load()) {
+                os::sleep_ms(static_cast<uint32_t>(scripted * 1000 / kRate));
+            } else if (virtual_ms_ != nullptr) {
+                virtual_ms_->fetch_add(scripted * 1000 / kRate);
+            }
             return Result<size_t>::ok(scripted);
         }
         // Past the script: a live microphone, real time.
@@ -228,6 +237,7 @@ private:
     std::atomic<uint64_t>* virtual_ms_;
     std::atomic<bool> fail_open_{false};
     std::atomic<bool> reads_gated_{false};
+    std::atomic<bool> real_time_{false};
     std::atomic<bool> read_waiting_{false};
     mutable std::mutex mu_;
     std::vector<Segment> script_;

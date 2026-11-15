@@ -716,6 +716,8 @@ Result<void> App::start() {
             },
             .now_ms = {},
             .agent = impl_->agent ? impl_->agent->service() : nullptr,
+            // Built above; power_manager.reset() comes after shell->stop().
+            .power = impl_->power_manager ? &impl_->power_manager->level_cell() : nullptr,
             .list_scenes = scenes != nullptr ? std::function<shell::ShellListing()>(
                                                    [scenes] { return scenes->shell_scenes(); })
                                              : nullptr,

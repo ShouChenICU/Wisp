@@ -98,9 +98,10 @@ void Shell::start() {
     home_ = std::make_unique<Home>(HomeDeps{
         .ui = deps_.ui,
         .shape = deps_.shape,
-        .bus = deps_.bus,
         .now_ms = deps_.now_ms,
         .admin_url = deps_.admin_url,
+        .agent = deps_.agent != nullptr ? &deps_.agent->status_cell() : nullptr,
+        .power = deps_.power,
     });
     home_->start();
     home_->set_conversation(deps_.conversation);

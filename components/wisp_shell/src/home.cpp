@@ -7,7 +7,6 @@
 #include "outcome_text.hpp"
 #include "page_frame.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/shell/activity.hpp"
 #include "wisp/shell/body_text.hpp"
@@ -68,31 +67,6 @@ lv_area_t wisp_box(const hal::Area& safe, int32_t size, int32_t cy) {
     const int32_t x1 = cx - size / 2;
     const int32_t y1 = cy - h / 2;
     return lv_area_t{x1, y1, x1 + size - 1, y1 + h - 1};
-}
-
-std::optional<agent::AgentState> parse_agent(const std::string& s) {
-    using agent::AgentState;
-    for (AgentState a : {AgentState::Idle, AgentState::Thinking, AgentState::Tool,
-                         AgentState::Output, AgentState::WaitingConfirm, AgentState::Error}) {
-        if (s == agent::to_string(a)) return a;
-    }
-    return std::nullopt;
-}
-
-std::optional<voice::VoiceState> parse_voice(const std::string& s) {
-    using voice::VoiceState;
-    for (VoiceState v : {VoiceState::Idle, VoiceState::Listening, VoiceState::Transcribing,
-                         VoiceState::Speaking, VoiceState::Error}) {
-        if (s == voice::to_string(v)) return v;
-    }
-    return std::nullopt;
-}
-
-std::string payload_str(const core::Event& e, const char* key) {
-    auto it = e.payload.find(key);
-    return it != e.payload.end() && it->second.type() == Value::Type::String
-               ? it->second.as_string()
-               : std::string();
 }
 
 // `a` in screen coordinates, `obj` in a parent whose top left is `origin`.
@@ -368,13 +342,37 @@ bool Home::start() {
     }
 
     alive_ = std::make_shared<bool>(true);
-    subs_[0] =
-        deps_.bus.subscribe(core::topics::kAgentState, [this](const core::Event& e) { on_bus(e); });
-    subs_[1] =
-        deps_.bus.subscribe(core::topics::kVoiceState, [this](const core::Event& e) { on_bus(e); });
-    subs_[2] =
-        deps_.bus.subscribe(core::topics::kPowerState, [this](const core::Event& e) { on_bus(e); });
     timer_ = lv_timer_create(&Home::timer_cb, kTickMs, this);
+    period_ = kTickMs;
+    quick_ = metered_ = false;
+    // On the UI dispatcher: each call runs on this thread, after start()
+    // has returned, and none once stop() has released it. The first call
+    // brings the current value; the error count captured here keeps an
+    // error from before start() from showing as a new one.
+    ui::UiRuntime* on = &deps_.ui;
+    if (deps_.agent != nullptr) {
+        agent_sub_ = deps_.agent->subscribe(
+            [this, errors = deps_.agent->get().errors](const agent::AgentStatus& s) mutable {
+                agent_state_.store(s.state);
+                // The count, not the state: an error that is idle again
+                // by this call still shows.
+                if (s.errors != errors) {
+                    errors = s.errors;
+                    note_error();
+                }
+                on_request();
+            },
+            on);
+    }
+    if (deps_.power != nullptr) {
+        power_sub_ = deps_.power->subscribe(
+            [this](const hal::PowerLevel& level) {
+                standby_.store(level == hal::PowerLevel::Standby ||
+                               level == hal::PowerLevel::DeepStandby);
+                on_request();
+            },
+            on);
+    }
 
     laid_out_ = false;
     refresh();
@@ -383,11 +381,10 @@ bool Home::start() {
 
 void Home::stop() {
     if (screen_ == nullptr) return;
-    for (core::SubscriptionId& id : subs_) {
-        if (id != 0) deps_.bus.unsubscribe(id);
-        id = 0;
-    }
-    set_conversation(nullptr);
+    // On the UI thread, so no call of these is under way.
+    agent_sub_.reset();
+    power_sub_.reset();
+    set_conversation(nullptr);  // and the voice cell's
     *alive_ = false;
     alive_.reset();
     lv_timer_delete(timer_);
@@ -407,12 +404,29 @@ void Home::set_conversation(ConversationController* conv) {
     if (conv_ != nullptr && tracking_ && on_wisp_ && press_.pending()) conv_->press_end();
     if (conv_ != nullptr && listener_ != 0) conv_->remove_listener(listener_);
     listener_ = 0;
+    // Released before the controller (and its voice) may go; without one
+    // there is no voice to show.
+    voice_sub_.reset();
+    voice_state_.store(voice::VoiceState::Idle);
     conv_ = conv;
     view_ = TurnView{};
     view_changed_ = true;
     if (conv_ != nullptr) {
         listener_ = conv_->add_listener([this](const TurnView&) { request(true); });
         conv_dirty_.store(true);
+        const core::StateCell<voice::VoiceStatus>& voice = conv_->voice_status();
+        voice_sub_ = voice.subscribe(
+            [this, outcomes = voice.get().outcomes](const voice::VoiceStatus& v) mutable {
+                voice_state_.store(v.state);
+                // The count, as for the agent: an error that is idle again
+                // by this call still shows.
+                if (v.outcomes != outcomes) {
+                    outcomes = v.outcomes;
+                    if (v.outcome == voice::VoiceStatus::Outcome::Error) note_error();
+                }
+                on_request();
+            },
+            &deps_.ui);
     }
     if (screen_ != nullptr) refresh();
 }
@@ -448,6 +462,7 @@ void Home::request(bool conv_changed) {
 }
 
 void Home::on_request() {
+    if (screen_ == nullptr) return;  // a cell's call before start()
     const uint64_t now = deps_.now_ms();
     const uint64_t since = now - last_refresh_;
     if (since >= kRefreshMs || now < last_refresh_) {
@@ -457,46 +472,38 @@ void Home::on_request() {
     // Held back: the timer runs it once the interval has passed.
     if (!quick_) {
         quick_ = true;
-        lv_timer_set_period(timer_, static_cast<uint32_t>(kRefreshMs - since));
+        period_ = static_cast<uint32_t>(kRefreshMs - since);
+        lv_timer_set_period(timer_, period_);
         lv_timer_reset(timer_);
     }
+}
+
+void Home::note_error() { error_at_.store(std::max<uint64_t>(deps_.now_ms(), 1)); }
+
+void Home::sync_timer() {
+    if (quick_ || timer_ == nullptr) return;  // the held-back refresh's period stays
+    const uint32_t want = metered_ ? kRefreshMs : kTickMs;
+    if (period_ == want) return;
+    period_ = want;
+    lv_timer_set_period(timer_, want);
 }
 
 void Home::timer_cb(lv_timer_t* t) {
     auto* self = static_cast<Home*>(lv_timer_get_user_data(t));
     if (self->quick_) {
         self->quick_ = false;
-        lv_timer_set_period(t, kTickMs);
-    }
-    self->refresh();
-}
-
-void Home::on_bus(const core::Event& e) {
-    // The bus's dispatch thread: note it and ask for a refresh.
-    const std::string state = payload_str(e, "state");
-    if (e.topic == core::topics::kAgentState) {
-        if (auto a = parse_agent(state)) {
-            agent_state_.store(*a);
-            if (*a == agent::AgentState::Error)
-                error_at_.store(std::max<uint64_t>(deps_.now_ms(), 1));
-        }
-    } else if (e.topic == core::topics::kVoiceState) {
-        if (auto v = parse_voice(state)) {
-            voice_state_.store(*v);
-            if (*v == voice::VoiceState::Error)
-                error_at_.store(std::max<uint64_t>(deps_.now_ms(), 1));
-            auto it = e.payload.find("level");
-            level_.store(
-                it != e.payload.end() && it->second.type() == Value::Type::Int
-                    ? static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100))
-                    : 0);
-        }
-    } else if (e.topic == core::topics::kPowerState) {
-        standby_.store(state == "standby" || state == "deep_standby");
-    } else {
+        self->refresh();  // which sets the period again
         return;
     }
-    request(false);
+    // The level alone between full refreshes: a full one at 20 Hz would
+    // cost frame time for a fade or hint that moves 4 times a second.
+    const uint64_t now = self->deps_.now_ms();
+    if (self->metered_ && self->wisp_ != nullptr && self->conv_ != nullptr &&
+        now >= self->last_refresh_ && now - self->last_refresh_ < kTickMs) {
+        self->wisp_->set_level(self->conv_->voice_level());
+        return;
+    }
+    self->refresh();
 }
 
 // --- refresh ----------------------------------------------------------------
@@ -574,12 +581,17 @@ void Home::refresh() {
         const agent::AgentState a = agent_state_.load();
         const voice::VoiceState v = voice_state_.load();
         const ui::WispMood mood = mood_for(a, v, recent_error);
+        const bool metered = mood == ui::WispMood::Listening || mood == ui::WispMood::Speaking;
         wisp_->set_mood(mood);
-        wisp_->set_level(
-            mood == ui::WispMood::Listening || mood == ui::WispMood::Speaking ? level_.load() : 0);
+        wisp_->set_level(metered && conv_ != nullptr ? conv_->voice_level() : 0);
         wisp_->set_busy(a == agent::AgentState::Tool);
         wisp_->set_paused(standby_.load());
+        // A paused wisp draws nothing: no quick timer for it.
+        metered_ = metered && !standby_.load();
+    } else {
+        metered_ = false;
     }
+    sync_timer();
 
     const bool has_text = !view_.heard.empty() || !view_.say.empty() || !view_.body.empty();
     const bool in_turn = (view_.running || has_text) && !fade_.faded(now);

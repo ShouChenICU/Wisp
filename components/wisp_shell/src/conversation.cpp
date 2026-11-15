@@ -505,6 +505,12 @@ TurnView ConversationController::current() const {
     return view_;
 }
 
+const core::StateCell<voice::VoiceStatus>& ConversationController::voice_status() const {
+    return deps_.voice.status_cell();
+}
+
+uint8_t ConversationController::voice_level() const { return deps_.voice.level(); }
+
 uint32_t ConversationController::add_listener(std::function<void(const TurnView&)> cb) {
     auto l = std::make_shared<Listener>();
     l->cb = std::move(cb);

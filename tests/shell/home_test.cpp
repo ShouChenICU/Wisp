@@ -14,12 +14,14 @@
 #include <vector>
 
 #include "shell/shell_fixture.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/visible.hpp"
 #include "support/wait.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/shell/limits.hpp"
 #include "wisp/shell/shell.hpp"
@@ -212,11 +214,8 @@ TEST_P(HomeShapes, LayoutInsideVisibleArea) {
 TEST_P(HomeShapes, TurnTextReadableAtBothEnds) {
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
-    wisp::core::EventBus bus;
-    ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
-    Home home(wisp::shell::HomeDeps{
-        .ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = {}});
+    Home home(wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .now_ms = {}, .admin_url = {}});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
@@ -307,7 +306,6 @@ TEST_P(HomeShapes, TurnTextReadableAtBothEnds) {
         lv_screen_load(before);
         home.stop();
     });
-    bus.stop();
     ui.stop();
 }
 
@@ -390,15 +388,10 @@ TEST_P(HomeShapes, StepListAsDrawn) {
     wisp::ui::set_lang(wisp::ui::Lang::Zh);
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
-    wisp::core::EventBus bus;
-    ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
     std::atomic<uint64_t> now{42'001};
-    Home home(wisp::shell::HomeDeps{.ui = ui,
-                                    .shape = shape_,
-                                    .bus = bus,
-                                    .now_ms = [&] { return now.load(); },
-                                    .admin_url = {}});
+    Home home(wisp::shell::HomeDeps{
+        .ui = ui, .shape = shape_, .now_ms = [&] { return now.load(); }, .admin_url = {}});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
@@ -531,7 +524,6 @@ TEST_P(HomeShapes, StepListAsDrawn) {
         lv_screen_load(before);
         home.stop();
     });
-    bus.stop();
     ui.stop();
 }
 
@@ -579,13 +571,10 @@ void expect_hint_fits(Home& home, const wisp::hal::ScreenShape& shape, const Sha
 TEST_P(HomeShapes, TurnOutcomeHintsFit) {
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
-    wisp::core::EventBus bus;
-    ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
-    Home home(
-        wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = [] {
-                                  return std::string(kLongUrl);
-                              }});
+    Home home(wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .now_ms = {}, .admin_url = [] {
+                                        return std::string(kLongUrl);
+                                    }});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
@@ -642,7 +631,6 @@ TEST_P(HomeShapes, TurnOutcomeHintsFit) {
         lv_screen_load(before);
         home.stop();
     });
-    bus.stop();
     ui.stop();
 }
 
@@ -652,13 +640,10 @@ TEST_P(HomeShapes, TurnOutcomeHintsFit) {
 TEST_P(HomeShapes, HintFitsTheSafeAreaOnAllShapes) {
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
-    wisp::core::EventBus bus;
-    ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
-    Home home(
-        wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = [] {
-                                  return std::string(kLongUrl);
-                              }});
+    Home home(wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .now_ms = {}, .admin_url = [] {
+                                        return std::string(kLongUrl);
+                                    }});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
@@ -726,7 +711,6 @@ TEST_P(HomeShapes, HintFitsTheSafeAreaOnAllShapes) {
         lv_screen_load(before);
         home.stop();
     });
-    bus.stop();
     ui.stop();
 }
 
@@ -788,11 +772,8 @@ TEST(HomeLayoutStop, NoRoomNarrowerThanTheControl) {
 TEST_P(HomeShapes, StopControlAsDrawn) {
     wisp::ui::UiRuntime ui(display_, nullptr);
     ASSERT_TRUE(ui.start());
-    wisp::core::EventBus bus;
-    ASSERT_TRUE(bus.start());
     auto on_ui = [&](const std::function<void()>& fn) { wisp::test::run_on_ui_blocking(&ui, fn); };
-    Home home(wisp::shell::HomeDeps{
-        .ui = ui, .shape = shape_, .bus = bus, .now_ms = {}, .admin_url = {}});
+    Home home(wisp::shell::HomeDeps{.ui = ui, .shape = shape_, .now_ms = {}, .admin_url = {}});
     lv_obj_t* before = nullptr;
     on_ui([&] {
         before = lv_screen_active();
@@ -848,7 +829,6 @@ TEST_P(HomeShapes, StopControlAsDrawn) {
         lv_screen_load(before);
         home.stop();
     });
-    bus.stop();
     ui.stop();
 }
 
@@ -881,6 +861,10 @@ protected:
             indev_ = lv_indev_get_next(nullptr);
         });
         ASSERT_NE(indev_, nullptr);
+        // The screen's power level, owned by the test (PowerManager's cell
+        // in the App); it outlives the shell (TearDown()).
+        power_ = std::make_unique<wisp::core::StateCell<wisp::hal::PowerLevel>>(
+            h->bus, wisp::hal::PowerLevel::Active);
         shell_ = std::make_unique<wisp::shell::Shell>(wisp::shell::ShellDeps{
             .ui = *ui_,
             .layer = *layer_,
@@ -892,6 +876,8 @@ protected:
             .leave_scene = {},
             .admin_url = [] { return std::string("http://10.0.0.7:8900"); },
             .now_ms = [this] { return wisp::os::now_ms() + home_ms.load(); },
+            .agent = agent.get(),
+            .power = power_.get(),
         });
         on_ui([&] { shell_->start(); });
     }
@@ -904,6 +890,8 @@ protected:
             });
             shell_.reset();
         }
+        // After the shell, its last follower; before the bus.
+        power_.reset();
         ShellFixture::TearDown();
         if (ui_) ui_->stop();
     }
@@ -994,6 +982,22 @@ protected:
         });
         return s;
     }
+    wisp::ui::WispMood mood() {
+        wisp::ui::WispMood m{};
+        on_ui([&] { m = shell_->wisp()->model().mood(); });
+        return m;
+    }
+    // Takes the asr profile away: the voice refuses the next capture with
+    // no_asr_profile.
+    void remove_asr() {
+        ASSERT_TRUE(h->worker.run_sync(
+            [&] {
+                const std::string id = h->models->get().active_for(wisp::core::ModelKind::Asr);
+                ASSERT_FALSE(id.empty());
+                ASSERT_TRUE(h->models->remove(id));
+            },
+            wisp::os::kForever));
+    }
     bool logged(const std::string& needle) {
         for (auto& e : wisp::log::ring_entries())
             if (e.tag == "shell" && e.msg.find(needle) != std::string::npos) return true;
@@ -1005,6 +1009,7 @@ protected:
     wisp::hal::ScreenShape shape_;
     std::unique_ptr<wisp::ui::UiRuntime> ui_;
     std::unique_ptr<wisp::ui::SystemLayer> layer_;
+    std::unique_ptr<wisp::core::StateCell<wisp::hal::PowerLevel>> power_;
     std::unique_ptr<wisp::shell::Shell> shell_;
     lv_indev_t* indev_ = nullptr;
     std::atomic<uint64_t> home_ms{0};
@@ -1144,9 +1149,9 @@ TEST_F(HomeTest, ReadinessAndErrorHints) {
          wisp::Properties{{"state", wisp::Value("idle")}, {"result", wisp::Value("not_heard")}}});
     EXPECT_TRUE(wait_until([&] { return hint() == "没听清"; }, 3000));
 
-    h->bus.publish({"voice.state", "voice", 0,
-                    wisp::Properties{{"state", wisp::Value("error")},
-                                     {"reason", wisp::Value("no_asr_profile")}}});
+    // A hold the voice refuses: no asr profile.
+    remove_asr();
+    conv->hold_begin();
     EXPECT_TRUE(wait_until(
         [&] { return hint() == "还没配置语音识别，请在管理后台的模型页设置\n" + url; }, 3000));
     // The error shows the wisp's error mood for a moment.
@@ -1154,6 +1159,8 @@ TEST_F(HomeTest, ReadinessAndErrorHints) {
         home().refresh();
         return shell_->wisp()->model().mood() == wisp::ui::WispMood::Error;
     }));
+    conv->hold_end();
+    ASSERT_TRUE(settled());
 
     // Gone kFadeAfterMs later.
     home_ms.store(kFadeAfterMs + 1000);
@@ -1272,8 +1279,7 @@ TEST_F(HomeTest, ScreenOffMidPressUnprimes) {
     const wisp::hal::TouchPoint at{static_cast<int16_t>(c.x), static_cast<int16_t>(c.y), 0};
     feed({at});
     ASSERT_TRUE(wait_until([&] { return mic->is_open(); }, 1000));
-    h->bus.publish(
-        {"power.state", "power", 0, wisp::Properties{{"state", wisp::Value("standby")}}});
+    power_->set(wisp::hal::PowerLevel::Standby);
     ASSERT_TRUE(wait_until([&] { return !mic->is_open(); }, 500));
     // The press is over: held on past the hold time, nothing starts.
     home_ms.store(wisp::voice::kHoldStartMs + 10);
@@ -1306,15 +1312,118 @@ TEST_F(HomeTest, PausedWhileScreenOff) {
         return n;
     };
     ASSERT_TRUE(wait_until([&] { return frames() > 2; }, 3000));
-    h->bus.publish(
-        {"power.state", "power", 0, wisp::Properties{{"state", wisp::Value("standby")}}});
-    h->bus.wait_idle(1000);
+    power_->set(wisp::hal::PowerLevel::Standby);
     wisp::os::sleep_ms(200);
     const uint32_t off = frames();
     wisp::os::sleep_ms(400);
     EXPECT_EQ(frames(), off);
-    h->bus.publish({"power.state", "power", 0, wisp::Properties{{"state", wisp::Value("active")}}});
+    power_->set(wisp::hal::PowerLevel::Active);
     EXPECT_TRUE(wait_until([&] { return frames() > off + 2; }, 3000));
+}
+
+// The agent's error that is idle again by the time Home looks (one update
+// of its cell) still shows: the error mood, from the cell's error count,
+// and the turn's note. wisp.bus is held throughout, so no agent.state
+// reaches anyone.
+TEST_F(HomeTest, ErrorThatEndsInIdleStillShowsTheHint) {
+    boot();
+    wisp::test::BusFlood flood(h->bus);
+    flood.hold();
+    for (int i = 0; i < 3; ++i) server.llm().push({.status = 500, .chunks = {}});
+    const uint32_t errors = agent->status_cell().get().errors;
+    // The UI thread waits while the agent fails and goes idle, so Home's
+    // subscription runs once, on Idle with the count moved.
+    on_ui([&] {
+        ASSERT_TRUE(agent->submit("你好", wisp::agent::Source::Web));
+        ASSERT_TRUE(wait_until(
+            [&] {
+                const wisp::agent::AgentStatus s = agent->status_cell().get();
+                return s.errors != errors && s.state == wisp::agent::AgentState::Idle;
+            },
+            8000));
+    });
+    EXPECT_TRUE(
+        ui_until([&] { return shell_->wisp()->model().mood() == wisp::ui::WispMood::Error; }));
+    EXPECT_TRUE(wait_until(
+        [&] { return hint_shown() == wisp::ui::tr(wisp::ui::StrId::HomeTurnServer); }, 3000));
+    flood.release();
+}
+
+// A capture the voice refuses shows the error mood from the voice's cell,
+// with wisp.bus held (no voice.state reaches anyone); the hint follows.
+TEST_F(HomeTest, VoiceErrorShowsTheHint) {
+    boot();
+    remove_asr();
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        EXPECT_TRUE(
+            ui_until([&] { return shell_->wisp()->model().mood() == wisp::ui::WispMood::Error; }));
+    }
+    EXPECT_TRUE(wait_until(
+        [&] {
+            return hint_shown() ==
+                   "还没配置语音识别，请在管理后台的模型页设置\nhttp://10.0.0.7:8900";
+        },
+        3000));
+    conv->hold_end();
+    ASSERT_TRUE(settled());
+}
+
+// While listening, the wisp's level is the voice service's own (level()),
+// not a voice.state's: with wisp.bus held a loud hold still lifts it.
+TEST_F(HomeTest, LevelComesFromTheVoiceService) {
+    boot();
+    mic->set_real_time(true);
+    mic->set_script({wisp::test::audio::sine(5000)});
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        ASSERT_TRUE(conv->holding());
+        ASSERT_TRUE(wait_until([&] { return voice->level() > 50; }, 3000));
+        EXPECT_TRUE(ui_until([&] {
+            return shell_->wisp()->model().mood() == wisp::ui::WispMood::Listening &&
+                   shell_->wisp()->level() > 50;
+        }));
+    }
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
+}
+
+// While listening the level reaches the wisp at the quick period
+// (kRefreshMs), not the slow tick: at least 10 changes a second. The mic
+// plays in real time and changes its loudness every 50 ms, so the voice's
+// level moves about 20 times a second; the wisp's change counter is read
+// on the UI thread, and the test times 20 changes on the same clock both
+// sides run on (2x margin over the 20 Hz both run at; the slow tick would
+// give 4). wisp.bus is held, so none of them comes from a voice.state.
+TEST_F(HomeTest, LevelAnimatesAtTheQuickPeriodWhileListening) {
+    boot();
+    mic->set_real_time(true);
+    std::vector<wisp::test::audio::Segment> script;
+    constexpr int16_t kAmplitudes[] = {1000, 4000, 12000, 2000, 24000};
+    for (int i = 0; i < 100; ++i) script.push_back(wisp::test::audio::sine(50, kAmplitudes[i % 5]));
+    mic->set_script(script);
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        conv->hold_begin();
+        ASSERT_TRUE(conv->holding());
+        ASSERT_TRUE(ui_until([&] {
+            return shell_->wisp()->model().mood() == wisp::ui::WispMood::Listening &&
+                   shell_->wisp()->level() > 0;
+        }));
+        uint32_t from = 0;
+        on_ui([&] { from = shell_->wisp()->level_changes(); });
+        const uint64_t t0 = wisp::os::now_ms();
+        EXPECT_TRUE(ui_until([&] { return shell_->wisp()->level_changes() >= from + 20; }, 4000));
+        const uint64_t took = wisp::os::now_ms() - t0;
+        EXPECT_LE(took, 2000u) << "20 level changes took " << took << " ms";
+    }
+    conv->hold_cancel();
+    ASSERT_TRUE(settled());
 }
 
 // A finger scrolling the column is reading: the swipe opens nothing. Once

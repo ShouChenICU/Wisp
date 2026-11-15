@@ -69,10 +69,14 @@
 // shows the wait of the error and turn hints does not run, so the full
 // hint still gets its time after the fade.
 //
-// The wisp's mood follows "agent.state" and "voice.state" (mood_for());
-// listening and speaking pass on their level, a running tool sets
-// set_busy(true), an "error" state shows Error for kErrorMoodMs. With the
-// screen off ("power.state" standby or deep_standby) the wisp is paused.
+// The wisp's mood follows the agent's and the voice's state cells
+// (AgentService::status_cell(), VoiceService::status_cell() through the
+// controller; mood_for()); listening and speaking pass on the voice's level
+// (VoiceService::level()), a running tool sets set_busy(true), and an
+// error -- a move of either cell's error count, so one that is idle again
+// by the time Home looks still counts -- shows Error for kErrorMoodMs.
+// With the screen off (the power level cell at Standby or DeepStandby)
+// the wisp is paused.
 //
 // Gestures (spec 6.3), tracked on the screen object from its own and its
 // children's PRESSED / PRESSING / RELEASED events; PRESS_LOST (the system
@@ -92,12 +96,16 @@
 //     swipe_min_px() anywhere on the screen -> hold_cancel().
 //
 // Threading. start(), stop(), set_conversation(), refresh() and every
-// LVGL callback run on the UI thread. The controller's listener and the
-// bus handlers run on their own threads: they only note what changed and
-// post one refresh at a time; refreshes run at most every kRefreshMs (a
-// later one waits on the home screen's timer), which also re-checks the
-// clock every kTickMs for the fade, the error mood and the readiness. A
-// post still queued after stop() does nothing.
+// LVGL callback run on the UI thread, and so do the cells' subscriptions
+// (on the UiRuntime). The controller's listener runs on its own thread: it
+// only notes the change and posts one refresh at a time. Refreshes run at
+// most every kRefreshMs (a later one waits on the home screen's timer),
+// which also re-checks the clock every kTickMs for the fade, the error
+// mood and the readiness. While the wisp shows a level (listening,
+// speaking, screen on) the timer runs every kRefreshMs instead and, between
+// those full refreshes, only passes the level on: the level changes up to
+// 20 times a second and moves no cell. A post still queued after stop()
+// does nothing.
 
 #include <array>
 #include <atomic>
@@ -112,7 +120,8 @@
 
 #include "lvgl.h"
 #include "wisp/agent/agent_service.hpp"
-#include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/shell/conversation.hpp"
@@ -218,10 +227,14 @@ struct HomeTextStats {
 struct HomeDeps {
     ui::UiRuntime& ui;
     hal::ScreenShape shape;
-    core::EventBus& bus;
     std::function<uint64_t()> now_ms;
     // "http://<ip>:<port>", or "" while there is none. UI thread.
     std::function<std::string()> admin_url;
+    // The agent's state and the screen's power level, followed from
+    // start() to stop(); each must outlive stop(). Null: always idle /
+    // always on.
+    const core::StateCell<agent::AgentStatus>* agent = nullptr;
+    const core::StateCell<hal::PowerLevel>* power = nullptr;
 };
 
 class Home {
@@ -242,8 +255,9 @@ public:
     // (which must not be the active one). Idempotent. UI thread.
     void stop();
 
-    // Follows `conv` (nullptr: none, no readiness hint and no voice). UI
-    // thread.
+    // Follows `conv` (nullptr: none, no readiness hint and no voice), and
+    // its voice cell until the next call or stop(): the controller's
+    // voice must outlive that. UI thread.
     void set_conversation(ConversationController* conv);
 
     // Re-reads what changed and the clock, and shows it. UI thread.
@@ -290,7 +304,10 @@ public:
 private:
     void request(bool conv_changed);
     void on_request();
-    void on_bus(const core::Event& e);
+    // Either cell's error count moved: the error mood starts now.
+    void note_error();
+    // The timer's period for what it runs now (see the file header).
+    void sync_timer();
     void apply_layout(bool in_turn, bool hint_visible);
     void render_text();
     void render_body();
@@ -348,17 +365,22 @@ private:
     lv_obj_t* hint_ = nullptr;
     ui::WispView* wisp_ = nullptr;  // owned by its object
     lv_timer_t* timer_ = nullptr;
-    bool quick_ = false;  // timer_ runs a held-back refresh
+    uint32_t period_ = 0;  // timer_'s, as last set
+    bool quick_ = false;   // timer_ runs a held-back refresh
+    // The wisp shows a level: timer_ runs every kRefreshMs and passes it on.
+    bool metered_ = false;
 
     ConversationController* conv_ = nullptr;
     uint32_t listener_ = 0;
-    core::SubscriptionId subs_[3] = {0, 0, 0};
+    // On the UiRuntime: the agent and power cells from start(), the
+    // controller's voice cell from set_conversation().
+    core::CellSubscription agent_sub_, power_sub_, voice_sub_;
     std::shared_ptr<bool> alive_;
 
-    // Written by the bus handlers, read on the UI thread.
+    // Written by the cells' subscriptions, read by refresh() and the press
+    // logic; all on the UI thread.
     std::atomic<agent::AgentState> agent_state_{agent::AgentState::Idle};
     std::atomic<voice::VoiceState> voice_state_{voice::VoiceState::Idle};
-    std::atomic<uint8_t> level_{0};
     std::atomic<uint64_t> error_at_{0};  // 0: never
     std::atomic<bool> standby_{false};
     std::atomic<bool> conv_dirty_{false};

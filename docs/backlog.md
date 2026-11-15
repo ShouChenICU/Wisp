@@ -317,6 +317,12 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator an
 - For the plan that moves subscribers onto the cells: dev-mode file edits and a card being inserted or removed do not move the scenes overview's `catalog`, so the self-check screen's periodic resync of the scene list cannot be dropped on `catalog` alone.
 - No test pins the `agent.state` payload for `waiting_confirm`.
 
+## State cell subscribers: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-state-cells-3-subscribers.md`. Simulator and unit tests only so far.
+
+- NOT RUN: `WISP_PERF` on Home while listening and while speaking: the wisp's level animation is smooth at about 20 Hz (Home's timer runs every 50 ms then and passes only the level on between full refreshes), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
+
 ## CI speed
 
 - `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.

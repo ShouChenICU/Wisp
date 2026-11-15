@@ -217,6 +217,10 @@ public:
 
     Readiness readiness() const;
     TurnView current() const;
+    // The voice's state cell and level (VoiceService::status_cell() and
+    // level()), for the screens that show them. Any thread.
+    const core::StateCell<voice::VoiceStatus>& voice_status() const;
+    uint8_t voice_level() const;
 
     uint32_t add_listener(std::function<void(const TurnView&)> cb);
     // Once it returns, `id`'s callback is not running and never runs

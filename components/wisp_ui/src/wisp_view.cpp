@@ -178,6 +178,7 @@ void WispView::set_mood(WispMood mood) {
 }
 
 void WispView::set_level(uint8_t level) {
+    if (level != level_) ++level_changes_;
     level_ = level;
     impl_->model.set_level(level);
 }

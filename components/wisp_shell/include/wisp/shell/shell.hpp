@@ -103,7 +103,9 @@
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/shell/choice_page.hpp"
 #include "wisp/shell/connections_page.hpp"
@@ -165,8 +167,13 @@ struct ShellDeps {
     // then leaves that part out or shows nothing. Unless said otherwise
     // they are called on the UI thread and must not touch flash; anything
     // that does runs inside a submit_io job.
-    // The history's conversation and "new conversation".
+    // The history's conversation and "new conversation"; the home screen
+    // follows its state (status_cell()), so it must outlive stop().
     agent::AgentService* agent = nullptr;
+    // The screen's power level (PowerManager::level_cell()): the home
+    // screen pauses the wisp while it is off. Null: always on. It must
+    // outlive stop().
+    const core::StateCell<hal::PowerLevel>* power = nullptr;
     // The installed scenes, on the storage worker (a submit_io job): icon
     // bytes at most kIconMaxBytes (or only their icon_hash), available
     // false while the scene's files are on an SD card that is out. Asked

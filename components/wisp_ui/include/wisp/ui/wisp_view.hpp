@@ -49,6 +49,10 @@ public:
     lv_obj_t* obj() const { return obj_; }
     // Frames built since create(), the first one included.
     uint32_t frames() const { return frames_; }
+    // The level last set, and how many set_level() calls changed it since
+    // create() (tests: how often the level reaches the wisp).
+    uint8_t level() const { return level_; }
+    uint32_t level_changes() const { return level_changes_; }
     const WispModel& model() const;
 
     ~WispView();
@@ -76,6 +80,7 @@ private:
     uint32_t frames_ = 0;
     uint32_t draw_us_ = 0;  // the last draw event's time, added to the next frame's
     uint8_t level_ = 0;
+    uint32_t level_changes_ = 0;
     bool busy_ = false;
     bool paused_ = false;
     bool stale_ = false;  // e-paper: the mood changed while paused
