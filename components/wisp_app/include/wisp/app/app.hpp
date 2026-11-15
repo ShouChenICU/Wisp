@@ -425,15 +425,17 @@ public:
     // "bus dropped=<n> cell_subs=<n>": events the bus dropped on overflow
     // and live state-cell subscriptions; then one line per edge inbox,
     // "inbox <name> overflows=<n>" (edges it dropped), joined with "\n", no
-    // trailing newline. With a screen: "inbox power_key" (the system
-    // duties); with a talk key and the voice: "inbox talk_key"
-    // (shell::TalkKey); both between start() and stop(). It reads counters
-    // (atomics) and the pointers to the system duties and the voice, which
-    // start() builds and stop() destroys, so only the thread that calls
-    // start() and stop() and the console task may call it: the console
-    // starts after those are built and stops before they are destroyed.
-    // It is what the firmware `mem` command appends to the heap report.
-    // Anything later added to the report must keep to the same rule.
+    // trailing newline. Headless too, unless it had no memory: "inbox
+    // scene_lifecycle" (the scene lifecycle edges); with a screen: "inbox
+    // power_key" (the system duties); with a talk key and the voice:
+    // "inbox talk_key" (shell::TalkKey); each between start() and stop().
+    // It reads counters (atomics) and the pointers to the scene lifecycle
+    // inbox, the system duties and the voice, which start() builds and
+    // stop() destroys, so only the thread that calls start() and stop()
+    // and the console task may call it: the console starts after those are
+    // built and stops before they are destroyed. It is what the firmware
+    // `mem` command appends to the heap report. Anything later added to
+    // the report must keep to the same rule.
     std::string dispatch_report() const;
 
     // Writes what still waits for flash before the device restarts, powers

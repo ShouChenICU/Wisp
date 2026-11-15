@@ -191,8 +191,8 @@ The edge inboxes (`mem` prints one line for each that exists):
 
 | Inbox (owner) | Places | Producer (thread) | Consumer (dispatcher) | An overflow loses |
 |---|---|---|---|---|
-| `power_key` (`SystemDuties`) | 8 | its `ButtonService` listener, the power key's `short`/`long` only (`wisp.button`; the fallback timer's thread for a PollOnly key) | `PowerKeyController` (UI) | the oldest press: a screen toggle or a power-off dialog |
-| `talk_key` (`shell::TalkKey`) | 8 | its `ButtonService` listener, the talk key's `down`/`up` only (`wisp.button`) | the hold logic (`wisp.bus`) | the oldest edge; a lost `up` is ended by the next `down` (see "Button input and standby") |
+| `power_key` (`SystemDuties`) | 8 | its `ButtonService` listener, the power key's `short`/`long` only (`wisp.button`, which polls a PollOnly key as well; the fallback timer's task instead when the edge queue or the worker could not be created) | `PowerKeyController` (UI) | the oldest press: a screen toggle or a power-off dialog |
+| `talk_key` (`shell::TalkKey`) | 8 | its `ButtonService` listener, the talk key's `down`/`up` only (`wisp.button`, or the fallback timer's task as for `power_key`) | the hold logic (`wisp.bus`) | the oldest edge; a lost `up` is ended by the next `down` (see "Button input and standby") |
 | `scene_lifecycle` (App) | 32 | the scene runtime (`wisp.scene`) and `SceneWiring`'s delete (`wisp.fs`), through the gate | the scene order, the notices, the agent's tool index (`wisp.bus`) | the oldest edges, with the effects above |
 
 The hardware diagnostics' button test hears `ButtonService` through a listener with a plain post to the UI thread: a display, where a lost post is harmless.
