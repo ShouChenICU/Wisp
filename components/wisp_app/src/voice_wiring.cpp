@@ -25,7 +25,7 @@ public:
 
 // A memory read of the settings cell, safe from any thread.
 bool tts_muted(const core::SystemSettings& settings) {
-    return settings.cell().read([](const core::SystemSettingsValues& v) { return v.tts_mute; });
+    return settings.cell().read([](const core::SettingsSnapshot& v) { return v.tts_mute; });
 }
 
 }  // namespace
@@ -55,9 +55,8 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         // the stored value, whatever the bus has delivered.
         .volume =
             [settings = &deps_.settings] {
-                return settings->cell().read([](const core::SystemSettingsValues& v) {
-                    return static_cast<uint8_t>(v.volume);
-                });
+                return settings->cell().read(
+                    [](const core::SettingsSnapshot& v) { return static_cast<uint8_t>(v.volume); });
             },
     });
     core::ModelProfileService* models = &deps_.models;

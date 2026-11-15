@@ -234,7 +234,7 @@ protected:
     // As SystemSettings::set() leaves the settings cell (follow_cells).
     void set_offset(int minutes) {
         settings_cell.update(
-            [minutes](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = minutes; });
+            [minutes](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = minutes; });
     }
 
     // The pixels of the one canvas on screen, once it has been drawn ("" before).

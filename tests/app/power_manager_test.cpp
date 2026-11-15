@@ -45,10 +45,10 @@ using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::PowerMonitor;
 using wisp::core::Settings;
+using wisp::core::SettingsSnapshot;
 using wisp::core::StateCell;
 using wisp::core::StorageManager;
 using wisp::core::SystemSettings;
-using wisp::core::SystemSettingsValues;
 using wisp::core::WakeLockKind;
 using wisp::core::WakeLockRegistry;
 using wisp::hal::DeviceClass;
@@ -111,7 +111,7 @@ struct Fixture {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
         // As SystemSettings seeds its cell from storage at boot.
-        SystemSettingsValues stored;
+        SettingsSnapshot stored;
         stored.screen_off_s = static_cast<int>(screen_off_s);
         settings_cell.seed(stored);
 
@@ -265,7 +265,7 @@ struct Fixture {
     EventBus bus;
     // SystemSettings::cell() as App hands it over; declared before pm,
     // which subscribes to it and must release that first.
-    StateCell<SystemSettingsValues> settings_cell{bus, SystemSettingsValues{}};
+    StateCell<SettingsSnapshot> settings_cell{bus, SettingsSnapshot{}};
     DeviceRegistry registry;
     WakeLockRegistry locks{bus};
 
@@ -927,7 +927,7 @@ TEST(PowerManager, BrightnessFollowsTheCellFlooded) {
         flood.hold();
         wisp::test::UiHold hold(f.ui.get());
         for (int level = 100; level <= 109; ++level) {
-            f.settings_cell.update([level](SystemSettingsValues& v) { v.brightness = level; });
+            f.settings_cell.update([level](SettingsSnapshot& v) { v.brightness = level; });
         }
         flood.flood(512);
         hold.release();
@@ -944,7 +944,7 @@ TEST(PowerManager, BrightnessFollowsTheCellFlooded) {
 TEST(PowerManager, ReseededBrightnessReachesThePanel) {
     Fixture f;
     f.settle_ui();
-    SystemSettingsValues v = f.settings_cell.get();
+    SettingsSnapshot v = f.settings_cell.get();
     v.brightness = 70;
     ASSERT_TRUE(f.settings_cell.seed(v));
     f.settle_ui();
@@ -956,7 +956,7 @@ TEST(PowerManager, ReseededBrightnessReachesThePanel) {
 // undim restores the new full level.
 TEST(PowerManager, DimIsRelativeToTheCellsBrightness) {
     Fixture f(/*screen_off_s=*/60);
-    f.settings_cell.update([](SystemSettingsValues& v) { v.brightness = 200; });
+    f.settings_cell.update([](SettingsSnapshot& v) { v.brightness = 200; });
     f.settle_ui();
     uint64_t t0 = wisp::os::now_ms();
     f.pm->note_activity();
@@ -965,7 +965,7 @@ TEST(PowerManager, DimIsRelativeToTheCellsBrightness) {
     ASSERT_EQ(f.pm->level(), PowerLevel::Dim);
     EXPECT_EQ(f.display->brightness(), 60);
 
-    f.settings_cell.update([](SystemSettingsValues& v) { v.brightness = 20; });
+    f.settings_cell.update([](SettingsSnapshot& v) { v.brightness = 20; });
     f.settle_ui();
     EXPECT_EQ(f.pm->level(), PowerLevel::Dim);
     EXPECT_EQ(f.display->brightness(),
@@ -1169,8 +1169,8 @@ struct Headless {
     // them: a stored value it would refuse reads as its default, so the
     // cell never holds one.
     void copy_store_to_cell() {
-        const SystemSettingsValues stored = SystemSettings(*backend, bus).get();
-        SystemSettingsValues v = settings_cell.get();
+        const SettingsSnapshot stored = SystemSettings(*backend, bus).get();
+        SettingsSnapshot v = settings_cell.get();
         v.screen_off_s = stored.screen_off_s;
         v.deep_after_s = stored.deep_after_s;
         settings_cell.set(v);
@@ -1190,7 +1190,7 @@ struct Headless {
     EventBus bus;
     // SystemSettings::cell() as App hands it over; declared before pm,
     // which subscribes to it and must release that first.
-    StateCell<SystemSettingsValues> settings_cell{bus, SystemSettingsValues{}};
+    StateCell<SettingsSnapshot> settings_cell{bus, SettingsSnapshot{}};
     DeviceRegistry registry;
     WakeLockRegistry locks{bus};
     std::shared_ptr<CallLog> log = std::make_shared<CallLog>();
@@ -1624,7 +1624,7 @@ TEST(PowerManager, ScreenOffFollowsTheSettingsCellFlooded) {
     {
         wisp::test::BusFlood flood(h.bus);
         flood.hold();
-        SystemSettingsValues v = h.settings_cell.get();
+        SettingsSnapshot v = h.settings_cell.get();
         for (int i = 0; i < 10; ++i) {
             v.screen_off_s = 24 - i;  // ends at 15
             h.settings_cell.set(v);
@@ -1644,9 +1644,9 @@ TEST(PowerManager, ScreenOffFollowsTheSettingsCellFlooded) {
 // only the constructor's get().
 TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
     EventBus bus;
-    SystemSettingsValues stored;
+    SettingsSnapshot stored;
     stored.screen_off_s = 20;
-    StateCell<SystemSettingsValues> settings{bus, stored};
+    StateCell<SettingsSnapshot> settings{bus, stored};
     DeviceRegistry registry;
     WakeLockRegistry locks{bus};
     bus.start();
@@ -1671,7 +1671,7 @@ TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
 
 // A stored value SystemSettings would refuse (a hand-edited or corrupt
 // store) counts as the default here too, as GET /settings reports it.
-TEST(PowerManager, OutOfRangeStoredSettingsReadAsDefaults) {
+TEST(PowerManager, StoredOutOfRangeTimeoutsReachPowerManagerAsDefaults) {
     Headless h(/*screen_off_s=*/5, /*deep_after_s=*/30);
     uint64_t t0 = h.start_idle();
     h.pm->tick(t0 + 5050);

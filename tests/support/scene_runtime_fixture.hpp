@@ -281,8 +281,8 @@ protected:
     // before rt, whose subscriptions to them stop() releases.
     bool follow_cells = false;
     wisp::core::StateCell<wisp::core::PowerSupply> supply_cell{bus, wisp::core::PowerSupply{}};
-    wisp::core::StateCell<wisp::core::SystemSettingsValues> settings_cell{
-        bus, wisp::core::SystemSettingsValues{}};
+    wisp::core::StateCell<wisp::core::SettingsSnapshot> settings_cell{
+        bus, wisp::core::SettingsSnapshot{}};
     wisp::core::StateCell<wisp::core::TimeSyncResult> time_cell{bus, wisp::core::TimeSyncResult{}};
     std::unique_ptr<wisp::core::StorageManager> storage;
     wisp::core::StorageWorker worker;

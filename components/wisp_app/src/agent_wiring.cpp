@@ -24,7 +24,7 @@ constexpr const char* kTag = "agent";
 // Settings' agent_max_steps and agent_turn_min as the cell holds them: the
 // cell only ever holds values within the rows' ranges (SystemSettings maps
 // an invalid stored value to the default), so they pass as they are.
-void apply_turn_limits(agent::AgentService& service, const core::SystemSettingsValues& v) {
+void apply_turn_limits(agent::AgentService& service, const core::SettingsSnapshot& v) {
     service.set_turn_limits(static_cast<uint32_t>(v.agent_max_steps),
                             static_cast<uint32_t>(v.agent_turn_min) * 60000u);
 }
@@ -466,7 +466,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     // is all the next turn reads.
     apply_turn_limits(*service_, deps_.settings.cell().get());
     settings_sub_ = deps_.settings.cell().subscribe(
-        [service = service_.get()](const core::SystemSettingsValues& v) {
+        [service = service_.get()](const core::SettingsSnapshot& v) {
             apply_turn_limits(*service, v);
         });
     service_->set_confirm(confirm_.get());

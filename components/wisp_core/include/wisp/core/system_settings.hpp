@@ -46,36 +46,6 @@
 
 namespace wisp::core {
 
-// The snapshot the settings cell holds: one field per schema row.
-using SystemSettingsValues = SettingsSnapshot;
-
-// Defaults and ranges of single keys, read from the schema table for the
-// consumers that still name them.
-inline constexpr std::string_view kDefaultNtpServers = setting_default_text(SettingId::NtpServers);
-inline constexpr int64_t kDefaultBrightness = setting_default_int(SettingId::Brightness);
-inline constexpr int64_t kDefaultVolume = setting_default_int(SettingId::Volume);
-inline constexpr std::string_view kDefaultLanguage = setting_default_text(SettingId::Language);
-inline constexpr int64_t kDefaultUtcOffsetMin = setting_default_int(SettingId::UtcOffsetMin);
-inline constexpr int64_t kDefaultNotifyVol = setting_default_int(SettingId::NotifyVol);
-inline constexpr bool kDefaultTtsMute = setting_default_int(SettingId::TtsMute) != 0;
-inline constexpr bool kDefaultTime24h = setting_default_int(SettingId::Time24h) != 0;
-
-// The power keys' defaults and valid ranges, shared with
-// wisp::app::PowerManager.
-inline constexpr int64_t kDefaultScreenOffS = setting_default_int(SettingId::ScreenOffS);
-inline constexpr int64_t kDefaultDeepAfterS = setting_default_int(SettingId::DeepAfterS);
-bool valid_screen_off_s(int64_t seconds);  // the ScreenOffS row's rule
-bool valid_deep_after_s(int64_t seconds);  // the DeepAfterS row's rule
-
-// The agent limits' defaults and ranges. wisp::agent's kMaxSteps and
-// kTurnMs are the same defaults (App checks that they agree).
-inline constexpr int64_t kDefaultAgentMaxSteps = setting_default_int(SettingId::AgentMaxSteps);
-inline constexpr int64_t kMinAgentMaxSteps = setting_spec(SettingId::AgentMaxSteps).min;
-inline constexpr int64_t kMaxAgentMaxSteps = setting_spec(SettingId::AgentMaxSteps).max;
-inline constexpr int64_t kDefaultAgentTurnMin = setting_default_int(SettingId::AgentTurnMin);
-inline constexpr int64_t kMinAgentTurnMin = setting_spec(SettingId::AgentTurnMin).min;
-inline constexpr int64_t kMaxAgentTurnMin = setting_spec(SettingId::AgentTurnMin).max;
-
 // Who asks SystemSettings::set() to write: each surface may write only the
 // rows that carry its flag (settings-schema spec 3.4). Internal callers (App
 // itself, boot code, tests) write any row, the store-only ones included.
@@ -113,14 +83,14 @@ public:
     SystemSettings& operator=(const SystemSettings&) = delete;
 
     // Reads the store (the settings cache once App has attached it).
-    SystemSettingsValues get() const;
+    SettingsSnapshot get() const;
 
     // The snapshot as the last stored batch left it (seed_cell() before
     // that). It moves only when a value changed; system.settings, published
     // by its mirror, also goes out for a stored batch that changed nothing.
     // A subscriber releases its subscription before this object is destroyed
     // (App::stop() order; wisp/core/state_cell.hpp).
-    const StateCell<SystemSettingsValues>& cell() const { return cell_; }
+    const StateCell<SettingsSnapshot>& cell() const { return cell_; }
     // Loads the cell from the store without publishing anything: App calls
     // it once at boot, after the settings cache is attached and before
     // anyone follows the cell. Logs one warning per stored value that is
@@ -148,7 +118,7 @@ private:
     // Declared after bus_ because its constructor takes it. Its owner
     // declares this object after the bus, so the cell is destroyed before
     // the bus object is (owner order, wisp/core/state_cell.hpp).
-    StateCell<SystemSettingsValues> cell_;
+    StateCell<SettingsSnapshot> cell_;
 };
 
 }  // namespace wisp::core

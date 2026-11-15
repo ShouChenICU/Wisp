@@ -46,14 +46,6 @@ void mirror_settings(EventBus& bus, const SettingsSnapshot&, const SettingsSnaps
 
 }  // namespace
 
-bool valid_screen_off_s(int64_t s) {
-    return valid_setting(setting_spec(SettingId::ScreenOffS), Value(s));
-}
-
-bool valid_deep_after_s(int64_t s) {
-    return valid_setting(setting_spec(SettingId::DeepAfterS), Value(s));
-}
-
 Map to_map(const SettingsSnapshot& values) {
     Map out;
     for (const SettingSpec& spec : kSettingsSchema) {

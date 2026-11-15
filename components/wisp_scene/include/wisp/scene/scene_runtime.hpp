@@ -553,7 +553,7 @@ struct SceneRuntimeDeps {
     // reports the schema's defaults and no setting fires an event. Read
     // on the scene task and by device_info()'s other callers (memory
     // only); followed from start() to stop().
-    const core::StateCell<core::SystemSettingsValues>* settings = nullptr;
+    const core::StateCell<core::SettingsSnapshot>* settings = nullptr;
     // wisp.device.list/get/call; null: list() returns {}, get() and call()
     // nil, "unavailable". Must outlive the runtime.
     core::DeviceService* devices = nullptr;

@@ -92,22 +92,21 @@ hal::ScreenShape display_shape(const hal::Display& display) {
 // with no flash, so any thread may call these (the scene task, the UI,
 // wisp.agent, wisp.fs).
 int utc_offset_of(const core::SystemSettings& settings) {
-    return settings.cell().read(
-        [](const core::SystemSettingsValues& v) { return v.utc_offset_min; });
+    return settings.cell().read([](const core::SettingsSnapshot& v) { return v.utc_offset_min; });
 }
 
 ui::Lang lang_of(const core::SystemSettings& settings) {
     return settings.cell().read(
-        [](const core::SystemSettingsValues& v) { return ui::to_lang(v.language); });
+        [](const core::SettingsSnapshot& v) { return ui::to_lang(v.language); });
 }
 
 uint8_t notify_vol_of(const core::SystemSettings& settings) {
     return settings.cell().read(
-        [](const core::SystemSettingsValues& v) { return static_cast<uint8_t>(v.notify_vol); });
+        [](const core::SettingsSnapshot& v) { return static_cast<uint8_t>(v.notify_vol); });
 }
 
 bool time_24h_of(const core::SystemSettings& settings) {
-    return settings.cell().read([](const core::SystemSettingsValues& v) { return v.time_24h; });
+    return settings.cell().read([](const core::SettingsSnapshot& v) { return v.time_24h; });
 }
 
 }  // namespace

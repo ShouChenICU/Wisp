@@ -168,7 +168,7 @@ struct ReminderDeps {
     // UTC seconds; below kWallClockValidSince: not set. Empty: never set.
     std::function<int64_t()> wall_s;
     // Minutes east of UTC, a cached value (never Settings, which is
-    // flash). Empty: 480.
+    // flash). Empty: the setting's default.
     std::function<int()> utc_offset_min;
     // The merged notification's title for `count` missed reminders, in
     // the device language. Empty: the count alone.

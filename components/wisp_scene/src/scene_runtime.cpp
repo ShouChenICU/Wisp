@@ -221,11 +221,11 @@ Result<void> SceneRuntime::start() {
             bool time_24h = false;
             ui::Lang lang = {};
         };
-        const Seen first = deps_.settings->read([](const core::SystemSettingsValues& v) {
+        const Seen first = deps_.settings->read([](const core::SettingsSnapshot& v) {
             return Seen{v.utc_offset_min, v.time_24h, ui::to_lang(v.language)};
         });
         settings_sub_ = deps_.settings->subscribe(
-            [this, last = first](const core::SystemSettingsValues& now) mutable {
+            [this, last = first](const core::SettingsSnapshot& now) mutable {
                 uint8_t bits = 0;
                 if (now.utc_offset_min != last.utc_offset_min || now.time_24h != last.time_24h)
                     bits |= kMinute;

@@ -350,8 +350,12 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
             if (it != e.payload.end() && it->second.as_string() == "dim") saw_dim.store(true);
         });
     const uint64_t t0 = wisp::os::now_ms();
-    const uint64_t off_ms = static_cast<uint64_t>(wisp::core::kDefaultScreenOffS) * 1000;
-    const uint64_t deep_ms = static_cast<uint64_t>(wisp::core::kDefaultDeepAfterS) * 1000;
+    const uint64_t off_ms =
+        static_cast<uint64_t>(wisp::core::setting_default_int(wisp::core::SettingId::ScreenOffS)) *
+        1000;
+    const uint64_t deep_ms =
+        static_cast<uint64_t>(wisp::core::setting_default_int(wisp::core::SettingId::DeepAfterS)) *
+        1000;
 
     pm->enter_standby();
     ASSERT_TRUE(pm->standby());

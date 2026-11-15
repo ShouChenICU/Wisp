@@ -83,7 +83,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<uint16_t> framebuffer_;  // guarded by mutex_; size width_*height_
 
-    std::atomic<uint8_t> brightness_{200};
+    std::atomic<uint8_t> brightness_{200};  // settings-literal-ok: the panel's power-on level
     std::atomic<bool> powered_{true};
 };
 

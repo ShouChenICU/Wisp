@@ -111,7 +111,7 @@ void SystemDuties::start() {
     // announced before (networking starts first) one UI iteration after
     // start().
     settings_sub_ = app_.system_settings().cell().subscribe(
-        [this](const core::SystemSettingsValues& v) { sync_system_language(v); }, &ui_);
+        [this](const core::SettingsSnapshot& v) { sync_system_language(v); }, &ui_);
     if (net::WifiService* wifi = app_.wifi()) {
         wifi_sub_ =
             wifi->wifi_cell().subscribe([this](const net::WifiSnapshot&) { sync_wifi(); }, &ui_);
@@ -325,7 +325,7 @@ bool SystemDuties::reset_holds_language() const {
            reset_status(app_).get().phase == ResetStatus::Phase::Done;
 }
 
-void SystemDuties::sync_system_language(const core::SystemSettingsValues& values) {
+void SystemDuties::sync_system_language(const core::SettingsSnapshot& values) {
     apply_system_language(ui::to_lang(values.language));
 }
 
@@ -393,10 +393,9 @@ void SystemDuties::on_reset_status(const ResetStatus& status) {
     }
     // A confirmed reset that failed lets the language follow again: what
     // was stored meanwhile is shown now. Only the language is read.
-    apply_system_language(
-        app_.system_settings().cell().read([](const core::SystemSettingsValues& v) {
-            return std::optional<ui::Lang>(ui::to_lang(v.language));
-        }));
+    apply_system_language(app_.system_settings().cell().read([](const core::SettingsSnapshot& v) {
+        return std::optional<ui::Lang>(ui::to_lang(v.language));
+    }));
 }
 
 void SystemDuties::show_reset_dialog() {

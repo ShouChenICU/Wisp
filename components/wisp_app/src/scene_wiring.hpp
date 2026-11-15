@@ -160,7 +160,7 @@ public:
                        core::NotificationService* notices = nullptr,
                        core::SensorService* sensors = nullptr,
                        const core::StateCell<core::PowerSupply>* supply = nullptr,
-                       const core::StateCell<core::SystemSettingsValues>* settings = nullptr,
+                       const core::StateCell<core::SettingsSnapshot>* settings = nullptr,
                        core::DeviceService* devices = nullptr);
     // Starts the proxy and the runtime and follows the power level
     // (PowerManager::level_cell()): Standby and below hide the scene.

@@ -785,7 +785,7 @@ return ui.screen { ui.label { text = "front" } }
     ASSERT_TRUE(rt->open("front"));
     ASSERT_EQ(rt->status("grow").state, SceneState::Background);
     settings_cell.update(
-        [](wisp::core::SystemSettingsValues& v) { v.language = wisp::core::LangCode::En; });
+        [](wisp::core::SettingsSnapshot& v) { v.language = wisp::core::LangCode::En; });
     ASSERT_TRUE(wait_until([&] { return count_log("front", "fits") == 1; }, 2000))
         << ::testing::PrintToString(scene_log("front")) << rt->status("front").error;
     EXPECT_EQ(count_log("grow", "grown"), 1u);
@@ -925,7 +925,7 @@ return ui.screen { ui.label { text = "scene a" } }
     }
     supply_cell.set(wisp::core::PowerSupply{false, true, 79, false});
     ASSERT_TRUE(wait_until([&] { return scene_log("a").size() == 2; }, 2000));
-    settings_cell.update([](wisp::core::SystemSettingsValues& v) {
+    settings_cell.update([](wisp::core::SettingsSnapshot& v) {
         v.language = wisp::core::LangCode::En;
         v.brightness = 50;
     });

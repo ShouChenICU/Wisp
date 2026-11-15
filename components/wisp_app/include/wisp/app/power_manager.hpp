@@ -65,9 +65,9 @@
 // and needs neither a post-queue slot nor the bus. Without a UI it does not
 // follow (a wisp.bus callback must not call a device, and no one looks at
 // that panel). Without the cell (tests) the timeouts and the brightness
-// stay at their defaults. A timeout in the cell that
-// core::SystemSettings::set() would refuse counts as its default, as
-// SystemSettings::get() reports it.
+// stay at their defaults. The cell holds only values set() accepts: a
+// stored timeout out of range reaches it as its default
+// (SystemSettings::get()).
 //
 // Any button edge resets the idle clock and, while the screen is off,
 // wakes the device (spec 6.7/8 of the foundation spec), except the power
@@ -142,7 +142,7 @@ struct PowerManagerDeps {
     // brightness follow it. Null in tests that need no settings: then the
     // timeouts and the brightness are the schema's defaults.
     // Must outlive the PowerManager.
-    const core::StateCell<core::SystemSettingsValues>* system_settings = nullptr;
+    const core::StateCell<core::SettingsSnapshot>* system_settings = nullptr;
 };
 
 class PowerManager {

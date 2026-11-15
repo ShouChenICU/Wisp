@@ -1203,7 +1203,7 @@ TEST_F(SceneRuntimeTest, TimeZoneChangeSurvivesAFullQueue) {
     ASSERT_EQ(refused->load(), 1);
 
     ASSERT_TRUE(
-        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 60; }));
+        settings_cell.update([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 60; }));
     ASSERT_TRUE(bus.wait_idle(1000));
     // Still full after the callback ran: its wake-up found no room either.
     close_one();
@@ -1222,12 +1222,11 @@ TEST_F(SceneRuntimeTest, LanguageChangeReachesScenes) {
     ASSERT_TRUE(rt->open("lang"));
     settle();
     // Another setting moves: no "lang".
-    ASSERT_TRUE(
-        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.brightness = 50; }));
+    ASSERT_TRUE(settings_cell.update([](wisp::core::SettingsSnapshot& v) { v.brightness = 50; }));
     settle();
     ASSERT_EQ(scene_log("lang"), (std::vector<std::string>{"open\tzh\t480\ttrue"}));
     ASSERT_TRUE(settings_cell.update(
-        [](wisp::core::SystemSettingsValues& v) { v.language = wisp::core::LangCode::En; }));
+        [](wisp::core::SettingsSnapshot& v) { v.language = wisp::core::LangCode::En; }));
     ASSERT_TRUE(wait_log("lang", 2));
     settle();
     EXPECT_EQ(scene_log("lang"), (std::vector<std::string>{"open\tzh\t480\ttrue", "lang\ten\ten"}));
@@ -1262,7 +1261,7 @@ TEST_F(SceneRuntimeTest, ChargingChangeReachesScenes) {
 // would reach it.
 TEST_F(SceneRuntimeTest, NoDeviceEventAtStart) {
     follow_device_cells();
-    wisp::core::SystemSettingsValues v;
+    wisp::core::SettingsSnapshot v;
     v.language = wisp::core::LangCode::En;
     v.utc_offset_min = 60;
     v.time_24h = false;
@@ -1321,7 +1320,7 @@ TEST_F(SceneRuntimeTest, ScreenOffWhileBusyComesBeforeAPendingTimeZoneChange) {
     ASSERT_TRUE(gate.wait_entered());
     rt->set_visible(false);
     ASSERT_TRUE(
-        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 60; }));
+        settings_cell.update([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 60; }));
     ASSERT_TRUE(bus.wait_idle(1000));
     gate.release();
     settle();

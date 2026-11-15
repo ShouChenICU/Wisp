@@ -59,23 +59,21 @@ PowerManager::PowerManager(PowerManagerDeps deps)
         // The cell's value now, so the first tick() (possibly before the
         // subscription's first call) already uses it; that first call then
         // delivers the same value again.
-        const core::SystemSettingsValues now = deps.system_settings->get();
+        const core::SettingsSnapshot now = deps.system_settings->get();
         apply_settings(now.screen_off_s, now.deep_after_s);
         // App set the panel to this level before the UI started.
         user_brightness_ = now.brightness;
         shown_brightness_ = now.brightness;
         followed_brightness_ = now.brightness;
-        settings_sub_ =
-            deps.system_settings->subscribe([this](const core::SystemSettingsValues& v) {
-                apply_settings(v.screen_off_s, v.deep_after_s);
-            });
+        settings_sub_ = deps.system_settings->subscribe([this](const core::SettingsSnapshot& v) {
+            apply_settings(v.screen_off_s, v.deep_after_s);
+        });
         // The display is the UI thread's, so brightness follows the cell
         // there only. Without a UI nobody looks at the panel and a wisp.bus
         // callback must not call a device: brightness stays put.
         if (display_ && ui_ != nullptr) {
             brightness_sub_ = deps.system_settings->subscribe(
-                [this](const core::SystemSettingsValues& v) { follow_brightness(v.brightness); },
-                ui_);
+                [this](const core::SettingsSnapshot& v) { follow_brightness(v.brightness); }, ui_);
         }
     }
 

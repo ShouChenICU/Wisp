@@ -93,8 +93,8 @@ protected:
         worker.stop();
     }
 
-    static wisp::core::SystemSettingsValues defaults() {
-        wisp::core::SystemSettingsValues v{};
+    static wisp::core::SettingsSnapshot defaults() {
+        wisp::core::SettingsSnapshot v{};
         v.brightness = 200;
         v.volume = 60;
         v.notify_vol = 40;
@@ -152,7 +152,7 @@ protected:
 
     wisp::core::StorageWorker worker;
     std::unique_ptr<wisp::test::PageHarness> harness;
-    wisp::core::SystemSettingsValues stored = defaults();
+    wisp::core::SettingsSnapshot stored = defaults();
     std::mutex mu;
     std::vector<std::map<std::string, Value>> writes;
     bool all_on_worker = true;

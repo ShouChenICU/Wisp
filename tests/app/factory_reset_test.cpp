@@ -509,7 +509,7 @@ TEST(FactoryReset, SettingsCellHoldsTheDefaultsAfterReset) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));
     wisp::app::App& app = *h.app;
-    const wisp::core::SystemSettingsValues defaults = app.system_settings().get();
+    const wisp::core::SettingsSnapshot defaults = app.system_settings().get();
     ASSERT_TRUE(app.system_settings().set({{"language", "en"}, {"brightness", 120}}));
     ASSERT_EQ(app.system_settings().cell().get().language, wisp::core::LangCode::En);
     ASSERT_TRUE(app.bus().wait_idle(2000));
@@ -519,7 +519,7 @@ TEST(FactoryReset, SettingsCellHoldsTheDefaultsAfterReset) {
     wisp::app::factory_reset(app);
 
     EXPECT_EQ(h.reboots.load(), 1);
-    const wisp::core::SystemSettingsValues held = app.system_settings().cell().get();
+    const wisp::core::SettingsSnapshot held = app.system_settings().cell().get();
     EXPECT_EQ(held.language, defaults.language);
     EXPECT_EQ(held.brightness, defaults.brightness);
     EXPECT_TRUE(held == defaults);
@@ -546,7 +546,7 @@ TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
     // Sees the reseed reach the cell's followers on the UI dispatcher.
     std::atomic<bool> reseed_seen{false};
     wisp::core::CellSubscription sub = app.system_settings().cell().subscribe(
-        [&](const wisp::core::SystemSettingsValues& v) {
+        [&](const wisp::core::SettingsSnapshot& v) {
             if (v.language == default_language) reseed_seen = true;
         },
         app.ui());

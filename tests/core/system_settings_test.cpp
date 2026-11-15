@@ -31,8 +31,8 @@ using wisp::Value;
 using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::Settings;
+using wisp::core::SettingsSnapshot;
 using wisp::core::SystemSettings;
-using wisp::core::SystemSettingsValues;
 using wisp::port::sim::JsonFileSettingsBackend;
 
 namespace {
@@ -375,7 +375,7 @@ TEST(SystemSettings, CellFollowsEveryStoredBatch) {
     EXPECT_EQ(events[0].payload, wisp::core::to_map(fx.settings.get()));
 
     ASSERT_TRUE(fx.settings.set({{"language", "en"}, {"time_24h", false}}));
-    const SystemSettingsValues now = fx.settings.cell().get();
+    const SettingsSnapshot now = fx.settings.cell().get();
     EXPECT_EQ(now.language, wisp::core::LangCode::En);
     EXPECT_FALSE(now.time_24h);
     EXPECT_EQ(now.volume, 30);
@@ -409,7 +409,7 @@ TEST(SystemSettings, RejectedOrFailedBatchLeavesTheCell) {
         EXPECT_FALSE(fx.settings.set({{"volume", 101}}));
         EXPECT_FALSE(fx.settings.set({{"brightness", 100}, {"contrast", 5}}));
         EXPECT_EQ(fx.settings.cell().revision(), cell_revision);
-        EXPECT_TRUE(fx.settings.cell().get() == SystemSettingsValues{});
+        EXPECT_TRUE(fx.settings.cell().get() == SettingsSnapshot{});
         EXPECT_TRUE(fx.changed().empty());
     }
 
@@ -425,7 +425,7 @@ TEST(SystemSettings, RejectedOrFailedBatchLeavesTheCell) {
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::IoError);
     EXPECT_EQ(settings.cell().revision(), cell_revision);
-    EXPECT_TRUE(settings.cell().get() == SystemSettingsValues{});
+    EXPECT_TRUE(settings.cell().get() == SettingsSnapshot{});
     EXPECT_TRUE(recorder.all(bus).empty());
 }
 
@@ -443,9 +443,9 @@ TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
     // A follower on wisp.bus, held while the batch fails: it is handed the
     // reseed once released. Released before the settings (its cell) go.
     std::mutex follower_mutex;
-    std::vector<SystemSettingsValues> followed;
+    std::vector<SettingsSnapshot> followed;
     wisp::core::CellSubscription follower = settings.cell().subscribe(
-        [&](const SystemSettingsValues& v) {
+        [&](const SettingsSnapshot& v) {
             std::lock_guard<std::mutex> lock(follower_mutex);
             followed.push_back(v);
         },
@@ -463,7 +463,7 @@ TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
         flood.release();
     }
     EXPECT_EQ(settings.get().brightness, 100);
-    EXPECT_EQ(settings.get().volume, SystemSettingsValues{}.volume);
+    EXPECT_EQ(settings.get().volume, SettingsSnapshot{}.volume);
     EXPECT_TRUE(settings.cell().get() == settings.get());
     EXPECT_TRUE(recorder.all(bus).empty());
     {
@@ -491,9 +491,9 @@ TEST(SystemSettings, SeedPublishesNothing) {
 // that has never been seeded already holds what an empty store reads as.
 TEST(SystemSettings, DefaultsMatchAnEmptyBackend) {
     Fixture fx;
-    EXPECT_TRUE(SystemSettingsValues{} == fx.settings.get());
-    EXPECT_TRUE(fx.settings.cell().get() == SystemSettingsValues{});
-    EXPECT_EQ(wisp::core::to_map(SystemSettingsValues{}), wisp::core::to_map(fx.settings.get()));
+    EXPECT_TRUE(SettingsSnapshot{} == fx.settings.get());
+    EXPECT_TRUE(fx.settings.cell().get() == SettingsSnapshot{});
+    EXPECT_EQ(wisp::core::to_map(SettingsSnapshot{}), wisp::core::to_map(fx.settings.get()));
 }
 
 // spec 4.1 and 5.4: power/deep_after_s (0 never, else 60-3600, default
@@ -650,7 +650,7 @@ TEST(SystemSettings, AgentLimitsOutOfRangeInStoreReadAsDefaults) {
 // defaults: keys, value types and values (spec 3.10).
 TEST(SettingsGolden, DefaultMapJson) {
     EXPECT_EQ(
-        wisp::to_json(Value(wisp::core::to_map(SystemSettingsValues{}))),
+        wisp::to_json(Value(wisp::core::to_map(SettingsSnapshot{}))),
         R"({"agent_max_steps":60,"agent_turn_min":15,"brightness":200,"deep_after_s":300,)"
         R"("language":"zh","notify_vol":60,"ntp_servers":"pool.ntp.org,ntp.aliyun.com",)"
         R"("screen_off_s":60,"time_24h":true,"tts_mute":false,"utc_offset_min":480,"volume":60})");
@@ -658,7 +658,7 @@ TEST(SettingsGolden, DefaultMapJson) {
 
 // Each value's type, for a non-default set.
 TEST(SettingsGolden, NonDefaultMapTypes) {
-    SystemSettingsValues v;
+    SettingsSnapshot v;
     v.brightness = 10;
     v.volume = 0;
     v.screen_off_s = 0;
@@ -816,7 +816,7 @@ TEST(SettingsGolden, EventPayloadIsTheMapOfTheStoredValues) {
 TEST(SystemSettings, SurfaceRefusesKeysOutsideItsFlags) {
     using wisp::core::SettingSurface;
     Fixture fx;
-    const SystemSettingsValues before = fx.settings.get();
+    const SettingsSnapshot before = fx.settings.get();
 
     auto refused = [&fx](const std::map<std::string, Value>& changes, SettingSurface from,
                          const std::string& name) {

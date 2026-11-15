@@ -156,7 +156,7 @@ private:
     // system UI's language) in line with `values`' language, reopening the
     // open network cards and confirm dialog in it if it changed -- unless
     // reset_holds_language().
-    void sync_system_language(const core::SystemSettingsValues& values);
+    void sync_system_language(const core::SettingsSnapshot& values);
     void apply_system_language(std::optional<ui::Lang> lang);
     // Whether a confirmed factory reset still running (factory_reset_
     // running()) or announced done owns the settings cell's next values:

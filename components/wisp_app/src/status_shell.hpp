@@ -69,10 +69,10 @@ struct StatusShellDeps {
     // so it must not touch flash. Empty: no battery or Wi-Fi item.
     std::function<Value()> device_status;
     // The time zone, minutes east of UTC. Called on the UI thread, so it
-    // reads memory, never Settings. Empty: UTC+8.
+    // reads memory, never Settings. Empty: the setting's default.
     std::function<int()> utc_offset_min;
     // Whether the time shows as a 24-hour clock (sys/time_24h), read the
-    // same way. Empty: 24-hour.
+    // same way. Empty: the setting's default.
     std::function<bool()> time_24h;
     // Seconds since the epoch; 0 (or empty) while the clock is unset.
     std::function<int64_t()> wall_s;

@@ -200,7 +200,8 @@ hal::Area WispModel::build() {
     WispShape& s = shape_;
     const hal::Area prev = s.bbox;
     s.stroke = std::max<int32_t>(h_ * 256 / 40, 2 * 256);
-    s.opacity = static_cast<uint8_t>(std::clamp<int32_t>(params_.brightness, 0, 255));
+    s.opacity = static_cast<uint8_t>(std::clamp<int32_t>(
+        params_.brightness, 0, 255));  // settings-literal-ok: the wisp's glow, an 8-bit opacity
     build_outline();
     build_face();
     build_sparks();

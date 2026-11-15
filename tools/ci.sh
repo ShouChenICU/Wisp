@@ -138,6 +138,14 @@ run_tool_test check_topics_test
 echo "==> tools/check_topics.py"
 python3 tools/check_topics.py
 
+# Setting defaults and ranges live in the settings schema only
+# (settings-schema spec section 4); prints the count of
+# settings-literal-ok markers so a growing count shows in CI output.
+run_tool_test check_settings_test
+
+echo "==> tools/check_settings.py"
+python3 tools/check_settings.py
+
 run_tool_test pack_assets_test
 
 # The scene push tool (scene-runtime-core spec 7.3), against a fake device

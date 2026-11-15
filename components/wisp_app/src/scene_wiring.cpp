@@ -186,7 +186,7 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 std::function<void()> wake, core::WakeLockRegistry* locks,
                                 core::NotificationService* notices, core::SensorService* sensors,
                                 const core::StateCell<core::PowerSupply>* supply,
-                                const core::StateCell<core::SystemSettingsValues>* settings,
+                                const core::StateCell<core::SettingsSnapshot>* settings,
                                 core::DeviceService* devices) {
     if (!repo_) return;
     if (deps_.platform.http_client) {

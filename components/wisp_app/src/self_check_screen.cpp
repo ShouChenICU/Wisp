@@ -146,7 +146,7 @@ void SelfCheck::build() {
     request_storage();
     // The time zone and clock format the settings cell holds now, so the
     // first frame shows them; its subscription follows every change.
-    app_.system_settings().cell().read([this](const core::SystemSettingsValues& v) {
+    app_.system_settings().cell().read([this](const core::SettingsSnapshot& v) {
         utc_offset_min_ = v.utc_offset_min;
         time_24h_ = v.time_24h;
     });
@@ -373,7 +373,7 @@ void SelfCheck::subscribe_cells() {
     // delivered: the only writer of utc_offset_min_ and time_24h_ after
     // build().
     settings_sub_ = app_.system_settings().cell().subscribe(
-        [this](const core::SystemSettingsValues& v) {
+        [this](const core::SettingsSnapshot& v) {
             utc_offset_min_ = v.utc_offset_min;
             time_24h_ = v.time_24h;
             refresh_time_sync();

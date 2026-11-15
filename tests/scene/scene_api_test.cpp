@@ -66,7 +66,7 @@ protected:
     template <class F>
     bool change_settings(F&& f) {
         return settings_cell.update(
-            [&](wisp::core::SystemSettingsValues& v) { std::forward<F>(f)(v); });
+            [&](wisp::core::SettingsSnapshot& v) { std::forward<F>(f)(v); });
     }
 
     // As TimeSyncService leaves its cell after an attempt.
@@ -425,7 +425,7 @@ wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang
     // Nothing changed: no event. The USB move wakes the battery check,
     // which finds the percent and charging the scene already saw.
     supply_cell.update([](wisp::core::PowerSupply& p) { p.usb_present = false; });
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 100; });
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.brightness = 100; });
     wisp::os::sleep_ms(150);
     EXPECT_TRUE(scene_log("dev").empty());
 
@@ -435,11 +435,10 @@ wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang
     ASSERT_TRUE(wait_log("dev", 1));
     supply_cell.set(wisp::core::PowerSupply{false, false, 79, false});
     // A settings change that is not the language does not fire.
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 50; });
-    change_settings(
-        [](wisp::core::SystemSettingsValues& v) { v.language = wisp::core::LangCode::En; });
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.brightness = 50; });
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.language = wisp::core::LangCode::En; });
     ASSERT_TRUE(wait_log("dev", 2));
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 60; });
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.brightness = 60; });
     wisp::os::sleep_ms(150);
     EXPECT_EQ(scene_log("dev"), (std::vector<std::string>{"battery\t79\tfalse", "lang\ten\ten"}));
 }
@@ -449,7 +448,7 @@ wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang
 // "minute", as the local time a scene shows has moved.
 TEST_F(SceneApiTest, UtcOffsetFollowsSettings) {
     wall = kNoon;
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 330; });
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 330; });
     start();
     install("tz", std::string(R"(
 print("open", wisp.device.info().utc_offset)
@@ -460,13 +459,11 @@ wisp.device.on("minute", function(i) print("minute", i.utc_offset, wisp.device.i
     EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"open\t330"}));
 
     // The same offset: nothing fires.
-    EXPECT_FALSE(
-        change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 330; }));
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 0; });
+    EXPECT_FALSE(change_settings([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 330; }));
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 0; });
     ASSERT_TRUE(wait_log("tz", 2));
-    EXPECT_FALSE(
-        change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 0; }));
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = -570; });
+    EXPECT_FALSE(change_settings([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 0; }));
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = -570; });
     ASSERT_TRUE(wait_log("tz", 3));
     bus.wait_idle(1000);
     ASSERT_TRUE(rt->check_sources({}));
@@ -487,7 +484,7 @@ wisp.device.on("minute", function(i) print("minute", i.utc_offset) end)
 )") + kScreen);
     ASSERT_TRUE(rt->open("tz"));
     rt->set_visible(false);
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 60; });
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.utc_offset_min = 60; });
     bus.wait_idle(1000);
     ASSERT_TRUE(rt->check_sources({}));
     EXPECT_TRUE(scene_log("tz").empty());
@@ -597,8 +594,8 @@ wisp.device.on("minute", function(i) print("minute", tostring(i.time_24h)) end)
     EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"open\ttrue"}));
 
     // The same value: nothing fires.
-    EXPECT_FALSE(change_settings([](wisp::core::SystemSettingsValues& v) { v.time_24h = true; }));
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.time_24h = false; });
+    EXPECT_FALSE(change_settings([](wisp::core::SettingsSnapshot& v) { v.time_24h = true; }));
+    change_settings([](wisp::core::SettingsSnapshot& v) { v.time_24h = false; });
     ASSERT_TRUE(wait_log("tf", 2));
     bus.wait_idle(1000);
     ASSERT_TRUE(rt->check_sources({}));
@@ -611,7 +608,7 @@ wisp.device.on("minute", function(i) print("minute", tostring(i.time_24h)) end)
 // A runtime started after the settings changed shows them at once: the
 // cell's value at start is what info() reports.
 TEST_F(SceneApiTest, SettingsCellAtStartShowsInInfo) {
-    change_settings([](wisp::core::SystemSettingsValues& v) {
+    change_settings([](wisp::core::SettingsSnapshot& v) {
         v.language = wisp::core::LangCode::En;
         v.utc_offset_min = 330;
         v.time_24h = false;
@@ -645,7 +642,7 @@ TEST_F(SceneApiTest, InfoSettingsFieldsAreTheSceneRows) {
     using wisp::core::kSettingScene;
     using wisp::core::kSettingsSchema;
     wall = kNoon;
-    change_settings([](wisp::core::SystemSettingsValues& v) {
+    change_settings([](wisp::core::SettingsSnapshot& v) {
         v.language = wisp::core::LangCode::Ja;
         v.utc_offset_min = -570;
         v.time_24h = false;
