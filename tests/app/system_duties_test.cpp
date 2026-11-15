@@ -3,6 +3,8 @@
 // confirm dialogs, the network cards and WISP_PERF all work over the home
 // screen the device boots into (mvp spec 6.6).
 
+#include "system_duties.hpp"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -89,15 +91,23 @@ protected:
                }) == "clicked";
     }
 
-    // Stops the UI loop's LVGL timers, the duties' 100 ms refresh with its
-    // 1 s resync among them, while posted jobs and dispatch slots still
-    // run: from here on only a cell's callback can open or close a card
-    // or a dialog. Returns once the loop is in its paused branch (the
-    // blocking job runs there or right before it, never before another
-    // lv_timer_handler()).
+    // Stops the UI loop's LVGL timers, the duties' 100 ms refresh among
+    // them, while posted jobs and dispatch slots still run: from here on
+    // only a cell's callback can open or close a card or a dialog. Returns
+    // once the loop is in its paused branch (the blocking job runs there or
+    // right before it, never before another lv_timer_handler()).
     void stop_lvgl_timers() {
         h->app->ui()->set_paused(true);
         run_on_ui_blocking(h->app->ui(), [] {});
+    }
+
+    // Stops the App's duties; start_duties() starts them again, as a late
+    // consumer of whatever changed in between.
+    void stop_duties() {
+        run_on_ui_blocking(h->app->ui(), [&] { wisp::app::system_duties(*h->app)->stop(); });
+    }
+    void start_duties() {
+        run_on_ui_blocking(h->app->ui(), [&] { wisp::app::system_duties(*h->app)->start(); });
     }
 
     // An edge of `key`, through the path a real one takes (ButtonService's
@@ -431,7 +441,7 @@ TEST_F(SystemDutiesTest, PerfLineEveryFiveSeconds) {
 // The cards and dialogs follow their owners' cells on the UI thread. In
 // each test below `wisp.bus` is held and flooded, so no net.*,
 // system.factory_reset or system.firmware event reaches anyone, and the
-// LVGL timers are stopped, so the 1 s resync cannot run either: what
+// LVGL timers are stopped, so no timer of the duties runs either: what
 // opens and closes the card or dialog is the cell's callback alone.
 TEST_F(SystemDutiesTest, HotspotCardFollowsTheCellFlooded) {
     boot();
@@ -488,8 +498,7 @@ TEST_F(SystemDutiesTest, ResetDialogOpensFlooded) {
     flood.release();
     h->app->ui()->set_paused(false);
     // Once the bus has drained and the UI thread has run again, nothing
-    // opened a second dialog. The periodic resync is not waited out here;
-    // FactoryReset.LateEventDoesNotReopenTheDialog covers it.
+    // opened a second dialog.
     h->app->bus().wait_idle(2000);
     run_on_ui_blocking(h->app->ui(), [] {});
     EXPECT_EQ(msgboxes(), 1);
@@ -517,6 +526,88 @@ TEST_F(SystemDutiesTest, FirmwareDialogOpensFlooded) {
     wisp::app::decline_firmware(*h->app);
     flood.flood(256);
     EXPECT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// A hotspot opened while the duties were stopped shows at their start:
+// the cells' first delivery, with the bus held and no LVGL timer running.
+TEST_F(SystemDutiesTest, HotspotOpenedBeforeStartShowsTheCard) {
+    boot();
+    stop_duties();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    auto ap = h->app->wifi()->start_provisioning(wisp::os::now_ms());
+    ASSERT_TRUE(ap);
+    const std::string password = ap.value().password;
+    flood.flood(256);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_FALSE(top_says(password));
+
+    start_duties();
+    EXPECT_TRUE(wait_until([&] { return top_says(password); }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// The hotspot closes and reopens five times (ten changes) while the UI
+// task is held: one call follows, and it shows the last session (its
+// password), though the hotspot's cell holds the value it held before.
+TEST_F(SystemDutiesTest, HotspotCardEndsAtTheLastOfTenChangesWithTheUiHeld) {
+    boot();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    auto first = h->app->wifi()->start_provisioning(wisp::os::now_ms());
+    ASSERT_TRUE(first);
+    const std::string first_password = first.value().password;
+    flood.flood(256);
+    ASSERT_TRUE(wait_until([&] { return top_says(first_password); }, 3000));
+
+    std::string last_password;
+    {
+        UiHold hold(h->app->ui());
+        for (int i = 0; i < 5; ++i) {
+            ASSERT_TRUE(h->app->wifi()->stop_provisioning());
+            auto ap = h->app->wifi()->start_provisioning(wisp::os::now_ms());
+            ASSERT_TRUE(ap);
+            last_password = ap.value().password;
+        }
+        flood.flood(256);
+        hold.release();
+    }
+    ASSERT_NE(last_password, first_password);
+    EXPECT_TRUE(wait_until([&] { return top_says(last_password); }, 3000));
+    EXPECT_FALSE(top_says(first_password));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// A pairing code issued while the duties were stopped shows at their
+// start, as the hotspot above.
+TEST_F(SystemDutiesTest, PairingCodeIssuedBeforeStartShowsTheCard) {
+    boot();
+    stop_duties();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    wisp::net::PairingService* pairing = h->app->pairing();
+    ASSERT_TRUE(pairing->request_code(wisp::os::now_ms()));
+    const std::string code = pairing->active_code(wisp::os::now_ms()).value_or("");
+    ASSERT_FALSE(code.empty());
+    flood.flood(256);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_FALSE(top_says(wisp::app::spaced_code(code)));
+
+    start_duties();
+    EXPECT_TRUE(wait_until([&] { return top_says(wisp::app::spaced_code(code)); }, 3000));
 
     flood.release();
     h->app->ui()->set_paused(false);

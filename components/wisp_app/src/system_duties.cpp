@@ -31,12 +31,8 @@ namespace wisp::app {
 namespace {
 
 constexpr const char* kTag = "system";
+// The pairing and provisioning cards' countdowns.
 constexpr uint32_t kUiRefreshMs = 100;
-// How often the refresh timer re-reads the network services and the
-// pending factory-reset and firmware requests besides the cells'
-// callbacks. The reads are a few short lock-protected copies and an
-// atomic.
-constexpr uint64_t kNetResyncMs = 1000;
 
 }  // namespace
 
@@ -112,9 +108,10 @@ void SystemDuties::start() {
         pm->set_power_key_owned(true);
     }
     // On the UI dispatcher: each callback runs here, on the UI thread, and
-    // first with the cell's current value. The calls below still show what
-    // was announced before (networking starts first) at once, before the
-    // first callback runs; the callbacks then find nothing new.
+    // first with the cell's current value, so the cards show what was
+    // announced before (networking starts first) one UI iteration after
+    // start(). The calls below still show the rest at once; their
+    // callbacks then find nothing new.
     settings_sub_ = app_.system_settings().cell().subscribe(
         [this](const core::SystemSettingsValues&) { sync_system_language(); }, &ui_);
     if (net::WifiService* wifi = app_.wifi()) {
@@ -131,11 +128,8 @@ void SystemDuties::start() {
         [this](const core::FirmwareProgress& p) { on_firmware_progress(p); }, &ui_);
 
     sync_system_language();
-    sync_wifi();
-    sync_pairing();
     sync_reset();
     sync_firmware();
-    last_net_resync_ms_ = os::now_ms();
     refresh_timer_ = lv_timer_create(&SystemDuties::refresh_timer_cb, kUiRefreshMs, this);
 
     perf_timer_ = std::make_unique<os::Timer>("wisp.perf", kPerfReportMs, /*periodic=*/true,
@@ -240,7 +234,7 @@ void SystemDuties::on_power_key(const core::ButtonEdge& edge) {
 void SystemDuties::on_firmware_progress(const core::FirmwareProgress& progress) {
     // The service moves this cell to "received" just before it raises the
     // request flag that sync_firmware() takes, so a call running in between
-    // would find no flag and leave the dialog to the resync: "received"
+    // would find no flag, and nothing else would open the dialog: "received"
     // opens it itself. show_firmware_dialog() shows only what
     // pending_firmware() still holds, once (fw_box_); the flag, taken
     // later, then finds the dialog open or the image answered (an answer
@@ -254,14 +248,9 @@ void SystemDuties::refresh_timer_cb(lv_timer_t* timer) {
     // Besides the settings cell's callback: one atomic load per tick while
     // nothing changes.
     self->sync_system_language();
+    // The cards' own countdowns: a pairing code's expiry and the success
+    // view's timer move no cell.
     const uint64_t now = os::now_ms();
-    if (now - self->last_net_resync_ms_ >= kNetResyncMs) {
-        self->last_net_resync_ms_ = now;
-        self->sync_wifi();
-        self->sync_pairing();
-        self->sync_reset();
-        self->sync_firmware();
-    }
     self->pair_card_.tick(now);
     self->setup_card_.tick(now);
 }
@@ -579,5 +568,7 @@ void SystemDuties::on_firmware_answer(bool yes) {
         decline_firmware(app_);
     }
 }
+
+SystemDuties* system_duties(App& app) { return app.impl_->duties.get(); }
 
 }  // namespace wisp::app

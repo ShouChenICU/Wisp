@@ -144,6 +144,7 @@ struct ResetStatus;
 
 class App;
 class PowerManager;
+class SystemDuties;
 struct LoopbackStatus;
 
 // Outcome of one Platform::read_line call.
@@ -493,6 +494,8 @@ private:
     friend void set_reset_spawner(
         App&,
         std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>);
+    // src/system_duties.hpp: tests stop and start the duties around a change.
+    friend SystemDuties* system_duties(App&);
 
     // start(): builds impl_->agent (src/agent_wiring.hpp) on the screen of
     // that shape.

@@ -731,10 +731,9 @@ TEST(FactoryReset, RequestBeforeTheScreenExistsIsShown) {
     UiNetHarness h;
     wisp::app::request_factory_reset(*h.app);
     ASSERT_TRUE(h.start("system."));
-    // Already up when start() returns (the screen's build took it), not
-    // only after the next resync.
+    // Already up when start() returns (the screen's build took it).
     EXPECT_TRUE(dialog_says(h, "恢复出厂设置"));
-    // Past the event and at least one resync: still one dialog.
+    // Past the event and the cell's first delivery: still one dialog.
     h.app->bus().wait_idle(2000);
     wisp::os::sleep_ms(1200);
     EXPECT_EQ(msgboxes(h), 1);
@@ -768,9 +767,8 @@ TEST(FactoryReset, RequestWithALostEventIsShown) {
 }
 
 // The reset status cell shows the dialog while the event is held back; when
-// the event arrives late -- after the user already said "no" -- and the
-// periodic resync runs, they find the request taken: the dialog does not
-// come back.
+// the event arrives late -- after the user already said "no" -- it finds
+// the request taken: the dialog does not come back.
 TEST(FactoryReset, LateEventDoesNotReopenTheDialog) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));
@@ -795,7 +793,7 @@ TEST(FactoryReset, LateEventDoesNotReopenTheDialog) {
     EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested", "cancelled"}));
     h.app->bus().wait_idle(2000);
     run_on_ui_blocking(h.app->ui(), [] {});
-    wisp::os::sleep_ms(1200);  // and one more resync
+    wisp::os::sleep_ms(1200);
     EXPECT_EQ(msgboxes(h), 0);
 }
 

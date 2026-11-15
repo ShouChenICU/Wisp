@@ -15,6 +15,7 @@
 #include "app/ui_net_harness.hpp"
 #include "net_cards.hpp"
 #include "net_section.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
@@ -67,6 +68,15 @@ bool on_top_layer(UiNetHarness& h, const std::string& needle) {
     return !run_on_ui_thread(h.app->ui(), [&] {
                 return find_label_text_containing(lv_layer_top(), needle.c_str());
             }).empty();
+}
+
+// Every UI-side call for the Wi-Fi and hotspot cells' current values has
+// run, and the UI thread has run again after them: the system duties'
+// cards show what those cells hold now.
+void settle_net_cells(UiNetHarness& h) {
+    ASSERT_TRUE(wisp::test::cell_barrier(h.app->wifi()->wifi_cell(), h.app->ui()));
+    ASSERT_TRUE(wisp::test::cell_barrier(h.app->wifi()->ap_cell(), h.app->ui()));
+    run_on_ui_blocking(h.app->ui(), [] {});
 }
 
 bool has_button(UiNetHarness& h, lv_obj_t* (*root)(), const std::string& text) {
@@ -655,14 +665,14 @@ TEST(NetUi, ProvisioningSuccessViewOutlivesTheHotspot) {
     ASSERT_TRUE(wait_until([&] { return on_top_layer(h, done_title(Lang::Zh)); }, 5000));
     // Closes once it has been empty for 3 s.
     ASSERT_TRUE(wait_until([&] { return !h.wifi->ap_active.load(); }, 6000));
-    // Past the screen's one-second resync of the services.
-    wisp::os::sleep_ms(1500);
+    // The duties have followed the hotspot's close.
+    ASSERT_NO_FATAL_FAILURE(settle_net_cells(h));
     EXPECT_TRUE(on_top_layer(h, done_title(Lang::Zh)));
     EXPECT_TRUE(on_top_layer(h, "http://192.168.1.50:8900"));
     ASSERT_TRUE(click_prefixed(h, ok_prefix(Lang::Zh)));
     ASSERT_TRUE(wait_until([&] { return !on_top_layer(h, done_title(Lang::Zh)); }, 3000));
     // Closed for good: the result that is still kept does not bring it back.
-    wisp::os::sleep_ms(1500);
+    ASSERT_NO_FATAL_FAILURE(settle_net_cells(h));
     EXPECT_FALSE(on_top_layer(h, done_title(Lang::Zh)));
 }
 

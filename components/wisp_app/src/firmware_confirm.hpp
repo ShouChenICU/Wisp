@@ -8,8 +8,8 @@
 // request_firmware_confirm(), which marks the request pending; the
 // system duties (system_duties.hpp) show it when the progress cell
 // (firmware_progress()) turns "received" and take it
-// (take_firmware_request(), on every move of that cell and on their
-// periodic resync), showing
+// (take_firmware_request(), on every move of that cell and at their
+// start), showing
 // "<current> → <new>" with Yes/No. "Yes" runs start_firmware_install(),
 // which confirms on a one-shot "wisp.fwup" task -- never on the UI thread,
 // as the platform re-verifies the image before switching the boot slot --

@@ -17,9 +17,10 @@
 // (the system settings, the Wi-Fi and hotspot, the pairing code, the reset
 // status, the firmware progress), subscribed on the UiRuntime: each call
 // runs on the UI thread and re-reads the services' current state, so a
-// call that stands for several changes still ends on the last one. A
-// 100 ms lv_timer also resyncs the network services and the pending
-// factory-reset and firmware requests once a second.
+// call that stands for several changes still ends on the last one, and
+// the first call shows what was announced before start(). Nothing
+// re-reads the services on a timer: a 100 ms lv_timer only runs the
+// cards' countdowns (and the language sync).
 //
 // The power key's short and long presses reach the duties through a
 // ButtonService listener and an EdgeInbox on the UiRuntime ("power_key"),
@@ -204,8 +205,6 @@ private:
     // The firmware-update confirmation; the third kind of dialog, likewise
     // never stacked on the other two.
     lv_obj_t* fw_box_ = nullptr;
-    // os::now_ms() of the last periodic network resync (see kNetResyncMs).
-    uint64_t last_net_resync_ms_ = 0;
 
     // Cleared by stop(): a post queued before it then does nothing. Read
     // and cleared on the UI thread only.
@@ -223,5 +222,10 @@ private:
     core::CellSubscription reset_sub_;
     core::CellSubscription fw_sub_;
 };
+
+// The App's duties; null without a screen or while App is stopped. For
+// tests that stop() and start() them (on the UI thread) around a change,
+// to show what a late start finds.
+SystemDuties* system_duties(App& app);
 
 }  // namespace wisp::app

@@ -333,7 +333,7 @@ Notes for the next state-cell plan (removing the periodic compensations).
 - When the system duties' start-time sync goes, a test must show that the reset status cell's initial delivery alone opens the factory-reset dialog.
 - `reset_status` survives `App::stop()`/`start()`; once the dialog opens on `seq` alone, the last run's request would reopen it (reset it to idle in `stop()`).
 - Untested abort paths: the agent failing to start followed by `App::stop()`, and a failed `VoiceWiring::start()`. Both release every subscription by reading the code; a leak would abort in `~StateCell`, but no test drives either path.
-- At start the system duties call `sync_wifi()` three times (the start-time call and the Wi-Fi and hotspot cells' first deliveries) and `sync_pairing()`, `sync_reset()` and `sync_firmware()` twice each, until the start-time syncs go.
+- At start the system duties call `sync_wifi()` twice (the Wi-Fi and hotspot cells' first deliveries), and `sync_reset()` and `sync_firmware()` twice each (the start-time call and the cell's first delivery), until those start-time syncs go.
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
 - A standby and a wake handled inside one UI loop iteration coalesce to `Active` for the status shell, which then leaves the pull-down panel open across the blink. Power key presses are seconds apart, so this needs two posted jobs drained together.
 

@@ -61,10 +61,10 @@ using TaskSpawner =
 void request_factory_reset(App& app);
 
 // Clears a pending request and returns whether there was one. The screen
-// calls it on the "requested" event, when it is built and on its periodic
-// resync, and shows the dialog when it returns true -- so a request is
-// shown once even if the screen did not exist yet or the bus dropped the
-// event. Any thread.
+// calls it on every move of the reset status cell and when it starts, and
+// shows the dialog when it returns true -- so a request is shown once even
+// if the screen did not exist yet or the bus dropped the event. Any
+// thread.
 bool take_factory_reset_request(App& app);
 
 // Clears any pending request and publishes system.factory_reset
