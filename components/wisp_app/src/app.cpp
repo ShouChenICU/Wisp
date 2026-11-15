@@ -1073,7 +1073,7 @@ void App::stop() {
         impl_->settings_cache.reset();
         impl_->scenes.reset();
     }
-    // Its last reader, the shell's listing on the worker, is gone.
+    // Its last reader, the shell's listing task, is gone.
     impl_->recents.reset();
 
     // Nothing subscribes any more: the scene runtime and the self-check

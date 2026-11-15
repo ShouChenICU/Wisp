@@ -268,8 +268,8 @@ The device boots into the home screen (black background, wisp in the centre). "H
   "behaviour during standby"; this records the current state and does not mean they need changing now):
   - **Fully paused during standby, waking only when really woken by `give()`**:
     - The IMU-reading branch of the self-check screen's sampling task (`SelfCheck::sample_loop()`, which originally
-      read the IMU with a period of `kSampleTaskPeriodMs` = 20 ms): it subscribes to `power.state` and stops
-      reading the IMU completely in standby. This removed its 20 ms periodic wake source (the earlier button
+      read the IMU with a period of `kSampleTaskPeriodMs` = 20 ms): it follows `PowerManager`'s level cell
+      (`PowerManager::level_cell()`) and stops reading the IMU completely in standby. This removed its 20 ms periodic wake source (the earlier button
       policy still polled every 50 ms at the time).
       `PowerManager::exit_standby()` calls `give()` on waking to resume sampling immediately. The "slow sampling"
       branch for the power state/RTC does **not** stop completely; see the next group.
@@ -314,7 +314,7 @@ The device boots into the home screen (black background, wisp in the centre). "H
       period further is expected to bring a negligible gain in measured standby current, so under the "minimal
       change" principle it was left alone.
     - The self-check screen's performance report timer (`"wisp.perf"`, `kPerfReportMs` = 5000 ms,
-      `SelfCheck::emit_perf_line()`) is **not** paused by the `power.state` subscription above: it and the
+      `SelfCheck::emit_perf_line()`) is **not** paused by the power level follower above: it and the
       sampling task are two separate `wisp::os::Timer`/tasks. During standby it still wakes once every 5 s and
       prints a `WISP_PERF` line as usual, only with `fps`/`frames`/`flush_ms` at 0 (because no frames are rendered
       once `UiRuntime` is paused). This is expected behaviour, not a bug: the `WISP_PERF` log during standby is

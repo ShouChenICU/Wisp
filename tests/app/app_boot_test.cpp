@@ -332,7 +332,15 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     // Headless, a tick runs its transition right here. The App's own
     // 1 s tick (real time, far behind these) leaves Standby and
     // DeepStandby alone; at Dim it may return to Active, which the
-    // assertions there hold for too.
+    // assertions there hold for too, so this follower (on wisp.bus, as
+    // App's are) shows that Dim itself was delivered. Released before
+    // stop() destroys PowerManager.
+    std::atomic<bool> saw_dim{false};
+    wisp::core::CellSubscription dim_follower = pm->level_cell().subscribe(
+        [&](const wisp::hal::PowerLevel& l) {
+            if (l == wisp::hal::PowerLevel::Dim) saw_dim.store(true);
+        },
+        &h.app.bus());
     const uint64_t t0 = wisp::os::now_ms();
     const uint64_t off_ms = static_cast<uint64_t>(wisp::core::kDefaultScreenOffS) * 1000;
     const uint64_t deep_ms = static_cast<uint64_t>(wisp::core::kDefaultDeepAfterS) * 1000;
@@ -356,6 +364,7 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     // Dim: the screen is still on.
     pm->tick(t0 + off_ms - wisp::app::PowerManager::kDimLeadMs / 2);
     settle();
+    EXPECT_TRUE(saw_dim.load());
     EXPECT_TRUE(devices->get("haptic.main", "level"));
     EXPECT_EQ(sensors->imu_rate(), 50u);
     sensors->unsubscribe(sub.value());
@@ -370,6 +379,7 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     settle();
     EXPECT_TRUE(devices->get("haptic.main", "level"));
 
+    dim_follower.reset();
     h.app.stop();
     EXPECT_EQ(h.app.devices(), nullptr);
 }

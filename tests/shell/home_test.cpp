@@ -1001,8 +1001,6 @@ protected:
 
 }  // namespace
 
-// A voice turn and a web turn both show their heard text above the wisp,
-// the say text under it and the body below.
 // A Home destroyed without stop() (here one never started, handed a
 // conversation) lets go of the voice cell and the controller's listener
 // before its members go: a turn afterwards calls nothing of it.
@@ -1022,6 +1020,8 @@ TEST_F(HomeTest, DestroyedWithoutStopLetsGoOfItsFollowers) {
     ASSERT_TRUE(ui_until([&] { return !conv->current().running; }));
 }
 
+// A voice turn and a web turn both show their heard text above the wisp,
+// the say text under it and the body below.
 TEST_F(HomeTest, TurnShowsHeardSayAndBody) {
     boot();
     server.llm().push(wisp::test::llm_text("<say>好的。</say>细节 **粗**\n- 一"));

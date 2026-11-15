@@ -1376,9 +1376,18 @@ TEST(ButtonService, ListenersRunInRegistrationOrder) {
 // outside the listener lock: here its last capture's destructor calls
 // back into ButtonService, which would deadlock under that lock.
 TEST(ButtonService, RemovedListenerIsDestroyedOutsideTheLock) {
-    DeviceRegistry registry;
-    EventBus bus;
-    ButtonService service(registry, bus);
+    // On the heap: if remove_listener() deadlocks, the remover thread is
+    // detached still holding the listener lock, and ~ButtonService's
+    // leftover check would block on that lock (a hang instead of a FAIL).
+    // The failure path leaks all of it, with everything the thread uses.
+    struct World {
+        DeviceRegistry registry;
+        EventBus bus;
+        ButtonService service{registry, bus};
+        std::atomic<bool> destroyed{false};
+        std::atomic<bool> done{false};
+    };
+    auto* w = new World;
     struct Reenter {
         ButtonService& service;
         std::atomic<bool>& destroyed;
@@ -1387,24 +1396,23 @@ TEST(ButtonService, RemovedListenerIsDestroyedOutsideTheLock) {
             destroyed.store(true);
         }
     };
-    std::atomic<bool> destroyed{false};
-    auto probe = std::make_shared<Reenter>(service, destroyed);
-    const uint32_t id = service.add_listener([probe](const ButtonEdge&) {});
+    auto probe = std::make_shared<Reenter>(w->service, w->destroyed);
+    const uint32_t id = w->service.add_listener([probe](const ButtonEdge&) {});
     probe.reset();
-    ASSERT_FALSE(destroyed.load());
+    ASSERT_FALSE(w->destroyed.load());
 
-    std::atomic<bool> done{false};
-    std::thread remover([&] {
-        service.remove_listener(id);
-        done.store(true);
+    std::thread remover([w, id] {
+        w->service.remove_listener(id);
+        w->done.store(true);
     });
-    if (!wisp::test::wait_until([&] { return done.load(); }, 2000)) {
+    if (!wisp::test::wait_until([&] { return w->done.load(); }, 2000)) {
         // Deadlocked: no way to unwind the remover; fail without hanging.
         remover.detach();
         FAIL() << "remove_listener() destroyed the function under its lock";
     }
     remover.join();
-    EXPECT_TRUE(destroyed.load());
+    EXPECT_TRUE(w->destroyed.load());
+    delete w;
 }
 
 TEST(ButtonService, DestroyedWithAListenerLeftIsReportedAsMisuse) {

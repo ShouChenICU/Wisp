@@ -73,8 +73,10 @@ public:
     // serialised: every path holds the state lock, so listener calls
     // never overlap, even across those threads. A listener runs
     // under ButtonService's state lock and its listener lock, so it may
-    // only push into an EdgeInbox, store an atomic, update a state cell or
-    // schedule a dispatch slot: it must not block, touch flash, or call
+    // only push into an EdgeInbox, store an atomic, update a state cell,
+    // schedule a dispatch slot or make a non-blocking post (one that fails
+    // rather than waits when the queue is full): it must not block, touch
+    // flash, or call
     // ButtonService (add_listener()/remove_listener() from inside a
     // listener deadlocks on the listener lock).
     //

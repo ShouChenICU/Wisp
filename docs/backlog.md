@@ -180,7 +180,7 @@ Source: glyph partition review records.
 ## Conversation controller (MVP shell)
 
 - After the agent dequeues a message and before `run_turn()` sets `running_turn`, `view()` shows neither running nor queued. A hold's transcript that arrives in that gap sees nothing to stop and waits behind the turn instead of replacing it (documented in `conversation.hpp`). The gap is an instant, except when the turn starts with a conversation rollover (`archive()` on flash). Fix if it shows: AgentService exposes a busy flag that covers the slot/active state, and `on_transcript()` stops on it.
-- `voice.state` events carry no capture id. An `idle`/`not_heard` or `error` that arrives late from capture N can mark capture N+1 as "没听清". Fix this when building the shell UI.
+- Neither `voice.state` events nor the voice status cell carry a capture id. An `idle`/`not_heard` or `error` that arrives late from capture N can mark capture N+1 as "没听清": a new capture started before the previous capture's "not heard" reaches the conversation controller shows "not heard" while listening. Needs a capture id in the voice status.
 - `notify()` copies the whole `TurnView` once per listener on every Delta, which is O(n²) over a turn. Revisit if long replies show up in WISP_PERF.
 - Test gaps in the shell tests: TalkKey when the screen turns off mid-hold; settings changes reaching the cached tts_mute and volume.
 - ESP `esp_http_client.cpp` attaches the socket to `RequestWatch` only after `esp_http_client_open()` returns, so a stop pressed during DNS/TCP connect/TLS handshake waits for the connection to succeed or fail (worst case: the open timeout). Needs an interruptible connect in the ESP port; not reproducible in the simulator. (A stop before the LLM request is honoured at the agent layer; verified.)
@@ -333,7 +333,6 @@ Notes for the next state-cell plan (removing the periodic compensations).
 - The UI-thread `sync_wifi()`/`sync_pairing()` of the system duties take the Wi-Fi and pairing services' mutexes, which are held across driver calls and persistence; read the snapshot cells instead.
 - When the system duties' start-time sync goes, a test must show that the reset status cell's initial delivery alone opens the factory-reset dialog.
 - `reset_status` survives `App::stop()`/`start()`; once the dialog opens on `seq` alone, the last run's request would reopen it (reset it to idle in `stop()`).
-- The voice status cell carries no capture id: a late outcome of capture N can mark capture N+1.
 - Untested abort paths: the agent failing to start followed by `App::stop()`, and a failed `VoiceWiring::start()`. Both release every subscription by reading the code; a leak would abort in `~StateCell`, but no test drives either path.
 - At start the system duties call `sync_wifi()` three times (the start-time call and the Wi-Fi and hotspot cells' first deliveries) and `sync_pairing()`, `sync_reset()` and `sync_firmware()` twice each, until the start-time syncs go.
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
@@ -366,7 +365,7 @@ Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator a
 - `ReminderScheduler::stop()` waits at most 5 s for queued and running actions; an action still running after that bound can reach the scheduler while it is destroyed. The fallback wait (`drain_io`) also waits for the whole worker to go idle, so a busy `wisp.fs` at shutdown can cost the full 5 s.
 - `StorageWorker::stop()` called a second time while the first call drains returns before the join. No current path does this (`App::stop` joins `wisp.reset` before it stops the scenes).
 - `StorageManager::status()`'s `online()` call may deinitialise the card without updating the cached state (from before this branch).
-- Wall-clock tests that fail occasionally under parallel load: `PowerManager.TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt`, `AppScenes.SelfCheckResyncsAfterAFaultedPanelCloses`.
+- Wall-clock tests that fail occasionally under parallel load: `PowerManager.TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt`.
 
 ## CI speed
 
