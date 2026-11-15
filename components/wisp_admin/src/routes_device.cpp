@@ -68,6 +68,11 @@ net::HttpResponse get_settings(AdminDeps& deps, const RequestContext&) {
 }
 
 net::HttpResponse get_settings_schema(AdminDeps&, const RequestContext& ctx) {
+    // AdminServer always passes the body it built; a context without one is
+    // a wiring mistake, answered rather than dereferenced.
+    if (ctx.settings_schema == nullptr || *ctx.settings_schema == nullptr) {
+        return net::HttpResponse::error(500, "internal", "internal error");
+    }
     net::HttpResponse res;
     res.status = 200;
     const std::shared_ptr<const os::LargeString>& body = *ctx.settings_schema;

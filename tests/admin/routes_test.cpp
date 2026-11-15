@@ -511,6 +511,26 @@ TEST(Routes, SettingsPutRefusesStoreOnlyKeys) {
               wisp::core::setting_default_int(wisp::core::SettingId::LowBattPct));
 }
 
+// The whole GET /settings/schema body, byte for byte: every web row of the
+// settings table, in table order, with its members in the documented order.
+constexpr const char* kSettingsSchemaGolden =
+    R"({"keys":[)"
+    R"({"name":"brightness","type":"int","label":"brightness","min":10,"max":255,"default":200,"unit":"level"},)"
+    R"({"name":"volume","type":"int","label":"volume","min":0,"max":100,"default":60,"unit":"percent"},)"
+    R"({"name":"screen_off_s","type":"int","label":"screen_off","min":15,"max":3600,"default":60,"unit":"seconds","zero_never":true,"choices":[0,15,30,60,120,300,600]},)"
+    R"({"name":"language","type":"enum","label":"lang_label","values":["zh","ja","en"],"default":"zh"},)"
+    R"({"name":"utc_offset_min","type":"int","label":"tz_label","min":-720,"max":840,"default":480,"unit":"utc_offset_minutes",)"
+    R"("choices":[-720,-660,-600,-570,-540,-480,-420,-360,-300,-240,-210,-180,-120,-60,0,60,120,180,210,240,)"
+    R"(270,300,330,345,360,390,420,480,525,540,570,600,630,660,720,765,780,840]},)"
+    R"({"name":"ntp_servers","type":"hosts","label":"time_servers","max_entries":2,"max_length":63,"default":"pool.ntp.org,ntp.aliyun.com"},)"
+    R"({"name":"deep_after_s","type":"int","label":"deep_after","min":60,"max":3600,"default":300,"unit":"seconds","zero_never":true,"choices":[0,60,120,300,600,1800,3600]},)"
+    R"({"name":"notify_vol","type":"int","label":"notify_vol","min":0,"max":100,"default":60,"unit":"percent"},)"
+    R"({"name":"tts_mute","type":"bool","label":"tts_mute","default":false},)"
+    R"({"name":"time_24h","type":"bool","label":"time_24h","default":true},)"
+    R"({"name":"agent_max_steps","type":"int","label":"agent_steps","min":8,"max":200,"default":60,"unit":"steps"},)"
+    R"({"name":"agent_turn_min","type":"int","label":"agent_minutes","min":2,"max":60,"default":15,"unit":"minutes"})"
+    R"(]})";
+
 // The keys GET /settings lists, described from the settings table.
 TEST(Routes, SettingsSchemaListsTheWebKeys) {
     AdminFixture f;
@@ -570,11 +590,10 @@ TEST(Routes, SettingsSchemaListsTheWebKeys) {
                                              {"label", Value("tts_mute")},
                                              {"default", Value(false)}}));
 
-    // Members in the documented order (Map compares unordered).
+    // The parsed checks above name what each value means; the golden
+    // below also pins the other rows, the framing and the member order.
     const std::string text = wisp::test::body_text(res);
-    EXPECT_TRUE(contains(text, R"({"name":"brightness","type":"int","label":"brightness",)"
-                               R"("min":10,"max":255,"default":200,"unit":"level"})"))
-        << text;
+    EXPECT_EQ(text, kSettingsSchemaGolden);
 }
 
 TEST(Routes, SettingsSchemaNeedsAToken) {
