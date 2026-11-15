@@ -20,6 +20,7 @@
 #include "firmware_confirm.hpp"
 #include "storage_io.hpp"
 #include "support/bus_flood.hpp"
+#include "support/fake_audio.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/temp_dir.hpp"
@@ -35,6 +36,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/reminders.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -46,6 +48,7 @@
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/scene_runtime.hpp"
+#include "wisp/shell/settings_page.hpp"
 #include "wisp/shell/shell.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
@@ -839,4 +842,72 @@ TEST(AppBoot, ButtonStartupFailureIsReportedWithoutBlockingBoot) {
     EXPECT_EQ(entry->state, wisp::core::DeviceState::Failed);
     EXPECT_EQ(entry->reason, "button service unavailable");
     h.app.stop();
+}
+
+// The settings readers read the settings cell: a change stored while
+// wisp.bus is held, its system.settings event not yet delivered, is what
+// the reminders' time zone and the shell's settings page see at once.
+TEST(AppBoot, SettingsReadersFollowStoredChangesFlooded) {
+    UiNetHarness h(diag_opts());
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(h.app->reminders(), nullptr);
+    ASSERT_NE(h.app->shell(), nullptr);
+    ASSERT_EQ(h.app->reminders()->utc_offset_min(), 480);
+
+    wisp::test::BusFlood flood(h.app->bus());
+    flood.hold();
+    ASSERT_TRUE(h.app->system_settings().set(
+        {{"utc_offset_min", wisp::Value(60)}, {"time_24h", wisp::Value(false)}}));
+    EXPECT_EQ(h.app->reminders()->utc_offset_min(), 60);
+    int offset = 0;
+    bool h24 = true;
+    run_on_ui_blocking(h.app->ui(), [&] {
+        h.app->shell()->show(wisp::shell::Page::Settings);
+        wisp::shell::SettingsPage* page = h.app->shell()->settings_page();
+        if (page == nullptr) return;
+        offset = page->values().utc_offset_min;
+        h24 = page->values().time_24h;
+    });
+    EXPECT_EQ(offset, 60);
+    EXPECT_FALSE(h24);
+    flood.release();
+}
+
+// The notification sound's volume is read from the settings cell: a tone
+// posted while wisp.bus is held, right after notify_vol went from 100 to
+// 10, is written at a tenth of the first tone's peak.
+TEST(AppBoot, NotificationVolumeFollowsStoredSettingsFlooded) {
+    auto out = std::make_shared<wisp::test::audio::FakeAudioOut>();
+    UiNetOptions opts;
+    opts.audio_out = out;
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    wisp::core::NotificationService* notes = h.app->notifications();
+    ASSERT_NE(notes, nullptr);
+    ASSERT_TRUE(h.app->system_settings().set({{"notify_vol", wisp::Value(100)}}));
+    ASSERT_TRUE(h.app->bus().wait_idle(2000));
+
+    // Posts a tone and returns the loudest sample it wrote.
+    auto tone_peak = [&](int closes_before) {
+        const size_t from = out->samples().size();
+        wisp::core::Notification n;
+        n.source = wisp::core::kAgentSource;
+        n.title = "t";
+        n.sound = wisp::core::NotifySound::Tone;
+        EXPECT_TRUE(notes->post(std::move(n), /*from_foreground=*/false));
+        EXPECT_TRUE(wait_until([&] { return out->closes() > closes_before; }, 3000));
+        const std::vector<int16_t> s = out->samples();
+        int peak = 0;
+        for (size_t i = from; i < s.size(); ++i) peak = std::max(peak, std::abs(int{s[i]}));
+        return peak;
+    };
+    const int at100 = tone_peak(0);
+    ASSERT_GT(at100, 0);
+
+    wisp::test::BusFlood flood(h.app->bus());
+    flood.hold();
+    ASSERT_TRUE(h.app->system_settings().set({{"notify_vol", wisp::Value(10)}}));
+    const int at10 = tone_peak(1);
+    EXPECT_NEAR(static_cast<double>(at10) / at100, 0.1, 0.1 * 0.05);
+    flood.release();
 }

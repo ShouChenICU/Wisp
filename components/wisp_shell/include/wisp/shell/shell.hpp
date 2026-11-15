@@ -189,7 +189,7 @@ struct ShellDeps {
     std::function<Result<void>(const std::string&, bool with_data)> delete_scene;
     // The scene list's order; read on the storage worker.
     SceneRecents* recents = nullptr;
-    // The system settings as last stored (a cache, no flash).
+    // The system settings as last stored (memory, no flash).
     std::function<core::SystemSettingsValues()> settings;
     // SystemSettings::set(), called inside a submit_io job.
     std::function<void(std::map<std::string, Value>)> set_settings;

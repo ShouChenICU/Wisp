@@ -159,22 +159,6 @@ struct App::Impl {
     // by stop() once both are gone. Follows power.state (sensor_sub).
     std::unique_ptr<core::SensorService> sensors;
     core::SubscriptionId sensor_sub = 0;
-    // audio/notify_vol and sys/tz_min, kept from system.settings: the
-    // router reads the volume on the posting thread (the scene task) and
-    // the status shell the time zone on the UI thread, neither of which
-    // may read Settings.
-    std::atomic<uint8_t> notify_vol{60};
-    std::atomic<int> utc_offset_min{480};
-    // sys/time_24h, for the status shell's clock the same way.
-    std::atomic<bool> time_24h{true};
-    // sys/lang, kept the same way for the agent (wisp.agent may not read
-    // Settings either).
-    std::atomic<ui::Lang> lang{ui::Lang::Zh};
-    // Every system setting, kept the same way for the shell's settings
-    // page (the UI thread may not read Settings either).
-    mutable os::Mutex settings_mu;
-    core::SystemSettingsValues settings_now{};
-    core::SubscriptionId settings_sub = 0;
     // What a posted, tapped or acted-on notification does (wake, sound,
     // banner, its scene). Built once the scene runtime is, stopped first
     // by App::stop().

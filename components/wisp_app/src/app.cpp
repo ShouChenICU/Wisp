@@ -85,34 +85,18 @@ hal::ScreenShape display_shape(const hal::Display& display) {
     return fallback;
 }
 
-// Folds a system.settings payload (core::to_map()) into `v`; keys missing
-// or of the wrong type leave their value as it was.
-void merge_settings(core::SystemSettingsValues& v, const Map& m) {
-    auto get_int = [&](const char* key, int& out) {
-        auto it = m.find(key);
-        if (it != m.end() && it->second.type() == Value::Type::Int)
-            out = static_cast<int>(it->second.as_int());
-    };
-    auto get_bool = [&](const char* key, bool& out) {
-        auto it = m.find(key);
-        if (it != m.end() && it->second.type() == Value::Type::Bool) out = it->second.as_bool();
-    };
-    auto get_str = [&](const char* key, std::string& out) {
-        auto it = m.find(key);
-        if (it != m.end() && it->second.type() == Value::Type::String) out = it->second.as_string();
-    };
-    get_int("brightness", v.brightness);
-    get_int("volume", v.volume);
-    get_int("screen_off_s", v.screen_off_s);
-    get_str("language", v.language);
-    get_int("utc_offset_min", v.utc_offset_min);
-    get_str("ntp_servers", v.ntp_servers);
-    get_int("deep_after_s", v.deep_after_s);
-    get_int("notify_vol", v.notify_vol);
-    get_bool("tts_mute", v.tts_mute);
-    get_bool("time_24h", v.time_24h);
-    get_int("agent_max_steps", v.agent_max_steps);
-    get_int("agent_turn_min", v.agent_turn_min);
+// The settings cell is the readers' source: a short read under its lock,
+// with no flash, so any thread may call these (the scene task, the UI,
+// wisp.agent, wisp.fs).
+int utc_offset_of(const core::SystemSettings& settings) {
+    return settings.cell().read(
+        [](const core::SystemSettingsValues& v) { return v.utc_offset_min; });
+}
+
+ui::Lang lang_of(const core::SystemSettings& settings) {
+    return settings.cell().read([](const core::SystemSettingsValues& v) {
+        return ui::parse_lang(v.language).value_or(ui::Lang::Zh);
+    });
 }
 
 }  // namespace
@@ -235,10 +219,11 @@ Result<void> App::start() {
                             return worker->submit(std::move(job));
                         },
                     .wall_s = [impl] { return impl->wall_now(); },
-                    .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
+                    .utc_offset_min = [impl] { return utc_offset_of(impl->system_settings); },
                     .missed_title =
                         [impl](size_t count) {
-                            return ui::tr_fill(ui::StrId::ReminderMissed, impl->lang.load(),
+                            return ui::tr_fill(ui::StrId::ReminderMissed,
+                                               lang_of(impl->system_settings),
                                                std::to_string(count));
                         },
                     .make_timer = {},
@@ -413,42 +398,6 @@ Result<void> App::start() {
     if (auto r = impl_->tones->start(); !r) {
         WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
     }
-    {
-        // Subscribed before the seed is read, so a change stored in
-        // between is not lost.
-        App::Impl* impl = impl_.get();
-        impl_->settings_sub =
-            impl_->bus.subscribe(core::topics::kSystemSettings, [impl](const core::Event& e) {
-                auto it = e.payload.find("notify_vol");
-                if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-                    impl->notify_vol.store(
-                        static_cast<uint8_t>(std::clamp<int64_t>(it->second.as_int(), 0, 100)));
-                }
-                it = e.payload.find("utc_offset_min");
-                if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-                    impl->utc_offset_min.store(static_cast<int>(it->second.as_int()));
-                }
-                it = e.payload.find("language");
-                if (it != e.payload.end() && it->second.type() == Value::Type::String) {
-                    if (auto lang = ui::parse_lang(it->second.as_string())) impl->lang.store(*lang);
-                }
-                it = e.payload.find("time_24h");
-                if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
-                    impl->time_24h.store(it->second.as_bool());
-                }
-                std::lock_guard<os::Mutex> lock(impl->settings_mu);
-                merge_settings(impl->settings_now, e.payload);
-            });
-        const core::SystemSettingsValues now = impl_->system_settings.get();
-        {
-            std::lock_guard<os::Mutex> lock(impl_->settings_mu);
-            impl_->settings_now = now;
-        }
-        impl_->notify_vol.store(static_cast<uint8_t>(std::clamp(now.notify_vol, 0, 100)));
-        impl_->utc_offset_min.store(now.utc_offset_min);
-        impl_->time_24h.store(now.time_24h);
-        if (auto lang = ui::parse_lang(now.language)) impl_->lang.store(*lang);
-    }
 
     // The IMU's subscribers, before the scene runtime and the self-check
     // screen that read it. Standby and deep standby pause every
@@ -563,7 +512,12 @@ Result<void> App::start() {
             .tones = impl_->tones.get(),
             .scenes = scene_runtime,
             .locks = &impl_->wakelocks,
-            .notify_volume = [impl] { return impl->notify_vol.load(); },
+            .notify_volume =
+                [impl] {
+                    return impl->system_settings.cell().read([](const auto& v) {
+                        return static_cast<uint8_t>(std::clamp(v.notify_vol, 0, 100));
+                    });
+                },
             .ui = impl_->ui.get(),
             .reminders = impl_->reminders.get(),
             .submit_io = impl_->reminders && scenes != nullptr
@@ -682,8 +636,12 @@ Result<void> App::start() {
             .router = *impl_->router,
             .scenes = scene_runtime,
             .device_status = std::move(device_status),
-            .utc_offset_min = [impl] { return impl->utc_offset_min.load(); },
-            .time_24h = [impl] { return impl->time_24h.load(); },
+            .utc_offset_min = [impl] { return utc_offset_of(impl->system_settings); },
+            .time_24h =
+                [impl] {
+                    return impl->system_settings.cell().read(
+                        [](const auto& v) { return v.time_24h; });
+                },
             .wall_s = [impl] { return impl->wall_now(); },
             .repo = scenes != nullptr ? scenes->repository() : nullptr,
             .submit_io = scenes != nullptr ? std::function<bool(std::function<void()>)>(
@@ -768,11 +726,7 @@ Result<void> App::start() {
                 return impl->scenes->ask_delete(id, with_data);
             },
             .recents = impl_->recents.get(),
-            .settings =
-                [impl] {
-                    std::lock_guard<os::Mutex> lock(impl->settings_mu);
-                    return impl->settings_now;
-                },
+            .settings = [impl] { return impl->system_settings.cell().get(); },
             .set_settings =
                 [impl](std::map<std::string, Value> changes) {
                     if (auto r = impl->system_settings.set(changes); !r)
@@ -920,8 +874,6 @@ void App::stop() {
         impl_->router->stop();
         impl_->router.reset();
     }
-    impl_->bus.unsubscribe(impl_->settings_sub);
-    impl_->settings_sub = 0;
     join_loopback(*this);
     // wisp.agent first: its tools drive the scene runtime, its dialogs sit
     // on the system layer, and it reaches flash through the storage worker
@@ -1127,7 +1079,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
     scene::SceneRuntime* runtime = scenes.runtime();
     agent::ContextSource context = [impl, shape, wall_s, wifi, runtime](agent::Source source) {
         agent::DeviceSnapshot d;
-        d.lang = ui::lang_code(impl->lang.load());
+        d.lang = ui::lang_code(lang_of(impl->system_settings));
         d.shape = shape;
         d.foreground = runtime->foreground().value_or(std::string());
         for (const scene::BackgroundScene& b : runtime->background_scenes()) {
@@ -1141,7 +1093,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         }
         d.wifi = wifi();
         d.wall_s = wall_s();
-        d.utc_offset_min = impl->utc_offset_min.load();
+        d.utc_offset_min = utc_offset_of(impl->system_settings);
         d.weekday = d.wall_s != 0 ? agent::weekday_of(d.wall_s, d.utc_offset_min) : 0;
         // Memory notes come with the memory service; none until then.
         d.source = source;
@@ -1223,7 +1175,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
                     impl->net ? impl->net->wifi_state() : std::nullopt;
                 return !st || *st == net::WifiState::Connected;
             },
-        .lang = [impl] { return std::string(ui::lang_code(impl->lang.load())); },
+        .lang = [impl] { return std::string(ui::lang_code(lang_of(impl->system_settings))); },
         .wall_s = wall_s,
         .context = std::move(context),
         .device_status = std::move(device_status),
