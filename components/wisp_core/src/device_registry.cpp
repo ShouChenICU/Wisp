@@ -126,9 +126,9 @@ Result<void> DeviceRegistry::add(std::shared_ptr<hal::Device> device) {
             ErrorCode::InvalidArgument,
             info.id + ": a generic device id is <kind>.<name>, at most 32 bytes");
     }
-    // ButtonService publishes "<id>.<edge>" and the system's key handlers
-    // subscribe to "button.", so a key under any other id would be polled
-    // and heard by no one.
+    // ButtonService names every edge after the id: its listeners get the
+    // id, its bus copy is "<id>.<edge>", and "button." is the prefix of
+    // every button topic (core::topics::kButtonPrefix).
     if (iface == hal::Interface::Button &&
         (info.id.rfind("button.", 0) != 0 || !valid_generic_id(info.id))) {
         return Result<void>::err(ErrorCode::InvalidArgument,

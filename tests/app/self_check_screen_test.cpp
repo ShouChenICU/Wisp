@@ -1656,7 +1656,8 @@ TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
     EXPECT_TRUE(wait_until([&] { return state() == "Tests 1/3 done|" + neutral + "|2|1"; }, 3000))
         << state();
 
-    h.app.bus().publish(wisp::core::Event{"button.vol_up.short", "button.vol_up"});
+    h.app.buttons().emit_for_test("button.vol_up", wisp::core::ButtonEdge::Kind::Short,
+                                  wisp::os::now_us());
     EXPECT_TRUE(wait_until([&] { return state() == "Tests 2/3 done|" + neutral + "|1|2"; }, 3000))
         << state();
 
@@ -1678,6 +1679,29 @@ TEST(SelfCheckScreen, InteractiveTestsTurnPassedAndAreCounted) {
     EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("已测"); }),
               "交互 3/3 已测|" + chip(SummaryLevel::Good));
 
+    h.app.stop();
+}
+
+// The button test listens to ButtonService, not the bus: with wisp.bus
+// held and flooded a press still shows as "<id>.<edge>" and passes it.
+TEST(SelfCheckScreen, ButtonTestPassesOnAPress) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json");
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+    auto state = [&] {
+        return run_on_ui_thread(h.app.ui(), [] {
+            return std::to_string(count_labels_containing("button.vol_up.down")) + "|" +
+                   std::to_string(count_labels_containing(LV_SYMBOL_OK " Passed"));
+        });
+    };
+    ASSERT_EQ(state(), "0|0");
+    wisp::test::BusFlood flood(h.app.bus());
+    flood.hold();
+    flood.flood(512);
+    h.app.buttons().emit_for_test("button.vol_up", wisp::core::ButtonEdge::Kind::Down,
+                                  wisp::os::now_us());
+    EXPECT_TRUE(wait_until([&] { return state() == "1|1"; }, 3000)) << state();
+    flood.release();
     h.app.stop();
 }
 

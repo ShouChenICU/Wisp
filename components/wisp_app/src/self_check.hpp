@@ -11,7 +11,7 @@
 //
 // SelfCheck itself is only forward-declared here (its full definition,
 // and everything it owns -- the "wisp.sample" task, the 100ms lv_timer,
-// its "button." bus subscription and its cell subscriptions --
+// its ButtonService listener and its cell subscriptions --
 // lives in self_check_screen.cpp) so that app.cpp and app_impl.hpp, which
 // only need to hold/forward a `std::unique_ptr<SelfCheck>` without
 // touching its insides, don't need to include any of its headers.

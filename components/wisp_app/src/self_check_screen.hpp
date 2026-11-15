@@ -37,6 +37,7 @@
 #include "self_check_sampler.hpp"
 #include "self_check_sensors.hpp"
 #include "self_check_tests.hpp"
+#include "wisp/core/button_service.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/state_cell.hpp"
@@ -97,8 +98,11 @@ private:
     // this screen is still up (alive_).
     bool post(std::function<void()> fn);
 
+    // Adds the button test's ButtonService listener.
     void subscribe_buttons();
-    void on_button_event(const core::Event& e);
+    // wisp.button, under ButtonService's lock: posts "<id>.<edge>" to the
+    // button test.
+    void on_button_edge(const core::ButtonEdge& e);
     // UI thread: follows the power level, Wi-Fi, hotspot, scenes overview
     // and settings cells (see the members below).
     void subscribe_cells();
@@ -217,9 +221,10 @@ private:
     SelfCheckSampler sampler_;
 
     // --- Subscriptions, all released at the start of ~SelfCheck() (the
-    // cells first thing, the button after the sampler stops), before
-    // App::stop() resets their owners. ---
-    core::SubscriptionId button_sub_ = 0;
+    // cells first thing, the button listener after the sampler stops),
+    // before App::stop() resets their owners. ---
+    // App's ButtonService listener; 0 once removed.
+    uint32_t button_listener_ = 0;
     // PowerManager::level_cell(), on wisp.bus: the sampler's standby flag
     // (memory only), off the UI thread.
     core::CellSubscription power_sub_;

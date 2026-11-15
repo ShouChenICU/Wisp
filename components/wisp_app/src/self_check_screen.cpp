@@ -20,7 +20,6 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/hal/storage.hpp"
 #include "wisp/net/pairing_service.hpp"
@@ -93,9 +92,11 @@ SelfCheck::~SelfCheck() {
     // Thread-agnostic: nothing the sampler touches requires the UI thread.
     sampler_.stop();
 
-    if (button_sub_ != 0) {
-        app_.bus().unsubscribe(button_sub_);
-        button_sub_ = 0;
+    // From the UI thread or App::stop()'s: remove_listener() waits only
+    // for a call in progress on wisp.button, which only posts.
+    if (button_listener_ != 0) {
+        app_.buttons().remove_listener(button_listener_);
+        button_listener_ = 0;
     }
 
     // LVGL-specific teardown must run on the UI thread -- see
@@ -267,13 +268,36 @@ hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.s
 
 void SelfCheck::subscribe_buttons() {
     // The button test only; what the power key does is SystemDuties'.
-    button_sub_ = app_.bus().subscribe(core::topics::kButtonPrefix,
-                                       [this](const core::Event& e) { on_button_event(e); });
+    button_listener_ =
+        app_.buttons().add_listener([this](const core::ButtonEdge& e) { on_button_edge(e); });
 }
 
-void SelfCheck::on_button_event(const core::Event& e) {
-    std::string topic = e.topic;
-    if (!post([this, topic] {
+namespace {
+
+const char* edge_name(core::ButtonEdge::Kind kind) {
+    switch (kind) {
+        case core::ButtonEdge::Kind::Down:
+            return "down";
+        case core::ButtonEdge::Kind::Up:
+            return "up";
+        case core::ButtonEdge::Kind::Short:
+            return "short";
+        case core::ButtonEdge::Kind::Long:
+            return "long";
+    }
+    return "?";
+}
+
+}  // namespace
+
+void SelfCheck::on_button_edge(const core::ButtonEdge& e) {
+    // On wisp.button under ButtonService's lock: one short string and a
+    // post, as the bus publish of the same edge allocates. A plain post:
+    // the button test is interactive diagnostics, so an edge lost to a
+    // full post queue only leaves the last edge shown (and the test
+    // unpassed) until the next press; it is logged.
+    std::string topic = std::string(e.id.view()) + "." + edge_name(e.kind);
+    if (!post([this, topic = std::move(topic)] {
             tests_section_.set_button_event(topic);
             pass_test(InteractiveTest::Button);
         })) {

@@ -44,7 +44,7 @@ public:
     // Starts not confirming.
     PowerKeyController() = default;
 
-    // Call once per "button.power.short" event, with the screen's
+    // Call once per short press of the power key, with the screen's
     // *current* on/off state (e.g. `!PowerManager::standby()`) -- read
     // right before this call, on the same thread that will act on the
     // returned Action (see self_check_screen.cpp).
@@ -59,7 +59,7 @@ public:
     //   - screen_on && !confirming: turns the screen off (ScreenOff).
     Action on_short(bool screen_on);
 
-    // Call once per "button.power.long" event, with the screen's current
+    // Call once per long press of the power key, with the screen's current
     // on/off state (see on_short()).
     //   - !screen_on: wakes the screen (same wake-takes-priority rule as
     //     on_short() above) -- ScreenOnAndConfirm and opens a confirm
