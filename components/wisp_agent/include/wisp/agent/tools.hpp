@@ -12,6 +12,7 @@
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
@@ -69,6 +70,21 @@ struct DeviceToolDeps {
 // device.status, settings.get, settings.set, notify.list and
 // notify.dismiss (spec 4.4).
 Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps);
+
+// device.list's result at most, envelope included: below the live turn's
+// tool-result budget (kLiveToolResultBytes, 96 KiB), so a long list is
+// never cut mid-JSON there. Entries that would cross it are left out and
+// "truncated" set.
+inline constexpr size_t kDeviceListMaxBytes = 64 * 1024;
+
+struct DeviceCallToolDeps {
+    // Must outlive the registry (App resets it after the agent).
+    core::DeviceService& devices;
+};
+
+// device.list and device.call (device model spec 4.2): self-describing
+// devices, every check in DeviceService.
+Result<void> add_device_call_tools(ToolRegistry& reg, DeviceCallToolDeps deps);
 
 // docs.read (spec 4.4; wisp/agent/docs.hpp).
 Result<void> add_docs_tools(ToolRegistry& reg);

@@ -470,3 +470,49 @@ TEST(ToolRegistry, TypeListAcceptsAnyOfItsTypes) {
     EXPECT_FALSE(wisp::agent::schema_supported(
         wisp::from_json(R"({"type":["object","string"]})").value(), &why));
 }
+
+namespace {
+
+// A tool that records the thread it ran on.
+ToolDef thread_probe(std::string name, ToolThread thread, std::thread::id* ran_on) {
+    ToolDef d = tool(std::move(name), "", thread);
+    d.run = [ran_on](const Value&, ToolCtx&) {
+        *ran_on = std::this_thread::get_id();
+        return ToolOutput{};
+    };
+    return d;
+}
+
+}  // namespace
+
+TEST(ToolRegistry, FsInteractiveToolsUseTheirExecutor) {
+    Worker fs;
+    Worker interactive;
+    ToolExecutors ex;
+    ex.fs = [&fs](std::function<void()> fn) { return fs.post(std::move(fn)); };
+    ex.fs_interactive = [&interactive](std::function<void()> fn) {
+        return interactive.post(std::move(fn));
+    };
+    ToolRegistry reg(ex);
+    std::thread::id note_on;
+    std::thread::id files_on;
+    ASSERT_TRUE(reg.add(thread_probe("memory.add", ToolThread::FsInteractive, &note_on)));
+    ASSERT_TRUE(reg.add(thread_probe("scene.files", ToolThread::Fs, &files_on)));
+    ToolCtx c = ctx();
+    EXPECT_TRUE(reg.call("memory_add", "", c).ok);
+    EXPECT_TRUE(reg.call("scene_files", "", c).ok);
+    EXPECT_EQ(note_on, interactive.id());
+    EXPECT_EQ(files_on, fs.id());
+}
+
+TEST(ToolRegistry, FsInteractiveFallsBackToFs) {
+    Worker fs;
+    ToolExecutors ex;
+    ex.fs = [&fs](std::function<void()> fn) { return fs.post(std::move(fn)); };
+    ToolRegistry reg(ex);
+    std::thread::id note_on;
+    ASSERT_TRUE(reg.add(thread_probe("memory.add", ToolThread::FsInteractive, &note_on)));
+    ToolCtx c = ctx();
+    EXPECT_TRUE(reg.call("memory_add", "", c).ok);
+    EXPECT_EQ(note_on, fs.id());
+}

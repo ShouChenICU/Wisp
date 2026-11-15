@@ -531,6 +531,27 @@ TEST(Routes, DeviceAndDevices) {
                                            {"caps", Value(Map{})}}));
 }
 
+TEST(Routes, DevicesCarryRoleAndSchema) {
+    AdminFixture f;
+    const std::string token = f.token();
+    ASSERT_TRUE(f.registry.add(std::make_shared<wisp::test::FakeGeneric>(
+        "haptic.main", &wisp::test::kFakeGenericSchema, wisp::Properties{}, "main")));
+
+    Value devices = body_json(f.srv->handle(authed(token, Get, "/api/v1/devices")));
+    const Value* haptic = nullptr;
+    for (const Value& d : field(devices, "devices").as_list()) {
+        if (field(d, "id") == Value("haptic.main")) haptic = &d;
+    }
+    ASSERT_NE(haptic, nullptr);
+    EXPECT_EQ(field(*haptic, "class"), Value("other"));
+    const Value& caps = field(*haptic, "caps");
+    EXPECT_EQ(field(caps, "role"), Value("main"));
+    const Value& cmds = field(field(caps, "schema"), "cmds");
+    ASSERT_EQ(cmds.type(), Value::Type::List);
+    ASSERT_FALSE(cmds.as_list().empty());
+    EXPECT_EQ(field(cmds.as_list()[0], "name"), Value("pulse"));
+}
+
 TEST(Routes, FactoryResetDelegatesToDevice) {
     AdminFixture f;
     const std::string token = f.token();

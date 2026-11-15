@@ -357,21 +357,22 @@ void SceneToolIndexObserver::on_manifest(const core::SceneManifest& manifest) {
 }
 
 Result<void> SceneToolIndexObserver::load_installed() {
-    // One worker job reads every scene.json and rebuilds the index; the
-    // worker serialises it against installs still in flight. run_sync runs
-    // inline before the worker starts (boot) and on its thread otherwise.
-    return worker_.run_sync(
-        [this] {
-            auto manifests = repo_.manifests();
-            if (!manifests) {
-                WLOG_W(kTag, "scene tool index not loaded: %s", manifests.error().message.c_str());
-                return;
-            }
-            for (const core::SceneManifest& m : manifests.value()) {
-                index_.replace_scene(m.id, m.name, m.tools);
-            }
-        },
-        os::kForever);
+    // manifests() reads each scene.json in a job of its own and parses it
+    // here, on the caller (the agent's start), which may wait. An install
+    // or remove can land between two of those jobs, and its scene.state
+    // event may be handled before this applies the older manifest, so
+    // whatever the repository says changed meanwhile is read again by a
+    // refresh() job queued after this.
+    uint64_t since = 0;
+    (void)repo_.changed_since(0, since);
+    auto manifests = repo_.manifests();
+    if (!manifests) return Result<void>::err(manifests.error().code, manifests.error().message);
+    for (const core::SceneManifest& m : manifests.value()) {
+        index_.replace_scene(m.id, m.name, m.tools);
+    }
+    uint64_t now = 0;
+    for (const std::string& id : repo_.changed_since(since, now)) refresh(id);
+    return Result<void>::ok();
 }
 
 void SceneToolIndexObserver::on_event(const core::Event& event) {
@@ -435,6 +436,10 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         .ui = [ui](std::function<void()> fn) { return ui->post(std::move(fn)); },
         .fs = on_worker,
         .io = on_worker,
+        .fs_interactive =
+            [worker](std::function<void()> fn) {
+                return worker->submit(std::move(fn), core::IoLane::Interactive);
+            },
     });
     inspector_ = std::make_unique<scene::UiInspector>(scene::InspectorDeps{
         .ui = deps_.ui,
@@ -468,6 +473,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             .llm = *llm_,
             .models = deps_.models,
             .run_io = deps_.run_io,
+            .run_io_interactive = deps_.run_io_interactive,
             .locks = deps_.locks,
             .notes = &deps_.notes,
             .screen_off = deps_.screen_off,
@@ -531,6 +537,21 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
                                                   .notes = deps_.notes,
                                                   .submit_io = on_worker,
                                               }));
+    // Offered only when some device describes itself: elsewhere the tools
+    // could only list nothing, yet cost every request their JSON. Decided
+    // once, so the list stays byte-stable: no service re-resolves devices
+    // after boot (device model spec 1.4).
+    bool described = false;
+    if (deps_.devices != nullptr) {
+        deps_.devices->for_each([&](Value) {
+            described = true;
+            return false;
+        });
+    }
+    if (described) {
+        check("device call", agent::add_device_call_tools(
+                                 *registry_, agent::DeviceCallToolDeps{.devices = *deps_.devices}));
+    }
     check("docs", agent::add_docs_tools(*registry_));
     if (deps_.scene_http != nullptr) {
         check("http",
@@ -619,6 +640,7 @@ void AgentWiring::refresh_storage() {
         for (const core::MediaStatus& m : storage->status().media) {
             media.push_back(Value(Map{{"id", Value(m.id)},
                                       {"online", Value(m.online)},
+                                      {"removable", Value(m.removable)},
                                       {"total_bytes", Value(static_cast<int64_t>(m.total_bytes))},
                                       {"free_bytes", Value(static_cast<int64_t>(m.free_bytes))}}));
         }

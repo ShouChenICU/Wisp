@@ -31,13 +31,16 @@ namespace {
 constexpr uint32_t kFlashWaitMs = 5000;
 
 // Runs `fn` (a mutating MemoryStore/ReminderScheduler call) on the flash
-// thread, or inline without one (tests). `fn`'s Result travels through a
-// shared slot since the job may outlive a timed-out wait.
+// thread, or inline without one (tests). On the Interactive lane, like the
+// agent's memory and todo tools: one small rewrite someone waits for. A
+// full lane is reported as busy (service_error()), as before. `fn`'s
+// Result travels through a shared slot since the job may outlive a
+// timed-out wait.
 Result<void> on_flash(core::StorageWorker* worker, std::function<Result<void>()> fn) {
     if (worker == nullptr) return fn();
     auto out = std::make_shared<std::optional<Result<void>>>();
-    Result<void> r =
-        worker->run_sync([out, fn] { out->emplace(fn()); }, kFlashWaitMs, core::IoLane::Normal);
+    Result<void> r = worker->run_sync([out, fn] { out->emplace(fn()); }, kFlashWaitMs,
+                                      core::IoLane::Interactive);
     if (!r) return r;
     return std::move(**out);
 }

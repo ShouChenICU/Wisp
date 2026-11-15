@@ -1549,6 +1549,8 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     for (const core::SceneToolDecl& t : s.package->manifest.tools) {
         api.tool_names.push_back(t.name);
     }
+    api.devices = deps_.devices;
+    api.device_grants = s.package->manifest.devices;
     // Only records it (lua_task.hpp: never destroy the VM in here).
     api.task_done = [this, instance = s.instance](uint32_t task, TaskOutcome outcome) {
         tool_task_done(instance, task, std::move(outcome));
@@ -1626,9 +1628,12 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
                                   const std::shared_ptr<FilesGate>& gate,
                                   const std::vector<std::string>* hosts) {
     core::SceneFiles& files = *deps_.files;
-    core::StorageWorker& worker = deps_.worker;
-    // Results come back from the worker (or, for a refusal, from this
-    // task) into this instance's box (Link::complete()).
+    // Every job goes through files.submit() (a download's own through
+    // FileDownload::submit()), which keeps one scene's calls in order
+    // across the flash and SD I/O workers. Results come back from the
+    // worker (or, for a refusal, from this task) into this instance's box
+    // (Link::complete()); one for an instance that is gone finds the box
+    // closed and goes unseen.
     auto deliver = [link = link_, box, id, instance](uint32_t cb, FilesResult r) {
         link->complete(*box, id, instance, cb, true, CompletionBox::Payload(std::move(r)));
     };
@@ -1637,9 +1642,9 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
         r.error = "busy";
         deliver(cb, std::move(r));
     };
-    api.files_run = [&files, &worker, deliver, busy, id](uint32_t cb, FilesJob job) {
-        const bool queued = worker.submit(
-            [&files, deliver, id, cb, job = std::move(job)] { deliver(cb, job(files, id)); });
+    api.files_run = [&files, deliver, busy, id](uint32_t cb, FilesJob job) {
+        const bool queued = files.submit(
+            id, [&files, deliver, id, cb, job = std::move(job)] { deliver(cb, job(files, id)); });
         if (!queued) busy(cb);
     };
     api.files_fail = [deliver](uint32_t cb, const char* error) {
@@ -1651,7 +1656,7 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
     net::SceneHttp& http = *deps_.http;
     std::optional<std::vector<std::string>> checked;
     if (hosts != nullptr) checked = *hosts;
-    api.files_download = [&files, &worker, &http, deliver, busy, gate, id, instance,
+    api.files_download = [&files, &http, deliver, busy, gate, id, instance,
                           hosts = std::move(checked)](uint32_t cb, net::SceneHttpRequest req,
                                                       std::string name) {
         // SceneHttp checks the URL again; checked here first so a refused
@@ -1669,7 +1674,7 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
         auto shared_req = std::allocate_shared<net::SceneHttpRequest>(
             os::LargeAllocator<net::SceneHttpRequest>(), std::move(req));
         // On the worker: begin the file, then send the request.
-        auto begin = [&files, &worker, &http, deliver, busy, gate, id, cb, shared_req,
+        auto begin = [&files, &http, deliver, busy, gate, id, cb, shared_req,
                       name = std::move(name)] {
             auto begun = files.begin_download(id, name);
             if (!begun) {
@@ -1679,9 +1684,10 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
                 return;
             }
             std::shared_ptr<core::FileDownload> dl = std::move(begun.value());
-            // On the worker once the transfer is over (done() runs on the
-            // proxy's task, which must not touch flash).
-            auto done = [&worker, deliver, busy, gate, dl, cb](net::SceneHttpResult res) {
+            // On the download's worker, behind its appends, once the
+            // transfer is over (done() runs on the proxy's task, which must
+            // not touch flash).
+            auto done = [deliver, busy, gate, dl, cb](net::SceneHttpResult res) {
                 auto result = std::allocate_shared<net::SceneHttpResult>(
                     os::LargeAllocator<net::SceneHttpResult>(), std::move(res));
                 auto finish = [deliver, gate, dl, cb, result] {
@@ -1703,9 +1709,12 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
                     deliver(cb, std::move(r));
                 };
                 // Without the worker the reservation goes and the .dl waits
-                // for the next count. Not forgotten here: this may run inside
-                // submit(), under the gate's lock.
-                if (!worker.submit(std::move(finish))) {
+                // for the next count. Not forgotten here, nor finished
+                // inline: this may run inside http.submit() on the download's
+                // own worker, under the gate's lock (which finish's forget()
+                // takes); FileDownload::submit() then tries once instead of
+                // waiting for a lane only this worker drains.
+                if (!dl->submit(std::move(finish))) {
                     dl->abandon();
                     busy(cb);
                 }
@@ -1724,7 +1733,7 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
             // The scene closed while this waited for the worker.
             dl->finish(false);
         };
-        if (!worker.submit(std::move(begin))) busy(cb);
+        if (!files.submit(id, std::move(begin))) busy(cb);
     };
 }
 
@@ -1740,7 +1749,10 @@ void SceneRuntime::close_gate(const std::shared_ptr<FilesGate>& gate) {
     }
     for (auto& dl : active) {
         dl->cancel();
-        if (!deps_.worker.submit([dl] { dl->finish(false); })) dl->abandon();
+        // One try (no wait): the scene task never waits for a storage
+        // lane. If refused, the reservation goes now and the ".dl" at the
+        // next count.
+        if (!dl->submit([dl] { dl->finish(false); }, 0)) dl->abandon();
     }
 }
 

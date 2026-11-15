@@ -7,11 +7,15 @@
 
 #include "dev/sim_devices.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
+#include "wisp/port/sim/sim_haptic.hpp"
 #include "wisp/port/sim/sim_wifi.hpp"
 
 namespace wisp::port::sim {
 
 namespace {
+
+namespace role = wisp::hal::role;
 
 constexpr const char* kTag = "sim_board";
 constexpr int32_t kWidth = 480;
@@ -56,6 +60,23 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
                                const std::string& reason = "disabled by --disable") {
         report.record({id, cls, wisp::core::DeviceState::Failed, reason});
     };
+    // A device the registry refuses (a class that does not match its
+    // interface, a duplicate id, a role another device already holds
+    // under the same interface) is a failed device, as on the ESP boards,
+    // never a reason to stop booting.
+    // Returns whether the device is registered.
+    auto register_device = [&](const std::shared_ptr<wisp::hal::Device>& device) {
+        auto added = registry.add(device);
+        if (!added) {
+            WLOG_E(kTag, "registry.add: %s", added.error().message.c_str());
+            if (device) {
+                report.record({device->info().id, device->info().cls,
+                               wisp::core::DeviceState::Failed,
+                               "registry.add: " + added.error().message});
+            }
+        }
+        return static_cast<bool>(added);
+    };
     // Checks --disable *before* constructing the device: avoids doing
     // any device-construction work for an id the caller explicitly
     // disabled, rather than building it and throwing it away.
@@ -66,27 +87,29 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
             record_disabled(id, cls);
             return;
         }
-        registry.add(factory());
+        register_device(factory());
     };
 
     if (is_disabled("display.main", wisp::hal::DeviceClass::Display)) {
         record_disabled("display.main", wisp::hal::DeviceClass::Display);
     } else {
         display_ = std::make_shared<SimDisplay>("display.main", kWidth, kHeight, config_.shape,
-                                                kCornerRadius, config_.panel);
-        registry.add(display_);
+                                                kCornerRadius, config_.panel, role::kMain);
+        register_device(display_);
     }
 
     make_or_fail("touch.main", wisp::hal::DeviceClass::Touch,
-                 [&] { return std::make_shared<SimTouch>("touch.main", input_); });
+                 [&] { return std::make_shared<SimTouch>("touch.main", input_, role::kMain); });
     make_or_fail("imu.main", wisp::hal::DeviceClass::Imu,
-                 [&] { return std::make_shared<SimImu>("imu.main", input_); });
-    make_or_fail("power.main", wisp::hal::DeviceClass::Power,
-                 [&] { return std::make_shared<SimPower>("power.main", on_power_off_); });
+                 [&] { return std::make_shared<SimImu>("imu.main", input_, role::kMain); });
+    make_or_fail("power.main", wisp::hal::DeviceClass::Power, [&] {
+        return std::make_shared<SimPower>("power.main", on_power_off_, role::kMain);
+    });
     make_or_fail("clock.main", wisp::hal::DeviceClass::Clock,
-                 [&] { return std::make_shared<SimClock>("clock.main"); });
+                 [&] { return std::make_shared<SimClock>("clock.main", role::kMain); });
     make_or_fail("button.power", wisp::hal::DeviceClass::Button, [&] {
-        return std::make_shared<SimButton>("button.power", SimButton::Kind::Power, input_);
+        return std::make_shared<SimButton>("button.power", SimButton::Kind::Power, input_,
+                                           role::kPower);
     });
     make_or_fail("button.vol_up", wisp::hal::DeviceClass::Button, [&] {
         return std::make_shared<SimButton>("button.vol_up", SimButton::Kind::VolUp, input_);
@@ -94,10 +117,13 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     make_or_fail("button.vol_down", wisp::hal::DeviceClass::Button, [&] {
         // Like the device's Vol-/BOOT key: hold-to-talk.
         return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_,
-                                           "talk");
+                                           role::kTalk);
     });
-    make_or_fail("net.wifi", wisp::hal::DeviceClass::Network,
-                 [&] { return std::make_shared<SimWifi>("net.wifi", config_.wifi_fail); });
+    make_or_fail("haptic.main", wisp::hal::DeviceClass::Other,
+                 [&] { return std::make_shared<SimHaptic>("haptic.main", role::kMain); });
+    make_or_fail("net.wifi", wisp::hal::DeviceClass::Network, [&] {
+        return std::make_shared<SimWifi>("net.wifi", config_.wifi_fail, role::kMain);
+    });
     // main.cpp doesn't abort the simulator if SDL_Init(SDL_INIT_AUDIO)
     // failed (a host with no audio backend at
     // all, e.g. a minimal container image) -- it just warns and
@@ -112,7 +138,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         record_disabled("audio_out.main", wisp::hal::DeviceClass::AudioOut,
                         "SDL audio unavailable");
     } else {
-        registry.add(std::make_shared<SimAudioOut>("audio_out.main"));
+        register_device(std::make_shared<SimAudioOut>("audio_out.main", role::kMain));
     }
 
     // audio_in.main also needs a real SDL capture device; the "dummy"
@@ -135,7 +161,7 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         // at that point, rather than assuming there's nothing to use.
         record_disabled("audio_in.main", wisp::hal::DeviceClass::AudioIn, "no capture device");
     } else {
-        registry.add(std::make_shared<SimAudioIn>("audio_in.main"));
+        register_device(std::make_shared<SimAudioIn>("audio_in.main", role::kMain));
     }
 
     std::error_code ec;
@@ -145,20 +171,20 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
     if (is_disabled("storage.int", wisp::hal::DeviceClass::Storage)) {
         record_disabled("storage.int", wisp::hal::DeviceClass::Storage);
     } else {
-        registry.add(std::make_shared<SimStorage>("storage.int", config_.data_dir + "/int",
-                                                  /*removable=*/false, "littlefs", kIntTotalBytes,
-                                                  nullptr));
+        register_device(std::make_shared<SimStorage>("storage.int", config_.data_dir + "/int",
+                                                     /*removable=*/false, "littlefs",
+                                                     kIntTotalBytes, nullptr, role::kInternal));
     }
 
     if (is_disabled("storage.sd", wisp::hal::DeviceClass::Storage)) {
         record_disabled("storage.sd", wisp::hal::DeviceClass::Storage);
     } else {
         auto input = input_;
-        auto sd_storage = std::make_shared<SimStorage>("storage.sd", config_.data_dir + "/sd",
-                                                       /*removable=*/true, "fat", kSdTotalBytes,
-                                                       [input] { return input->sd_present(); });
-        registry.add(sd_storage);
-        if (!sd_storage->online()) {
+        auto sd_storage = std::make_shared<SimStorage>(
+            "storage.sd", config_.data_dir + "/sd",
+            /*removable=*/true, "fat", kSdTotalBytes, [input] { return input->sd_present(); },
+            role::kRemovable);
+        if (register_device(sd_storage) && !sd_storage->online()) {
             report.record({"storage.sd", wisp::hal::DeviceClass::Storage,
                            wisp::core::DeviceState::Missing, "no SD card"});
         }

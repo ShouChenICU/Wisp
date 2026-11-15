@@ -50,7 +50,9 @@ private:
 // write when latched IRQ bits need clearing. Failed reads retain state.
 class EspPmuPowerKey : public wisp::hal::Button {
 public:
-    EspPmuPowerKey(std::shared_ptr<EspPower> power, std::string id, std::string model);
+    // `role`, when not empty, becomes caps "role" (wisp/hal/button.hpp).
+    EspPmuPowerKey(std::shared_ptr<EspPower> power, std::string id, std::string model,
+                   std::string role);
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     bool pressed() override;
     hal::ButtonInputMode input_mode() const override { return hal::ButtonInputMode::PollOnly; }

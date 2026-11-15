@@ -6,14 +6,18 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,9 +28,11 @@
 #include "support/wait.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/zip.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 using wisp::ErrorCode;
 using wisp::Result;
@@ -76,14 +82,37 @@ const Value& at(const Value& v, const char* key) {
     return found != nullptr ? *found : null;
 }
 
+// With a router, the scenes' file calls go through it as in the app
+// (SceneFilesConfig::submit_io), and `worker` is its flash worker.
 struct FilesFixture {
     explicit FilesFixture(bool with_files = true, size_t max_list = 256,
                           std::shared_ptr<wisp::test::FakeStorage> sd = nullptr,
-                          wisp::core::StorageWorker* worker = nullptr)
+                          wisp::core::StorageWorker* worker = nullptr,
+                          wisp::core::StorageRouter* router = nullptr,
+                          std::function<void(std::string_view)> on_parse = {})
         : f(true, std::move(sd)) {
+        if (worker != nullptr) {
+            // As in the app, the repository does its file work on the
+            // flash worker.
+            f.scenes = std::make_unique<wisp::core::SceneRepository>(
+                *f.storage, wisp::core::SceneRepoConfig{.code_root = f.dir + "/scenes",
+                                                        .data_root = f.dir + "/scenes",
+                                                        .on_parse = std::move(on_parse),
+                                                        .worker = worker});
+        }
         SceneFilesConfig cfg;
         cfg.data_root = f.dir + "/scenes";
         cfg.max_list = max_list;
+        if (router != nullptr) {
+            cfg.submit_io = [router](wisp::core::Medium m, wisp::core::IoLane lane,
+                                     std::function<void()> job) {
+                return router->submit(m, std::move(job), lane);
+            };
+        }
+        cfg.on_io = [this](std::string_view) {
+            std::lock_guard<std::mutex> lock(io_mu);
+            io_on_sd.push_back(wisp::os::on_sd_io_thread());
+        };
         wisp::core::SceneRepository* repo = f.scenes.get();
         cfg.declared = [repo](std::string_view id) -> Result<FilesWant> {
             auto info = repo->info(std::string(id));
@@ -111,9 +140,17 @@ struct FilesFixture {
         return f.srv->handle(req);
     }
 
+    std::vector<bool> io_threads() {
+        std::lock_guard<std::mutex> lock(io_mu);
+        return io_on_sd;
+    }
+
     AdminFixture f;
     std::unique_ptr<SceneFiles> files;
     std::string token;
+    std::mutex io_mu;
+    // Per SceneFiles call: whether it ran on the SD I/O thread.
+    std::vector<bool> io_on_sd;
 };
 
 // The whole streamed body of `res`, pulled the way a server does.
@@ -411,16 +448,43 @@ TEST(AdminSceneFiles, EncodedDotsAreRefused) {
     }
 }
 
+// The installed-scene check every route makes parses the manifest on the
+// worker, not on the admin server's small internal stack.
+TEST(AdminSceneFiles, SceneCheckParsesOnTheWorker) {
+    wisp::core::StorageWorker worker;
+    wisp::core::StorageRouter router(worker);
+    std::mutex mu;
+    std::vector<bool> on_worker;
+    {
+        FilesFixture fx(true, 256, nullptr, &worker, &router, [&](std::string_view) {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.push_back(worker.on_worker());
+        });
+        fx.install("notes");
+        ASSERT_TRUE(worker.start());
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            on_worker.clear();
+        }
+        EXPECT_EQ(fx.call(Method::Get, "/api/v1/scenes/notes/files").status, 200);
+        worker.stop();
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    ASSERT_FALSE(on_worker.empty());
+    EXPECT_EQ(std::count(on_worker.begin(), on_worker.end(), false), 0);
+}
+
 // Every read of a download runs on the flash thread, one 32 KiB chunk at
 // a time: while that thread is busy the stream waits, and the bytes that
 // come out once it is free are the file's.
 TEST(AdminSceneFiles, DownloadReadsOnTheFlashThread) {
     wisp::core::StorageWorker worker;
+    wisp::core::StorageRouter router(worker);
     {
         // Set up before the flash thread starts, as at boot; from then on
         // the route itself (the scene check and every read) must go
         // through the worker.
-        FilesFixture fx(true, 256, nullptr, &worker);
+        FilesFixture fx(true, 256, nullptr, &worker, &router);
         fx.install("notes");
         const std::string big = pattern(100 * 1024);
         ASSERT_TRUE(fx.files->write("notes", "big.bin", as_bytes(big)));
@@ -461,6 +525,35 @@ TEST(AdminSceneFiles, DownloadReadsOnTheFlashThread) {
         pump.join();
         EXPECT_TRUE(body == big);
         EXPECT_EQ(pieces, 4u);
+        worker.stop();
+    }
+}
+
+// A card scene's file is read on the SD I/O worker, so a large download
+// from the card never occupies wisp.fs.
+TEST(AdminSceneFiles, CardFileReadRunsOnTheSdWorker) {
+    const std::string sd_dir = wisp::test::temp_dir().string();
+    auto sd = std::make_shared<wisp::test::FakeStorage>("storage.sd", sd_dir, true);
+    wisp::core::StorageWorker worker;
+    wisp::core::StorageWorker sd_worker(wisp::core::StorageWorker::sd_io_config());
+    wisp::core::StorageRouter router(worker, &sd_worker);
+    {
+        FilesFixture fx(true, 256, sd, &worker, &router);
+        fx.install("music", "sd");
+        const std::string big = pattern(40 * 1024);
+        // Before the workers start, as at boot: the location is chosen and
+        // the scene's record loaded with it.
+        ASSERT_TRUE(fx.files->write("music", "song.bin", as_bytes(big)));
+        ASSERT_TRUE(worker.start());
+        ASSERT_TRUE(sd_worker.start());
+        const size_t before = fx.io_threads().size();
+        HttpResponse dl = fx.call(Method::Get, "/api/v1/scenes/music/files/song.bin");
+        ASSERT_EQ(dl.status, 200) << dl.body;
+        EXPECT_TRUE(drain(dl) == big);
+        const std::vector<bool> calls = fx.io_threads();
+        ASSERT_GT(calls.size(), before);
+        for (size_t i = before; i < calls.size(); ++i) EXPECT_TRUE(calls[i]) << "call " << i;
+        sd_worker.stop();
         worker.stop();
     }
 }

@@ -121,6 +121,7 @@ export default {
   'class.audio_in': 'Microphone',
   'class.storage': 'Storage',
   'class.network': 'Network',
+  'class.other': 'Other',
   'logs.subtitle': 'Device logs, streamed live only when you ask',
   'logs.start': 'Start live logs',
   'logs.stop': 'Stop',

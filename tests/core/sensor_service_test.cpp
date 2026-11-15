@@ -390,6 +390,21 @@ TEST(SensorService, RegistersOccupancyPerHolder) {
     EXPECT_TRUE(f.occupancy.list().empty());
 }
 
+// Occupancy names the IMU the board registered, whatever its id.
+TEST(SensorService, OccupancyUsesTheImusOwnId) {
+    auto imu = std::make_shared<FakeImu>("imu.accel");
+    OccupancyRegistry occupancy;
+    SensorService svc(imu, occupancy);
+    Seen s;
+    auto h = svc.subscribe(SensorKind::Accel, 25, "scene.a", s.cb());
+    ASSERT_TRUE(h);
+    auto list = occupancy.list();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list[0].device, "imu.accel");
+    svc.unsubscribe(h.value());
+    EXPECT_TRUE(occupancy.list().empty());
+}
+
 TEST(SensorService, TaskConfigIsPsramStack) {
     wisp::core::SensorServiceConfig c;
     auto t = SensorService::task_config(c);

@@ -20,21 +20,29 @@ struct AudioFormat {
 class AudioOut : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioOut;
+    static constexpr Interface kInterface = Interface::AudioOut;
 
     virtual Result<void> open(const AudioFormat& format) = 0;
     virtual Result<size_t> write(const int16_t* frames, size_t count) = 0;
     virtual void close() = 0;
     virtual Result<void> set_volume(uint8_t percent) = 0;
+
+protected:
+    AudioOut() : Device(kInterface) {}
 };
 
 class AudioIn : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioIn;
+    static constexpr Interface kInterface = Interface::AudioIn;
 
     virtual Result<void> open(const AudioFormat& format) = 0;
     virtual Result<size_t> read(int16_t* frames, size_t count) = 0;
     virtual void close() = 0;
     virtual Result<void> set_gain(float db) = 0;
+
+protected:
+    AudioIn() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

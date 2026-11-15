@@ -11,6 +11,8 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/format.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/storage_router.hpp"
+#include "wisp/core/storage_worker.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/shell/shell.hpp"
@@ -288,6 +290,42 @@ std::string run_command(App& app, std::string_view line) {
 }
 
 std::string quote_ssid(std::string_view ssid) { return "\"" + escape(ssid, true) + "\""; }
+
+namespace {
+
+uint64_t ceil_ms(uint64_t us) { return (us + 999) / 1000; }
+
+void append_lanes(std::string& out, const core::StorageWorker& w) {
+    struct Lane {
+        core::IoLane lane;
+        const char* name;
+    };
+    constexpr Lane kLanes[] = {{core::IoLane::Interactive, "interactive"},
+                               {core::IoLane::Normal, "normal"},
+                               {core::IoLane::Bulk, "bulk"}};
+    for (const Lane& l : kLanes) {
+        const core::LaneStats s = w.stats(l.lane);
+        if (!out.empty()) out += '\n';
+        out += std::string("storage ") + w.name() + " " + l.name +
+               " jobs=" + std::to_string(s.jobs) +
+               " wait_max_ms=" + std::to_string(ceil_ms(s.max_wait_us)) +
+               " job_max_ms=" + std::to_string(ceil_ms(s.max_job_us));
+    }
+}
+
+}  // namespace
+
+std::string storage_report(const core::StorageRouter* router) {
+    if (router == nullptr) return "storage off";
+    std::string out;
+    append_lanes(out, router->flash());
+    if (router->sd() != nullptr) {
+        append_lanes(out, *router->sd());
+    } else {
+        out += "\nstorage wisp.sd.io off";
+    }
+    return out;
+}
 
 void start_console(App& app) {
     App::Impl& impl = *app.impl_;

@@ -21,6 +21,7 @@
 #include "power_sampling.hpp"
 #include "storage_io.hpp"
 #include "support/bus_flood.hpp"
+#include "support/cell_barrier.hpp"
 #include "support/fake_audio.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
@@ -34,6 +35,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -41,10 +43,13 @@
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/hal/button.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -76,6 +81,12 @@ struct MakeAppOptions {
     uint32_t settings_write_delay_ms = 0;
     // Registered as "power.main" when set: PowerMonitor samples it.
     std::shared_ptr<wisp::test::FakePower> power;
+    // The same devices under other ids ("display.panel", "imu.accel",
+    // "storage.flash", "button.side"), with the same roles, plus a touch
+    // panel "touch.panel" with role main: the app must find them by role.
+    bool renamed_ids = false;
+    // The display's caps "role"; empty is no role.
+    std::string display_role = wisp::hal::role::kMain;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -109,7 +120,8 @@ private:
 
 // A wisp::app::Board that registers a fixed, test-controlled set of fake
 // devices: "display.main" (if with_display), "storage.int" (if
-// with_internal_storage), "imu.main" and "button.power" -- except that
+// with_internal_storage), "imu.main" and "button.power" (other ids with
+// renamed_ids) -- except that
 // any id listed in `opts.fail` is instead recorded into the BootReport as
 // DeviceState::Failed (with the configured reason) and never added to the
 // registry, exercising App::start()'s "boot continues past a failed
@@ -128,13 +140,22 @@ public:
         if (opts_.with_internal_storage) {
             maybe_register(
                 registry, report,
-                std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
+                std::make_shared<FakeStorage>(opts_.renamed_ids ? "storage.flash" : "storage.int",
+                                              wisp::test::temp_dir().string(),
                                               /*removable=*/false));
         }
         if (opts_.sd) maybe_register(registry, report, opts_.sd);
         if (opts_.power) maybe_register(registry, report, opts_.power);
-        maybe_register(registry, report, std::make_shared<FakeImu>("imu.main"));
-        maybe_register(registry, report, std::make_shared<FakeButton>("button.power"));
+        maybe_register(registry, report,
+                       std::make_shared<FakeImu>(opts_.renamed_ids ? "imu.accel" : "imu.main"));
+        maybe_register(registry, report,
+                       std::make_shared<FakeButton>(
+                           opts_.renamed_ids ? "button.side" : "button.power",
+                           wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
+        if (opts_.renamed_ids) {
+            maybe_register(registry, report,
+                           std::make_shared<wisp::test::FakeTouch>("touch.panel"));
+        }
     }
 
 private:
@@ -170,7 +191,9 @@ struct Harness {
 private:
     wisp::app::Platform build_platform(const MakeAppOptions& opts) {
         if (opts.with_display) {
-            display = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/1);
+            display = std::make_shared<FakeDisplay>(
+                opts.renamed_ids ? "display.panel" : "display.main", 480, 480, /*area_align=*/1,
+                "rounded_rect", opts.display_role);
         }
 
         wisp::app::Platform platform;
@@ -220,6 +243,160 @@ TEST(AppBoot, StartsUiWhenDisplayPresent) {
     ASSERT_NE(h.app.ui(), nullptr);
     EXPECT_TRUE(wait_until([&] { return h.display->flush_count() > 0; }, 2000));
     EXPECT_EQ(h.display->brightness(), 200);
+}
+
+// Spec 2.3: the app asks for "the main display", "the main IMU", "the
+// internal medium" and "the power key", never for an id.
+TEST(AppBoot, DevicesAreFoundByRoleNotById) {
+    auto h = make_app({.with_display = true, .renamed_ids = true});
+    ASSERT_TRUE(h.app.start());
+
+    ASSERT_NE(h.app.ui(), nullptr);
+    EXPECT_TRUE(wait_until([&] { return h.display->flush_count() > 0; }, 2000));
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* notes = rep.find("notes");
+    ASSERT_NE(notes, nullptr);
+    EXPECT_EQ(notes->find("mode"), nullptr);
+    EXPECT_EQ(notes->find("storage"), nullptr);
+
+    // The touch panel: the UI reads it as its pointer.
+    bool pointer = false;
+    wisp::test::run_on_ui_blocking(h.app.ui(), [&] {
+        for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+            if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER) pointer = true;
+        }
+    });
+    EXPECT_TRUE(pointer);
+
+    // The IMU: a subscription holds it.
+    wisp::core::SensorService* sensors = h.app.sensors();
+    ASSERT_NE(sensors, nullptr);
+    ASSERT_TRUE(sensors->available(wisp::core::SensorKind::Accel));
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 10, "system.test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    auto held = h.app.occupancy().list();
+    ASSERT_EQ(held.size(), 1u);
+    EXPECT_EQ(held[0].device, "imu.accel");
+    EXPECT_EQ(held[0].holder, "system.test");
+    sensors->unsubscribe(sub.value());
+
+    // The power key: its short press turns the screen off (the system
+    // duties own it) ...
+    auto key = h.app.registry().get<wisp::hal::Button>("button.side");
+    ASSERT_NE(key, nullptr);
+    static_cast<FakeButton&>(*key).standby_poll = 20;
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(pm, nullptr);
+    h.app.bus().publish(wisp::core::Event{"button.side.short", "button.side"});
+    ASSERT_TRUE(wait_until([&] { return pm->standby(); }, 2000));
+    // ... in standby only the power-role key is polled, and it still is
+    // under its own id; its down alone does not wake the screen (the
+    // PowerManager leaves the owned key to its owner) ...
+    std::atomic<bool> pressed{false};
+    const auto key_sub =
+        h.app.bus().subscribe("button.side.down", [&](const auto&) { pressed.store(true); });
+    static_cast<FakeButton&>(*key).down = true;
+    EXPECT_TRUE(wait_until([&] { return pressed.load(); }, 2000));
+    ASSERT_TRUE(h.app.bus().wait_idle(1000));
+    wisp::test::run_on_ui_blocking(h.app.ui(), [] {});
+    EXPECT_TRUE(pm->standby());
+    // ... and the short press its release makes wakes it.
+    static_cast<FakeButton&>(*key).down = false;
+    EXPECT_TRUE(wait_until([&] { return !pm->standby(); }, 2000));
+    h.app.bus().unsubscribe(key_sub);
+
+    h.app.stop();
+}
+
+// The device service follows PowerManager's level cell: a "standby: off"
+// device is unreachable while the screen is off, and reachable again
+// after. Driven through the real PowerManager; the cell's level is typed,
+// so the old "unknown state name changes nothing" case cannot occur.
+TEST(AppBoot, DeviceServiceFollowsThePowerState) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::DeviceService* devices = h.app.devices();
+    ASSERT_NE(devices, nullptr);
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(pm, nullptr);
+    auto haptic = std::make_shared<wisp::test::FakeGeneric>(
+        "haptic.main", &wisp::test::kFakeGenericSchema, wisp::Properties{}, std::string{}, true);
+    ASSERT_TRUE(h.app.registry().add(haptic));
+    // Before any change of the level it is Active.
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+
+    // Until App's followers (on wisp.bus) have had the level as it is now.
+    auto settle = [&] { ASSERT_TRUE(wisp::test::cell_barrier(pm->level_cell(), &h.app.bus())); };
+    // Headless, a tick runs its transition right here. The App's own
+    // 1 s tick (real time, far behind these) leaves Standby and
+    // DeepStandby alone; at Dim it may return to Active, which the
+    // assertions there hold for too.
+    const uint64_t t0 = wisp::os::now_ms();
+    const uint64_t off_ms = static_cast<uint64_t>(wisp::core::kDefaultScreenOffS) * 1000;
+    const uint64_t deep_ms = static_cast<uint64_t>(wisp::core::kDefaultDeepAfterS) * 1000;
+
+    pm->enter_standby();
+    ASSERT_TRUE(pm->standby());
+    settle();
+    auto busy = devices->get("haptic.main", "level");
+    ASSERT_FALSE(busy);
+    EXPECT_EQ(busy.error().code, wisp::ErrorCode::Busy);
+    // The sensors follow the same level.
+    wisp::core::SensorService* sensors = h.app.sensors();
+    ASSERT_NE(sensors, nullptr);
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 50, "test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    EXPECT_EQ(sensors->imu_rate(), 0u);
+    pm->exit_standby();
+    settle();
+
+    // Dim: the screen is still on.
+    pm->tick(t0 + off_ms - wisp::app::PowerManager::kDimLeadMs / 2);
+    settle();
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+    EXPECT_EQ(sensors->imu_rate(), 50u);
+    sensors->unsubscribe(sub.value());
+    // Idle past the timeout, then past the deep timer.
+    pm->tick(t0 + off_ms + 1000);
+    ASSERT_EQ(pm->level(), wisp::hal::PowerLevel::Standby);
+    pm->tick(t0 + off_ms + 1000 + deep_ms + 1000);
+    ASSERT_EQ(pm->level(), wisp::hal::PowerLevel::DeepStandby);
+    settle();
+    EXPECT_FALSE(devices->get("haptic.main", "level"));
+    pm->exit_standby();
+    settle();
+    EXPECT_TRUE(devices->get("haptic.main", "level"));
+
+    h.app.stop();
+    EXPECT_EQ(h.app.devices(), nullptr);
+}
+
+// A display that does not declare the role is not the main display: the
+// device boots headless, as with no display at all.
+TEST(AppBoot, ADisplayWithoutTheRoleIsLikeNoDisplay) {
+    auto h = make_app({.with_display = true, .display_role = ""});
+    // The log ring is shared by the whole process, so only lines logged by
+    // this start() count.
+    const auto before = wisp::log::ring_entries();
+    const uint32_t last_seq = before.empty() ? 0 : before.back().seq;
+    ASSERT_TRUE(h.app.start());
+    // The board's mistake is named at boot.
+    const auto entries = wisp::log::ring_entries();
+    EXPECT_EQ(std::count_if(entries.begin(), entries.end(),
+                            [last_seq](const auto& e) {
+                                return e.seq > last_seq && e.tag == "app" &&
+                                       e.msg ==
+                                           "no device with role main among display: "
+                                           "display.main";
+                            }),
+              1);
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* mode = rep.find("notes")->find("mode");
+    ASSERT_NE(mode, nullptr);
+    EXPECT_EQ(mode->as_string(), "headless");
+    EXPECT_EQ(h.app.ui(), nullptr);
 }
 
 // vector-font spec 3.6: without a font image the UI still starts, on
@@ -666,19 +843,22 @@ TEST(AppNotifications, StopSavesPendingNotices) {
     EXPECT_NE(text.find("restore_failed"), std::string::npos) << text;
 }
 
-TEST(App, StorageRefreshRunsOnTheWorker) {
+// The SD card hot-plug probe is card-only work: on wisp.sd.io.
+TEST(AppBoot, StorageRefreshRunsOnTheSdWorker) {
     MakeAppOptions opts;
     opts.with_display = false;
     opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
                                             /*removable=*/true);
     std::atomic<int> polls{0};
     std::atomic<int> off_thread{0};
+    std::atomic<bool> booted{false};
     std::atomic<bool> hold{false};
     wisp::os::Semaphore entered(1, 0);
     wisp::os::Semaphore release(1, 0);
     opts.sd->on_online = [&] {
         polls.fetch_add(1);
-        if (!wisp::os::on_flash_thread()) off_thread.fetch_add(1);
+        // StorageManager::init() probes the card too, at boot.
+        if (booted.load() && !wisp::os::on_sd_io_thread()) off_thread.fetch_add(1);
         if (hold.exchange(false)) {
             entered.give();
             release.take(wisp::os::kForever);
@@ -686,6 +866,7 @@ TEST(App, StorageRefreshRunsOnTheWorker) {
     };
     Harness h(opts);
     ASSERT_TRUE(h.app.start());
+    booted = true;
     ASSERT_NE(h.app.storage_worker(), nullptr);
 
     // The timer's own refresh may be in flight; ours goes in once it is not.
@@ -704,6 +885,76 @@ TEST(App, StorageRefreshRunsOnTheWorker) {
     ASSERT_TRUE(wait_until([&] { return polls.load() > timer_before; }, 5000));
     h.app.stop();
     EXPECT_EQ(off_thread.load(), 0);
+}
+
+// A board with a card slot gets the SD I/O worker "wisp.sd.io" next to
+// wisp.fs; card work goes there through the router.
+TEST(AppBoot, SdWorkerRunsWithACardSlot) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+                                            /*removable=*/true);
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    wisp::core::StorageRouter* router = h.app.storage_router();
+    ASSERT_NE(router, nullptr);
+    ASSERT_NE(router->sd(), nullptr);
+    EXPECT_TRUE(router->sd()->running());
+    EXPECT_EQ(&router->worker_for(wisp::core::Medium::Sd), router->sd());
+    h.app.stop();
+}
+
+// Without a slot there is no second worker, and boot goes on: card work
+// (there is none) would go to wisp.fs.
+TEST(AppBoot, NoSdWorkerWithoutACardSlot) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    wisp::core::StorageRouter* router = h.app.storage_router();
+    ASSERT_NE(router, nullptr);
+    EXPECT_EQ(router->sd(), nullptr);
+    EXPECT_EQ(&router->worker_for(wisp::core::Medium::Sd), h.app.storage_worker());
+    h.app.stop();
+}
+
+// Before a restart, power-off or deep standby, card work still queued on
+// wisp.sd.io is written too, not only wisp.fs's.
+TEST(AppBoot, FlushStorageDrainsTheSdWorker) {
+    MakeAppOptions opts;
+    opts.with_display = false;
+    opts.sd = std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+                                            /*removable=*/true);
+    Harness h(opts);
+    ASSERT_TRUE(h.app.start());
+    wisp::core::StorageRouter* router = h.app.storage_router();
+    ASSERT_NE(router, nullptr);
+    ASSERT_NE(router->sd(), nullptr);
+    wisp::os::Semaphore started(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    // A failed assertion below must not leave the worker parked.
+    struct ReleaseOnExit {
+        wisp::os::Semaphore& s;
+        ~ReleaseOnExit() { s.give(); }
+    } guard{release};
+    std::atomic<bool> gate_done{false};
+    ASSERT_TRUE(router->sd()->submit([&] {
+        started.give();
+        (void)release.take(wisp::os::kForever);
+        gate_done = true;
+    }));
+    ASSERT_TRUE(started.take(3000));
+    std::atomic<bool> returned{false};
+    std::thread flush([&] {
+        h.app.flush_storage();
+        returned = true;
+    });
+    // Still waiting for the card job.
+    EXPECT_FALSE(wait_until([&] { return returned.load(); }, 300));
+    release.give();
+    flush.join();
+    EXPECT_TRUE(gate_done.load());
+    h.app.stop();
 }
 
 TEST(App, RestartFlushesSettingsFirst) {

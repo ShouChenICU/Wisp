@@ -19,12 +19,13 @@ struct ButtonEdgeSink {
 // built on top by the portable ButtonService (see wisp_core), not here.
 // caps keys: "standby" (string, optional: "wake_source" for a button that
 // must keep working at every power level; see StandbyPolicy in
-// wisp/hal/device.hpp); "role" (string, optional: "talk" for the button
-// held to talk, mvp spec 6.3 -- the board picks it, the shell finds it
-// with shell::find_talk_button()).
+// wisp/hal/device.hpp); "role" (optional: "power", or "talk" -- the
+// button held to talk, mvp spec 6.3; see wisp/hal/roles.hpp), or a list of
+// both for one key serving both.
 class Button : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::Button;
+    static constexpr Interface kInterface = Interface::Button;
 
     virtual bool pressed() = 0;
     virtual ButtonInputMode input_mode() const { return ButtonInputMode::PollOnly; }
@@ -40,6 +41,9 @@ public:
     // may update level-wake/sleep inhibition here, never in the ISR callback.
     virtual void service_input() {}
     virtual uint32_t standby_poll_ms() const { return 0; }
+
+protected:
+    Button() : Device(kInterface) {}
 };
 
 }  // namespace wisp::hal

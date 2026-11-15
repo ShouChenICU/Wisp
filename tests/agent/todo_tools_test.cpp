@@ -59,6 +59,10 @@ protected:
         ASSERT_TRUE(worker.run_sync([this] { ASSERT_TRUE(sched->load()); }, wisp::os::kForever));
         tools = std::make_unique<wisp::agent::ToolRegistry>(wisp::agent::ToolExecutors{
             .fs = [this](std::function<void()> fn) { return worker.submit(std::move(fn)); },
+            .fs_interactive =
+                [this](std::function<void()> fn) {
+                    return worker.submit(std::move(fn), wisp::core::IoLane::Interactive);
+                },
         });
         ASSERT_TRUE(
             wisp::agent::add_todo_tools(*tools, wisp::agent::TodoToolDeps{.scheduler = *sched}));
@@ -92,7 +96,6 @@ TEST_F(TodoTools, AddParsesDueAndRepeat) {
         const ToolDef* def = tools->find_wire(c.wire);
         ASSERT_NE(def, nullptr) << c.wire;
         EXPECT_EQ(def->risk, c.risk) << c.wire;
-        EXPECT_EQ(def->thread, ToolThread::Fs) << c.wire;
         EXPECT_EQ(def->timeout_ms, 5000u) << c.wire;
     }
 
@@ -202,4 +205,14 @@ TEST_F(TodoTools, ListShowsLocalTimesAndErrorsMap) {
     EXPECT_EQ(str(no_clock.result, "error"), "clock_not_set");
     // Without a clock the list still answers, without due_today.
     EXPECT_TRUE(call("todo_list", R"({"filter":"due_today"})").ok);
+}
+
+// Short, and the user or the agent waits for each: the whole set takes the
+// Interactive lane, list included, so a list right after a change sees it.
+TEST_F(TodoTools, DeclareTheInteractiveThread) {
+    for (const char* name : {"todo.list", "todo.add", "todo.update", "todo.done", "todo.remove"}) {
+        const ToolDef* def = tools->find(name);
+        ASSERT_NE(def, nullptr) << name;
+        EXPECT_EQ(def->thread, ToolThread::FsInteractive) << name;
+    }
 }

@@ -40,7 +40,7 @@
 namespace wisp::agent {
 
 enum class ToolRisk : uint8_t { Normal, Note, Confirm };
-enum class ToolThread : uint8_t { Agent, Ui, Fs, Io };
+enum class ToolThread : uint8_t { Agent, Ui, Fs, Io, FsInteractive };
 
 struct ToolCtx {
     std::function<bool()> cancelled;
@@ -75,16 +75,24 @@ struct ToolDef {
     // whose stack may be in PSRAM (flash_access = false): a tool that
     // touches flash in any way -- Settings/NVS, StorageManager files on
     // LittleFS, anything that calls them -- must declare Fs (wisp.fs) or
-    // Io (a one-shot task with an internal stack) instead.
+    // Io (a one-shot task with an internal stack) instead. FsInteractive
+    // is wisp.fs too, on its Interactive lane (flash-thread spec 3.1): for
+    // tools whose whole call is a small file write the user waits for (the
+    // memory and todo tools), never for long work (scene installs,
+    // exports, file tools), which would hold up every other Interactive
+    // job. Within a lane jobs keep their order; across lanes they do not,
+    // which is safe for a tool since the registry waits for each call.
     ToolThread thread = ToolThread::Agent;
     uint32_t timeout_ms = 5000;
     ToolFn run;
 };
 
 // Each posts `fn` to its thread and returns false if it could not be
-// queued. An empty function refuses everything.
+// queued. An empty function refuses everything, except fs_interactive:
+// empty, FsInteractive tools go to fs.
 struct ToolExecutors {
     std::function<bool(std::function<void()>)> ui, fs, io;
+    std::function<bool(std::function<void()>)> fs_interactive;
 };
 
 class ToolRegistry {
@@ -108,8 +116,10 @@ public:
 
     // Parses args_json ("" means {}), validates it, runs the tool on its
     // thread and waits up to min(timeout_ms, ctx.deadline_ms), checking
-    // ctx.cancelled() every 20 ms. An Agent tool runs right here.
-    ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx);
+    // ctx.cancelled() every 20 ms. An Agent tool runs right here. Leaves
+    // the registry unchanged, so a const registry (App::agent_tools()) can
+    // call its tools.
+    ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) const;
 
 private:
     struct Entry {

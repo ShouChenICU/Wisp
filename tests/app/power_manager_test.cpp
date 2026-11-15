@@ -27,6 +27,7 @@
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -62,7 +63,8 @@ namespace {
 
 class CountedButton : public FakeButton {
 public:
-    explicit CountedButton(std::string id) : FakeButton(std::move(id)) {}
+    explicit CountedButton(std::string id, wisp::Properties caps = {})
+        : FakeButton(std::move(id), std::move(caps)) {}
     bool pressed() override {
         ++reads;
         return FakeButton::pressed();
@@ -74,7 +76,7 @@ public:
 class CountedEdgeButton : public wisp::port::sim::SimButton {
 public:
     explicit CountedEdgeButton(std::shared_ptr<wisp::port::sim::SimInput> input)
-        : SimButton("button.power", Kind::Power, std::move(input)) {}
+        : SimButton("button.power", Kind::Power, std::move(input), wisp::hal::role::kPower) {}
     bool pressed() override {
         ++reads;
         return SimButton::pressed();
@@ -99,7 +101,8 @@ struct Fixture {
     // `with_power_monitor=false` passes a null PowerMonitor*; see
     // NullPowerMonitorIsToleratedByStandbyTransitions below.
     explicit Fixture(int64_t screen_off_s = 60, bool with_storage = true,
-                     bool with_power_monitor = true, bool edge_power = false) {
+                     bool with_power_monitor = true, bool edge_power = false,
+                     const std::string& power_key_id = "button.power") {
         settings_path = (temp_dir() / "power_settings.json").string();
         backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
         Settings power_settings(*backend, "power");
@@ -116,6 +119,10 @@ struct Fixture {
             power_events.push_back(e);
         });
 
+        if (power_key_id != btn->info().id) {
+            btn = std::make_shared<CountedButton>(
+                power_key_id, wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}});
+        }
         if (edge_power)
             registry.add(edge_btn);
         else
@@ -165,6 +172,7 @@ struct Fixture {
             .power_monitor = with_power_monitor ? power_monitor.get() : nullptr,
             .ui = ui.get(),
             .buttons = buttons.get(),
+            .power_key = power_key_id,
             .set_light_sleep = [this](bool on) { light_sleep_calls.push_back(on); },
         });
     }
@@ -245,7 +253,8 @@ struct Fixture {
     std::shared_ptr<wisp::port::sim::SimInput> input =
         std::make_shared<wisp::port::sim::SimInput>();
     std::shared_ptr<CountedEdgeButton> edge_btn = std::make_shared<CountedEdgeButton>(input);
-    std::shared_ptr<CountedButton> btn = std::make_shared<CountedButton>("button.power");
+    std::shared_ptr<CountedButton> btn = std::make_shared<CountedButton>(
+        "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}});
     std::shared_ptr<CountedButton> vol_btn = std::make_shared<CountedButton>("button.vol_up");
 
     std::shared_ptr<FakeStorage> int_storage =
@@ -276,22 +285,23 @@ private:
 // *live* `!pm.standby()` read fresh on the UI thread, and
 // PowerManager::set_power_key_owned(true) hands this wiring (not
 // PowerManager's own generic "any button wakes it" subscriber)
-// exclusive control over what "button.power" does.
+// exclusive control over what the power key (`key`) does.
 class PowerKeyWiring {
 public:
-    PowerKeyWiring(EventBus& bus, UiRuntime& ui, PowerManager& pm) : bus_(bus), ui_(ui), pm_(pm) {
+    PowerKeyWiring(EventBus& bus, UiRuntime& ui, PowerManager& pm, std::string key = "button.power")
+        : bus_(bus), ui_(ui), pm_(pm), key_(std::move(key)) {
         pm_.set_power_key_owned(true);
         sub_ = bus_.subscribe("button.", [this](const Event& e) {
-            if (e.source != "button.power") {
+            if (e.source != key_) {
                 return;
             }
             std::string topic = e.topic;
             ui_.post([this, topic] {
                 bool screen_on = !pm_.standby();
                 PowerKeyController::Action action = PowerKeyController::Action::None;
-                if (topic == "button.power.short") {
+                if (topic == key_ + ".short") {
                     action = pkc_.on_short(screen_on);
-                } else if (topic == "button.power.long") {
+                } else if (topic == key_ + ".long") {
                     action = pkc_.on_long(screen_on);
                 }
                 switch (action) {
@@ -315,6 +325,7 @@ private:
     EventBus& bus_;
     UiRuntime& ui_;
     PowerManager& pm_;
+    std::string key_;
     PowerKeyController pkc_;
     wisp::core::SubscriptionId sub_ = 0;
 };
@@ -642,6 +653,35 @@ TEST(PowerManager, PowerKeyScreenOffThenVolumeKeyWakeThenNextPowerShortTurnsItOf
     EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
 }
 
+// Spec 2.3: the owned key is the one with role power, whatever its id. A
+// down of that key in standby is left to its owner (which acts on the
+// short that follows), so one press does not wake and re-sleep the screen.
+TEST(PowerManager, PowerKeyOwnershipFollowsTheRoleKey) {
+    Fixture f(/*screen_off_s=*/60, /*with_storage=*/true, /*with_power_monitor=*/true,
+              /*edge_power=*/false, "button.side");
+    PowerKeyWiring wiring(f.bus, *f.ui, *f.pm, "button.side");
+
+    press_short(*f.buttons, *f.btn);
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+
+    const uint64_t t = (input_clock += 5000);
+    f.btn->down = true;
+    f.buttons->poll(t);
+    ASSERT_TRUE(f.bus.wait_idle(1000));
+    f.drain_ui();
+    EXPECT_TRUE(f.pm->standby());
+    f.btn->down = false;
+    f.buttons->poll(t + 100);
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+
+    press_short(*f.buttons, *f.btn);
+    ASSERT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+    f.bus.publish({"button.vol_up.down", "button.vol_up"});
+    ASSERT_TRUE(wait_until([&] { return !f.pm->standby(); }, 2000));
+    press_short(*f.buttons, *f.btn);
+    EXPECT_TRUE(wait_until([&] { return f.pm->standby(); }, 2000));
+}
+
 // A confirm dialog left open when automatic standby kicks in must not
 // swallow the next power-key press as a dialog
 // decision -- spec 6.7's "待机中按任意键或长按电源键都会唤醒" requires
@@ -842,12 +882,15 @@ struct CallLog {
 // records every set_power() call. `busy` makes the next that many calls
 // fail with ErrorCode::Busy, as the ESP audio devices do while a stream is
 // open; `unsupported` makes every call fail with ErrorCode::Unsupported.
-class Probe : public wisp::hal::Device {
+// `Base` is the interface it registers as: a plain Device (class Other)
+// unless the test depends on the class, as the audio ordering does.
+template <class Base>
+class BasicProbe : public Base {
 public:
-    Probe(std::string id, DeviceClass cls, const char* standby, std::shared_ptr<CallLog> log)
+    BasicProbe(std::string id, const char* standby, std::shared_ptr<CallLog> log)
         : log_(std::move(log)) {
         info_.id = std::move(id);
-        info_.cls = cls;
+        info_.cls = wisp::hal::class_of(this->interface());
         info_.model = "PROBE";
         if (standby != nullptr) info_.caps["standby"] = wisp::Value(standby);
     }
@@ -880,6 +923,36 @@ private:
     std::shared_ptr<CallLog> log_;
     std::atomic<bool> powered_{true};
 };
+
+// The audio interfaces with their streams stubbed out: only the class
+// (and so PowerManager's audio ordering) matters to these tests.
+class StubAudioIn : public wisp::hal::AudioIn {
+public:
+    wisp::Result<void> open(const wisp::hal::AudioFormat&) override {
+        return wisp::Result<void>::ok();
+    }
+    wisp::Result<size_t> read(int16_t*, size_t count) override {
+        return wisp::Result<size_t>::ok(count);
+    }
+    void close() override {}
+    wisp::Result<void> set_gain(float) override { return wisp::Result<void>::ok(); }
+};
+
+class StubAudioOut : public wisp::hal::AudioOut {
+public:
+    wisp::Result<void> open(const wisp::hal::AudioFormat&) override {
+        return wisp::Result<void>::ok();
+    }
+    wisp::Result<size_t> write(const int16_t*, size_t count) override {
+        return wisp::Result<size_t>::ok(count);
+    }
+    void close() override {}
+    wisp::Result<void> set_volume(uint8_t) override { return wisp::Result<void>::ok(); }
+};
+
+using Probe = BasicProbe<wisp::hal::Device>;
+using AudioInProbe = BasicProbe<StubAudioIn>;
+using AudioOutProbe = BasicProbe<StubAudioOut>;
 
 // Collects every Warn-or-worse line logged with PowerManager's tag.
 class WarnSink : public wisp::LogSink {
@@ -948,9 +1021,10 @@ struct Headless {
     // PowerManagerDeps::before_deep_standby (App's storage flush).
     std::function<void()> before_deep;
 
-    std::shared_ptr<Probe> add_probe(std::string id, DeviceClass cls, const char* standby) {
-        auto probe = std::make_shared<Probe>(std::move(id), cls, standby, log);
-        registry.add(probe);
+    template <class P = Probe>
+    std::shared_ptr<P> add_probe(std::string id, const char* standby) {
+        auto probe = std::make_shared<P>(std::move(id), standby, log);
+        EXPECT_TRUE(registry.add(probe));
         return probe;
     }
 
@@ -1069,10 +1143,10 @@ TEST(PowerManager, DimWithShortestTimeout) {
 TEST(PowerManager, StandbyWalksDevicesByPolicy) {
     WarnSink warns;
     Headless h;
-    auto off = h.add_probe("imu.off", DeviceClass::Imu, "off");
-    auto wake = h.add_probe("button.wake", DeviceClass::Button, "wake_source");
-    auto none = h.add_probe("clock.none", DeviceClass::Clock, nullptr);
-    auto unsup = h.add_probe("touch.unsup", DeviceClass::Touch, "off");
+    auto off = h.add_probe("imu.off", "off");
+    auto wake = h.add_probe("button.wake", "wake_source");
+    auto none = h.add_probe("clock.none", nullptr);
+    auto unsup = h.add_probe("touch.unsup", "off");
     unsup->unsupported = true;
 
     h.pm->enter_standby();
@@ -1092,15 +1166,42 @@ TEST(PowerManager, StandbyWalksDevicesByPolicy) {
     EXPECT_TRUE(warns.lines().empty());
 }
 
+// A device the portable code knows nothing about (a self-describing one,
+// interface None) goes down with the others, ahead of the audio input.
+TEST(PowerManager, GenericDevicesGoDownWithTheOthers) {
+    Headless h;
+    // Registered after the input, which also sorts first by id: a walk in
+    // either registration or registry order reaches the input first.
+    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
+    auto generic =
+        std::make_shared<wisp::test::FakeGeneric>("haptic.main", &wisp::test::kFakeGenericSchema,
+                                                  wisp::Properties{}, "main", /*standby_off=*/true);
+    ASSERT_TRUE(h.registry.add(generic));
+    int generic_calls_at_audio_in = -1;
+    in->on_set_power = [&](PowerLevel level) {
+        if (level == PowerLevel::Standby) generic_calls_at_audio_in = generic->set_power_calls();
+    };
+
+    h.pm->enter_standby();
+    EXPECT_EQ(generic->set_power_calls(), 1);
+    EXPECT_FALSE(generic->powered());
+    EXPECT_EQ(generic_calls_at_audio_in, 1);  // already powered down when the input was reached
+    EXPECT_FALSE(in->powered());
+
+    h.pm->exit_standby();
+    EXPECT_EQ(generic->set_power_calls(), 2);
+    EXPECT_TRUE(generic->powered());
+}
+
 // The audio pair goes down input first and comes back output first,
 // wherever the two sit in the registry: in a duplex pair the output
 // clocks the input (wisp/port/esp/i2s_power.hpp).
 TEST(PowerManager, AudioGoesDownInputFirstAndUpOutputFirst) {
     Headless h;
-    h.add_probe("audio_out.main", DeviceClass::AudioOut, "off");
-    h.add_probe("touch.main", DeviceClass::Touch, "off");
-    h.add_probe("audio_in.main", DeviceClass::AudioIn, "off");
-    h.add_probe("imu.main", DeviceClass::Imu, "off");
+    h.add_probe<AudioOutProbe>("audio_out.main", "off");
+    h.add_probe("touch.main", "off");
+    h.add_probe<AudioInProbe>("audio_in.main", "off");
+    h.add_probe("imu.main", "off");
 
     h.pm->enter_standby();
     EXPECT_EQ(h.log->take(), (Strings{"imu.main:standby", "touch.main:standby",
@@ -1115,8 +1216,8 @@ TEST(PowerManager, AudioGoesDownInputFirstAndUpOutputFirst) {
 TEST(PowerManager, BusyDeviceIsRetriedOnTheNextTick) {
     WarnSink warns;
     Headless h;
-    auto in = h.add_probe("audio_in.main", DeviceClass::AudioIn, "off");
-    auto out = h.add_probe("audio_out.main", DeviceClass::AudioOut, "off");
+    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
+    auto out = h.add_probe<AudioOutProbe>("audio_out.main", "off");
     in->busy = 2;
     out->busy = 1;
 
@@ -1154,7 +1255,7 @@ TEST(PowerManager, BusyDeviceIsRetriedOnTheNextTick) {
 
 TEST(PowerManager, DeepStandbyAfterDeepAfterS) {
     Headless h(/*screen_off_s=*/60, /*deep_after_s=*/300);
-    auto off = h.add_probe("imu.main", DeviceClass::Imu, "off");
+    auto off = h.add_probe("imu.main", "off");
     uint64_t t0 = h.start_idle();
 
     h.pm->tick(t0 + 60050);
@@ -1272,10 +1373,10 @@ TEST(PowerManager, ScreenLockKeepsActiveButPowerKeyStillSleeps) {
 TEST(PowerManager, WakeFromDeepStandbyRestoresAll) {
     Fixture f(/*screen_off_s=*/60);
     auto log = std::make_shared<CallLog>();
-    auto in = std::make_shared<Probe>("audio_in.main", DeviceClass::AudioIn, "off", log);
-    auto out = std::make_shared<Probe>("audio_out.main", DeviceClass::AudioOut, "off", log);
-    f.registry.add(in);
-    f.registry.add(out);
+    auto in = std::make_shared<AudioInProbe>("audio_in.main", "off", log);
+    auto out = std::make_shared<AudioOutProbe>("audio_out.main", "off", log);
+    ASSERT_TRUE(f.registry.add(in));
+    ASSERT_TRUE(f.registry.add(out));
 
     uint64_t t0 = wisp::os::now_ms();
     f.pm->note_activity();
@@ -1582,7 +1683,7 @@ TEST(PowerManager, LockChangesCoalesceIntoOneEvaluation) {
 TEST(PowerManager, DeviceTakingALockDuringATransitionDoesNotDeadlock) {
     Fixture f(/*screen_off_s=*/60);
     auto log = std::make_shared<CallLog>();
-    auto probe = std::make_shared<Probe>("imu.locky", DeviceClass::Imu, "off", log);
+    auto probe = std::make_shared<Probe>("imu.locky", "off", log);
     auto held = std::make_shared<std::atomic<uint32_t>>(0);
     WakeLockRegistry* locks = &f.locks;
     probe->on_set_power = [locks, held](PowerLevel level) {
@@ -1592,7 +1693,7 @@ TEST(PowerManager, DeviceTakingALockDuringATransitionDoesNotDeadlock) {
             locks->release(held->exchange(0));
         }
     };
-    f.registry.add(probe);
+    ASSERT_TRUE(f.registry.add(probe));
 
     f.run_on_ui([&] { f.pm->enter_standby(); });
     f.drain_ui();
@@ -1642,7 +1743,7 @@ TEST(PowerManager, ActivityHookHearsButtonsAndTouches) {
 
 TEST(PowerManager, FlushesBeforeDevicesGoDeep) {
     Headless h;
-    h.add_probe("imu.main", DeviceClass::Imu, "off");
+    h.add_probe("imu.main", "off");
     std::vector<std::string> seen;
     h.before_deep = [&] { seen = h.log->take(); };
     h.go_deep();
@@ -1653,7 +1754,7 @@ TEST(PowerManager, FlushesBeforeDevicesGoDeep) {
 
 TEST(PowerManager, WakeDuringTheFlushAbortsDeepStandby) {
     Headless h;
-    h.add_probe("imu.main", DeviceClass::Imu, "off");
+    h.add_probe("imu.main", "off");
     int flushes = 0;
     h.before_deep = [&] {
         ++flushes;

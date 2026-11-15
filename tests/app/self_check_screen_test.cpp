@@ -46,6 +46,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -99,6 +100,8 @@ struct BoardExtras {
     // Registered as "clock.main" when set; otherwise a FakeClock of the
     // board's own.
     std::shared_ptr<FakeClock> clock;
+    // The id of the card (role removable) when the harness has one.
+    std::string sd_id = "storage.sd";
 };
 
 class FullFakeBoard : public wisp::app::Board {
@@ -127,13 +130,14 @@ public:
         registry.add(std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
                                                    /*removable=*/false));
         registry.add(imu_);
-        registry.add(std::make_shared<FakeButton>("button.power"));
+        registry.add(std::make_shared<FakeButton>(
+            "button.power", wisp::Properties{{"role", wisp::Value(wisp::hal::role::kPower)}}));
         registry.add(power_);
         registry.add(extras_.clock ? extras_.clock : std::make_shared<FakeClock>("clock.main"));
         if (sd_) {
             registry.add(sd_);
             if (!sd_->online()) {
-                report.record({"storage.sd", wisp::hal::DeviceClass::Storage,
+                report.record({sd_->info().id, wisp::hal::DeviceClass::Storage,
                                wisp::core::DeviceState::Missing, "no SD card"});
             }
         }
@@ -180,7 +184,7 @@ struct Harness {
                                                 /*area_align=*/1, std::move(display_shape))),
           imu(std::make_shared<FakeImu>("imu.main")),
           power(std::make_shared<FakePower>("power.main")),
-          sd(with_sd ? std::make_shared<FakeStorage>("storage.sd", wisp::test::temp_dir().string(),
+          sd(with_sd ? std::make_shared<FakeStorage>(extras.sd_id, wisp::test::temp_dir().string(),
                                                      /*removable=*/true)
                      : nullptr),
           settings_path(std::move(settings_path_in)),
@@ -1141,6 +1145,37 @@ TEST(SelfCheckScreen, DeviceListSdRowTracksLiveStorageStatus) {
     ASSERT_TRUE(wait_until(
         [&] { return sd_row() == hex(wisp::app::kColorGood) + "|storage.sd|FAKE"; }, 3000))
         << sd_row();
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("Devices "); }),
+              "Devices 7/7 OK|" + chip(SummaryLevel::Good));
+
+    h.app.stop();
+}
+
+// Spec 2.3: the card is the medium with role removable, whatever its id.
+TEST(SelfCheckScreen, CardRowFollowsTheRemovableMediumWhateverItsId) {
+    Harness h(wisp::test::temp_dir().string() + "/settings.json", /*init_sleep_ms=*/0,
+              "rounded_rect", /*with_sd=*/true, /*display_size=*/480,
+              BoardExtras{.sd_id = "storage.card"});
+    ASSERT_TRUE(h.start());
+    ASSERT_TRUE(h.wait_for_flushes(5));
+
+    auto card_row = [&] {
+        std::string rows = run_on_ui_thread(h.app.ui(), [] { return device_rows(); });
+        std::stringstream ss(rows);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.find("|storage.card|") != std::string::npos) return line;
+        }
+        return rows;
+    };
+    EXPECT_EQ(card_row(), hex(wisp::app::kColorMissing) + "|storage.card|FAKE|Missing: no SD card");
+    EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("Devices "); }),
+              "Devices 6/7 OK|" + chip(SummaryLevel::Neutral));
+
+    h.sd->online_flag = true;
+    ASSERT_TRUE(wait_until(
+        [&] { return card_row() == hex(wisp::app::kColorGood) + "|storage.card|FAKE"; }, 3000))
+        << card_row();
     EXPECT_EQ(run_on_ui_thread(h.app.ui(), [] { return chip_state("Devices "); }),
               "Devices 7/7 OK|" + chip(SummaryLevel::Good));
 

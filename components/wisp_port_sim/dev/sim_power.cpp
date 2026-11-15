@@ -4,12 +4,13 @@
 
 namespace wisp::port::sim {
 
-SimPower::SimPower(std::string id, std::function<void()> on_power_off)
+SimPower::SimPower(std::string id, std::function<void()> on_power_off, std::string role)
     : on_power_off_(std::move(on_power_off)) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sim-battery";
     info_.caps = wisp::Properties{{"battery", true}, {"charging_status", true}};
+    if (!role.empty()) info_.caps.emplace("role", wisp::Value(std::move(role)));
 }
 
 wisp::Result<wisp::hal::PowerStatus> SimPower::status() {

@@ -120,6 +120,7 @@
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/image_decoders.hpp"
@@ -219,7 +220,7 @@ std::string debug_command(wisp::app::App& app, const std::vector<std::string>& a
         wisp::net::TimeSyncService* sync = app.time_sync();
         if (sync == nullptr) return "clock-advance=no time sync";
         g_clock_offset_s.fetch_add(seconds);
-        if (auto clock = app.registry().get<wisp::hal::Clock>("clock.main")) {
+        if (auto clock = app.registry().by_role<wisp::hal::Clock>(wisp::hal::role::kMain)) {
             if (auto now = clock->get_unix()) (void)clock->set_unix(now.value() + seconds);
         }
         const int64_t now = static_cast<int64_t>(std::time(nullptr)) + g_clock_offset_s.load();
@@ -415,7 +416,7 @@ void take_screenshot(wisp::app::App& app, const std::string& path) {
 // there is no display device or its caps don't parse.
 std::vector<uint8_t> build_visible_mask(wisp::app::App& app) {
     std::vector<uint8_t> mask(static_cast<size_t>(kScreenSize) * kScreenSize, 1);
-    auto display = app.registry().get<wisp::hal::Display>("display.main");
+    auto display = app.registry().by_role<wisp::hal::Display>(wisp::hal::role::kMain);
     if (!display) {
         return mask;
     }
@@ -798,7 +799,7 @@ void wisp_demo_tick(lv_timer_t* t) {
 
 void start_wisp_demo(wisp::app::App& app) {
     wisp::ui::UiRuntime* ui = app.ui();
-    auto display = app.registry().get<wisp::hal::Display>("display.main");
+    auto display = app.registry().by_role<wisp::hal::Display>(wisp::hal::role::kMain);
     if (ui == nullptr || !display) {
         WLOG_W(kLogTag, "--wisp-demo: no display");
         return;

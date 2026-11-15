@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
 #include <string>
 
 #include "support/utf8.hpp"
@@ -161,6 +162,17 @@ TEST(Json, ReplacesInvalidUtf8) {
     EXPECT_EQ(wisp::to_json(wisp::Value(good)), "\"" + good + "\"");
 }
 
+// The same well-formedness rule as to_json()'s replacement, as a check.
+TEST(Json, ValidUtf8MatchesTheReplacementRule) {
+    EXPECT_TRUE(wisp::valid_utf8(""));
+    EXPECT_TRUE(wisp::valid_utf8("plain ascii \x01\x7f"));
+    EXPECT_TRUE(wisp::valid_utf8("中文 \xF0\x9F\x94\xA5 \xC3\xA9"));
+    for (const char* bad : {"a\xe4\xb8", "\x80", "\xc0\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80",
+                            "\xf5", "\xff", "ok\xC3"}) {
+        EXPECT_FALSE(wisp::valid_utf8(bad)) << bad;
+    }
+}
+
 // Persistence needs the stored bytes back exactly (an SSID in GBK, say),
 // so it uses the raw form, which keeps non-UTF-8 bytes as they are.
 TEST(Json, RawFormPreservesBytes) {
@@ -220,4 +232,49 @@ TEST(Json, AppendStringMatchesToJson) {
         wisp::append_json_string(out, s);
         EXPECT_EQ(out, "prefix:" + wisp::to_json(wisp::Value(s))) << s;
     }
+}
+
+TEST(Json, SizeMatchesToJson) {
+    const std::string controls("a\x01\"\\\n\t\x7f", 7);
+    const std::string bad_utf8("x\xC3\x28\xE2\x82y\xF0\x9F\x98\x80", 10);
+    const std::string embedded_nul("a\0b", 3);
+    const wisp::Value values[] = {
+        wisp::Value(),
+        wisp::Value(true),
+        wisp::Value(false),
+        wisp::Value(0),
+        wisp::Value(int64_t{-9223372036854775807 - 1}),
+        wisp::Value(int64_t{1234567890123}),
+        wisp::Value(1.5),
+        wisp::Value(80.0),
+        wisp::Value(-0.0),
+        wisp::Value(std::numeric_limits<double>::quiet_NaN()),
+        wisp::Value(std::numeric_limits<double>::infinity()),
+        wisp::Value(-std::numeric_limits<double>::infinity()),
+        wisp::Value(-0.1),
+        wisp::Value(1e300),
+        wisp::Value(3.141592653589793),
+        wisp::Value(controls),
+        wisp::Value(embedded_nul),
+        wisp::Value(bad_utf8),
+        wisp::Value("温度 °C"),
+        wisp::Value(wisp::List{}),
+        wisp::Value(wisp::Map{}),
+        wisp::Value(wisp::Map{{controls, wisp::List{1, 2.5, bad_utf8, wisp::Value()}},
+                              {"k", wisp::Map{{"x", true}}}}),
+    };
+    for (const wisp::Value& v : values) {
+        const std::string json = wisp::to_json(v);
+        EXPECT_EQ(wisp::json_size(v, 1 << 20), json.size()) << json;
+        // At the limit it is exact; one below, it reports limit + 1.
+        EXPECT_EQ(wisp::json_size(v, json.size()), json.size()) << json;
+        if (!json.empty()) EXPECT_EQ(wisp::json_size(v, json.size() - 1), json.size()) << json;
+    }
+}
+
+TEST(Json, SizeStopsAtTheLimit) {
+    const wisp::Value big(std::string(1 << 20, 'x'));
+    EXPECT_EQ(wisp::json_size(big, 1024), 1025u);
+    wisp::List many(100000, wisp::Value(7));
+    EXPECT_EQ(wisp::json_size(wisp::Value(std::move(many)), 10), 11u);
 }

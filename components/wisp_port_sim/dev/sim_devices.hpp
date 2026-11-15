@@ -27,9 +27,12 @@
 
 namespace wisp::port::sim {
 
+// Every constructor's trailing `role`, when not empty, becomes caps "role"
+// (wisp/hal/roles.hpp), the name portable code finds the device by.
+
 class SimTouch : public wisp::hal::Touch {
 public:
-    SimTouch(std::string id, std::shared_ptr<SimInput> input);
+    SimTouch(std::string id, std::shared_ptr<SimInput> input, std::string role = {});
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     // Reports no touch while powered off.
     wisp::Result<std::vector<wisp::hal::TouchPoint>> read() override;
@@ -44,7 +47,7 @@ private:
 
 class SimImu : public wisp::hal::Imu {
 public:
-    SimImu(std::string id, std::shared_ptr<SimInput> input);
+    SimImu(std::string id, std::shared_ptr<SimInput> input, std::string role = {});
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     // Fails while powered off, like the real sensors.
     wisp::Result<wisp::hal::ImuSample> read() override;
@@ -62,7 +65,7 @@ private:
 // Fixed status (80%, 3900 mV, not charging, USB present).
 class SimPower : public wisp::hal::Power {
 public:
-    SimPower(std::string id, std::function<void()> on_power_off);
+    SimPower(std::string id, std::function<void()> on_power_off, std::string role = {});
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<wisp::hal::PowerStatus> status() override;
     wisp::Result<void> power_off() override;
@@ -78,7 +81,7 @@ private:
 // ("保存相对系统时间的偏移").
 class SimClock : public wisp::hal::Clock {
 public:
-    explicit SimClock(std::string id);
+    explicit SimClock(std::string id, std::string role = {});
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<int64_t> get_unix() override;
     wisp::Result<void> set_unix(int64_t seconds) override;
@@ -135,7 +138,7 @@ private:
 // dev/sim_audio.cpp does.
 class SimAudioOut : public wisp::hal::AudioOut {
 public:
-    explicit SimAudioOut(std::string id);
+    explicit SimAudioOut(std::string id, std::string role = {});
     ~SimAudioOut() override;
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<void> open(const wisp::hal::AudioFormat& format) override;
@@ -178,7 +181,7 @@ private:
 // or crashing.
 class SimAudioIn : public wisp::hal::AudioIn {
 public:
-    explicit SimAudioIn(std::string id);
+    explicit SimAudioIn(std::string id, std::string role = {});
     ~SimAudioIn() override;
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     wisp::Result<void> open(const wisp::hal::AudioFormat& format) override;
@@ -203,7 +206,7 @@ private:
 class SimStorage : public wisp::hal::Storage {
 public:
     SimStorage(std::string id, std::string mount_point, bool removable, std::string fs,
-               uint64_t total_bytes, std::function<bool()> online_fn);
+               uint64_t total_bytes, std::function<bool()> online_fn, std::string role = {});
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     std::string mount_point() const override { return mount_point_; }
     bool online() override { return online_fn_ ? online_fn_() : true; }

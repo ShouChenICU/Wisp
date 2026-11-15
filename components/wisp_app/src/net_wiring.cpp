@@ -10,6 +10,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/hal/wifi.hpp"
 
 namespace wisp::app {
@@ -28,7 +29,7 @@ void NetWiring::start() {
     Platform& platform = deps_.platform;
     const uint64_t now = deps_.now_ms ? deps_.now_ms() : os::now_ms();
 
-    auto wifi_dev = deps_.registry.get<hal::Wifi>("net.wifi");
+    auto wifi_dev = deps_.registry.by_role<hal::Wifi>(hal::role::kMain);
     if (!platform.random) {
         // Tokens, codes and the hotspot password all need a strong RNG;
         // never fall back to a weak one.
@@ -37,7 +38,7 @@ void NetWiring::start() {
         return;
     }
 
-    auto clock = deps_.registry.get<hal::Clock>("clock.main");
+    auto clock = deps_.registry.by_role<hal::Clock>(hal::role::kMain);
     auto unix_now = [clock]() -> int64_t {
         if (!clock) return 0;
         auto t = clock->get_unix();
@@ -186,7 +187,7 @@ void NetWiring::start() {
         reconcile_http(now);  // http_always_on serves from boot
     }
 
-    if (auto power = deps_.registry.get<hal::Power>("power.main")) {
+    if (auto power = deps_.registry.by_role<hal::Power>(hal::role::kMain)) {
         const auto& caps = power->info().caps;
         auto it = caps.find("charging_status");
         reports_external_power_ =

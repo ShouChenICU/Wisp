@@ -37,6 +37,7 @@
 #include "wisp/app/system_notices.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -115,10 +116,8 @@ struct App::Impl {
 
     // Constructed just before power_manager (which holds a
     // non-owning pointer into it -- see PowerManager::enter_standby()/
-    // exit_standby()'s PowerMonitor::set_standby() hook), via its own new
-    // "power.main" device lookup in App::start() -- separate from, and
-    // parallel to, the existing "imu.main" lookup that App::start()
-    // already did for power_manager's own `imu` parameter. Owns its own
+    // exit_standby()'s PowerMonitor::set_standby() hook), via its own
+    // main-power-device lookup in App::start(). Owns its own
     // internal sample Timer (see power_monitor.hpp), so -- unlike
     // storage_timer below -- there is no separate App-owned Timer object
     // for it. Torn down in App::stop() right after power_manager (which
@@ -150,7 +149,7 @@ struct App::Impl {
     // posts to, started once the router and the banners are up, stopped
     // with the agent (whose tools use it) and reset after it.
     std::unique_ptr<core::ReminderScheduler> reminders;
-    // The notification sounds over "audio_out.main" (scene-device spec
+    // The notification sounds over the main speaker (scene-device spec
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.
     std::unique_ptr<core::TonePlayer> tones;
@@ -161,6 +160,12 @@ struct App::Impl {
     // (sensors_power_sub), released before power_manager goes.
     std::unique_ptr<core::SensorService> sensors;
     core::CellSubscription sensors_power_sub;
+    // Self-describing devices (device model spec 3.6): built by start()
+    // next to sensors, reset by stop() after it. Its power level follows
+    // PowerManager's level cell (devices_power_sub), released just before
+    // it and before power_manager goes.
+    std::unique_ptr<core::DeviceService> devices;
+    core::CellSubscription devices_power_sub;
     // What a posted, tapped or acted-on notification does (wake, sound,
     // banner, its scene). Built once the scene runtime is, stopped first
     // by App::stop().
@@ -303,12 +308,15 @@ struct App::Impl {
     // the three saving services alike (spec 3.4, 3.5), after their third
     // failed write in a row. Any thread.
     void report_persist_failed();
-    // run_io() waits up to `timeout_ms` for `job` (os::kForever allowed);
-    // StorageWorker::run_sync()'s errors. A full queue (or a worker
-    // stopping) is retried for up to `busy_budget_ms` before Busy is
-    // returned.
+    // run_io() waits up to `timeout_ms` for `job` (os::kForever allowed)
+    // on `lane`; StorageWorker::run_sync()'s errors. A full lane (or a
+    // worker stopping) is retried for up to `busy_budget_ms` before Busy
+    // is returned. Interactive is for short jobs someone waits for (the
+    // conversation appends); see flash-thread spec 3.1.
+    static constexpr uint32_t kIoBusyBudgetMs = 2000;
     Result<void> run_io(std::function<void()> job, uint32_t timeout_ms,
-                        uint32_t busy_budget_ms = 2000);
+                        uint32_t busy_budget_ms = kIoBusyBudgetMs,
+                        core::IoLane lane = core::IoLane::Normal);
 
     // Both the constructor and destructor are declared here but defined
     // out-of-line in self_check_screen.cpp, the one TU where SelfCheck's

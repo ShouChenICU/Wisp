@@ -30,9 +30,11 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/bench.hpp"
 #include "wisp/app/board.hpp"
+#include "wisp/app/console.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/console_esp.hpp"
 #include "wisp/port/esp/esp_firmware.hpp"
 #include "wisp/port/esp/esp_font_partition.hpp"
@@ -82,8 +84,9 @@ void apply_pm_config(bool light_sleep_enable) {
     }
 }
 
-// Set once App exists; the light-sleep hook below reads power.main through
-// it. Light sleep is only switched by PowerManager, which App starts.
+// Set once App exists; the light-sleep hook below finds the main power
+// device through it. Light sleep is only switched by PowerManager, which
+// App starts.
 wisp::app::App* g_app = nullptr;
 
 // Automatic light sleep on or off, bracketed by a light-sleep statistics
@@ -92,7 +95,8 @@ wisp::app::App* g_app = nullptr;
 // touch read, and takes none of PowerManager's locks.
 void set_light_sleep(bool on) {
     std::shared_ptr<wisp::hal::Power> power =
-        g_app != nullptr ? g_app->registry().get<wisp::hal::Power>("power.main") : nullptr;
+        g_app != nullptr ? g_app->registry().by_role<wisp::hal::Power>(wisp::hal::role::kMain)
+                         : nullptr;
     if (on) {
         wisp::port::esp::sleep_stats_begin(power.get());
         apply_pm_config(/*light_sleep_enable=*/true);
@@ -200,14 +204,17 @@ extern "C" void app_main() {
         };
     }
     // `mem`: heap figures and every task's stack, for the internal-RAM
-    // budget in AGENTS.md section 5 (wisp/port/esp/mem_report.hpp).
+    // budget in AGENTS.md section 5 (wisp/port/esp/mem_report.hpp), then
+    // the bus drops and cell subscriptions (App::dispatch_report()) and
+    // each storage lane's longest wait and job (wisp::app::storage_report).
     platform.console_commands.push_back(
         {"mem",
-         "mem                          internal/DMA/PSRAM heap, task stacks, bus drops and cell "
-         "subscriptions",
+         "mem                          heap, task stacks, bus drops, cell subscriptions and "
+         "storage queues",
          [](wisp::app::App& app, const std::vector<std::string>& args) -> std::string {
              if (args.size() != 1) return "error: usage: mem";
-             return wisp::port::esp::mem_report() + "\n" + app.dispatch_report();
+             return wisp::port::esp::mem_report() + "\n" + app.dispatch_report() + "\n" +
+                    wisp::app::storage_report(app.storage_router());
          }});
     // `sleep`: light-sleep statistics of the running and the last deep
     // standby, and the PM locks (wisp/port/esp/sleep_stats.hpp).

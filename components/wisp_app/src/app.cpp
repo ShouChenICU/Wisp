@@ -29,9 +29,11 @@
 #include "wisp/core/reminders.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/hal/button.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/power.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -75,7 +77,7 @@ hal::ScreenShape display_shape(const hal::Display& display) {
     if (shape) {
         return shape.value();
     }
-    WLOG_W("app", "display.main: invalid shape caps (%s); treating as circle",
+    WLOG_W("app", "%s: invalid shape caps (%s); treating as circle", display.info().id.c_str(),
            shape.error().message.c_str());
     hal::ScreenShape fallback;
     fallback.kind = hal::ScreenShapeKind::Circle;
@@ -140,6 +142,23 @@ Result<void> App::start() {
             impl_->report.record(
                 {device->info().id, device->info().cls, core::DeviceState::Ok, ""});
         }
+    }
+    // The wiring below finds these devices by role main; one registered
+    // without it would be treated as missing with nothing saying why.
+    for (const core::RoleGap& gap : core::main_role_gaps(impl_->registry)) {
+        std::string ids;
+        for (const std::string& id : gap.ids) {
+            if (!ids.empty()) ids += ", ";
+            ids += id;
+        }
+        WLOG_W("app", "no device with role main among %s: %s", hal::to_string(gap.iface),
+               ids.c_str());
+    }
+    if (auto key = core::power_key_also_talks(impl_->registry)) {
+        WLOG_W("app",
+               "%s holds roles power and talk: holding it to talk also triggers the power "
+               "key's long press",
+               key->c_str());
     }
 
     // Step 3: core services.
@@ -225,10 +244,17 @@ Result<void> App::start() {
                     .notes = notes,
                     // The worker or nothing: a timer callback must never
                     // end up running a pass (which writes flash) itself.
+                    // Interactive: a pass rewrites one small file and a
+                    // reminder should ring on time. stop() waits for a
+                    // queued pass by queuing behind it, and the router's
+                    // todo actions must run before that too, so all three
+                    // use this one lane (a full lane: the retry timer for a
+                    // pass, drain_io for stop()).
                     .submit_io =
                         [worker](std::function<void()> job) {
-                            return worker->submit(std::move(job));
+                            return worker->submit(std::move(job), core::IoLane::Interactive);
                         },
+                    .drain_io = [worker](uint32_t ms) { return worker->drain(ms); },
                     .wall_s = [impl] { return impl->wall_now(); },
                     .utc_offset_min = [impl] { return utc_offset_of(impl->system_settings); },
                     .missed_title =
@@ -301,8 +327,8 @@ Result<void> App::start() {
     // The settings cell starts from what is stored, read from the cache
     // just attached, before anything below reads the language or follows it.
     impl_->system_settings.seed_cell();
-    // The SD card hot-plug probe, on the worker like every other storage
-    // access.
+    // The SD card hot-plug probe, on the card's worker (wisp.sd.io, or
+    // wisp.fs without one).
     impl_->refresh_pending.store(false);
     impl_->storage_timer =
         std::make_unique<os::Timer>("wisp.storage", kStorageRefreshMs, /*periodic=*/true,
@@ -330,7 +356,7 @@ Result<void> App::start() {
     if (auto lang = ui::parse_lang(impl_->system_settings.get().language)) {
         ui::set_lang(*lang);
     }
-    auto display = impl_->registry.get<hal::Display>("display.main");
+    auto display = impl_->registry.by_role<hal::Display>(hal::role::kMain);
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;
     int64_t boot_brightness = 200;
@@ -339,7 +365,7 @@ Result<void> App::start() {
         boot_brightness = std::clamp<int64_t>(display_settings.get_int("brightness", 200), 0, 255);
         display->set_brightness(static_cast<uint8_t>(boot_brightness));
 
-        touch = impl_->registry.get<hal::Touch>("touch.main");
+        touch = impl_->registry.by_role<hal::Touch>(hal::role::kMain);
         ui::UiConfig ui_config;
         ui_config.install_image_decoders = impl_->platform.install_image_decoders;
         ui_config.font_image = impl_->platform.font_image;
@@ -370,14 +396,13 @@ Result<void> App::start() {
     // self-check screen is built below, since that screen's power-key
     // handling calls into it.
 
-    // PowerMonitor is constructed here too -- before
-    // PowerManager, which holds a non-owning pointer into it -- and, like
-    // PowerManager itself, regardless of headless mode: polling
-    // "power.main" and publishing power.charging.changed/power.battery.
-    // low has nothing to do with whether there's a screen. It's
-    // completely inert if no "power.main" device is registered (see
-    // power_monitor.hpp).
-    auto power_dev = impl_->registry.get<hal::Power>("power.main");
+    // PowerMonitor is constructed here too -- before PowerManager, which
+    // holds a non-owning pointer into it -- and, like PowerManager itself,
+    // regardless of headless mode: polling the main power device and
+    // publishing power.charging.changed/power.battery.low has nothing to do
+    // with whether there's a screen. It's completely inert if no Power
+    // device has role main (see power_monitor.hpp).
+    auto power_dev = impl_->registry.by_role<hal::Power>(hal::role::kMain);
     impl_->power_monitor = std::make_unique<core::PowerMonitor>(
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
     impl_->power_monitor->start();
@@ -407,7 +432,7 @@ Result<void> App::start() {
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
     impl_->tones = std::make_unique<core::TonePlayer>(
-        impl_->registry.get<hal::AudioOut>("audio_out.main"), &impl_->wakelocks);
+        impl_->registry.by_role<hal::AudioOut>(hal::role::kMain), &impl_->wakelocks);
     if (auto r = impl_->tones->start(); !r) {
         WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
     }
@@ -417,10 +442,19 @@ Result<void> App::start() {
     // subscription (spec 6.1): App follows PowerManager's level cell for
     // it once PowerManager exists, as the service keeps no reference to it.
     impl_->sensors = std::make_unique<core::SensorService>(
-        impl_->registry.get<hal::Imu>("imu.main"), impl_->occupancy);
+        impl_->registry.by_role<hal::Imu>(hal::role::kMain), impl_->occupancy);
     if (auto r = impl_->sensors->start(); !r) {
         WLOG_W("app", "sensors off: %s", r.error().message.c_str());
     }
+    // Generic devices (device model spec 3.6), for the agent tools and the
+    // scenes; it follows PowerManager's level cell like the sensors, once
+    // PowerManager exists (devices_power_sub below).
+    impl_->devices = std::make_unique<core::DeviceService>(
+        impl_->registry, &impl_->occupancy,
+        impl_->platform.device_clock_ms ? impl_->platform.device_clock_ms
+                                        : std::function<uint64_t()>(os::now_ms));
+
+    auto power_key = impl_->registry.by_role<hal::Button>(hal::role::kPower);
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
         .bus = impl_->bus,
         .registry = impl_->registry,
@@ -431,6 +465,7 @@ Result<void> App::start() {
         .power_monitor = impl_->power_monitor.get(),
         .ui = impl_->ui.get(),
         .buttons = &impl_->buttons,
+        .power_key = power_key ? power_key->info().id : std::string(),
         .set_light_sleep = impl_->platform.set_light_sleep,
         .before_deep_standby = [this] { flush_storage(); },
         .on_activity =
@@ -447,6 +482,12 @@ Result<void> App::start() {
     }
     // Standby and deep standby pause every IMU subscription (spec 6.1).
     impl_->sensors_power_sub = impl_->sensors->follow_power(impl_->power_manager->level_cell());
+    // At Standby and below "standby: off" devices are unreachable through
+    // the service (device model spec 3.6). On wisp.bus, like the sensors.
+    impl_->devices_power_sub = impl_->power_manager->level_cell().subscribe(
+        [devices = impl_->devices.get()](const hal::PowerLevel& level) {
+            devices->set_power_level(level);
+        });
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true, [this] {
             const uint64_t now = os::now_ms();
@@ -510,7 +551,7 @@ Result<void> App::start() {
             },
             &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get(),
             impl_->power_monitor ? &impl_->power_monitor->supply() : nullptr,
-            &impl_->system_settings.cell());
+            &impl_->system_settings.cell(), impl_->devices.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {
@@ -524,10 +565,13 @@ Result<void> App::start() {
             .notify_volume = [impl] { return notify_vol_of(impl->system_settings); },
             .ui = impl_->ui.get(),
             .reminders = impl_->reminders.get(),
+            // The reminders' lane (see their submit_io above), so their
+            // stop() waits for a todo action queued before it.
             .submit_io = impl_->reminders && scenes != nullptr
                              ? std::function<bool(std::function<void()>)>(
                                    [worker = &scenes->worker()](std::function<void()> job) {
-                                       return worker->submit(std::move(job));
+                                       return worker->submit(std::move(job),
+                                                             core::IoLane::Interactive);
                                    })
                              : nullptr,
             // The shell is built later, and goes before the router is
@@ -717,14 +761,21 @@ Result<void> App::start() {
             .power = impl_->power_manager ? &impl_->power_manager->level_cell() : nullptr,
             // The runtime lives until scenes.reset(), after shell->stop().
             .scenes = scene_runtime != nullptr ? &scene_runtime->overview() : nullptr,
-            .list_scenes = scenes != nullptr ? std::function<shell::ShellListing()>(
-                                                   [scenes] { return scenes->shell_scenes(); })
-                                             : nullptr,
+            .list_scenes = scenes != nullptr
+                               ? std::function<shell::ShellListing(const std::function<bool()>&)>(
+                                     [scenes](const std::function<bool()>& cancelled) {
+                                         return scenes->shell_scenes(cancelled);
+                                     })
+                               : nullptr,
             .read_scene_icon =
                 scenes != nullptr
                     ? std::function<std::shared_ptr<const os::LargeBuffer>(const std::string&)>(
                           [scenes](const std::string& id) { return scenes->shell_icon(id); })
                     : nullptr,
+            .listing_current = scenes != nullptr ? std::function<bool()>([scenes] {
+                return scenes->shell_listing_current();
+            })
+                                                 : nullptr,
             .scene_has_data = scenes != nullptr ? std::function<bool(const std::string&)>(
                                                       [scenes](const std::string& id) {
                                                           return scenes->scene_has_data(id);
@@ -835,7 +886,7 @@ Result<void> App::start() {
     // spec 9.2 ("--no-sd 时 Library 只有内置根"): surfaces the actual
     // root list, rather than leaving it something only a unit test can
     // see, so a smoke test can assert on it directly without depending
-    // on whether "storage.sd" happened to be registered.
+    // on whether a card happened to be registered.
     {
         wisp::List library_roots;
         for (const std::string& root : impl_->storage.roots(core::Area::Library)) {
@@ -1002,6 +1053,9 @@ void App::stop() {
         impl_->sensors->stop();
         impl_->sensors.reset();
     }
+    // Its last callers, the agent tools and the scenes, are gone.
+    impl_->devices_power_sub.reset();
+    impl_->devices.reset();
 
     // PowerManager is torn down next -- after the self-check screen
     // (which calls into it), before buttons/ui/bus (which it in turn
@@ -1170,6 +1224,11 @@ void App::build_agent(const hal::ScreenShape& shape) {
             [impl](std::function<void()> job) {
                 return impl->run_io(std::move(job), os::kForever);
             },
+        .run_io_interactive =
+            [impl](std::function<void()> job) {
+                return impl->run_io(std::move(job), os::kForever, App::Impl::kIoBusyBudgetMs,
+                                    core::IoLane::Interactive);
+            },
         .delete_scene =
             [impl](const std::string& id, bool with_data, std::function<void(Result<void>)> done) {
                 impl->scenes->delete_scene(id, with_data, std::move(done));
@@ -1193,6 +1252,7 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .lang = [impl] { return std::string(ui::lang_code(lang_of(impl->system_settings))); },
         .wall_s = wall_s,
         .context = std::move(context),
+        .devices = impl->devices.get(),
         .device_status = std::move(device_status),
     });
     if (!impl->agent) WLOG_E("app", "no memory for the agent; the agent is off");
@@ -1212,19 +1272,19 @@ bool App::Impl::submit_io(std::function<void()> job) {
 }
 
 Result<void> App::Impl::run_io(std::function<void()> job, uint32_t timeout_ms,
-                               uint32_t busy_budget_ms) {
+                               uint32_t busy_budget_ms, core::IoLane lane) {
     core::StorageWorker* worker = scenes ? &scenes->worker() : nullptr;
     if (worker == nullptr) {
         job();
         return Result<void>::ok();
     }
-    // A full Normal lane drains within a few jobs; a worker that is
-    // stopping stays Busy until it has stopped, and then runs it inline.
-    Result<void> r = worker->run_sync(job, timeout_ms);
+    // A full lane drains within a few jobs; a worker that is stopping
+    // stays Busy until it has stopped, and then runs it inline.
+    Result<void> r = worker->run_sync(job, timeout_ms, lane);
     for (uint32_t waited = 0; !r && r.error().code == ErrorCode::Busy && waited < busy_budget_ms;
          waited += kIoBusyPollMs) {
         os::sleep_ms(kIoBusyPollMs);
-        r = worker->run_sync(job, timeout_ms);
+        r = worker->run_sync(job, timeout_ms, lane);
     }
     return r;
 }
@@ -1238,22 +1298,33 @@ void App::flush_storage() {
     if (auto r = impl_->settings_front.flush(kShutdownSettingsFlushMs); !r) {
         WLOG_W("app", "settings not saved before going down: %s", r.error().message.c_str());
     }
-    core::StorageWorker* worker = storage_worker();
-    if (worker != nullptr && !worker->drain(kShutdownDrainMs)) {
+    // Both workers: card work queued on wisp.sd.io is written too.
+    core::StorageRouter* router = storage_router();
+    if (router != nullptr && !router->drain(kShutdownDrainMs)) {
         WLOG_W("app", "storage work still queued (%u jobs); going down anyway",
-               static_cast<unsigned>(worker->pending()));
+               static_cast<unsigned>(router->pending()));
     }
 }
 
 bool queue_storage_refresh(App& app) {
     App::Impl* impl = app.impl_.get();
     if (impl->refresh_pending.exchange(true)) return false;
-    if (impl->submit_io([impl] {
-            impl->storage.refresh();
-            impl->refresh_pending.store(false);
-        })) {
+    std::function<void()> job = [impl] {
+        impl->storage.refresh();
+        impl->refresh_pending.store(false);
+    };
+    // Card work (it takes only the card's I/O lock, and may deinit a
+    // pulled card): on wisp.sd.io when it runs, else on wisp.fs.
+    core::StorageRouter* router = app.storage_router();
+    if (router == nullptr) {
+        job();
         return true;
     }
+    if (router->submit(core::Medium::Sd, job)) return true;
+    // Not running (boot or shutdown): run_sync() runs it right here. Timeout
+    // means it got queued after all and runs later; Busy that it never will.
+    Result<void> r = router->run_sync(core::Medium::Sd, std::move(job), 0);
+    if (r || r.error().code == ErrorCode::Timeout) return true;
     impl->refresh_pending.store(false);
     return false;
 }
@@ -1279,7 +1350,11 @@ core::NotificationService* App::notifications() { return impl_->notifications.ge
 core::ReminderScheduler* App::reminders() { return impl_->reminders.get(); }
 core::OccupancyRegistry& App::occupancy() { return impl_->occupancy; }
 core::SensorService* App::sensors() { return impl_->sensors.get(); }
+core::DeviceService* App::devices() { return impl_->devices.get(); }
 agent::AgentService* App::agent() { return impl_->agent ? impl_->agent->service() : nullptr; }
+const agent::ToolRegistry* App::agent_tools() const {
+    return impl_->agent ? impl_->agent->tools() : nullptr;
+}
 core::MemoryStore* App::memory() { return impl_->agent ? impl_->agent->memory() : nullptr; }
 shell::ConversationController* App::conversation() {
     return impl_->voice ? &impl_->voice->conversation() : nullptr;
@@ -1287,6 +1362,9 @@ shell::ConversationController* App::conversation() {
 shell::Shell* App::shell() { return impl_->shell.get(); }
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
+}
+core::StorageRouter* App::storage_router() {
+    return impl_->scenes ? &impl_->scenes->router() : nullptr;
 }
 net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr; }
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }

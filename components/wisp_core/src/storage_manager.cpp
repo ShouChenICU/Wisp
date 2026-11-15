@@ -15,6 +15,7 @@
 
 #include "wisp/core/log.hpp"
 #include "wisp/core/topics.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
@@ -22,8 +23,6 @@ namespace wisp::core {
 namespace {
 
 constexpr const char* kTag = "storage_manager";
-constexpr const char* kIntId = "storage.int";
-constexpr const char* kSdId = "storage.sd";
 
 // Lexically normalizes `path`: collapses repeated '/', drops '.'
 // components, and drops a trailing '/' (so the result never has one).
@@ -485,79 +484,146 @@ uint64_t path_size(const std::string& path) {
     return S_ISREG(st.st_mode) ? static_cast<uint64_t>(st.st_size) : 0;
 }
 
+// Reads exactly `size` bytes of `path` into `dst`.
+Result<void> read_exact(const std::string& path, uint8_t* dst, size_t size) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        return io_error("fopen", path);
+    }
+    size_t read = size == 0 ? 0 : fread(dst, 1, size, f);
+    bool failed = ferror(f) != 0 || read != size;
+    int saved_errno = errno;
+    fclose(f);
+    if (failed) {
+        return Result<void>::err(ErrorCode::IoError,
+                                 "read " + path + ": " + std::string(strerror(saved_errno)));
+    }
+    return Result<void>::ok();
+}
+
 }  // namespace
 
 StorageManager::StorageManager(DeviceRegistry& registry, EventBus& bus, StorageConfig config)
     : registry_(registry), bus_(bus), config_(config), sd_cell_(bus, SdStatus{}, &sd_mirror) {}
 
+StorageManager::View StorageManager::view() const {
+    std::lock_guard<os::Mutex> lock(state_mu_);
+    return View{ready_, int_mount_, sd_mount_, sd_online_};
+}
+
+Medium StorageManager::medium_in(const View& v, const std::string& path) {
+    return v.ready && is_under(path, v.sd_mount) ? Medium::Sd : Medium::Internal;
+}
+
+Medium StorageManager::medium_of(const std::string& raw_path) const {
+    Result<std::string> normalized = normalize_path(raw_path);
+    if (!normalized) {
+        return Medium::Internal;
+    }
+    return medium_in(view(), normalized.value());
+}
+
+Result<Medium> StorageManager::medium_for_call(const std::string& raw_path,
+                                               uint64_t calls_on_error) const {
+    Result<std::string> normalized = normalize_path(raw_path);
+    if (!normalized) {
+        calls_.fetch_add(calls_on_error, std::memory_order_relaxed);
+        return Result<Medium>::err(normalized.error().code, normalized.error().message);
+    }
+    return Result<Medium>::ok(medium_in(view(), normalized.value()));
+}
+
+bool StorageManager::has_sd() const {
+    std::lock_guard<os::Mutex> lock(state_mu_);
+    return ready_ && sd_dev_ != nullptr;
+}
+
 Result<void> StorageManager::init() {
     WISP_ASSERT_FLASH_THREAD("StorageManager::init");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    std::lock_guard<os::Mutex> int_io(int_io_mu_);
+    std::lock_guard<os::Mutex> sd_io(sd_io_mu_);
 
-    // Set this false up front, before anything else
-    // -- so that if this call is a *re*-init that fails partway (e.g.
-    // storage.int was unplugged since a previous successful init()), the
-    // manager is left unusable (StorageUnavailable/empty roots) rather
-    // than silently continuing to operate on the previous, now-stale
-    // int_mount_/sd_mount_/sd_online_ state. It's only set back to true
-    // at the very end, once every step below has actually succeeded.
-    ready_ = false;
-
-    int_dev_ = registry_.get<hal::Storage>(kIntId);
-    if (!int_dev_) {
-        return Result<void>::err(ErrorCode::StorageUnavailable,
-                                 std::string(kIntId) + " not registered");
+    // Not ready from here on, so that if this call is a *re*-init that
+    // fails partway (e.g. storage.int was unplugged since a previous
+    // successful init()), the manager is left unusable
+    // (StorageUnavailable/empty roots) rather than silently continuing to
+    // operate on the previous, now-stale mount state. It only becomes
+    // ready again at the very end, once every step below has succeeded.
+    {
+        std::lock_guard<os::Mutex> state(state_mu_);
+        ready_ = false;
     }
-    Result<std::string> int_norm = normalize_path(int_dev_->mount_point());
+
+    // Everything is worked out in locals first: the directory creation and
+    // online() below are I/O, which never runs under state_mu_.
+    std::shared_ptr<hal::Storage> int_dev = registry_.by_role<hal::Storage>(hal::role::kInternal);
+    if (!int_dev) {
+        return Result<void>::err(ErrorCode::StorageUnavailable,
+                                 "no storage device with role internal");
+    }
+    Result<std::string> int_norm = normalize_path(int_dev->mount_point());
     if (!int_norm) {
         return Result<void>::err(int_norm.error().code, int_norm.error().message);
     }
-    int_mount_ = int_norm.value();
-    WISP_TRY(mkdir_p(int_mount_ + "/system"));
-    WISP_TRY(mkdir_p(int_mount_ + "/library"));
+    const std::string& int_mount = int_norm.value();
+    WISP_TRY(mkdir_p(int_mount + "/system"));
+    WISP_TRY(mkdir_p(int_mount + "/library"));
 
-    sd_dev_ = registry_.get<hal::Storage>(kSdId);
-    if (sd_dev_) {
-        Result<std::string> sd_norm = normalize_path(sd_dev_->mount_point());
+    std::shared_ptr<hal::Storage> sd_dev = registry_.by_role<hal::Storage>(hal::role::kRemovable);
+    if (sd_dev == int_dev) {
+        // One medium cannot be both: as a card it would be listed twice,
+        // get card events and take the Library root off internal flash.
+        WLOG_W(kTag, "'%s' has both roles internal and removable; treating it as internal only",
+               int_dev->info().id.c_str());
+        sd_dev.reset();
+    }
+    std::string sd_mount;
+    bool sd_online = false;
+    if (sd_dev) {
+        Result<std::string> sd_norm = normalize_path(sd_dev->mount_point());
         if (!sd_norm) {
             return Result<void>::err(sd_norm.error().code, sd_norm.error().message);
         }
-        sd_mount_ = sd_norm.value();
-        sd_online_ = sd_dev_->online();
-        if (sd_online_) {
+        sd_mount = sd_norm.value();
+        sd_online = sd_dev->online();
+        if (sd_online) {
             // Best-effort: a write-protected/corrupt SD card must not
             // fail init() for internal storage, which is otherwise fine
             // -- see this method's doc comment.
-            ensure_sd_dirs_best_effort(sd_mount_);
+            ensure_sd_dirs_best_effort(sd_mount);
         }
-    } else {
-        sd_mount_.clear();
-        sd_online_ = false;
     }
 
-    // Silent: nothing is published at boot, as before.
-    sd_cell_.seed({sd_online_, sd_cell_.get().changes});
+    // Silent: nothing is published at boot, as before. Under both I/O
+    // locks, so no refresh() moves the cell in between.
+    sd_cell_.seed({sd_online, sd_cell_.get().changes});
 
+    std::lock_guard<os::Mutex> state(state_mu_);
+    int_dev_ = std::move(int_dev);
+    sd_dev_ = std::move(sd_dev);
+    int_mount_ = int_mount;
+    sd_mount_ = std::move(sd_mount);
+    sd_online_ = sd_online;
     ready_ = true;
     return Result<void>::ok();
 }
 
 std::vector<std::string> StorageManager::roots(Area area) const {
-    std::lock_guard<os::Mutex> lock(mutex_);
-    if (!ready_) {
+    const View v = view();
+    if (!v.ready) {
         return {};
     }
     switch (area) {
         case Area::System:
-            return {int_mount_ + "/system"};
+            return {v.int_mount + "/system"};
         case Area::Library:
-            if (sd_online_) {
-                return {sd_mount_ + "/wisp/library", int_mount_ + "/library"};
+            if (v.sd_online) {
+                return {v.sd_mount + "/wisp/library", v.int_mount + "/library"};
             }
-            return {int_mount_ + "/library"};
+            return {v.int_mount + "/library"};
         case Area::Backup:
-            if (sd_online_) {
-                return {sd_mount_ + "/wisp/backup"};
+            if (v.sd_online) {
+                return {v.sd_mount + "/wisp/backup"};
             }
             return {};
     }
@@ -575,34 +641,25 @@ Result<std::string> StorageManager::write_root(Area area) const {
 
 Result<void> StorageManager::write_atomic(const std::string& raw_path,
                                           std::span<const uint8_t> data) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::write_atomic");
-    std::lock_guard<os::Mutex> lock(mutex_);
-    // Its own checks rather than checked_path()'s.
-    calls_.fetch_add(1, std::memory_order_relaxed);
-
-    if (!ready_) {
-        return Result<void>::err(ErrorCode::StorageUnavailable, "StorageManager not initialized");
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
     }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::write_atomic");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
 
-    Result<std::string> normalized = normalize_path(raw_path);
-    if (!normalized) {
-        return Result<void>::err(normalized.error().code, normalized.error().message);
-    }
-    const std::string& path = normalized.value();
-
-    // A caller writing directly to one of
-    // write_atomic()'s own reserved names would be invisible to the
-    // quota, and would be clobbered by this very function's "<path>.new"
+    // checked_path() also rejects a caller writing directly to one of
+    // write_atomic()'s own reserved names, which would be invisible to the
+    // quota and clobbered by this very function's "<path>.new"
     // bookkeeping below -- see has_reserved_suffix()'s doc comment.
-    if (has_reserved_suffix(path)) {
-        return Result<void>::err(ErrorCode::InvalidArgument,
-                                 "path must not end in '.tmp' or '.new': " + path);
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/true);
+    if (!checked) {
+        return Result<void>::err(checked.error().code, checked.error().message);
     }
-
-    if (sd_dev_ && !sd_mount_.empty() && is_under(path, sd_mount_) && !sd_online_) {
-        return Result<void>::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
-    }
-    WISP_TRY(check_depth(path));
+    const std::string& path = checked.value();
+    WISP_TRY(check_locked_medium(v, path, medium));
 
     // Recover a "<path>.new" orphaned by a *double*
     // power cut (first write completed and synced, but the final rename
@@ -614,8 +671,8 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     // recovered file's size.
     WISP_TRY(promote_pending_new(path));
 
-    std::string library_root = int_mount_ + "/library";
-    if (!int_mount_.empty() && is_under(path, library_root)) {
+    if (in_internal_library(v, path)) {
+        const std::string library_root = v.int_mount + "/library";
         uint64_t existing_total = dir_size(library_root);
         uint64_t old_target_size = file_size(path);
         uint64_t projected = existing_total - old_target_size + data.size();
@@ -666,15 +723,19 @@ Result<void> StorageManager::write_atomic(const std::string& raw_path,
     return Result<void>::ok();
 }
 
-Result<std::pair<std::string, uint64_t>> StorageManager::open_for_read(
-    const std::string& raw_path) {
+Result<std::pair<std::string, uint64_t>> StorageManager::open_for_read(const View& v,
+                                                                       const std::string& raw_path,
+                                                                       Medium medium) {
     using R = Result<std::pair<std::string, uint64_t>>;
 
-    Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/false);
     if (!checked) {
         return R::err(checked.error().code, checked.error().message);
     }
     std::string path = std::move(checked.value());
+    if (Result<void> m = check_locked_medium(v, path, medium); !m) {
+        return R::err(m.error().code, m.error().message);
+    }
 
     // Promote a leftover ".new" (a complete, synced write that was
     // interrupted before the final rename -- see file header and
@@ -704,33 +765,17 @@ Result<std::pair<std::string, uint64_t>> StorageManager::open_for_read(
     return R::ok({std::move(path), static_cast<uint64_t>(st.st_size)});
 }
 
-namespace {
-
-// Reads exactly `size` bytes of `path` into `dst`.
-Result<void> read_exact(const std::string& path, uint8_t* dst, size_t size) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) {
-        return io_error("fopen", path);
-    }
-    size_t read = size == 0 ? 0 : fread(dst, 1, size, f);
-    bool failed = ferror(f) != 0 || read != size;
-    int saved_errno = errno;
-    fclose(f);
-    if (failed) {
-        return Result<void>::err(ErrorCode::IoError,
-                                 "read " + path + ": " + std::string(strerror(saved_errno)));
-    }
-    return Result<void>::ok();
-}
-
-}  // namespace
-
 Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_path) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::read_file");
     using R = Result<std::vector<uint8_t>>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::read_file");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
 
-    auto opened = open_for_read(raw_path);
+    auto opened = open_for_read(view(), raw_path, medium);
     if (!opened) {
         return R::err(opened.error().code, opened.error().message);
     }
@@ -744,11 +789,16 @@ Result<std::vector<uint8_t>> StorageManager::read_file(const std::string& raw_pa
 }
 
 Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_path) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::read_file_large");
     using R = Result<os::LargeBuffer>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::read_file_large");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
 
-    auto opened = open_for_read(raw_path);
+    auto opened = open_for_read(view(), raw_path, medium);
     if (!opened) {
         return R::err(opened.error().code, opened.error().message);
     }
@@ -766,11 +816,16 @@ Result<os::LargeBuffer> StorageManager::read_file_large(const std::string& raw_p
 
 Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, uint64_t offset,
                                                    size_t len) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::read_range");
     using R = Result<os::LargeBuffer>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::read_range");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
 
-    auto opened = open_for_read(raw_path);
+    auto opened = open_for_read(view(), raw_path, medium);
     if (!opened) {
         return R::err(opened.error().code, opened.error().message);
     }
@@ -809,10 +864,11 @@ Result<os::LargeBuffer> StorageManager::read_range(const std::string& raw_path, 
     return R::ok(std::move(buf));
 }
 
-Result<std::string> StorageManager::checked_path(const std::string& raw, bool mutating) const {
+Result<std::string> StorageManager::checked_path(const View& v, const std::string& raw,
+                                                 bool mutating) const {
     using R = Result<std::string>;
     calls_.fetch_add(1, std::memory_order_relaxed);
-    if (!ready_) {
+    if (!v.ready) {
         return R::err(ErrorCode::StorageUnavailable, "StorageManager not initialized");
     }
     Result<std::string> normalized = normalize_path(raw);
@@ -824,18 +880,30 @@ Result<std::string> StorageManager::checked_path(const std::string& raw, bool mu
     if (has_reserved_suffix(path)) {
         return R::err(ErrorCode::InvalidArgument, "path must not end in '.tmp' or '.new': " + path);
     }
-    if (mutating && sd_dev_ && is_under(path, sd_mount_) && !sd_online_) {
+    if (mutating && is_under(path, v.sd_mount) && !v.sd_online) {
         return R::err(ErrorCode::StorageUnavailable, "sd card offline: " + path);
     }
-    Result<void> depth = check_depth(path);
+    Result<void> depth = check_depth(v, path);
     if (!depth) {
         return R::err(depth.error().code, depth.error().message);
     }
     return normalized;
 }
 
-Result<void> StorageManager::check_depth(const std::string& path) const {
-    for (const std::string* mount : {&int_mount_, &sd_mount_}) {
+Result<void> StorageManager::check_locked_medium(const View& v, const std::string& path,
+                                                 Medium locked) {
+    // The medium was picked before its lock was taken; only an init()
+    // in between (it holds both I/O locks) can move `path` to the other
+    // one, and then this call holds the wrong lock for it.
+    if (medium_in(v, path) != locked) {
+        return Result<void>::err(ErrorCode::StorageUnavailable,
+                                 "storage re-initialized during the call: " + path);
+    }
+    return Result<void>::ok();
+}
+
+Result<void> StorageManager::check_depth(const View& v, const std::string& path) {
+    for (const std::string* mount : {&v.int_mount, &v.sd_mount}) {
         if (!is_under(path, *mount)) {
             continue;
         }
@@ -850,15 +918,15 @@ Result<void> StorageManager::check_depth(const std::string& path) const {
     return Result<void>::ok();
 }
 
-Result<void> StorageManager::check_contained(const std::string& path) const {
-    bool inside = path.size() > int_mount_.size() && is_under(path, int_mount_);
-    if (!inside && sd_online_ && !sd_mount_.empty()) {
-        inside = path.size() > sd_mount_.size() && is_under(path, sd_mount_);
+Result<void> StorageManager::check_contained(const View& v, const std::string& path) {
+    bool inside = path.size() > v.int_mount.size() && is_under(path, v.int_mount);
+    if (!inside && v.sd_online && !v.sd_mount.empty()) {
+        inside = path.size() > v.sd_mount.size() && is_under(path, v.sd_mount);
     }
-    bool is_root = path == int_mount_ + "/system" || path == int_mount_ + "/library" ||
-                   (!sd_mount_.empty() &&
-                    (path == sd_mount_ + "/wisp" || path == sd_mount_ + "/wisp/library" ||
-                     path == sd_mount_ + "/wisp/backup"));
+    bool is_root = path == v.int_mount + "/system" || path == v.int_mount + "/library" ||
+                   (!v.sd_mount.empty() &&
+                    (path == v.sd_mount + "/wisp" || path == v.sd_mount + "/wisp/library" ||
+                     path == v.sd_mount + "/wisp/backup"));
     if (path.empty() || path.front() != '/' || !inside || is_root) {
         return Result<void>::err(ErrorCode::InvalidArgument,
                                  "not a removable path inside storage: " + path);
@@ -866,27 +934,34 @@ Result<void> StorageManager::check_contained(const std::string& path) const {
     return Result<void>::ok();
 }
 
-bool StorageManager::in_internal_library(const std::string& path) const {
-    return !int_mount_.empty() && is_under(path, int_mount_ + "/library");
+bool StorageManager::in_internal_library(const View& v, const std::string& path) {
+    return !v.int_mount.empty() && is_under(path, v.int_mount + "/library");
 }
 
 Result<void> StorageManager::append(const std::string& raw_path, std::span<const uint8_t> data) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::append");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::append");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
 
-    Result<std::string> checked = checked_path(raw_path, /*mutating=*/true);
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/true);
     if (!checked) {
         return Result<void>::err(checked.error().code, checked.error().message);
     }
     const std::string& path = checked.value();
+    WISP_TRY(check_locked_medium(v, path, medium));
 
     // Appending to a bare path while a complete ".new" sits beside it
     // would strand that data, which a later read_file() would then find
     // shadowed by the appended file.
     WISP_TRY(promote_pending_new(path));
 
-    if (in_internal_library(path)) {
-        uint64_t projected = dir_size(int_mount_ + "/library") + data.size();
+    if (in_internal_library(v, path)) {
+        uint64_t projected = dir_size(v.int_mount + "/library") + data.size();
         if (projected > config_.internal_library_quota) {
             return Result<void>::err(ErrorCode::QuotaExceeded,
                                      "internal library quota exceeded: " + path);
@@ -901,7 +976,12 @@ Result<void> StorageManager::append(const std::string& raw_path, std::span<const
 }
 
 Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_path) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::list_dir");
+    // A malformed path is left to visit_dir(), which rejects (and counts)
+    // it before any thread check.
+    if (Result<std::string> normalized = normalize_path(raw_path); normalized) {
+        WISP_ASSERT_MEDIUM_THREAD(medium_in(view(), normalized.value()) == Medium::Sd,
+                                  "StorageManager::list_dir");
+    }
     std::vector<DirEntry> out;
     Result<void> r = visit_dir(raw_path, [&out](const DirEntry& e) {
         out.push_back(e);
@@ -917,15 +997,22 @@ Result<std::vector<DirEntry>> StorageManager::list_dir(const std::string& raw_pa
 
 Result<void> StorageManager::visit_dir(const std::string& raw_path,
                                        const std::function<bool(const DirEntry&)>& visit) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::visit_dir");
     using R = Result<void>;
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return R::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::visit_dir");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
 
-    Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/false);
     if (!checked) {
         return R::err(checked.error().code, checked.error().message);
     }
     const std::string& path = checked.value();
+    WISP_TRY(check_locked_medium(v, path, medium));
 
     struct stat st;
     if (stat(path.c_str(), &st) != 0) {
@@ -968,15 +1055,22 @@ Result<void> StorageManager::visit_dir(const std::string& raw_path,
 }
 
 Result<void> StorageManager::remove_tree(const std::string& raw_path) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::remove_tree");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::remove_tree");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
 
-    Result<std::string> checked = checked_path(raw_path, /*mutating=*/true);
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/true);
     if (!checked) {
         return Result<void>::err(checked.error().code, checked.error().message);
     }
     const std::string& path = checked.value();
-    WISP_TRY(check_contained(path));
+    WISP_TRY(check_locked_medium(v, path, medium));
+    WISP_TRY(check_contained(v, path));
 
     WISP_TRY(remove_tree_at(path));
     // Bookkeeping beside a removed file; a directory never has any, so
@@ -991,21 +1085,40 @@ Result<void> StorageManager::remove_tree(const std::string& raw_path) {
 }
 
 Result<void> StorageManager::rename(const std::string& raw_from, const std::string& raw_to) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::rename");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_from);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    // A malformed target counts both paths, as a rename that reaches it
+    // always has.
+    if (Result<Medium> to_picked = medium_for_call(raw_to, /*calls_on_error=*/2); !to_picked) {
+        return Result<void>::err(to_picked.error().code, to_picked.error().message);
+    }
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::rename");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
 
-    Result<std::string> from_r = checked_path(raw_from, /*mutating=*/true);
+    Result<std::string> from_r = checked_path(v, raw_from, /*mutating=*/true);
     if (!from_r) {
         return Result<void>::err(from_r.error().code, from_r.error().message);
     }
-    Result<std::string> to_r = checked_path(raw_to, /*mutating=*/true);
+    Result<std::string> to_r = checked_path(v, raw_to, /*mutating=*/true);
     if (!to_r) {
         return Result<void>::err(to_r.error().code, to_r.error().message);
     }
     const std::string& from = from_r.value();
     const std::string& to = to_r.value();
-    WISP_TRY(check_contained(from));
-    WISP_TRY(check_contained(to));
+    WISP_TRY(check_locked_medium(v, from, medium));
+    // Only `from`'s medium is locked (and checked against this thread), so
+    // `to` must be on it too; the filesystems cannot rename across devices
+    // anyway.
+    if (medium_in(v, to) != medium) {
+        return Result<void>::err(ErrorCode::InvalidArgument,
+                                 "cannot rename across storage devices: " + from + " -> " + to);
+    }
+    WISP_TRY(check_contained(v, from));
+    WISP_TRY(check_contained(v, to));
 
     WISP_TRY(promote_pending_new(from));
     WISP_TRY(promote_pending_new(to));
@@ -1022,8 +1135,8 @@ Result<void> StorageManager::rename(const std::string& raw_from, const std::stri
                                  "cannot move " + from + " into itself: " + to);
     }
 
-    if (in_internal_library(to) && !in_internal_library(from)) {
-        uint64_t projected = dir_size(int_mount_ + "/library") + path_size(from);
+    if (in_internal_library(v, to) && !in_internal_library(v, from)) {
+        uint64_t projected = dir_size(v.int_mount + "/library") + path_size(from);
         if (projected > config_.internal_library_quota) {
             return Result<void>::err(ErrorCode::QuotaExceeded,
                                      "internal library quota exceeded: " + to);
@@ -1048,18 +1161,27 @@ Result<void> StorageManager::rename(const std::string& raw_from, const std::stri
 }
 
 Result<uint64_t> StorageManager::tree_size(const std::string& raw_path) {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::tree_size");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<uint64_t>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::tree_size");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
 
-    Result<std::string> checked = checked_path(raw_path, /*mutating=*/false);
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/false);
     if (!checked) {
         return Result<uint64_t>::err(checked.error().code, checked.error().message);
+    }
+    if (Result<void> m = check_locked_medium(v, checked.value(), medium); !m) {
+        return Result<uint64_t>::err(m.error().code, m.error().message);
     }
     return Result<uint64_t>::ok(path_size(checked.value()));
 }
 
 Result<std::string> StorageManager::internal_root() const {
-    std::lock_guard<os::Mutex> lock(mutex_);
+    std::lock_guard<os::Mutex> lock(state_mu_);
     if (!ready_) {
         return Result<std::string>::err(ErrorCode::StorageUnavailable,
                                         "StorageManager not initialized");
@@ -1068,44 +1190,73 @@ Result<std::string> StorageManager::internal_root() const {
 }
 
 void StorageManager::refresh() {
-    WISP_ASSERT_FLASH_THREAD("StorageManager::refresh");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    WISP_ASSERT_SD_IO_THREAD("StorageManager::refresh");
+    // online() may deinit a removed card (EspSdStorage), which is only
+    // safe with no card I/O in flight: holding sd_io_mu_ waits out the
+    // running card operation, and the one after this sees the new state.
+    std::lock_guard<os::Mutex> io(sd_io_mu_);
 
-    if (!sd_dev_) {
+    std::shared_ptr<hal::Storage> sd_dev;
+    bool was_online = false;
+    std::string sd_mount;
+    {
+        std::lock_guard<os::Mutex> state(state_mu_);
+        sd_dev = sd_dev_;
+        was_online = sd_online_;
+        sd_mount = sd_mount_;
+    }
+    if (!sd_dev) {
         return;
     }
 
-    bool now_online = sd_dev_->online();
-    if (now_online == sd_online_) {
+    bool now_online = sd_dev->online();
+    if (now_online == was_online) {
         return;
     }
-    sd_online_ = now_online;
+    {
+        std::lock_guard<os::Mutex> state(state_mu_);
+        sd_online_ = now_online;
+    }
 
-    if (sd_online_) {
+    if (now_online) {
         // Best-effort, same as init(): a write-protected/corrupt card
         // stays marked online rather than flipping refresh() back to
         // "removed" just because its directories couldn't be (re)made.
-        ensure_sd_dirs_best_effort(sd_mount_);
+        ensure_sd_dirs_best_effort(sd_mount);
     }
     // Always a new value: `changes` moves, so no event is lost to equal-value
     // skipping, and the mirror runs after the mount above, as the publish did.
+    // Set under sd_io_mu_, so two refresh() calls move the cell (and the
+    // mirror publishes) in the order they observed the card; the mirror's
+    // publish() never blocks on (or calls back into) a handler -- see
+    // event_bus.hpp.
     sd_cell_.update([&](SdStatus& s) {
-        s.online = sd_online_;
+        s.online = now_online;
         ++s.changes;
     });
 }
 
 StorageStatus StorageManager::status() const {
     WISP_ASSERT_FLASH_THREAD("StorageManager::status");
-    std::lock_guard<os::Mutex> lock(mutex_);
+    std::lock_guard<os::Mutex> int_io(int_io_mu_);
+    std::lock_guard<os::Mutex> sd_io(sd_io_mu_);
+
+    std::shared_ptr<hal::Storage> int_dev;
+    std::shared_ptr<hal::Storage> sd_dev;
+    {
+        std::lock_guard<os::Mutex> state(state_mu_);
+        int_dev = int_dev_;
+        sd_dev = sd_dev_;
+    }
 
     StorageStatus result;
-    for (const auto& dev : {int_dev_, sd_dev_}) {
+    for (const auto& dev : {int_dev, sd_dev}) {
         if (!dev) {
             continue;
         }
         MediaStatus m;
         m.id = dev->info().id;
+        m.removable = dev == sd_dev;
         m.online = dev->online();
         Result<hal::Capacity> cap = dev->capacity();
         if (cap) {
@@ -1118,14 +1269,13 @@ StorageStatus StorageManager::status() const {
 }
 
 void StorageManager::set_standby(bool standby) {
-    // Deliberately not taking mutex_ here. PowerManager
-    // calls this from the UI thread while holding its own transition_
-    // mutex_, and mutex_ can be held elsewhere (write_atomic()'s fsync +
-    // rename) for up to the duration of an SD write -- taking it here too
-    // would make a standby transition wait out whatever write happens to
-    // be in flight, eating into the wake-latency budget for no reason.
-    // Safe without it: sd_dev_ is assigned exactly once, inside init()
-    // (never reassigned afterwards -- see sd_dev_'s own comment), and
+    // Deliberately takes no lock. PowerManager calls this from the UI
+    // thread while holding its own transition_ mutex, and sd_io_mu_ can be
+    // held for a whole card operation (write_atomic()'s fsync + rename)
+    // -- taking it here too would make a standby transition wait out
+    // whatever card write happens to be in flight, eating into the
+    // wake-latency budget for no reason. Safe without it: sd_dev_ is
+    // assigned inside init() only (see sd_dev_'s own comment), and
     // hal::Storage::set_standby() (EspSdStorage::set_standby(), in
     // practice) is itself just an atomic store plus a semaphore give(),
     // already safe to call concurrently with anything else touching the

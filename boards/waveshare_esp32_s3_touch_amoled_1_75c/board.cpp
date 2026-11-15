@@ -44,6 +44,7 @@
 #include "esp_err.h"
 #include "qmi8658_conv.h"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/esp_audio.hpp"
 #include "wisp/port/esp/esp_button.hpp"
 #include "wisp/port/esp/esp_clock.hpp"
@@ -330,15 +331,16 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
             "button.power: GPIO3 active-high selected; verify polarity/strapping/wake on hardware");
         add_device(registry, report,
                    std::make_shared<wisp::port::esp::EspGpioButton>(
-                       kPinBtnPower, kPowerActiveLow, "button.power", "gpio-button", "",
-                       wisp::hal::ButtonInputMode::EdgeEvent));
+                       kPinBtnPower, kPowerActiveLow, "button.power", "gpio-button",
+                       wisp::hal::role::kPower, wisp::hal::ButtonInputMode::EdgeEvent));
     } else if (power) {
         WLOG_W(kTag,
                "button.power: PMU fallback; GPIO3 polarity/strapping/wake NOT hardware validated; "
                "standby metadata 100 ms");
-        add_device(registry, report,
-                   std::make_shared<wisp::port::esp::EspPmuPowerKey>(
-                       std::move(power), "button.power", "axp2101-pwrkey"));
+        add_device(
+            registry, report,
+            std::make_shared<wisp::port::esp::EspPmuPowerKey>(
+                std::move(power), "button.power", "axp2101-pwrkey", wisp::hal::role::kPower));
     } else {
         record_failed(report, "button.power", cls, "power.main unavailable");
     }
@@ -358,7 +360,7 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     }
     add_device(registry, report,
                std::make_shared<wisp::port::esp::EspGpioButton>(
-                   kPinBtnBoot, true, "button.boot", "gpio-button", "talk",
+                   kPinBtnBoot, true, "button.boot", "gpio-button", wisp::hal::role::kTalk,
                    wisp::hal::ButtonInputMode::EdgeEvent));
 }
 

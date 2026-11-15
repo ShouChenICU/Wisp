@@ -20,6 +20,9 @@
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/core/topics.hpp"
+#include "wisp/hal/roles.hpp"
+#include "wisp/hal/storage.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
@@ -54,15 +57,22 @@ constexpr uint64_t kStorageRetryMs = 10000;
 constexpr int32_t kInnerPad = 8;
 constexpr int32_t kSectionGap = 10;
 
+std::string card_id(const core::DeviceRegistry& registry) {
+    auto card = registry.by_role<hal::Storage>(hal::role::kRemovable);
+    if (!card || card == registry.by_role<hal::Storage>(hal::role::kInternal)) return {};
+    return card->info().id;
+}
+
 }  // namespace
 
 SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
     : app_(app),
       ui_(app.ui()),
       system_(system),
-      display_(app.registry().get<hal::Display>("display.main")),
-      power_(app.registry().get<hal::Power>("power.main")),
-      clock_(app.registry().get<hal::Clock>("clock.main")),
+      display_(app.registry().by_role<hal::Display>(hal::role::kMain)),
+      power_(app.registry().by_role<hal::Power>(hal::role::kMain)),
+      clock_(app.registry().by_role<hal::Clock>(hal::role::kMain)),
+      sd_id_(card_id(app.registry())),
       ui_settings_(*app.platform().settings, "ui"),
       net_section_(app.wifi()),
       scenes_(scenes),
@@ -229,14 +239,14 @@ void SelfCheck::build_devices(lv_obj_t* col) {
         row.reason = found ? found->reason : std::string();
         rows.push_back(std::move(row));
 
-        if (id == "storage.sd" && device != nullptr) {
+        if (!sd_id_.empty() && id == sd_id_ && device != nullptr) {
             // BootReport only ever reflects whether the card was present
             // at boot (spec 6.1: devices aren't re-registered after
             // init()), so this row would otherwise keep showing a missing
             // card forever once one is inserted later -- show_storage()
             // (driven by the live StorageManager::status()) follows it
             // instead. Only when the device actually exists in the
-            // registry: a "storage.sd" boot-report entry with no backing
+            // registry: a card boot-report entry with no backing
             // device (e.g. `--disable storage.sd`) is a real, permanent
             // Failed/Missing that StorageManager::status() can't ever
             // contradict (it simply won't have an entry for it either),
@@ -257,8 +267,8 @@ hal::Area SelfCheck::compute_safe_area() const { return hal::safe_rect(system_.s
 
 void SelfCheck::subscribe_buttons() {
     // The button test only; what the power key does is SystemDuties'.
-    button_sub_ =
-        app_.bus().subscribe("button.", [this](const core::Event& e) { on_button_event(e); });
+    button_sub_ = app_.bus().subscribe(core::topics::kButtonPrefix,
+                                       [this](const core::Event& e) { on_button_event(e); });
 }
 
 void SelfCheck::on_button_event(const core::Event& e) {
@@ -498,11 +508,9 @@ void SelfCheck::show_storage(const core::StorageStatus& status) {
     // The row follows the card: online is Ok, offline or not yet mounted
     // is Missing, as every registered but cardless SD device starts out at
     // boot.
-    bool online = std::any_of(status.media.begin(), status.media.end(), [](const auto& media) {
-        return media.id == "storage.sd" && media.online;
-    });
-    if (devices_.set_state("storage.sd",
-                           online ? core::DeviceState::Ok : core::DeviceState::Missing)) {
+    bool online = std::any_of(status.media.begin(), status.media.end(),
+                              [](const auto& media) { return media.removable && media.online; });
+    if (devices_.set_state(sd_id_, online ? core::DeviceState::Ok : core::DeviceState::Missing)) {
         header_.show_devices(devices_.summary());
     }
 }

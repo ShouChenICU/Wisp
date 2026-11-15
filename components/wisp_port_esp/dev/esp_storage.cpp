@@ -20,6 +20,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
@@ -126,6 +127,7 @@ EspInternalStorage::EspInternalStorage() {
     info_.model = "littlefs";
     info_.caps =
         wisp::Properties{{"removable", false}, {"fs", wisp::Value(std::string("littlefs"))}};
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kInternal);
 }
 
 Result<wisp::hal::Capacity> EspInternalStorage::capacity() {
@@ -155,6 +157,7 @@ EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name
     info_.cls = kClass;
     info_.model = std::move(model);
     info_.caps = wisp::Properties{{"removable", true}, {"fs", wisp::Value(std::string("fat"))}};
+    info_.caps["role"] = wisp::Value(wisp::hal::role::kRemovable);
 
     if (already_mounted && card != nullptr) {
         card_ = card;
@@ -203,10 +206,11 @@ bool EspSdStorage::online() {
     std::lock_guard<wisp::os::Mutex> lock(state_mutex_);
     if (retry_.state() == SdCardState::Removed) {
         // Safe to do this slow-ish-but-not-card-I/O call right here: the
-        // only caller of online() (core::StorageManager::status()/
-        // refresh()) always holds StorageManager's own mutex while doing
-        // so, which guarantees no FATFS I/O against this mount point is
-        // in flight right now -- see esp_storage.hpp's file comment.
+        // only caller of online() (core::StorageManager's init()/
+        // status()/refresh()) always holds StorageManager's SD I/O lock
+        // while doing so, which guarantees no FATFS I/O against this mount
+        // point is in flight right now -- see esp_storage.hpp's file
+        // comment.
         esp_err_t err = esp_board_manager_deinit_device_by_name(bmgr_device_name_.c_str());
         if (err != ESP_OK) {
             WLOG_W(kTag, "storage.sd: deinit after card removal failed: %s", esp_err_to_name(err));

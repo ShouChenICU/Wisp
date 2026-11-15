@@ -196,10 +196,14 @@ Home::~Home() {
     // conversation), what calls back into this object goes before any
     // member it touches: the cell subscriptions (from another thread each
     // release waits for a call under way) and the controller's listener.
+    // After stop() this is a no-op.
     agent_sub_.reset();
     power_sub_.reset();
     voice_sub_.reset();
     if (conv_ != nullptr && listener_ != 0) conv_->remove_listener(listener_);
+    listener_ = 0;
+    // A post still queued must not reach this object.
+    if (alive_) *alive_ = false;
 }
 
 bool Home::start() {

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "app/ui_net_harness.hpp"
@@ -30,6 +31,7 @@
 #include "wisp/core/reminders.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
@@ -223,6 +225,48 @@ TEST(FactoryReset, ClearsAgentFiles) {
 
     for (const std::string& root : roots) EXPECT_FALSE(std::filesystem::exists(root + "/agent"));
     EXPECT_TRUE(std::filesystem::exists(kept));
+}
+
+// With a card, wisp.sd.io is stopped (its queued work done) before the
+// erase, which runs on wisp.fs and touches the card too; the card's agent
+// files go with the rest. wisp.fs is held while the reset starts, so the
+// erase cannot begin until the test lets it: the SD worker must already
+// have stopped by then, not merely by the end.
+TEST(FactoryReset, StopsTheSdWorkerBeforeErasing) {
+    const std::string sd_dir = wisp::test::temp_dir().string();
+    UiNetOptions opts;
+    opts.extra_devices.push_back(
+        std::make_shared<wisp::test::FakeStorage>("storage.sd", sd_dir, /*removable=*/true));
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::StorageRouter* router = app.storage_router();
+    ASSERT_NE(router, nullptr);
+    ASSERT_NE(router->sd(), nullptr);
+    ASSERT_TRUE(router->sd()->running());
+    const std::string text = "x";
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(text.data()),
+                                         text.size());
+    const std::string card_agent = sd_dir + "/wisp/library/agent";
+    ASSERT_TRUE(write_on_flash(app, card_agent + "/files/a.txt", bytes));
+
+    wisp::os::Semaphore entered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    ASSERT_TRUE(router->flash().submit([&] {
+        entered.give();
+        release.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered.take(5000));
+    std::thread reset([&app] { wisp::app::factory_reset(app); });
+    const bool stopped_before_erase = wait_until([&] { return !router->sd()->running(); }, 5000);
+    const bool card_files_still_there = std::filesystem::exists(card_agent);
+    release.give();
+    reset.join();
+
+    EXPECT_TRUE(stopped_before_erase);
+    EXPECT_TRUE(card_files_still_there);
+    EXPECT_FALSE(router->sd()->running());
+    EXPECT_FALSE(std::filesystem::exists(card_agent));
 }
 
 // The agent's memory notes live under <System>/memory/ (mvp spec 5.1).

@@ -35,7 +35,7 @@ using wisp::ui::StrId;
 
 namespace {
 
-// Registers only "audio_in.main"/"audio_out.main" -- loopback doesn't
+// Registers only the mic and the speaker -- loopback doesn't
 // need a display, and App::start() tolerates headless boot.
 class AudioOnlyBoard : public wisp::app::Board {
 public:
@@ -166,6 +166,25 @@ TEST(Loopback, ReportsEachStepAsAStringId) {
     for (const auto& status : s) {
         EXPECT_EQ(status.error, wisp::ErrorCode::Ok);
     }
+
+    h.app->stop();
+}
+
+// Spec 2.3: the mic and the speaker are found by role, whatever their ids.
+TEST(Loopback, UsesTheRoleMicAndSpeaker) {
+    Harness h;
+    h.audio_in = std::make_shared<FakeAudioIn>("audio_in.mic");
+    h.audio_out = std::make_shared<FakeAudioOut>("audio_out.spk");
+    h.start_app();
+
+    h.run_loopback_and_wait();
+
+    auto s = h.statuses_so_far();
+    ASSERT_EQ(s.size(), 3u);
+    EXPECT_EQ(s[1].id, StrId::LoopPlaying);
+    EXPECT_EQ(s[2].id, StrId::LoopDone);
+    EXPECT_EQ(s[2].error, wisp::ErrorCode::Ok);
+    EXPECT_EQ(h.audio_out->set_volume_calls(), 1);
 
     h.app->stop();
 }

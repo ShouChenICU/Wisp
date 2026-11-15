@@ -191,7 +191,7 @@ Source: glyph partition review records.
 
 ## Shell sub-pages (MVP spec 6.4)
 
-- Device checks not run: `bench scroll` with the conversation history open and with the scene list open (with icons), against the "性能基准" section of the board doc; the cost of the first icon decode on the worker, and the wisp.fs stack high-water mark (`mem`) after opening a scene list with icons, since lodepng now runs on that 8 KB internal stack; touch feel of swipe versus scroll on the sub-pages.
+- Device checks not run: `bench scroll` with the conversation history open and with the scene list open (with icons), against the "性能基准" section of the board doc; the cost of the first icon decode (now on `wisp.shell.list`; its stack is measured under "Storage worker lanes: device checks not run"); touch feel of swipe versus scroll on the sub-pages.
 - The settings page reads the settings once when it is built: a change made by voice or from the admin page while it is open shows only after it is reopened, and the screen-off highlight follows the tap even if the write fails. Subscribe to `system.settings` while the page is open.
 - Scene list open on the device (9 scenes, no icons, no SD card): the first open after boot lists in 539 ms (was 770–1283 ms), later opens in 8–40 ms (`cached=1`); the build is 38–66 ms. The first open still re-reads each `scene.json` in the wisp.files lookups with the card out; listing once in the background after boot, or keeping the chosen files location with the cached listing, would remove it. Not yet measured: how long the long-press card takes to show "同时删除数据" (one `removal()` probe, about 16 file calls).
 - Small long-lived containers in internal RAM: `SceneRecents`' map and the scene list's `scenes_`/`cards_` vectors (one entry per scene), and also:
@@ -339,6 +339,35 @@ Notes for the next state-cell plan (removing the periodic compensations).
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
 - A standby and a wake handled inside one UI loop iteration coalesce to `Active` for the status shell, which then leaves the pull-down panel open across the blink. Power key presses are seconds apart, so this needs two posted jobs drained together.
 
+## Storage worker lanes: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator and unit tests only so far; the ESP-only branches of `WISP_ASSERT_SD_IO_THREAD`/`WISP_ASSERT_MEDIUM_THREAD` and of `storage_manager.cpp` were not compiled in that environment, so the firmware build itself is the first check: build the firmware for both boards first.
+
+1. `mem` at idle and in the AGENTS.md section 5 worst case: `wisp.sd.io` and `wisp.shell.list` stacks in PSRAM, `wisp.fs` in internal RAM; the high-water marks of the three (`wisp.shell.list` while it decodes a 256×256 icon); internal free and largest block against `wisp/app/ram_budget.hpp`, compared with the numbers before this branch. Record them in `docs/hardware/<board>.md`.
+2. Card file I/O from `wisp.sd.io`'s PSRAM stack: a scene with `"files": "sd"` writes, appends, reads and downloads several MB; the bytes match; FATFS/sdmmc reads and writes and the unmount in `StorageManager::refresh()` after a card pull run there without an abort and without a `sd access off the sd i/o thread` or `flash access off the flash thread` line. If it aborts, set `kSdOwnWorker` (`components/wisp_app/src/scene_wiring.hpp`) to false and record it in `docs/hardware/<board>.md`.
+3. An OTA upload and a card download at the same time, both on the Bulk lane: both complete, no sdmmc timeout in the log; a setting changed meanwhile applies at once.
+4. `mem` after a normal session (scene list opened, scenes opened, a voice turn, settings changed): each lane's longest wait and job, recorded in `docs/hardware/<board>.md`; the Interactive lane's longest wait should not exceed the longest job of the other lanes. Also a worst-case to-do or memory file rewrite on the Interactive lane (200 to-dos, 64 notes) and its `job_max_ms`.
+5. The scene list opened cold with the example scenes: cards first, icons fill in, no stutter while scrolling; the `scenes ms_list=... ms_icons=...` line compared with before; the warm-open time.
+6. The port-8900 httpd stack high-water mark while listing many scenes and during a scene upload (the manifests now parse on `wisp.fs` for those routes, `ParseOn::Worker`).
+7. Card pulled during a download and put back: the download fails, the scene keeps running, its files are counted again. Expect either code: the running append fails with `io_error` until the 2 s `refresh()` marks the card offline, and with `unavailable` after that.
+8. Factory reset with a card in: `<sd>/wisp/library/agent` is gone after the restart.
+9. Deep standby entered right after changing a setting and writing a card file: both are on disk after waking (the drain covers both workers).
+
+## Storage worker lanes parked review findings
+
+- `SceneRepository::install()` opens the zip, inflates it, parses `scene.json` and validates the tool schemas on the admin httpd task's internal-RAM stack before any job (as before this branch); that is heavier than the manifest parse moved off that stack.
+- `SceneWiring::list_async` (the hardware diagnostics' scene list) still runs a whole listing in one worker job.
+- `Shell::stop()` is bounded by one storage job plus one file-area probe (`kFilesProbeMs`), not strictly by one job; and probes that timed out pile up behind a wedged worker.
+- On the own-worker abandon path a `FileDownload` stays in its gate until the scene closes.
+- A stale card job that lands on `wisp.fs` creates an empty `SceneFiles` record before answering `Busy`.
+- No test for a partial start of the SD worker in the style of `SceneHttp`'s: a failed start of `wisp.sd.io` shares the no-card-slot path and is not tested on its own.
+- The first download of a scene with no files location yet runs entirely on `wisp.fs`'s Bulk lane (it stays on the worker it began on), even once the location is the card.
+- A scene that always has an Internal-routed job in flight never moves to `wisp.sd.io` (its calls stay on `wisp.fs` to keep their order).
+- `ReminderScheduler::stop()` waits at most 5 s for queued and running actions; an action still running after that bound can reach the scheduler while it is destroyed. The fallback wait (`drain_io`) also waits for the whole worker to go idle, so a busy `wisp.fs` at shutdown can cost the full 5 s.
+- `StorageWorker::stop()` called a second time while the first call drains returns before the join. No current path does this (`App::stop` joins `wisp.reset` before it stops the scenes).
+- `StorageManager::status()`'s `online()` call may deinitialise the card without updating the cached state (from before this branch).
+- Wall-clock tests that fail occasionally under parallel load: `PowerManager.TickEntersStandbyAfterIdleTimeoutAndActivityResetsIt`, `AppScenes.SelfCheckResyncsAfterAFaultedPanelCloses`.
+
 ## CI speed
 
 - `tools/ci.sh` runs ctest serially (about 390 s; `sim_smoke` alone takes 92 s). `ctest -j 20` finished in 92 s on a 20-core host, but under that load `AppScenes.DeleteAfterStopRuntimeIsRefused` aborted once (it passes alone, three runs out of three). Find its timing assumption first, then run ctest in parallel, keeping the smoke tests `RUN_SERIAL` if they share ports.
@@ -346,3 +375,35 @@ Notes for the next state-cell plan (removing the periodic compensations).
 ## Agent core tool enhancements
 
 - `lua.run` failures now carry their full payload in `ToolOutput.result_json`, while `AgentService::execute_tool` still reads the diagnostic error code only from `ToolOutput.result`. Runtime/compile/timeout/memory/cancelled failures therefore log `error:failed`; the model result and ToolEnd summary remain correct. Preserve a small structured error code or expose explicit metadata without parsing the large JSON payload. Add a regression at the production consumer boundary.
+
+## Device model: device checks not run
+
+Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-path.md`. Simulator and unit tests only so far; the ESP port and board edits (caps `role`, `EspPmuPowerKey`'s role) are not compiled in that environment.
+
+- Both boards build (`idf.py bmgr -c ../boards -b <board> && idf.py build`).
+- `WISP_MANIFEST` on both boards: the same devices, ids, models and caps as before, plus `role` (`main`, `internal`/`removable`, `power`, `talk`) on every device except keys without one; no new boot-report failure and no entry "role ... already taken"; no boot warning about a missing `main` role. Then record the manifest lines with `role` in `docs/hardware/*.md`.
+- Self-check: every device green; the SD row on the 2.16 follows card insert and remove; the display, battery and clock readouts present.
+- Voice: hold the talk key (2.16 Vol-, 1.75C BOOT), speak, hear the answer.
+- Standby and wake with the power key, short and long press; the power key still wakes from deep standby (role-based polling); on the 1.75C both the GPIO3 and the PMU fallback paths if switchable.
+- Net: Wi-Fi connects, the RTC is set after SNTP, the admin device page lists caps `role` and shows nothing new missing.
+- `mem` idle: expect about 1–1.5 KB less free internal RAM (one caps map node of about 90 bytes per device that has a role, plus `core::DeviceService`); re-measure against `ram_budget.hpp`.
+- SD card hot-plug on the 2.16 with a scene that uses `files: "sd"` open, and the admin overview's storage card (the SD row follows insert and remove, the labels read "SD card" and "Internal storage").
+- An IMU scene receives samples; IMU polling stops in standby and resumes on wake.
+- Notification tone, TTS playback and the self-check mic loopback.
+- Battery and charging shown (status bar, self-check, admin); a long press on the power key opens the power-off dialog.
+- The talk key from a dark screen wakes it and, held, records.
+- A 1.75C without an RTC shows no clock warning and still gets the time from SNTP.
+- The light-sleep statistics are still reported when the screen goes off and on.
+- On a board without a self-describing device (both current boards), the agent's request carries neither `device.list` nor `device.call`.
+- On the first board with a self-describing device: the serial monitor and the admin device page with its larger manifest (about 650 bytes more per device); the self-check screen on the round and the rounded shape scrolled to the end (such a device adds a row); driver calls from the agent thread and from a scene task at once over a shared I2C bus; `busy` in standby; `min_interval_ms` holding; the internal-RAM peak while `device.list` and the manifest are rendered.
+
+## Device model
+
+- A key that holds both roles `power` and `talk` (device-model spec 2.3) gets no gesture arbitration: holding it to talk also triggers the power key's long press (the power-off dialog after a second). It needs arbitration where talk owns the hold and the power key keeps only a short press; that belongs to the input-generality work of the device-model spec's part 3. Until then `App` warns about such a board at boot (`core::power_key_also_talks()`).
+- Next parts of the device-model work: the ESP devices' ids move into the board configs (`BoardSpec` slots, spec part 2); the install-time prompt for `permissions.device` comes with phase I's general permission mechanism (until then a declared permission is honoured).
+- Parked: the device routes and `DeviceRegistry::manifest()` build their JSON as a `Value` tree and a `std::string` in internal RAM (about 10 KB transient for a dozen devices of which three describe themselves); render into `os::LargeString` instead.
+- Parked: the admin device page shows `caps.schema` as one JSON blob.
+- Parked: a per-holder call budget in `DeviceService` for scenes: a scene can call a granted device's `get()`, or a command without `min_interval_ms`, as fast as its callbacks run, which contends for the bus and writes one log line per state-changing call.
+- Parked: the agent's `lua.run` reaches devices as holder `agent` without leaving a conversation note, unlike `device.call`.
+- Parked: the `device.call` activity line carries no device identity (it would need a per-tool key preference in `activity_target()`).
+- Parked: `tools/check_layering.py`'s comment stripper can report a false positive on a line with a digit separator and an apostrophe in its comment.

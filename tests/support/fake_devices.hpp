@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,6 +30,7 @@
 #include "wisp/hal/button.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/hal/device_schema.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/hal/power.hpp"
@@ -46,7 +48,7 @@ namespace wisp::test {
 class FakeDisplay : public wisp::hal::Display {
 public:
     explicit FakeDisplay(std::string id, int width, int height, int area_align = 1,
-                         std::string shape = "rounded_rect") {
+                         std::string shape = "rounded_rect", std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -56,6 +58,7 @@ public:
             {"corner_radius", 40},      {"panel", wisp::Value("amoled")},
             {"brightness", true},       {"standby", wisp::Value("off")},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -128,11 +131,12 @@ private:
 // wisp::hal::Device::set_power()'s default) by setting `unsupported`.
 class FakeTouch : public wisp::hal::Touch {
 public:
-    explicit FakeTouch(std::string id, int max_points = 1) {
+    explicit FakeTouch(std::string id, int max_points = 1, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
         info_.caps = wisp::Properties{{"max_points", max_points}, {"standby", wisp::Value("off")}};
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -178,7 +182,7 @@ private:
 // (defaulting to an all-zero sample), repeatedly, until changed again.
 class FakeImu : public wisp::hal::Imu {
 public:
-    explicit FakeImu(std::string id) {
+    explicit FakeImu(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -189,6 +193,7 @@ public:
             {"max_rate_hz", 1000},
             {"standby", wisp::Value("off")},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -282,8 +287,12 @@ public:
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
     bool pressed() override { return down.load(); }
+    uint32_t standby_poll_ms() const override { return standby_poll.load(); }
 
     std::atomic<bool> down{false};
+    // What standby_poll_ms() reports; 0, the default, is not polled in
+    // standby.
+    std::atomic<uint32_t> standby_poll{0};
 
 private:
     wisp::hal::DeviceInfo info_;
@@ -303,6 +312,7 @@ public:
         info_.caps = wisp::Properties{
             {"removable", removable},
             {"fs", wisp::Value("fake")},
+            {"role", wisp::Value(removable ? "removable" : "internal")},
         };
     }
 
@@ -378,7 +388,7 @@ private:
 
 class FakePower : public wisp::hal::Power {
 public:
-    explicit FakePower(std::string id) {
+    explicit FakePower(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -386,6 +396,7 @@ public:
             {"battery", true},
             {"charging_status", true},
         };
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -448,10 +459,11 @@ private:
 
 class FakeClock : public wisp::hal::Clock {
 public:
-    explicit FakeClock(std::string id) {
+    explicit FakeClock(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -480,10 +492,11 @@ private:
 // completes in one call instead of real-time.
 class FakeAudioIn : public wisp::hal::AudioIn {
 public:
-    explicit FakeAudioIn(std::string id) {
+    explicit FakeAudioIn(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -510,10 +523,11 @@ private:
 // volume loopback.cpp's record_and_play() applied.
 class FakeAudioOut : public wisp::hal::AudioOut {
 public:
-    explicit FakeAudioOut(std::string id) {
+    explicit FakeAudioOut(std::string id, std::string role = "main") {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
     }
 
     const wisp::hal::DeviceInfo& info() const override { return info_; }
@@ -551,6 +565,129 @@ private:
     mutable std::mutex mutex_;
     uint8_t last_volume_ = 0;
     int set_volume_calls_ = 0;
+};
+
+// A haptic-like schema for tests of the generic path: prop level (Int
+// 0..100); cmds pulse (ms 10..2000, strength 0..100 optional default 80,
+// at most every 100 ms), set_mode (mode soft|hard), read_raw (reg 0..255,
+// a query that changes nothing).
+inline constexpr wisp::hal::ParamSpec kFakeGenericProps[] = {
+    {.name = "level",
+     .type = wisp::hal::ParamType::Int,
+     .desc = "Drive level",
+     .min = 0,
+     .max = 100,
+     .unit = "%"},
+};
+inline constexpr wisp::hal::ParamSpec kFakePulseArgs[] = {
+    {.name = "ms", .type = wisp::hal::ParamType::Int, .min = 10, .max = 2000, .unit = "ms"},
+    {.name = "strength",
+     .type = wisp::hal::ParamType::Int,
+     .min = 0,
+     .max = 100,
+     .optional = true,
+     .def = 80},
+};
+inline constexpr const char* kFakeModes[] = {"soft", "hard"};
+inline constexpr wisp::hal::ParamSpec kFakeSetModeArgs[] = {
+    {.name = "mode", .type = wisp::hal::ParamType::Enum, .choices = kFakeModes},
+};
+inline constexpr wisp::hal::ParamSpec kFakeReadRawArgs[] = {
+    {.name = "reg", .type = wisp::hal::ParamType::Int, .min = 0, .max = 255},
+};
+inline constexpr wisp::hal::CmdSpec kFakeGenericCmds[] = {
+    {.name = "pulse", .desc = "Vibrate once", .args = kFakePulseArgs, .min_interval_ms = 100},
+    {.name = "set_mode", .desc = "Pick the drive mode", .args = kFakeSetModeArgs},
+    {.name = "read_raw",
+     .desc = "Read one register",
+     .args = kFakeReadRawArgs,
+     .changes_state = false},
+};
+inline constexpr wisp::hal::DeviceSchema kFakeGenericSchema{.props = kFakeGenericProps,
+                                                            .cmds = kFakeGenericCmds};
+
+// A device no typed interface covers (interface None). The first
+// constructor makes one without a schema (only info() and the default
+// set_power()); `cls` is a parameter so a test can register one that is
+// mislabelled. The second describes itself with `schema` and records
+// every get(), invoke() and set_power().
+class FakeGeneric : public wisp::hal::Device {
+public:
+    explicit FakeGeneric(std::string id, wisp::hal::DeviceClass cls = wisp::hal::DeviceClass::Other,
+                         wisp::Properties caps = {}) {
+        info_.id = std::move(id);
+        info_.cls = cls;
+        info_.model = "FAKE";
+        info_.caps = std::move(caps);
+    }
+
+    FakeGeneric(std::string id, const wisp::hal::DeviceSchema* schema, wisp::Properties caps = {},
+                std::string role = {}, bool standby_off = false)
+        : FakeGeneric(std::move(id), wisp::hal::DeviceClass::Other, std::move(caps)) {
+        schema_ = schema;
+        records_power_ = true;
+        if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
+        if (standby_off) info_.caps["standby"] = wisp::Value("off");
+    }
+
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+    const wisp::hal::DeviceSchema* describe() const override { return schema_; }
+
+    wisp::Result<wisp::Value> get(std::string_view prop) override {
+        std::function<wisp::Result<wisp::Value>(std::string_view)> handler;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            gets_.emplace_back(prop);
+            handler = on_get;
+        }
+        if (handler) return handler(prop);
+        return wisp::Result<wisp::Value>::ok(wisp::Value(1));
+    }
+
+    wisp::Result<wisp::Value> invoke(std::string_view cmd, const wisp::Map& args) override {
+        std::function<wisp::Result<wisp::Value>(std::string_view, const wisp::Map&)> handler;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            invocations_.emplace_back(std::string(cmd), args);
+            handler = on_invoke;
+        }
+        if (handler) return handler(cmd, args);
+        return wisp::Result<wisp::Value>::ok(wisp::Value());
+    }
+
+    wisp::Result<void> set_power(wisp::hal::PowerLevel level) override {
+        if (!records_power_) return wisp::hal::Device::set_power(level);
+        ++set_power_calls_;
+        powered_.store(wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level));
+        return wisp::Result<void>::ok();
+    }
+
+    std::vector<std::pair<std::string, wisp::Map>> invocations() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return invocations_;
+    }
+    std::vector<std::string> gets() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return gets_;
+    }
+    int set_power_calls() const { return set_power_calls_.load(); }
+    bool powered() const { return powered_.load(); }
+
+    // Set before the device is used. Defaults: invoke() returns ok(null),
+    // get() returns ok(1).
+    std::function<wisp::Result<wisp::Value>(std::string_view, const wisp::Map&)> on_invoke;
+    std::function<wisp::Result<wisp::Value>(std::string_view)> on_get;
+
+private:
+    wisp::hal::DeviceInfo info_;
+    const wisp::hal::DeviceSchema* schema_ = nullptr;
+    bool records_power_ = false;
+
+    mutable std::mutex mutex_;
+    std::vector<std::pair<std::string, wisp::Map>> invocations_;
+    std::vector<std::string> gets_;
+    std::atomic<int> set_power_calls_{0};
+    std::atomic<bool> powered_{true};
 };
 
 }  // namespace wisp::test

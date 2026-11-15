@@ -2,7 +2,7 @@
 
 // Spec 6.3: publishes the two sub-project-1 power topics --
 // "power.charging.changed" and "power.battery.low" -- by polling
-// wisp::hal::Power (device id "power.main") on its own periodic
+// the wisp::hal::Power device with role main on its own periodic
 // os::Timer. Lives in wisp_core (not
 // wisp_app) for the same reason wisp::core::StorageManager does: it only
 // needs a hal:: device, an EventBus and Settings, nothing from wisp_app/
@@ -15,7 +15,7 @@
 // mutex. PowerManager likewise drops its transition lock around this call.
 //
 // Device-optional, like every other hal:: pointer App hands around: if no
-// "power.main" device is registered, `power` is null and this class is
+// Power device has role main, `power` is null and this class is
 // completely inert -- start()/stop()/set_standby()/sample() all become
 // no-ops, never crash. Event source is kPowerMonitorSource, the
 // component's name: the events come from the supply cell's mirror, a plain
@@ -95,7 +95,7 @@ inline constexpr char kPowerMonitorSource[] = "power_monitor";
 
 class PowerMonitor {
 public:
-    // `power` may be null (no "power.main" device registered -- see file
+    // `power` may be null (no Power device with role main -- see file
     // header's "device-optional" note). `settings` should already be
     // bound to the "power" namespace (the same namespace wisp::app::
     // PowerManager binds its own Settings to for "screen_off_s"); this

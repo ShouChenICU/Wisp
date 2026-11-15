@@ -24,11 +24,14 @@
 #include "wisp/base/error.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/os/flash_guard.hpp"
+#include "wisp/os/os.hpp"
 
 using wisp::core::Area;
 using wisp::core::DeviceRegistry;
 using wisp::core::Event;
 using wisp::core::EventBus;
+using wisp::core::Medium;
 using wisp::core::StorageConfig;
 using wisp::core::StorageManager;
 using wisp::test::FakeStorage;
@@ -334,6 +337,129 @@ TEST(StorageManager, MissingInternalFailsInit) {
     wisp::core::EventBus bus;
     wisp::core::StorageManager m(reg, bus);
     EXPECT_EQ(m.init().error().code, wisp::ErrorCode::StorageUnavailable);
+}
+
+// StorageManager asks for the media by role, so a board may name them as
+// it likes.
+TEST(StorageManager, FindsMediaByRoleWhateverTheirIds) {
+    auto in = wisp::test::temp_dir().string();
+    auto sd = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.flash", in, false)));
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.card", sd, true)));
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    auto media = mgr.status().media;
+    ASSERT_EQ(media.size(), 2u);
+    EXPECT_EQ(media[0].id, "storage.flash");
+    EXPECT_FALSE(media[0].removable);
+    EXPECT_EQ(media[1].id, "storage.card");
+    EXPECT_TRUE(media[1].removable);
+    EXPECT_EQ(mgr.roots(Area::Library).front(), sd + "/wisp/library");
+}
+
+// The topics stay "storage.sd.*" (what subscribers listen for) whatever
+// the card's id; the source is the manager's component name, since the SD
+// cell's mirror publishes them and boards choose device ids.
+TEST(StorageManager, CardEventsCarryTheComponentName) {
+    auto in = wisp::test::temp_dir().string();
+    auto sd = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    auto card = std::make_shared<FakeStorage>("storage.card", sd, true);
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.flash", in, false)));
+    ASSERT_TRUE(registry.add(card));
+    std::mutex mutex;
+    std::vector<Event> events;
+    bus.start();
+    bus.subscribe("", [&](const Event& e) {
+        std::lock_guard<std::mutex> lock(mutex);
+        events.push_back(e);
+    });
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    card->online_flag = false;
+    mgr.refresh();
+    bus.wait_idle(1000);
+    bus.stop();
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].topic, "storage.sd.removed");
+    EXPECT_EQ(events[0].source, wisp::core::kStorageManagerSource);
+}
+
+namespace {
+
+// A storage device with whatever caps "role" (and "removable") the test
+// gives it, e.g. none, or a board that put both roles on one medium.
+class RoleStorage : public FakeStorage {
+public:
+    RoleStorage(std::string id, std::string dir, bool removable, wisp::Value role)
+        : FakeStorage(std::move(id), std::move(dir), removable), info_(FakeStorage::info()) {
+        info_.caps["role"] = std::move(role);
+    }
+    const wisp::hal::DeviceInfo& info() const override { return info_; }
+
+private:
+    wisp::hal::DeviceInfo info_;
+};
+
+}  // namespace
+
+TEST(StorageManager, NoInternalRoleIsUnavailable) {
+    DeviceRegistry registry;
+    EventBus bus;
+    // Internal flash whose board forgot to give it a role.
+    ASSERT_TRUE(registry.add(std::make_shared<RoleStorage>(
+        "storage.int", wisp::test::temp_dir().string(), false, wisp::Value(""))));
+    StorageManager mgr(registry, bus);
+
+    auto r = mgr.init();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, wisp::ErrorCode::StorageUnavailable);
+    EXPECT_EQ(r.error().message, "no storage device with role internal");
+}
+
+// A card is found by role, never by id: a "storage.sd" without the
+// removable role is not the card.
+TEST(StorageManager, NoRemovableRoleIsNoCard) {
+    auto in = wisp::test::temp_dir().string();
+    auto sd = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    ASSERT_TRUE(registry.add(std::make_shared<FakeStorage>("storage.int", in, false)));
+    ASSERT_TRUE(
+        registry.add(std::make_shared<RoleStorage>("storage.sd", sd, true, wisp::Value(""))));
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    auto media = mgr.status().media;
+    ASSERT_EQ(media.size(), 1u);
+    EXPECT_EQ(media[0].id, "storage.int");
+    EXPECT_EQ(mgr.roots(Area::Library), (std::vector<std::string>{in + "/library"}));
+}
+
+// A board that declares both roles on one medium has no card: listing it
+// twice, sending card events for internal flash or moving the Library
+// root would all be wrong.
+TEST(StorageManager, OneMediumWithBothRolesIsNoCard) {
+    auto in = wisp::test::temp_dir().string();
+    DeviceRegistry registry;
+    EventBus bus;
+    ASSERT_TRUE(registry.add(std::make_shared<RoleStorage>(
+        "storage.int", in, false,
+        wisp::Value(wisp::List{wisp::Value("internal"), wisp::Value("removable")}))));
+    StorageManager mgr(registry, bus);
+    ASSERT_TRUE(mgr.init());
+
+    auto media = mgr.status().media;
+    ASSERT_EQ(media.size(), 1u);
+    EXPECT_EQ(media[0].id, "storage.int");
+    EXPECT_FALSE(media[0].removable);
+    EXPECT_EQ(mgr.roots(Area::Library), (std::vector<std::string>{in + "/library"}));
 }
 
 TEST(StorageManager, RejectsDotDotPath) {
@@ -954,4 +1080,276 @@ TEST(StorageManager, CallsCountsPathOperations) {
     ASSERT_TRUE(f.mgr->list_dir(f.in + "/system"));
     ASSERT_TRUE(f.mgr->tree_size(f.in + "/system"));
     EXPECT_EQ(f.mgr->calls(), before + 5);
+}
+
+// medium_of(): the SD card's mount, online or not, is Sd; everything
+// else, and every path before init(), is Internal.
+TEST(StorageManager, MediumOfPaths) {
+    Fixture f(/*sd_online=*/true);
+    EXPECT_EQ(f.mgr->medium_of(f.sd + "/x"), Medium::Internal);
+    ASSERT_TRUE(f.mgr->init());
+    EXPECT_EQ(f.mgr->medium_of(f.sd + "/wisp/library/a"), Medium::Sd);
+    EXPECT_EQ(f.mgr->medium_of(f.sd + "//wisp/./library"), Medium::Sd);
+    EXPECT_EQ(f.mgr->medium_of(f.in + "/system/a"), Medium::Internal);
+    EXPECT_EQ(f.mgr->medium_of("/elsewhere/a"), Medium::Internal);
+    f.sd_dev->online_flag = false;
+    f.mgr->refresh();
+    EXPECT_EQ(f.mgr->medium_of(f.sd + "/x"), Medium::Sd);
+}
+
+TEST(StorageManager, HasSd) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    EXPECT_TRUE(f.mgr->has_sd());
+
+    DeviceRegistry reg;
+    EventBus bus;
+    reg.add(std::make_shared<FakeStorage>("storage.int", wisp::test::temp_dir().string(),
+                                          /*removable=*/false));
+    StorageManager m(reg, bus);
+    ASSERT_TRUE(m.init());
+    EXPECT_FALSE(m.has_sd());
+}
+
+namespace {
+
+// Starts a visit_dir() of an SD directory on its own task and parks it
+// inside the callback -- holding the card -- until release() is called.
+struct CardHolder {
+    explicit CardHolder(Fixture& f) {
+        const std::string dir = f.sd + "/wisp/library/d";
+        EXPECT_TRUE(f.mgr->write_atomic(dir + "/f", bytes("x")));
+        task = wisp::os::Task::spawn({}, [this, &f, dir] {
+            result = f.mgr->visit_dir(dir, [this](const wisp::core::DirEntry&) {
+                inside.give();
+                gate.take(wisp::os::kForever);
+                return false;
+            });
+        });
+        EXPECT_TRUE(inside.take(5000));
+    }
+    ~CardHolder() { release(); }
+
+    void release() {
+        if (task) {
+            gate.give();
+            task->join();
+            task.reset();
+        }
+    }
+
+    wisp::os::Semaphore inside{1, 0};
+    wisp::os::Semaphore gate{1, 0};
+    std::unique_ptr<wisp::os::Task> task;
+    wisp::Result<void> result = wisp::Result<void>::ok();
+};
+
+}  // namespace
+
+// Card I/O in flight holds only the card's lock: internal-flash work goes
+// on meanwhile.
+TEST(StorageManager, SdOperationDoesNotBlockInternal) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    CardHolder holder(f);
+
+    wisp::os::Semaphore done(1, 0);
+    wisp::Result<void> written = wisp::Result<void>::ok();
+    auto b = wisp::os::Task::spawn({}, [&] {
+        written = f.mgr->write_atomic(f.in + "/system/x", bytes("x"));
+        done.give();
+    });
+    // Released before asserting, so a failure does not leave B waiting.
+    const bool finished_while_held = done.take(5000);
+    holder.release();
+    b->join();
+    ASSERT_TRUE(finished_while_held);
+    EXPECT_TRUE(written);
+    EXPECT_TRUE(holder.result);
+}
+
+// Two card operations never overlap.
+TEST(StorageManager, SdOperationsSerialize) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    CardHolder holder(f);
+
+    wisp::os::Semaphore done(1, 0);
+    wisp::Result<void> appended = wisp::Result<void>::ok();
+    auto b = wisp::os::Task::spawn({}, [&] {
+        appended = f.mgr->append(f.sd + "/wisp/library/log", view("a\n"));
+        done.give();
+    });
+    // Can only pass falsely (B not yet scheduled), never fail falsely.
+    EXPECT_FALSE(done.take(100));
+    holder.release();
+    ASSERT_TRUE(done.take(5000));
+    b->join();
+    EXPECT_TRUE(appended);
+}
+
+// refresh() re-probes the card under the card's lock, so a removal (which
+// on the device deinits the card inside online()) never lands under an
+// in-flight card operation.
+TEST(StorageManager, RefreshWaitsForAnInFlightSdOperation) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    CardHolder holder(f);
+
+    wisp::os::Semaphore probed(1, 0);
+    f.sd_dev->online_flag = false;
+    f.sd_dev->on_online = [&probed] { probed.give(); };
+    auto b = wisp::os::Task::spawn({}, [&] { f.mgr->refresh(); });
+    EXPECT_FALSE(probed.take(100));
+    holder.release();
+    ASSERT_TRUE(probed.take(5000));
+    b->join();
+    f.sd_dev->on_online = nullptr;
+    f.bus.wait_idle(1000);
+    std::vector<std::string> topics = f.collected_topics();
+    ASSERT_FALSE(topics.empty());
+    EXPECT_EQ(topics.back(), "storage.sd.removed");
+}
+
+// Only the source's medium is locked, so a rename never reaches the other
+// device: refused before any I/O.
+TEST(StorageManager, RenameAcrossMediaIsRefused) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    ASSERT_TRUE(f.mgr->write_atomic(f.in + "/system/a", bytes("a")));
+    EXPECT_EQ(f.mgr->rename(f.in + "/system/a", f.sd + "/wisp/library/a").error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_TRUE(exists(f.in + "/system/a"));
+    EXPECT_FALSE(exists(f.sd + "/wisp/library/a"));
+}
+
+TEST(StorageManager, SdWriteOnTheFlashThreadIsAllowed) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    wisp::Result<void> written = wisp::Result<void>::ok();
+    auto t = wisp::os::Task::spawn({}, [&] {
+        wisp::os::set_flash_thread();
+        written = f.mgr->write_atomic(f.sd + "/wisp/library/a", bytes("a"));
+        wisp::os::clear_flash_thread();
+    });
+    t->join();
+    EXPECT_TRUE(written);
+}
+
+TEST(StorageManager, SdWriteOnTheSdIoThreadIsAllowed) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    wisp::Result<void> written = wisp::Result<void>::ok();
+    std::string read_back;
+    auto t = wisp::os::Task::spawn({}, [&] {
+        wisp::os::set_sd_io_thread();
+        written = f.mgr->write_atomic(f.sd + "/wisp/library/a", bytes("a"));
+        auto r = f.mgr->read_file(f.sd + "/wisp/library/a");
+        if (r) read_back = str(r.value());
+        f.mgr->refresh();
+        wisp::os::clear_sd_io_thread();
+    });
+    t->join();
+    EXPECT_TRUE(written);
+    EXPECT_EQ(read_back, "a");
+}
+
+// A path that does not normalize is bad input, not a thread violation:
+// from the SD I/O thread (where the flash rule would fire for an
+// Internal path) every entry point returns InvalidArgument without
+// dying, and still counts in calls().
+TEST(StorageManager, MalformedPathOnTheSdIoThreadIsInvalidArgument) {
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    const std::string bad = f.sd + "/wisp/../wisp/library/a";
+    const std::string good = f.sd + "/wisp/library/b";
+    ASSERT_TRUE(f.mgr->write_atomic(good, bytes("b")));
+    const uint64_t before = f.mgr->calls();
+    wisp::ErrorCode write_code{}, read_code{}, remove_code{}, rename_to_code{}, rename_from_code{};
+    wisp::ErrorCode append_code{}, visit_code{}, list_code{}, size_code{};
+    bool visited = false;
+    auto t = wisp::os::Task::spawn({}, [&] {
+        wisp::os::set_sd_io_thread();
+        write_code = f.mgr->write_atomic(bad, bytes("a")).error().code;
+        read_code = f.mgr->read_file(bad).error().code;
+        remove_code = f.mgr->remove_tree(bad).error().code;
+        rename_to_code = f.mgr->rename(good, bad).error().code;
+        rename_from_code = f.mgr->rename(bad, good).error().code;
+        append_code = f.mgr->append(bad, bytes("a")).error().code;
+        visit_code = f.mgr
+                         ->visit_dir(bad,
+                                     [&](const auto&) {
+                                         visited = true;
+                                         return true;
+                                     })
+                         .error()
+                         .code;
+        list_code = f.mgr->list_dir(bad).error().code;
+        size_code = f.mgr->tree_size(bad).error().code;
+        wisp::os::clear_sd_io_thread();
+    });
+    t->join();
+    EXPECT_EQ(write_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(read_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(remove_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(rename_to_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(rename_from_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(append_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(visit_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(list_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(size_code, wisp::ErrorCode::InvalidArgument);
+    EXPECT_FALSE(visited);
+    // write, read, remove: one each; rename with a bad target: both of its
+    // paths; rename with a bad source: stops at the first; append,
+    // visit_dir, list_dir, tree_size: one each.
+    EXPECT_EQ(f.mgr->calls(), before + 3 + 2 + 1 + 4);
+    EXPECT_TRUE(exists(good));
+}
+
+namespace {
+
+// Threads stay registered across these death tests, so they run in the
+// "threadsafe" style (re-executing the binary) rather than forking a
+// multi-threaded process; the style is restored afterwards.
+struct ThreadsafeDeathStyle {
+    ThreadsafeDeathStyle() { GTEST_FLAG_SET(death_test_style, "threadsafe"); }
+    ~ThreadsafeDeathStyle() { GTEST_FLAG_SET(death_test_style, old); }
+    std::string old = GTEST_FLAG_GET(death_test_style);
+};
+
+}  // namespace
+
+TEST(StorageManagerDeathTest, InternalWriteOnTheSdIoThreadAborts) {
+    ThreadsafeDeathStyle style;
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    EXPECT_DEATH(
+        {
+            auto t = wisp::os::Task::spawn({}, [&f] {
+                wisp::os::set_sd_io_thread();
+                (void)f.mgr->write_atomic(f.in + "/system/a", bytes("a"));
+            });
+            t->join();
+        },
+        "flash access off the flash thread.*write_atomic");
+}
+
+TEST(StorageManagerDeathTest, SdWriteOffBothThreadsAborts) {
+    ThreadsafeDeathStyle style;
+    Fixture f(/*sd_online=*/true);
+    ASSERT_TRUE(f.mgr->init());
+    wisp::os::Semaphore registered(1, 0);
+    wisp::os::Semaphore release(1, 0);
+    auto owner = wisp::os::Task::spawn({}, [&] {
+        wisp::os::set_flash_thread();
+        registered.give();
+        release.take(wisp::os::kForever);
+        wisp::os::clear_flash_thread();
+    });
+    registered.take(wisp::os::kForever);
+    EXPECT_DEATH(
+        { (void)f.mgr->append(f.sd + "/wisp/library/a", view("a")); },
+        "sd access off the sd i/o thread.*append");
+    release.give();
+    owner->join();
 }

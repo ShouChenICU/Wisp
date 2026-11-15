@@ -21,8 +21,8 @@
 // gesture (gesture.hpp).
 //
 // Occupancy (spec 6.3): every holder with at least one subscription
-// holds "imu.main" shared in the OccupancyRegistry; its last unsubscribe
-// releases it. Paused subscriptions still hold it.
+// holds the IMU's own id shared in the OccupancyRegistry; its last
+// unsubscribe releases it. Paused subscriptions still hold it.
 //
 // Standby: set_standby(true) (PowerManager's standby or deep_standby, via
 // its level, which follow_power() follows) pauses everything and powers
@@ -85,8 +85,6 @@ public:
     static constexpr std::array<uint32_t, 4> kRates = {10, 25, 50, 100};
     // What gesture subscriptions sample the accelerometer at.
     static constexpr uint32_t kGestureRate = 50;
-    // The device id taken in the OccupancyRegistry.
-    static constexpr const char* kDevice = "imu.main";
 
     // `imu` may be null: nothing is available then.
     SensorService(std::shared_ptr<hal::Imu> imu, OccupancyRegistry& occupancy,
@@ -170,6 +168,9 @@ private:
     void power_down_if_idle_locked();
 
     std::shared_ptr<hal::Imu> imu_;
+    // imu_'s own id, the device taken in the OccupancyRegistry; empty when
+    // imu_ is null, and then no subscription succeeds, so it is never taken.
+    std::string device_id_;
     OccupancyRegistry& occupancy_;
     SensorServiceConfig config_;
     bool has_accel_ = false;

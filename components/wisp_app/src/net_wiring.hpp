@@ -4,7 +4,7 @@
 // 4b), kept apart from app.cpp so App::Impl only holds one object for it.
 //
 // start() runs on App::start()'s thread, after PowerManager exists:
-//   - builds PairingService (and, with a "net.wifi" device, WifiService)
+//   - builds PairingService (and, with a main Wi-Fi device, WifiService)
 //     and init()s them through run_io -- WifiService::init() only loads
 //     the saved list and user enable flag; disabled state shuts the radio off;
 //   - follows PowerManager::level_cell(), PowerMonitor::supply() and

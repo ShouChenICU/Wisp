@@ -160,6 +160,11 @@ struct ReminderDeps {
     NotificationService* notes = nullptr;
     // Runs a job on the storage worker; false if it could not be queued.
     std::function<bool(std::function<void()>)> submit_io;
+    // Waits up to `timeout_ms` until the storage worker has no job queued
+    // or running (StorageWorker::drain()); false on timeout. stop() uses
+    // it when submit_io refuses its barrier job. Empty: stop() then does
+    // not wait.
+    std::function<bool(uint32_t timeout_ms)> drain_io;
     // UTC seconds; below kWallClockValidSince: not set. Empty: never set.
     std::function<int64_t()> wall_s;
     // Minutes east of UTC, a cached value (never Settings, which is
@@ -210,8 +215,8 @@ public:
     // pass; one pass covers any number of syncs. `time` must outlive the
     // subscription, which stop() releases. Idempotent.
     void start(const StateCell<TimeSyncResult>* time = nullptr);
-    // Stops the timer and the subscription, and waits for a pass already
-    // queued (unless called on the worker). Idempotent.
+    // Stops the timer and the subscription, and waits for a pass or todo
+    // action already queued (unless called on the worker). Idempotent.
     void stop();
 
     // A copy, ascending by id. Memory only. DueToday: open todos due on
@@ -248,6 +253,12 @@ public:
 
     // The local time zone the scheduler uses (ReminderDeps::utc_offset_min).
     int utc_offset_min() const;
+
+    // False once stop() or forget() ran, and stays readable after this
+    // object is gone: a job queued on the worker on the scheduler's behalf
+    // checks it before touching the scheduler, since stop() waits for
+    // queued jobs only up to a bound (and not at all on the worker).
+    std::shared_ptr<const std::atomic<bool>> alive_token() const { return alive_; }
 
 private:
     os::LargeString serialize_locked() const;

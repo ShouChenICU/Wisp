@@ -8,6 +8,14 @@
 //   - the "wisp.fs" StorageWorker (start_storage(), right after
 //     StorageManager::init()): file work for tasks that must not touch
 //     flash, the scene task above all;
+//   - when the board has a card slot, the SD I/O worker "wisp.sd.io"
+//     (StorageWorker::sd_io_config()), started right after wisp.fs, and
+//     the StorageRouter over both: card-only work (a card scene's
+//     wisp.files calls, their recount after a card change, the hot-plug
+//     probe) runs there, so card transfers never hold up internal flash
+//     work. Without a slot, or if it cannot start, the router sends card
+//     work to wisp.fs, as it does with SceneWiringDeps::sd_own_worker
+//     (kSdOwnWorker) set false;
 //   - the SceneRepository over <int>/scenes (or, in dev mode,
 //     Platform::scenes_dir for the code and Platform::scenes_data_dir for
 //     the data), whose recover() runs on the worker before anything lists
@@ -16,8 +24,8 @@
 //     and the SD card's library, even in dev mode (StorageManager moves
 //     files only inside a storage mount). Its scan() follows recover() on
 //     the worker; each change of StorageManager::sd_cell() recounts the
-//     card's scenes there. Deleting a scene with its data also clears its
-//     files;
+//     card's scenes on wisp.sd.io (marked on wisp.fs first, orphans logged
+//     there). Deleting a scene with its data also clears its files;
 //   - with a screen (build_runtime(), after the system layer): the
 //     scenes' HTTP proxy (given Platform::http_client) and the
 //     SceneRuntime, built before networking so the admin routes can be
@@ -45,7 +53,7 @@
 // front loads the screen it replaced again), stop() after networking
 // (whose handlers use the repository and the runtime) and before the
 // storage-refresh timer: the proxy stops (it may wait for one request in
-// flight), then the worker drains and stops.
+// flight), then both workers drain, wisp.sd.io stops, then wisp.fs.
 //
 // Deleting (AdminDeps::request_scene_delete): request_delete() opens the
 // confirmation on the device. "Yes" closes the scene if it is up --
@@ -71,6 +79,7 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/storage_router.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
@@ -85,10 +94,26 @@
 
 namespace wisp::app {
 
+// Whether card-only work gets its own worker, wisp.sd.io, whose stack is
+// in PSRAM. False runs it all on wisp.fs, as before that worker existed:
+// the fallback if the device shows that FATFS/sdmmc writes cannot run
+// from a PSRAM stack (flash-thread spec 3.9).
+inline constexpr bool kSdOwnWorker = true;
+
+// How long the scene listing waits for one scene's files to say where they
+// are (SceneWiring::shell_scenes()), the order of a worker drain at stop:
+// past it the scene shows as not runnable, so a wedged card worker holds
+// neither the listing nor a stop waiting for it.
+inline constexpr uint32_t kFilesProbeMs = 5000;
+
 struct SceneWiringDeps {
     Platform& platform;
     core::EventBus& bus;
     core::StorageManager& storage;
+    // kSdOwnWorker; a field so that tests can run the fallback.
+    bool sd_own_worker = kSdOwnWorker;
+    // kFilesProbeMs; a field so that tests need not wait it out.
+    uint32_t files_probe_ms = kFilesProbeMs;
 };
 
 // One installed scene as the self-check card lists it.
@@ -127,7 +152,8 @@ public:
                        core::NotificationService* notices = nullptr,
                        core::SensorService* sensors = nullptr,
                        const core::StateCell<core::PowerSupply>* supply = nullptr,
-                       const core::StateCell<core::SystemSettingsValues>* settings = nullptr);
+                       const core::StateCell<core::SystemSettingsValues>* settings = nullptr,
+                       core::DeviceService* devices = nullptr);
     // Starts the proxy and the runtime and follows the power level
     // (PowerManager::level_cell()): Standby and below hide the scene.
     // `power` must outlive stop_runtime(); null (no PowerManager) keeps the
@@ -140,7 +166,8 @@ public:
     // Stops the runtime (closing the scene in front) and lets go of the
     // system layer, which App::stop() destroys next. Idempotent.
     void stop_runtime();
-    // stop_runtime(), then the proxy, then the worker (drained). Idempotent.
+    // stop_runtime(), then the proxy, then both workers (drained):
+    // wisp.sd.io first, then wisp.fs. Idempotent.
     void stop();
 
     core::SceneRepository* repository() const { return repo_.get(); }
@@ -158,12 +185,20 @@ public:
     net::SceneHttp* http() const { return http_.get(); }
     // The "wisp.fs" worker, running from start_storage() until stop().
     core::StorageWorker& worker() { return worker_; }
+    // Picks wisp.fs or wisp.sd.io by medium (see the file header); its
+    // sd() is null without an SD I/O worker.
+    core::StorageRouter& router() { return *router_; }
 
     // The shell's scene list (ShellDeps::list_scenes): every installed
     // scene with its icon, whether it runs in the background and whether
-    // it can run now (its files are not on a card that is out). On
-    // worker() only. Empty without a repository or when listing fails
-    // (logged).
+    // it can run now (its files are not on a card that is out). On the
+    // shell's listing task, one call at a time (not on the worker or the
+    // UI thread): every read is a job of the repository's, of SceneFiles'
+    // or of the worker's, waited for here. Empty without a repository or
+    // when listing fails (logged); its generation is the repository's
+    // (SceneRepository::changed_since()) it is up to date with. Asks
+    // `cancelled` between scenes and, once it is true, stops there and
+    // answers `cancelled` (the next call reads everything again).
     //
     // Kept between calls (outside dev mode, whose working directory
     // changes behind the repository's back): only what changed since the
@@ -179,9 +214,13 @@ public:
     // Running in the background comes from the runtime each time, never
     // from storage. An icon comes as its bytes when read for this call and
     // as its icon_hash alone after that (shell_icon() reads it again).
-    shell::ShellListing shell_scenes();
-    // ShellDeps::read_scene_icon: scene `id`'s icon file, or null. On
-    // worker() only.
+    shell::ShellListing shell_scenes(const std::function<bool()>& cancelled = {});
+    // ShellDeps::listing_current: whether shell_scenes() would read nothing
+    // (its listing is cached, nothing changed in the repository and the
+    // card is as it saw it). No file work: any thread.
+    bool shell_listing_current() const;
+    // ShellDeps::read_scene_icon: scene `id`'s icon file, or null. On the
+    // shell's listing task, like shell_scenes().
     std::shared_ptr<const os::LargeBuffer> shell_icon(const std::string& id);
     // ShellDeps::scene_has_data: whether deleting `id` with its data would
     // find any (SceneRepository::removal()). Read when asked, never kept:
@@ -237,6 +276,9 @@ private:
     // scene stays as it is; nothing is retried behind the user's back.
     void delete_failed(const std::string& id, const std::string& name, const char* why);
     void publish(const std::string& id, const char* state);
+    // On wisp.fs, after the card came or went: marks the card's scenes,
+    // queues their recounts on the card's worker and the orphan log here.
+    void recount_card(core::SceneFiles& files);
     // Dev mode: starts the watch timer (start_runtime()).
     void start_watching();
     // On the worker: one DirWatcher poll, reloading the scene in front if
@@ -250,15 +292,21 @@ private:
         uint64_t icon_hash = 0;
         bool available = true;
     };
-    // shell_scenes() helpers, on the worker: the entry for manifest `m`
-    // (its icon read into `bytes`), and whether `id` can run with the card
-    // as `online` says.
+    // shell_scenes() helpers, on its task: the entry for manifest `m` (its
+    // icon read into `bytes`), and whether `id` can run with the card as
+    // `online` says (false, and `unsure` set, when its files did not answer
+    // within files_probe_ms).
     ListedScene listed_scene(const core::SceneManifest& m,
                              std::shared_ptr<const os::LargeBuffer>& bytes);
-    bool can_run(const os::LargeString& id, bool online);
+    bool can_run(const os::LargeString& id, bool online, bool& unsure);
 
     SceneWiringDeps deps_;
     core::StorageWorker worker_;
+    // Started only with a card slot; its stack may be in PSRAM (it never
+    // touches internal flash).
+    core::StorageWorker sd_worker_{core::StorageWorker::sd_io_config()};
+    // Over worker_ alone until start_storage() has started sd_worker_.
+    std::optional<core::StorageRouter> router_;
     // The services sit in Mem::Large, like the worker inside this object
     // (App builds it there): long-lived and small, so malloc would put them
     // in internal RAM. The worker's stack and the FreeRTOS objects stay
@@ -274,15 +322,17 @@ private:
     // Bumped by that subscription (on wisp.bus) for each change it sees;
     // shell_scenes() then asks again whether each scene can run.
     std::atomic<uint64_t> sd_changes_{0};
-    // shell_scenes()'s listing, sorted by id; worker only. `listed_` is
-    // false until one has been read (and after a failed read), `listed_gen_`
-    // the repository generation it is up to date with, and `listed_online_`
-    // / `listed_sd_` the card as its `available` flags saw it.
+    // shell_scenes()'s listing, sorted by id; on its task only. `listed_`
+    // is false until one has been read (and after a failed read),
+    // `listed_gen_` the repository generation it is up to date with, and
+    // `listed_online_` / `listed_sd_` the card as its `available` flags saw
+    // it; atomics, since shell_listing_current() reads them from the UI
+    // thread.
     os::LargeVector<ListedScene> listing_;
-    bool listed_ = false;
-    uint64_t listed_gen_ = 0;
-    bool listed_online_ = true;
-    uint64_t listed_sd_ = 0;
+    std::atomic<bool> listed_{false};
+    std::atomic<uint64_t> listed_gen_{0};
+    std::atomic<bool> listed_online_{true};
+    std::atomic<uint64_t> listed_sd_{0};
     // Declared before runtime_, so the runtime goes first: it cancels its
     // scene's requests through the proxy while it stops.
     os::LargeUnique<net::SceneHttp> http_;

@@ -73,7 +73,25 @@ import traceback
 TIMEOUT_S = 20
 EXIT_AFTER_MS = 3000
 
-# The 13 devices SimBoard::init() registers by default (see
+# caps.role of each simulated device (wisp/hal/roles.hpp); button.vol_up
+# serves no portable role, so it declares none.
+EXPECTED_ROLES = {
+    "audio_in.main": "main",
+    "audio_out.main": "main",
+    "button.power": "power",
+    "button.vol_down": "talk",
+    "clock.main": "main",
+    "display.main": "main",
+    "haptic.main": "main",
+    "imu.main": "main",
+    "net.wifi": "main",
+    "power.main": "main",
+    "storage.int": "internal",
+    "storage.sd": "removable",
+    "touch.main": "main",
+}
+
+# The 14 devices SimBoard::init() registers by default (see
 # components/wisp_port_sim/sim_board.cpp).
 EXPECTED_DEVICE_IDS = {
     "audio_in.main",
@@ -83,6 +101,7 @@ EXPECTED_DEVICE_IDS = {
     "button.vol_up",
     "clock.main",
     "display.main",
+    "haptic.main",
     "imu.main",
     "net.wifi",
     "power.main",
@@ -336,11 +355,28 @@ def case_default(sim_path, tmp_root):
         f"imu.main.caps.magnetometer == {imu_caps.get('magnetometer')!r}, expected false",
     )
 
+    # A self-describing device carries its schema in caps (device model
+    # spec 3), and the manifest stays one JSON line with it.
+    haptic = manifest_devices["haptic.main"]
+    expect(haptic["class"] == "other", f"haptic.main class == {haptic['class']!r}")
+    haptic_cmds = haptic["caps"]["schema"]["cmds"]
+    expect(
+        haptic_cmds[0]["name"] == "pulse",
+        f"haptic.main schema cmds[0].name == {haptic_cmds[0]['name']!r}, expected 'pulse'",
+    )
+    manifest_lines = [l for l in result.stdout.splitlines() if l.startswith("WISP_MANIFEST ")]
+    expect(len(manifest_lines) == 1, f"{len(manifest_lines)} WISP_MANIFEST lines, expected 1")
+
     display_safe_area = manifest_devices["display.main"]["safe_area"]
     expect(
         display_safe_area == DEFAULT_SAFE_AREA,
         f"display.main safe_area == {display_safe_area}, expected {DEFAULT_SAFE_AREA}",
     )
+
+    for device_id, device in manifest_devices.items():
+        role = device.get("caps", {}).get("role")
+        want = EXPECTED_ROLES.get(device_id)
+        expect(role == want, f"{device_id} caps.role == {role!r}, expected {want!r}")
 
     # All devices report "ok", with two controller-approved exceptions:
     # storage.sd (not asserted here; --no-sd covers its "missing"

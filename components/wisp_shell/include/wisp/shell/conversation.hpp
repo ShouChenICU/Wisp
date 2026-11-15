@@ -308,7 +308,7 @@ private:
     uint32_t next_listener_ = 1;
 };
 
-// The id of the first button whose caps "role" is "talk", if any.
+// The id of the button with role talk (wisp/hal/roles.hpp), if any.
 std::optional<std::string> find_talk_button(core::DeviceRegistry& reg);
 
 }  // namespace wisp::shell

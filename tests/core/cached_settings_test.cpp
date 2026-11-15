@@ -6,10 +6,12 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "support/fake_settings_backend.hpp"
+#include "support/wait.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/os/flash_guard.hpp"
@@ -387,4 +389,121 @@ TEST(CachedSettings, EraseAllDuringASaveInFlight) {
     EXPECT_EQ(platform.store.size(), 1u);
     EXPECT_EQ(platform.store.count({"b", "y"}), 1u);
     EXPECT_EQ(cache.get("a", "x").error().code, ErrorCode::NotFound);
+}
+
+namespace {
+
+// What ran on the worker, in order: the platform's write_batch() records
+// "save", a queued Normal job its own name.
+struct OrderLog {
+    std::mutex m;
+    std::vector<std::string> v;
+    void add(std::string s) {
+        std::lock_guard<std::mutex> lock(m);
+        v.push_back(std::move(s));
+    }
+    std::vector<std::string> get() {
+        std::lock_guard<std::mutex> lock(m);
+        return v;
+    }
+};
+
+}  // namespace
+
+TEST(CachedSettings, SavesOvertakeANormalBacklog) {
+    FakePlatformBackend platform;
+    OrderLog order;
+    platform.on_write = [&] { order.add("save"); };
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+    block_worker(w, release);
+
+    ASSERT_TRUE(w.submit([&] { order.add("N1"); }, wisp::core::IoLane::Normal));
+    ASSERT_TRUE(w.submit([&] { order.add("N2"); }, wisp::core::IoLane::Normal));
+    ASSERT_TRUE(cache.set("audio", "volume", 3));
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_EQ(order.get(), (std::vector<std::string>{"save", "N1", "N2"}));
+    EXPECT_EQ(platform.stored("audio", "volume"), Value(3));
+}
+
+TEST(CachedSettings, FlushWaitsOnTheInteractiveLane) {
+    FakePlatformBackend platform;
+    OrderLog order;
+    platform.on_write = [&] { order.add("save"); };
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w;
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+    block_worker(w, release);
+
+    ASSERT_TRUE(w.submit([&] { order.add("N1"); }, wisp::core::IoLane::Normal));
+    ASSERT_TRUE(cache.set("audio", "volume", 4));
+    // The blocker, N1 and the save are pending; the flush's job makes four.
+    std::atomic<bool> flushed{false};
+    Result<void> flush_result = Result<void>::ok();
+    std::thread flusher([&] {
+        flush_result = cache.flush(5000);
+        flushed = true;
+    });
+    const bool queued = wisp::test::wait_until([&] { return w.pending() == 4; }, 5000);
+    release.give();
+    flusher.join();
+    ASSERT_TRUE(queued);
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_TRUE(flushed.load());
+    EXPECT_TRUE(flush_result);
+    EXPECT_EQ(order.get(), (std::vector<std::string>{"save", "N1"}));
+}
+
+TEST(CachedSettings, SaveFallsBackToNormalWhenTheInteractiveLaneIsFull) {
+    FakePlatformBackend platform;
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w(wisp::core::StorageWorkerConfig{.interactive_capacity = 1});
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+    block_worker(w, release);
+
+    ASSERT_TRUE(w.submit([] {}, wisp::core::IoLane::Interactive));
+    // The save cannot be queued on the full lane; it must not stay dirty
+    // until some later change or flush.
+    ASSERT_TRUE(cache.set("audio", "volume", 5));
+    release.give();
+    ASSERT_TRUE(w.drain(5000));
+
+    EXPECT_EQ(platform.stored("audio", "volume"), Value(5));
+}
+
+TEST(CachedSettings, FlushFallsBackToNormalWhenTheInteractiveLaneIsFull) {
+    FakePlatformBackend platform;
+    wisp::os::Semaphore release(1, 0);
+    StorageWorker w(wisp::core::StorageWorkerConfig{.interactive_capacity = 1});
+    ReleaseOnExit guard{release};
+    ASSERT_TRUE(w.start());
+    CachedSettingsBackend cache(platform, w, {});
+    ASSERT_TRUE(cache.load());
+    block_worker(w, release);
+
+    // set()'s save takes the one Interactive slot; the flush's own job
+    // finds the lane full.
+    ASSERT_TRUE(cache.set("audio", "volume", 6));
+    Result<void> flush_result = Result<void>::ok();
+    std::thread flusher([&] { flush_result = cache.flush(5000); });
+    const bool queued = wisp::test::wait_until([&] { return w.pending() == 3; }, 5000);
+    release.give();
+    flusher.join();
+    ASSERT_TRUE(queued);
+
+    EXPECT_TRUE(flush_result);
+    EXPECT_EQ(platform.stored("audio", "volume"), Value(6));
 }

@@ -9,6 +9,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/scene_manifest.hpp"
+#include "wisp/os/flash_guard.hpp"
 
 namespace wisp::core {
 
@@ -24,6 +25,10 @@ constexpr uint32_t kSubmitRetryMs = 10;
 constexpr uint32_t kSubmitGiveUpMs = 5000;
 // How often a push() waiting for room looks at cancel() in any case.
 constexpr uint32_t kWaitSliceMs = 50;
+
+// The record generation the card job running on this thread was routed
+// with (SceneFiles::submit()); 0 outside such a job.
+thread_local uint64_t t_card_gen = 0;
 
 bool ends_with(std::string_view s, std::string_view x) {
     return s.size() >= x.size() && s.substr(s.size() - x.size()) == x;
@@ -290,18 +295,130 @@ bool SceneFiles::sd_files_exist(std::string_view scene) const {
     return static_cast<bool>(storage_.visit_dir(dir, [](const DirEntry&) { return false; }));
 }
 
+SceneFiles::IoLocks SceneFiles::lock_io(std::string_view scene, bool card) {
+    IoLocks l;
+    if (os::on_sd_io_thread()) {
+        l.sd = std::unique_lock<os::Mutex>(io_sd_mu_);
+    } else {
+        l.in = std::unique_lock<os::Mutex>(io_int_mu_);
+        // Stable now: loaded and loc change only with both I/O locks.
+        bool internal = false;
+        if (!card) {
+            std::lock_guard<os::Mutex> lock(mu_);
+            auto it = records_.find(scene);
+            internal = it != records_.end() && it->second.loaded &&
+                       it->second.loc == FilesLocation::Internal;
+        }
+        if (!internal) l.sd = std::unique_lock<os::Mutex>(io_sd_mu_);
+    }
+    if (config_.on_io) config_.on_io(scene);
+    return l;
+}
+
+SceneFiles::IoLocks SceneFiles::lock_both() {
+    IoLocks l;
+    l.in = std::unique_lock<os::Mutex>(io_int_mu_);
+    l.sd = std::unique_lock<os::Mutex>(io_sd_mu_);
+    return l;
+}
+
+Medium SceneFiles::route_locked(std::string_view scene) const {
+    auto it = records_.find(scene);
+    if (it == records_.end()) return Medium::Internal;
+    const Record& r = it->second;
+    const bool card = r.int_in_flight == 0 && r.loaded && r.loc == FilesLocation::Sd;
+    return card ? Medium::Sd : Medium::Internal;
+}
+
+Medium SceneFiles::medium_of(std::string_view scene) const {
+    std::lock_guard<os::Mutex> lock(mu_);
+    return route_locked(scene);
+}
+
+bool SceneFiles::submit(std::string_view scene, std::function<void()> job, IoLane lane) {
+    return submit_on(scene, std::nullopt, std::move(job), lane);
+}
+
+bool SceneFiles::submit_on(std::string_view scene, std::optional<Medium> pinned,
+                           std::function<void()> job, IoLane lane) {
+    if (!job) return false;
+    if (!config_.submit_io) {
+        job();
+        return true;
+    }
+    Medium m = Medium::Internal;
+    Record* counted = nullptr;
+    uint64_t gen = 0;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        m = pinned ? *pinned : route_locked(scene);
+        // An invalid id gets no entry: its job fails before any file work,
+        // and it can never be routed to the card anyway.
+        if (m == Medium::Internal && valid_owner(scene)) {
+            auto it = records_.find(scene);
+            if (it == records_.end()) it = records_.emplace(std::string(scene), Record{}).first;
+            ++it->second.int_in_flight;
+            counted = &it->second;
+        } else if (m == Medium::Sd && !pinned) {
+            // Routed to the card: the record is loaded (route_locked()).
+            gen = records_.find(scene)->second.gen;
+        }
+    }
+    if (counted != nullptr) {
+        // In PSRAM: one per queued job.
+        auto token = std::allocate_shared<InFlight>(os::LargeAllocator<InFlight>(), *this, counted);
+        job = [token, inner = std::move(job)] {
+            inner();
+            token->end();
+        };
+    } else if (gen != 0) {
+        job = [gen, inner = std::move(job)] {
+            const uint64_t outer = t_card_gen;
+            t_card_gen = gen;
+            inner();
+            t_card_gen = outer;
+        };
+    }
+    return config_.submit_io(m, lane, std::move(job));
+}
+
+void SceneFiles::end_internal(Record* r) {
+    std::lock_guard<os::Mutex> lock(mu_);
+    if (r->int_in_flight > 0) --r->int_in_flight;
+}
+
 Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choose) {
     using R = Result<Record*>;
     if (!valid_owner(scene)) return R::err(ErrorCode::InvalidArgument, "invalid scene id");
+    if (os::on_sd_io_thread()) {
+        // Loading or choosing reads and writes the location record and
+        // asks the repository, all on internal flash: wisp.fs does that.
+        Record* card = nullptr;
+        {
+            std::lock_guard<os::Mutex> lock(mu_);
+            auto it = records_.find(scene);
+            if (it != records_.end() && it->second.loaded && it->second.loc == FilesLocation::Sd &&
+                (t_card_gen == 0 || it->second.gen == t_card_gen))
+                card = &it->second;
+        }
+        if (card == nullptr) return R::err(ErrorCode::Busy, "busy");
+        return count(scene, card);
+    }
     Record* r = nullptr;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         auto it = records_.find(scene);
         if (it == records_.end()) it = records_.emplace(std::string(scene), Record{}).first;
         r = &it->second;
+        // A card job that fell back to wisp.fs (the SD I/O worker stopped)
+        // is just as stale once its record went: checked before anything
+        // is loaded or chosen again.
+        if (t_card_gen != 0 && (!r->loaded || r->gen != t_card_gen))
+            return R::err(ErrorCode::Busy, "busy");
     }
     if (!r->loaded) {
         FilesLocation loc = FilesLocation::None;
+        FilesWant want = FilesWant::Auto;
         auto raw = storage_.read_file_large(record_path(scene));
         if (raw) {
             auto parsed = from_json(std::string_view(
@@ -314,7 +431,7 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
             if (loc == FilesLocation::None)
                 WLOG_W(kTag, "%.*s: unreadable location record", static_cast<int>(scene.size()),
                        scene.data());
-            const FilesWant want = loc == FilesLocation::None ? FilesWant::Auto : want_of(scene);
+            if (loc != FilesLocation::None) want = want_of(scene);
             if ((want == FilesWant::Sd && loc == FilesLocation::Internal) ||
                 (want == FilesWant::Int && loc == FilesLocation::Sd)) {
                 // spec 7.2: the first choice stands; files are never moved.
@@ -327,12 +444,18 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         }
         std::lock_guard<os::Mutex> lock(mu_);
         r->loc = loc;
+        if (loc != FilesLocation::None) r->want = want;
         r->loaded = true;
+        r->gen = ++last_gen_;
         r->counted = false;
     }
     if (r->loc == FilesLocation::None) {
         bool installed = true;
         const FilesWant want = want_of(scene, &installed);
+        {
+            std::lock_guard<os::Mutex> lock(mu_);
+            r->want = want;
+        }
         const bool card = sd_online();
         // "sd" never falls back to internal storage.
         if (want == FilesWant::Sd && !card)
@@ -355,6 +478,11 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
         r->loc = loc;
         r->counted = false;
     }
+    return count(scene, r);
+}
+
+Result<SceneFiles::Record*> SceneFiles::count(std::string_view scene, Record* r) {
+    using R = Result<Record*>;
     if (!r->counted) {
         const std::string dir = dir_of(scene, r->loc);
         if (dir.empty()) return fail<Record*>(ErrorCode::StorageUnavailable, "unavailable");
@@ -373,7 +501,8 @@ Result<SceneFiles::Record*> SceneFiles::ensure(std::string_view scene, bool choo
 }
 
 Result<void> SceneFiles::scan() {
-    std::lock_guard<os::Mutex> io(io_mu_);
+    if (os::on_sd_io_thread()) return fail<void>(ErrorCode::Busy, "busy");
+    IoLocks io = lock_both();
     auto listed = storage_.list_dir(config_.data_root);
     if (!listed) {
         if (listed.error().code == ErrorCode::NotFound) return Result<void>::ok();
@@ -398,8 +527,17 @@ Result<void> SceneFiles::scan() {
 }
 
 void SceneFiles::on_sd_changed() {
-    std::lock_guard<os::Mutex> io(io_mu_);
+    for (const std::string& id : sd_changed_begin()) {
+        auto r = recount(id);
+        if (!r) WLOG_W(kTag, "%s: not counted: %s", id.c_str(), r.error().message.c_str());
+    }
+    sd_changed_end();
+}
+
+std::vector<std::string> SceneFiles::sd_changed_begin() {
     std::vector<std::string> on_card;
+    if (os::on_sd_io_thread()) return on_card;
+    IoLocks io = lock_both();
     {
         std::lock_guard<os::Mutex> lock(mu_);
         for (auto& [id, r] : records_) {
@@ -408,11 +546,30 @@ void SceneFiles::on_sd_changed() {
             on_card.push_back(id);
         }
     }
-    if (!sd_online()) return;
-    for (const std::string& id : on_card) {
-        auto r = ensure(id, false);
-        if (!r) WLOG_W(kTag, "%s: not counted: %s", id.c_str(), r.error().message.c_str());
+    if (!sd_online()) on_card.clear();
+    return on_card;
+}
+
+Result<void> SceneFiles::recount(std::string_view scene) {
+    // Card work only: a record on the card never changes location without
+    // io_sd_mu_ (file header), so this lock alone keeps it there.
+    std::lock_guard<os::Mutex> io(io_sd_mu_);
+    Record* r = nullptr;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        auto it = records_.find(scene);
+        if (it != records_.end() && it->second.loaded && it->second.loc == FilesLocation::Sd)
+            r = &it->second;
     }
+    if (r == nullptr) return Result<void>::ok();
+    auto counted = count(scene, r);
+    if (!counted) return Result<void>::err(counted.error().code, counted.error().message);
+    return Result<void>::ok();
+}
+
+void SceneFiles::sd_changed_end() {
+    if (os::on_sd_io_thread() || !sd_online()) return;
+    IoLocks io = lock_both();
     log_orphans();
 }
 
@@ -420,7 +577,7 @@ Result<void> SceneFiles::write(std::string_view scene, std::string_view name,
                                std::span<const uint8_t> data) {
     if (!valid_file_name(name)) return fail<void>(ErrorCode::InvalidArgument, "bad_name");
     if (data.size() > config_.max_write) return fail<void>(ErrorCode::InvalidArgument, "too_large");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, true);
     if (!rec) return Result<void>::err(rec.error().code, rec.error().message);
     Record& r = *rec.value();
@@ -454,7 +611,7 @@ Result<void> SceneFiles::append(std::string_view scene, std::string_view name,
                                 std::span<const uint8_t> data) {
     if (!valid_file_name(name)) return fail<void>(ErrorCode::InvalidArgument, "bad_name");
     if (data.size() > config_.max_write) return fail<void>(ErrorCode::InvalidArgument, "too_large");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, true);
     if (!rec) return Result<void>::err(rec.error().code, rec.error().message);
     Record& r = *rec.value();
@@ -481,7 +638,7 @@ Result<os::LargeBuffer> SceneFiles::read(std::string_view scene, std::string_vie
         return fail<os::LargeBuffer>(ErrorCode::InvalidArgument, "bad_name");
     if (len > config_.max_read)
         return fail<os::LargeBuffer>(ErrorCode::InvalidArgument, "too_large");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, false);
     if (!rec) return R::err(rec.error().code, rec.error().message);
     if (rec.value()->loc == FilesLocation::None)
@@ -500,7 +657,7 @@ Result<os::LargeBuffer> SceneFiles::read(std::string_view scene, std::string_vie
 Result<SceneFileList> SceneFiles::list(std::string_view scene) {
     using R = Result<SceneFileList>;
     SceneFileList out;
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, false);
     if (!rec) return R::err(rec.error().code, rec.error().message);
     if (rec.value()->loc == FilesLocation::None) return R::ok(std::move(out));
@@ -539,7 +696,7 @@ Result<SceneFileList> SceneFiles::list(std::string_view scene) {
 
 Result<void> SceneFiles::remove(std::string_view scene, std::string_view name) {
     if (!valid_file_name(name)) return fail<void>(ErrorCode::InvalidArgument, "bad_name");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, false);
     if (!rec) return Result<void>::err(rec.error().code, rec.error().message);
     Record& r = *rec.value();
@@ -559,7 +716,7 @@ Result<void> SceneFiles::remove(std::string_view scene, std::string_view name) {
 Result<SceneFileEntry> SceneFiles::stat(std::string_view scene, std::string_view name) {
     using R = Result<SceneFileEntry>;
     if (!valid_file_name(name)) return fail<SceneFileEntry>(ErrorCode::InvalidArgument, "bad_name");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, false);
     if (!rec) return R::err(rec.error().code, rec.error().message);
     if (rec.value()->loc == FilesLocation::None)
@@ -577,16 +734,24 @@ Result<SceneFileEntry> SceneFiles::stat(std::string_view scene, std::string_view
 
 Result<SceneFilesInfo> SceneFiles::info(std::string_view scene) {
     using R = Result<SceneFilesInfo>;
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, false);
     if (!rec) return R::err(rec.error().code, rec.error().message);
     SceneFilesInfo out;
     // Asked before mu_: push() takes mu_ on the HTTP task, which must not
     // wait behind the storage lock.
     const bool card = sd_online();
-    out.want = want_of(scene);
+    // Off wisp.sd.io the declaration is asked afresh (an update may have
+    // changed it); on it, the one cached when the record loaded.
+    const bool sd_thread = os::on_sd_io_thread();
+    if (!sd_thread) out.want = want_of(scene);
     std::lock_guard<os::Mutex> lock(mu_);
-    const Record& r = *rec.value();
+    Record& r = *rec.value();
+    if (sd_thread) {
+        out.want = r.want;
+    } else {
+        r.want = out.want;
+    }
     out.location = r.loc;
     if (r.loc == FilesLocation::None) {
         const bool sd = out.want == FilesWant::Sd || (out.want == FilesWant::Auto && card);
@@ -600,7 +765,8 @@ Result<SceneFilesInfo> SceneFiles::info(std::string_view scene) {
 
 Result<void> SceneFiles::remove_all(std::string_view scene) {
     if (!valid_scene_id(scene)) return fail<void>(ErrorCode::InvalidArgument, "invalid scene id");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    if (os::on_sd_io_thread()) return fail<void>(ErrorCode::Busy, "busy");
+    IoLocks io = lock_both();
     Result<void> first = storage_.remove_tree(dir_of(scene, FilesLocation::Internal));
     if (std::string sd = sd_scene_dir(storage_, scene); !sd.empty()) {
         Result<void> r = storage_.remove_tree(sd);
@@ -611,10 +777,10 @@ Result<void> SceneFiles::remove_all(std::string_view scene) {
     {
         std::lock_guard<os::Mutex> lock(mu_);
         auto it = records_.find(scene);
-        // A download in flight keeps its entry; the next use reads the
-        // (now missing) record again.
+        // A download or an Internal job in flight keeps its entry; the
+        // next use reads the (now missing) record again, on wisp.fs.
         if (it != records_.end()) {
-            if (it->second.downloading.empty()) {
+            if (it->second.downloading.empty() && it->second.int_in_flight == 0) {
                 records_.erase(it);
             } else {
                 it->second.loaded = false;
@@ -631,7 +797,7 @@ Result<std::shared_ptr<FileDownload>> SceneFiles::begin_download(std::string_vie
                                                                  std::string_view name) {
     using R = Result<std::shared_ptr<FileDownload>>;
     if (!valid_file_name(name)) return R::err(ErrorCode::InvalidArgument, "bad_name");
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(scene);
     auto rec = ensure(scene, true);
     if (!rec) return R::err(rec.error().code, rec.error().message);
     Record& r = *rec.value();
@@ -648,7 +814,10 @@ Result<std::shared_ptr<FileDownload>> SceneFiles::begin_download(std::string_vie
     Result<void> made = storage_.remove_tree(dl->dl_path());
     if (made) made = storage_.append(dl->dl_path(), {});
     if (!made) return storage_fail<std::shared_ptr<FileDownload>>(made.error());
+    // Its appends and finish stay on the worker this runs on (FileDownload).
+    dl->medium_ = os::on_sd_io_thread() ? Medium::Sd : Medium::Internal;
     std::lock_guard<os::Mutex> lock(mu_);
+    dl->gen_ = r.gen;
     r.downloading.push_back(dl->name_);
     return R::ok(std::move(dl));
 }
@@ -670,6 +839,9 @@ void SceneFiles::release(const std::string& scene, const std::string& name, uint
     Record& r = it->second;
     r.pending -= std::min(reserved, r.pending);
     std::erase(r.downloading, name);
+    // The download's ".dl" stays behind with bytes the usage never
+    // counted: the scene's next call counts it again, which removes it.
+    r.counted = false;
 }
 
 Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
@@ -693,10 +865,21 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
         size = dl.written_;
     }
     dl.wake_.give();
-    std::lock_guard<os::Mutex> io(io_mu_);
+    IoLocks io = lock_io(dl.scene_, dl.card_);
+    {
+        // The scene's files were removed since begin_download() (file
+        // header): what was fetched belongs to files that are gone.
+        std::lock_guard<os::Mutex> lock(mu_);
+        auto it = records_.find(dl.scene_);
+        if (it == records_.end() || !it->second.loaded || it->second.gen != dl.gen_) good = false;
+    }
     const std::string dl_path = dl.dl_path();
     const std::string done = dl.dir_ + "/." + dl.name_ + std::string(kDoneSuffix);
-    Result<void> r = Result<void>::ok();
+    // Pinned to its worker, an internal download never finishes on
+    // wisp.sd.io; if it did, its ".dl" is left for the next count rather
+    // than touching internal flash there.
+    const bool reachable = dl.card_ || !os::on_sd_io_thread();
+    Result<void> r = reachable ? Result<void>::ok() : Result<void>::err(ErrorCode::Busy, "busy");
     uint64_t replaced = 0;
     if (good && rest.ok() && rest.size() != 0) {
         r = storage_.append(dl_path, rest.span());
@@ -725,7 +908,9 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
     // A ".done" that a failed step left behind is complete: the next count
     // finishes it, so it stays (and the scene is counted again).
     bool recount = false;
-    if (!good) {
+    if (!reachable) {
+        recount = true;
+    } else if (!good) {
         storage_.remove_tree(dl_path);
     } else if (!r) {
         storage_.remove_tree(dl_path);
@@ -760,13 +945,34 @@ Result<uint64_t> SceneFiles::finish_download(FileDownload& dl, bool ok) {
 }
 
 FileDownload::FileDownload(SceneFiles& files, std::string scene, std::string name, std::string dir)
-    : files_(files), scene_(std::move(scene)), name_(std::move(name)), dir_(std::move(dir)) {}
+    : files_(files),
+      scene_(std::move(scene)),
+      name_(std::move(name)),
+      dir_(std::move(dir)),
+      card_(files_.on_card(dir_)) {}
 
 FileDownload::~FileDownload() = default;
 
 std::string FileDownload::dl_path() const { return dir_ + "/." + name_ + std::string(kDlSuffix); }
 
 Result<uint64_t> FileDownload::finish(bool ok) { return files_.finish_download(*this, ok); }
+
+bool FileDownload::submit(std::function<void()> job, uint32_t wait_ms) {
+    // On its own worker (SceneHttp calls done() inside the job that began
+    // the download when it refuses the request) the lane cannot drain
+    // while this waits. on_flash_thread() also holds while no flash thread
+    // is registered (boot, shutdown), when there is no worker to wait for.
+    const bool own = medium_ == Medium::Sd ? os::on_sd_io_thread() : os::on_flash_thread();
+    if (own) wait_ms = 0;
+    // A full Bulk lane is mostly this download's own appends, which drain
+    // quickly (at once after cancel()): worth waiting for, as dispatch()
+    // does, rather than losing a finished download.
+    for (uint32_t waited = 0;; waited += kSubmitRetryMs) {
+        if (files_.submit_on(scene_, medium_, job, IoLane::Bulk)) return true;
+        if (waited >= wait_ms) return false;
+        os::sleep_ms(kSubmitRetryMs);
+    }
+}
 
 void FileDownload::fail_locked(const char* code) {
     if (error_.empty()) error_ = code;
@@ -861,7 +1067,9 @@ bool FileDownload::dispatch(os::LargeBuffer buf) {
     auto job = [self = shared_from_this(), holder = std::make_shared<os::LargeBuffer>(
                                                std::move(buf))] { self->append(*holder); };
     for (uint32_t waited = 0;; waited += kSubmitRetryMs) {
-        if (submit(job)) return true;
+        // The same worker and lane for every chunk and for finish(): they
+        // run in order.
+        if (files_.submit_on(scene_, medium_, job, IoLane::Bulk)) return true;
         std::lock_guard<os::Mutex> lock(mu_);
         if (cancelled_ || finished_ || waited >= kSubmitGiveUpMs) {
             queued_ -= std::min(queued_, kChunk);
@@ -881,7 +1089,9 @@ void FileDownload::append(const os::LargeBuffer& buf) {
             return;
         }
     }
-    Result<void> r = files_.storage_.append(dl_path(), buf.span());
+    // See finish_download(): never internal flash on wisp.sd.io.
+    Result<void> r = card_ || !os::on_sd_io_thread() ? files_.storage_.append(dl_path(), buf.span())
+                                                     : Result<void>::err(ErrorCode::Busy, "busy");
     {
         std::lock_guard<os::Mutex> lock(mu_);
         queued_ -= std::min(queued_, buf.size());

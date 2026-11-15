@@ -244,6 +244,23 @@ TEST(AppVoice, NoMicStillBoots) {
     EXPECT_TRUE(v.server->requests().empty());
 }
 
+// Spec 2.3: the mic is found by role, whatever its id.
+TEST(AppVoice, FindsTheMicByRole) {
+    VoiceApp v(/*with_mic=*/true);
+    v.mic->set_id("audio_in.mic");
+    ASSERT_TRUE(v.start());
+    wisp::shell::ConversationController* conv = v.h->app->conversation();
+    ASSERT_NE(conv, nullptr);
+    ASSERT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 10000));
+    v.mic->set_script({silence(300)});
+    v.key->down = true;
+    ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 3000));
+    EXPECT_TRUE(wait_until([&] { return v.mic->opens() > 0; }, 3000));
+    v.key->down = false;
+    ASSERT_TRUE(wait_until([&] { return !conv->holding(); }, 3000));
+    for (const auto& reason : v.voice_reasons()) EXPECT_NE(reason, "mic_unavailable");
+}
+
 TEST(AppVoice, AgentNotRunningLeavesVoiceOff) {
     VoiceApp v(/*with_mic=*/true);
     // An unreadable conversation file: the agent does not start.

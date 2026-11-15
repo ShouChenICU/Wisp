@@ -194,13 +194,18 @@ Result<void> CachedSettingsBackend::write_batch(std::span<const SettingsChange> 
 }
 
 void CachedSettingsBackend::schedule() {
-    auto job = [this] { (void)persist(); };
-    if (worker_.submit(job)) return;
+    // A save writes whatever is dirty when it runs, so it does not care
+    // what order it runs in relative to other jobs: when the Interactive
+    // lane is full it takes the Normal one rather than leaving the change
+    // unwritten until the next one.
+    std::function<void()> job = [this] { (void)persist(); };
+    if (worker_.try_submit(job, IoLane::Interactive)) return;
+    if (worker_.try_submit(job, IoLane::Normal)) return;
     // The worker is not running (boot or shutdown: run_sync() runs the
-    // save right here) or its queue is full. With timeout 0 a save that
+    // save right here) or both lanes are full. With timeout 0 a save that
     // got queued after all still runs later; one that was refused leaves
     // the keys dirty for the next change or flush().
-    Result<void> r = worker_.run_sync(job, 0);
+    Result<void> r = worker_.run_sync(std::move(job), 0, IoLane::Interactive);
     if (!r && r.error().code != ErrorCode::Timeout) {
         WLOG_W(kTag, "settings save not queued (%s); retrying on the next change",
                r.error().message.c_str());
@@ -289,7 +294,14 @@ Result<void> CachedSettingsBackend::flush(uint32_t timeout_ms) {
     }
     // The job may outlive a timed-out wait, so its result is shared.
     auto out = std::make_shared<Result<void>>(Result<void>::ok());
-    WISP_TRY(worker_.run_sync([this, out] { *out = persist(); }, timeout_ms));
+    std::function<void()> job = [this, out] { *out = persist(); };
+    Result<void> r = worker_.run_sync(job, timeout_ms, IoLane::Interactive);
+    // As in schedule(): order does not matter to a save, so a full
+    // Interactive lane is no reason to leave it unwritten.
+    if (!r && r.error().code == ErrorCode::Busy && worker_.running()) {
+        r = worker_.run_sync(std::move(job), timeout_ms, IoLane::Normal);
+    }
+    WISP_TRY(r);
     return *out;
 }
 

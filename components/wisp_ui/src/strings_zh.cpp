@@ -313,6 +313,8 @@ const char* strings_zh(StrId id) {
             return "Agent 要删除「{}」的文件 {}";
         case StrId::AgentNoteSetting:
             return "{} {} → {}";
+        case StrId::AgentNoteDevice:
+            return "设备 {}：{}";
         case StrId::AgentSetBrightness:
             return "亮度";
         case StrId::AgentSetVolume:
@@ -785,6 +787,10 @@ const char* strings_zh(StrId id) {
             return "查看通知";
         case StrId::ActNotifyDismiss:
             return "清除通知";
+        case StrId::ActDeviceList:
+            return "查看外设";
+        case StrId::ActDeviceCall:
+            return "使用外设";
         case StrId::ActDocsRead:
             return "查阅文档";
         case StrId::ActHttpFetch:

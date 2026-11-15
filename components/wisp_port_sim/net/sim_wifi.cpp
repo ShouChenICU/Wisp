@@ -25,7 +25,7 @@ constexpr const char* kApIp = "192.168.4.1";
 
 }  // namespace
 
-SimWifi::SimWifi(std::string id, bool fail_all) : fail_all_(fail_all) {
+SimWifi::SimWifi(std::string id, bool fail_all, std::string role) : fail_all_(fail_all) {
     info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "sim-wifi";
@@ -33,6 +33,7 @@ SimWifi::SimWifi(std::string id, bool fail_all) : fail_all_(fail_all) {
         {"ap", true},
         {"bands", List{Value("2.4GHz")}},
     };
+    if (!role.empty()) info_.caps.emplace("role", Value(std::move(role)));
 }
 
 Result<std::vector<hal::WifiScanEntry>> SimWifi::scan() {

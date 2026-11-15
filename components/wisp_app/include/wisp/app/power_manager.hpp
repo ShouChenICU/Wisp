@@ -65,11 +65,11 @@
 // SystemSettings::get() reports it.
 //
 // Any button event resets the idle clock and, while the screen is off,
-// wakes the device (spec 6.7/8 of the foundation spec), except
-// "button.power" once set_power_key_owned(true) handed that key to its
-// owner. With a UiRuntime, touch activity resets the idle clock too
-// (UiRuntime::set_touch_activity_cb(), which only fires when there is a
-// touch device).
+// wakes the device (spec 6.7/8 of the foundation spec), except the power
+// key (PowerManagerDeps::power_key) once set_power_key_owned(true) handed
+// that key to its owner. With a UiRuntime, touch activity resets the idle
+// clock too (UiRuntime::set_touch_activity_cb(), which only fires when
+// there is a touch device).
 
 #include <atomic>
 #include <cstdint>
@@ -113,6 +113,10 @@ struct PowerManagerDeps {
     core::PowerMonitor* power_monitor = nullptr;
     ui::UiRuntime* ui = nullptr;
     core::ButtonService* buttons = nullptr;
+    // The id of the key with role power (App: by_role<hal::Button>(
+    // hal::role::kPower)), the one set_power_key_owned() hands to its
+    // owner. Empty: no key is owned, every button wakes.
+    std::string power_key;
     std::function<void(bool enable)> set_light_sleep;  // Platform::set_light_sleep
     // Runs on the transition's thread right before the devices go to deep
     // standby, without PowerManager's lock: App writes what still waits
@@ -193,7 +197,7 @@ public:
     // PowerManager is destroyed.
     void set_brightness(uint8_t level);
 
-    // Excludes "button.power" from the "any button wakes it" subscriber
+    // Excludes the power key from the "any button wakes it" subscriber
     // once some other code (the system duties' PowerKeyController)
     // decides what that key does. Without this one short press in standby
     // ("down" then "short") would be acted on twice: this class wakes on
@@ -267,6 +271,7 @@ private:
     core::PowerMonitor* power_monitor_;
     ui::UiRuntime* ui_;
     core::ButtonService* buttons_;
+    const std::string power_key_;
     std::function<void(bool)> set_light_sleep_;
     std::function<void()> before_deep_standby_;
     std::function<void()> on_activity_;

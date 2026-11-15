@@ -34,7 +34,8 @@ namespace wisp::port::sim {
 
 class SimWifi : public hal::Wifi {
 public:
-    explicit SimWifi(std::string id, bool fail_all = false);
+    // `role`, when not empty, becomes caps "role" (wisp/hal/roles.hpp).
+    explicit SimWifi(std::string id, bool fail_all = false, std::string role = {});
 
     const hal::DeviceInfo& info() const override { return info_; }
 

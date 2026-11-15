@@ -237,11 +237,18 @@ bool SceneWorkspace::has_draft(const std::string& id) {
 }
 
 Value SceneWorkspace::list() {
+    // Not inside the job below: the repository reads one scene per job and
+    // parses on this thread (scene_repository.hpp), so the scene.list tool
+    // calls this from the agent's thread. Called on the worker it all runs
+    // inline.
+    auto installed = deps_.repo.list();
+    if (!installed) {
+        WLOG_W(kTag, "scene list failed: %s", installed.error().message.c_str());
+        return Value(List{});
+    }
     auto r = core::call_on_worker<Value>(&deps_.worker, [&]() -> Result<Value> {
         List out;
         std::vector<std::string> seen;
-        auto installed = deps_.repo.list();
-        if (!installed) return pass<Value>(installed.error());
         for (const core::SceneInfo& info : installed.value()) {
             const std::string& id = info.manifest.id;
             seen.push_back(id);

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -81,7 +82,10 @@ protected:
         d.submit_io = [this](std::function<void()> job) {
             return agent_h->worker.submit(std::move(job));
         };
-        d.list_scenes = [] {
+        d.list_scenes = [this](const std::function<bool()>&) {
+            // As the app's lister does: it waits for the storage worker,
+            // so a held worker keeps the page loading.
+            (void)agent_h->worker.run_sync([] {}, wisp::os::kForever);
             std::vector<wisp::shell::ShellScene> out;
             for (int i = 1; i <= 9; ++i) {
                 wisp::shell::ShellScene s;

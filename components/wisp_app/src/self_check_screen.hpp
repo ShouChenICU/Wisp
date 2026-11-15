@@ -145,6 +145,10 @@ private:
     std::shared_ptr<hal::Display> display_;
     std::shared_ptr<hal::Power> power_;
     std::shared_ptr<hal::Clock> clock_;
+    // The card's id: the medium with role removable, unless it also holds
+    // role internal (StorageManager then treats it as internal only).
+    // Empty: no card, the boot report's rows stand as they are.
+    const std::string sd_id_;
     core::Settings ui_settings_;
 
     bool overlay_enabled_ = false;
@@ -167,7 +171,7 @@ private:
     TestSection tests_section_;
     PerfSection perf_;
 
-    // Whether the device list's "storage.sd" row follows StorageManager::
+    // Whether the device list's card row (sd_id_) follows StorageManager::
     // status() live (see build_devices()).
     bool sd_row_live_ = false;
     // This boot's interactive test results. UI thread only.

@@ -53,6 +53,7 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       power_monitor_(deps.power_monitor),
       ui_(deps.ui),
       buttons_(deps.buttons),
+      power_key_(std::move(deps.power_key)),
       set_light_sleep_(std::move(deps.set_light_sleep)),
       before_deep_standby_(std::move(deps.before_deep_standby)),
       on_activity_(std::move(deps.on_activity)),
@@ -86,13 +87,14 @@ PowerManager::PowerManager(PowerManagerDeps deps)
     // The wake itself is posted rather than run on the bus dispatcher:
     // waking can block for the panel's wake latency, and handlers must
     // return quickly (event_bus.hpp).
-    button_sub_ = bus_.subscribe("button.", [this](const core::Event& e) {
+    button_sub_ = bus_.subscribe(core::topics::kButtonPrefix, [this](const core::Event& e) {
         note_activity();
         if (on_activity_) on_activity_();
         if (!standby()) {
             return;
         }
-        if (power_key_owned_.load(std::memory_order_acquire) && e.source == "button.power") {
+        if (power_key_owned_.load(std::memory_order_acquire) && !power_key_.empty() &&
+            e.source == power_key_) {
             return;  // The owner decides what this does -- see set_power_key_owned().
         }
         run_on_ui("exit_standby", [this] { exit_standby(); });

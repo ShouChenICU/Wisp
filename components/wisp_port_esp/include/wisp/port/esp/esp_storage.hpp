@@ -50,16 +50,16 @@
 //         worker does *not* unmount from here -- see sd_retry.hpp's
 //         mark_removed() comment for why: online() does that itself,
 //         specifically because online() is always called under
-//         core::StorageManager's own mutex, which guarantees no FATFS
-//         I/O against this mount point can be in flight at that moment,
+//         core::StorageManager's SD I/O lock (sd_io_mu_), which guarantees
+//         no FATFS I/O against this mount point can be in flight then,
 //         so a same-thread esp_board_manager_deinit_device_by_name() call
 //         there is both safe and fast (no card I/O, just driver/bmgr
 //         bookkeeping).
 //
 //     card_/the SdRetryState/the cached capacity are all guarded by one
 //     os::Mutex (state_mutex_) internal to this class -- *not*
-//     StorageManager's mutex, since per the ruling above the worker must
-//     be able to mount/probe without holding that one (nothing uses "/sd"
+//     StorageManager's SD I/O lock, since per the ruling above the worker
+//     must be able to mount/probe without holding that one (nothing uses "/sd"
 //     until online() has returned true, so there is nothing for the
 //     worker to race against there).
 //

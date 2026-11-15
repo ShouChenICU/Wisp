@@ -1,8 +1,8 @@
 #pragma once
 
 // The voice half of App's boot (MVP spec 4, 6.3): the ASR and TTS clients
-// over the platform's HTTP client, the PcmPlayer on "audio_out.main"
-// (wisp.play), the VoiceService on "audio_in.main" (wisp.voice), the
+// over the platform's HTTP client, the PcmPlayer on the main speaker
+// (wisp.play), the VoiceService on the main mic (wisp.voice), the
 // ConversationController that joins it to the agent and, when a button's
 // caps "role" is "talk", the TalkKey on it.
 //

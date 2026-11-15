@@ -197,13 +197,21 @@ void ReminderScheduler::stop() {
     time_sub_.reset();
     if (timer_.cancel) timer_.cancel();
     if (retry_.cancel) retry_.cancel();
-    // A pass queued before this may still be running on the worker; the
-    // queue runs in order, so once this job has run none is.
+    // A pass or todo action queued before this may still be running on the
+    // worker, past its liveness check; its lane runs in order, so once this
+    // job has run none is. A full lane refuses it, and no other lane would
+    // do: across lanes there is no order, and a lower lane's forced turn
+    // (StorageWorker's turn rule) could run it ahead of them. So then wait
+    // for the worker to be idle instead.
     if (deps_.submit_io && !os::on_flash_thread()) {
         auto done = std::make_shared<os::Semaphore>(1, 0);
-        if (deps_.submit_io([done] { done->give(); }) && !done->take(kStopWaitMs)) {
-            WLOG_W(kTag, "a reminder pass is still running at stop");
+        bool finished = true;
+        if (deps_.submit_io([done] { done->give(); })) {
+            finished = done->take(kStopWaitMs);
+        } else if (deps_.drain_io) {
+            finished = deps_.drain_io(kStopWaitMs);
         }
+        if (!finished) WLOG_W(kTag, "a reminder pass is still running at stop");
     }
 }
 

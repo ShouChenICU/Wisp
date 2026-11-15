@@ -85,10 +85,13 @@ public:
         info_.id = "audio_in.main";
         info_.cls = kClass;
         info_.model = "FAKE";
+        info_.caps["role"] = wisp::Value("main");
         set_script(std::move(script));
     }
 
     const hal::DeviceInfo& info() const override { return info_; }
+    // Another id, before the device is registered.
+    void set_id(std::string id) { info_.id = std::move(id); }
 
     // Replaces the script; the next open() starts it from the beginning.
     void set_script(std::vector<Segment> script) {
@@ -257,6 +260,7 @@ public:
         info_.id = "audio_out.main";
         info_.cls = kClass;
         info_.model = "FAKE";
+        info_.caps["role"] = wisp::Value("main");
     }
 
     const hal::DeviceInfo& info() const override { return info_; }

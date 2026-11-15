@@ -4,10 +4,11 @@
 //
 // Threads: the scene task does the work of open/close/exit/eval and of a
 // running scene's store; the agent's thread only waits for it. Everything
-// that touches flash goes to the storage worker: files_list and files_read
-// run there (ToolThread::Fs); the tools that must also ask the user or
-// wait for the scene task run on the agent's thread and send their flash
-// work there with run_io().
+// that touches flash goes to the storage worker: the tools run on the
+// agent's thread and send their flash work there with run_io(). The files
+// tools send theirs through SceneFiles::submit() instead (run_files()), so
+// a scene's files are worked on by the worker their medium picks
+// (wisp.sd.io for files on the card), in order with the scene's own calls.
 //
 // A stopped scene's store is opened for the one call on the worker, with
 // the runtime's own limits, then flushed and closed, all in one worker
@@ -25,6 +26,7 @@
 // Everything a scene wrote -- its data, files, log lines, eval results
 // and errors -- goes back wrapped by scene_data() (spec 6.3).
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -36,7 +38,9 @@
 #include "wisp/base/base64.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/ui/strings.hpp"
 
 namespace wisp::agent {
@@ -71,6 +75,21 @@ ToolOutput files_fail(const Error& e) {
         if (code == known) return tool_error(code, e.message);
     }
     return fail(e);
+}
+
+// fn() as a job of scene `id` through SceneFiles::submit() (as
+// core::run_files() queues it), waiting the way run_io() does, so a
+// stopped turn stops waiting. The agent's own files (kAgentFilesId) stay
+// on wisp.fs through `submit_io`, as the agent's other storage work does.
+template <typename T>
+Result<T> run_files(core::SceneFiles* files, const detail::SubmitIo& submit_io,
+                    const std::string& id, std::function<Result<T>()> fn, uint32_t timeout_ms,
+                    const ToolCtx& ctx) {
+    if (id == core::kAgentFilesId) return run_io<T>(submit_io, std::move(fn), timeout_ms, ctx);
+    const detail::SubmitIo routed = [files, id](std::function<void()> job) {
+        return files->submit(id, std::move(job));
+    };
+    return run_io<T>(routed, std::move(fn), timeout_ms, ctx);
 }
 
 int64_t int_arg(const Value& a, const char* key, int64_t fallback) {
@@ -323,21 +342,25 @@ Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
         .name = "scene.files_list",
         .description = "The scene's private files (wisp.files): name, size and mtime.",
         .schema_json = kIdOnly,
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::Agent,
         .timeout_ms = kFilesMs,
         .run =
-            [ops](const Value& a, ToolCtx&) {
+            [ops](const Value& a, ToolCtx& ctx) {
                 if (ops->d.files == nullptr) return tool_error("unavailable", "no scene files");
-                auto r = ops->d.files->list(arg_str(a, "id"));
+                const std::string id = arg_str(a, "id");
+                core::SceneFiles* files = ops->d.files;
+                auto r = run_files<core::SceneFileList>(
+                    files, ops->d.submit_io, id, [files, id] { return files->list(id); }, kFilesMs,
+                    ctx);
                 if (!r) return files_fail(r.error());
-                List files;
+                List entries;
                 for (const core::SceneFileEntry& e : r.value().entries) {
-                    files.emplace_back(
+                    entries.emplace_back(
                         Map{{"name", Value(std::string(e.name.data(), e.name.size()))},
                             {"size", Value(static_cast<int64_t>(e.size))},
                             {"mtime", Value(e.mtime)}});
                 }
-                return done({{"files", Value(std::move(files))},
+                return done({{"files", Value(std::move(entries))},
                              {"truncated", Value(r.value().truncated)}});
             },
     }));
@@ -350,19 +373,25 @@ Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
                        R"("name":{"type":"string","maxLength":128},)"
                        R"("offset":{"type":"integer","minimum":0},)"
                        R"("len":{"type":"integer","minimum":0}},"required":["id","name"]})",
-        .thread = ToolThread::Fs,
+        .thread = ToolThread::Agent,
         .timeout_ms = kFilesMs,
         .run =
-            [ops](const Value& a, ToolCtx&) {
+            [ops](const Value& a, ToolCtx& ctx) {
                 if (ops->d.files == nullptr) return tool_error("unavailable", "no scene files");
                 const std::string id = arg_str(a, "id");
                 const int64_t len = int_arg(a, "len", static_cast<int64_t>(kReadMaxBytes));
                 if (len > static_cast<int64_t>(kReadMaxBytes)) {
                     return tool_error("too_large", "len is at most 65536");
                 }
-                auto r = ops->d.files->read(id, arg_str(a, "name"),
-                                            static_cast<uint64_t>(int_arg(a, "offset", 0)),
-                                            static_cast<size_t>(len));
+                core::SceneFiles* files = ops->d.files;
+                const std::string name = arg_str(a, "name");
+                const auto offset = static_cast<uint64_t>(int_arg(a, "offset", 0));
+                auto r = run_files<os::LargeBuffer>(
+                    files, ops->d.submit_io, id,
+                    [files, id, name, offset, len] {
+                        return files->read(id, name, offset, static_cast<size_t>(len));
+                    },
+                    kFilesMs, ctx);
                 if (!r) return files_fail(r.error());
                 const std::string_view bytes(reinterpret_cast<const char*>(r.value().data()),
                                              r.value().size());
@@ -393,9 +422,9 @@ Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
                 const std::string id = arg_str(a, "id");
                 const std::string file = arg_str(a, "name");
                 core::SceneFiles* files = ops->d.files;
-                auto st = run_io<core::SceneFileEntry>(
-                    ops->d.submit_io, [files, id, file] { return files->stat(id, file); }, kFilesMs,
-                    ctx);
+                auto st = run_files<core::SceneFileEntry>(
+                    files, ops->d.submit_io, id,
+                    [files, id, file] { return files->stat(id, file); }, kFilesMs, ctx);
                 if (!st) return files_fail(st.error());
                 const std::string name = ops->name_of(id);
                 if (!ops->d.confirm ||
@@ -403,8 +432,8 @@ Result<void> add_scene_ops_tools(ToolRegistry& reg, SceneOpsDeps deps) {
                                     ctx)) {
                     return tool_error("denied", "the user said no");
                 }
-                auto r = run_io<bool>(
-                    ops->d.submit_io,
+                auto r = run_files<bool>(
+                    files, ops->d.submit_io, id,
                     [files, id, file]() -> Result<bool> {
                         WISP_TRY(files->remove(id, file));
                         return Result<bool>::ok(true);

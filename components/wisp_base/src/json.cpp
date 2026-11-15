@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -145,7 +146,102 @@ std::string serialize(const Value& v) {
     return out;
 }
 
+// A sink for append_json_string() that only counts.
+struct CountingSink {
+    size_t n = 0;
+    void push_back(char) { ++n; }
+    void append(const char*, size_t len) { n += len; }
+    void append(const char* s) { n += std::strlen(s); }
+};
+
+size_t int_size(int64_t i) {
+    // Through uint64_t, so INT64_MIN has a magnitude too.
+    uint64_t magnitude = i < 0 ? 0 - static_cast<uint64_t>(i) : static_cast<uint64_t>(i);
+    size_t digits = 1;
+    while (magnitude >= 10) {
+        magnitude /= 10;
+        ++digits;
+    }
+    return digits + (i < 0 ? 1 : 0);
+}
+
+// ArduinoJson's own float formatting, measured on a one-value document
+// so the count cannot drift from serialize().
+size_t double_size(double d) {
+    JsonDocument doc;
+    doc.set(d);
+    return measureJson(doc);
+}
+
+// Adds the size of `v` to `n`; false once `n` exceeds `limit`.
+bool add_json_size(const Value& v, size_t limit, size_t& n) {
+    auto add = [&](size_t k) {
+        n += k;
+        return n <= limit;
+    };
+    // A string never gets shorter when escaped, so its raw size plus the
+    // quotes already tells when it cannot fit, before reading it.
+    auto add_string = [&](const std::string& s) {
+        if (s.size() + 2 > limit - n) {
+            n = limit + 1;
+            return false;
+        }
+        CountingSink sink;
+        append_json_string(sink, s);
+        return add(sink.n);
+    };
+    switch (v.type()) {
+        case Value::Type::Null:
+            return add(4);
+        case Value::Type::Bool:
+            return add(v.as_bool() ? 4 : 5);
+        case Value::Type::Int:
+            return add(int_size(v.as_int()));
+        case Value::Type::Double:
+            return add(double_size(v.as_double()));
+        case Value::Type::String:
+            return add_string(v.as_string());
+        case Value::Type::List: {
+            const List& list = v.as_list();
+            if (!add(list.empty() ? 2 : 1 + list.size())) return false;  // [ , , ]
+            for (const Value& item : list) {
+                if (!add_json_size(item, limit, n)) return false;
+            }
+            return true;
+        }
+        case Value::Type::Map: {
+            const Map& map = v.as_map();
+            if (!add(map.empty() ? 2 : 1 + 2 * map.size())) return false;  // { : , : }
+            for (const auto& [key, value] : map) {
+                if (!add_string(key) || !add_json_size(value, limit, n)) return false;
+            }
+            return true;
+        }
+    }
+    return true;
+}
+
 }  // namespace
+
+size_t json_size(const Value& v, size_t limit) {
+    size_t n = 0;
+    return add_json_size(v, limit, n) ? n : limit + 1;
+}
+
+bool valid_utf8(std::string_view s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        if (static_cast<uint8_t>(s[i]) < 0x80) {
+            ++i;
+            continue;
+        }
+        size_t bad = 0;
+        const size_t len = json_detail::utf8_sequence(s, i, &bad);
+        if (len == 0) return false;
+        i += len;
+    }
+    return true;
+}
 
 size_t json_detail::utf8_sequence(std::string_view s, size_t i, size_t* bad) {
     const auto b = static_cast<uint8_t>(s[i]);

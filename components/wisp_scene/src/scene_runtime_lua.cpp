@@ -225,6 +225,9 @@ void SceneRuntime::lua_start(const std::shared_ptr<LuaRunJob>& job) {
     // kept rather than shown as a foreground scene's own banner.
     api.background = true;
     api.http_principal = net::HttpPrincipal::Agent;
+    // The agent reaches every device (device model spec 4.3), as "agent".
+    api.devices = deps_.devices;
+    api.device_grant_all = true;
     api.task_slice_ms = kLuaRunSliceMs;
     api.task_max_json = kEvalResultMaxBytes;
     // Only records it (lua_task.hpp: never destroy the VM in here).

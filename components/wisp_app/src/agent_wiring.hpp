@@ -44,6 +44,7 @@
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/device_service.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
@@ -198,6 +199,9 @@ struct AgentWiringDeps {
     net::HttpClient* http = nullptr;
     // StorageWorker::run_sync() with an unbounded wait.
     std::function<Result<void>(std::function<void()>)> run_io{};
+    // The same on the Interactive lane (AgentDeps::run_io_interactive).
+    // Empty: run_io.
+    std::function<Result<void>(std::function<void()>)> run_io_interactive{};
     // SceneWiring::delete_scene.
     std::function<void(const std::string& id, bool with_data,
                        std::function<void(Result<void>)> done)>
@@ -213,6 +217,9 @@ struct AgentWiringDeps {
     // before handing the snapshot to AgentService; this need not (and, as
     // cached values only, cannot) set it.
     agent::ContextSource context{};
+    // The generic device path (device.list, device.call); null: no such
+    // tools. Must outlive the AgentWiring.
+    core::DeviceService* devices = nullptr;
     // device.status without "storage", which AgentWiring adds from its
     // cache. Cached values only.
     std::function<Value()> device_status{};
@@ -235,7 +242,9 @@ public:
     // updated at once, without reading it back from flash.
     void on_manifest(const core::SceneManifest& manifest);
 
-    // Reads every installed scene.json on the worker and builds the index.
+    // Builds the index from every installed scene.json: read on the worker
+    // one scene per job and parsed on the caller, which must be allowed to
+    // wait (not the UI thread).
     Result<void> load_installed();
 
 private:
@@ -282,6 +291,8 @@ public:
     // /memory routes read and delete through this same instance rather
     // than opening a second one on the same file.
     core::MemoryStore* memory() { return memory_.get(); }
+    // The agent's tools, for tests of the order and the wiring.
+    const agent::ToolRegistry* tools() const { return registry_.get(); }
     // Sends the agent frames to `hub` from now on (null: nowhere). The hub
     // must outlive stop() or the next attach_ws().
     void attach_ws(admin::WsHub* hub);

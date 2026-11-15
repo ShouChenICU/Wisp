@@ -4,7 +4,7 @@
 // stacked confirm dialogs; a long press while the screen is off wakes it,
 // then still confirms). This class has no device/UI dependencies at all
 // -- it just turns the two gestures ButtonService already produces for
-// "button.power" (`on_short()`/`on_long()`, called once per `short`/
+// the power key (`on_short()`/`on_long()`, called once per `short`/
 // `long` event) plus the self-check screen's confirm dialog result
 // (`on_confirm()`) into the Action the caller (the self-check screen)
 // should perform. See self_check_screen.cpp for how each Action is

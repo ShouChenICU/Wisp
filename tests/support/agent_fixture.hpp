@@ -5,8 +5,9 @@
 // (wisp.fs), the scripted FakeLlmServer behind a real LlmClient (retry
 // waits skipped), a ModelProfileService with one llm profile (or none),
 // an EventBus, a WakeLockRegistry, a NotificationService that saves
-// nothing, an empty ToolRegistry whose ui/fs/io executors are plain
-// worker threads, and a clock that runs with os::now_ms() but can be
+// nothing, an empty ToolRegistry whose ui/io executors are plain worker
+// threads and whose fs/fs_interactive ones are the worker's Normal and
+// Interactive lanes, and a clock that runs with os::now_ms() but can be
 // moved ahead. `wifi` stands in for WifiService's cell: a test hands it to
 // the service with set_wifi() (otherwise the service asks `network_up`).
 //
@@ -119,6 +120,10 @@ struct AgentHarness {
             .ui = [this](std::function<void()> fn) { return ui_thread.post(std::move(fn)); },
             .fs = [this](std::function<void()> fn) { return worker.submit(std::move(fn)); },
             .io = [this](std::function<void()> fn) { return io_thread.post(std::move(fn)); },
+            .fs_interactive =
+                [this](std::function<void()> fn) {
+                    return worker.submit(std::move(fn), core::IoLane::Interactive);
+                },
         });
     }
 
@@ -140,7 +145,13 @@ struct AgentHarness {
             .models = *models,
             .run_io =
                 [this](std::function<void()> fn) {
+                    ++io_calls;
                     return worker.run_sync(std::move(fn), os::kForever);
+                },
+            .run_io_interactive =
+                [this](std::function<void()> fn) {
+                    ++interactive_io_calls;
+                    return worker.run_sync(std::move(fn), os::kForever, core::IoLane::Interactive);
                 },
             .locks = locks.get(),
             .notes = notes.get(),
@@ -185,6 +196,9 @@ struct AgentHarness {
     JobThread ui_thread, io_thread;
     std::unique_ptr<agent::ToolRegistry> tools;
 
+    // Calls of deps().run_io and deps().run_io_interactive.
+    std::atomic<int> io_calls{0};
+    std::atomic<int> interactive_io_calls{0};
     std::atomic<bool> screen_off{false};
     std::atomic<bool> network_up{true};
     std::atomic<uint64_t> offset{0};
