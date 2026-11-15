@@ -142,6 +142,9 @@ struct FirmwarePending {
     std::string next;
     // compare_firmware_versions() says the new one is older.
     bool downgrade = false;
+    // The upload this image came from (begin()'s id): the dialog hands it
+    // back with its answer, which then applies to this image only.
+    uint32_t upload = 0;
 };
 
 // Event::source of system.firmware: App published it before the cell did.
@@ -231,9 +234,13 @@ public:
     // slot is free again.
     // Blocks while the platform checks the image again (seconds on the
     // device): never call it on the UI thread.
-    FirmwareOutcome confirm();
-    // Drops the pending image and publishes "rejected".
-    FirmwareOutcome decline();
+    // With `upload` (FirmwarePending::upload of the image the user was
+    // shown), NotPending unless that image is the one pending: a "yes" for
+    // an image already declined or timed out never installs the next one.
+    FirmwareOutcome confirm(std::optional<uint32_t> upload = std::nullopt);
+    // Drops the pending image and publishes "rejected"; `upload` as for
+    // confirm().
+    FirmwareOutcome decline(std::optional<uint32_t> upload = std::nullopt);
     // Rejects a pending image nobody answered for confirm_timeout_ms.
     void tick(uint64_t now_ms);
 

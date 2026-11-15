@@ -173,7 +173,8 @@ private:
     // closed the box.
     void on_power_off_answer(bool yes);
     void on_reset_answer(bool yes);
-    void on_firmware_answer(bool yes);
+    // `upload`: FirmwarePending::upload of the image the dialog showed.
+    void on_firmware_answer(bool yes, uint32_t upload);
 
     App& app_;
     ui::UiRuntime& ui_;

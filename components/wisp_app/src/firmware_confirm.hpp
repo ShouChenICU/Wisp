@@ -17,6 +17,7 @@
 // service (two minutes), which publishes "rejected"; any phase but
 // "received" closes the dialog.
 
+#include <cstdint>
 #include <optional>
 
 #include "wisp/core/firmware_update.hpp"
@@ -35,11 +36,14 @@ std::optional<core::FirmwarePending> pending_firmware(App& app);
 const core::StateCell<core::FirmwareProgress>& firmware_progress(App& app);
 
 // Confirms the pending image on the "wisp.fwup" task. True when the task
-// runs; false (the image is declined) when it cannot start. Any thread.
-bool start_firmware_install(App& app);
+// runs; false (the image is declined) when it cannot start. With `upload`
+// (FirmwarePending::upload of the image the dialog showed) only that
+// image: one declined or timed out meanwhile is not replaced by the next
+// upload's, which gets a dialog of its own. Any thread.
+bool start_firmware_install(App& app, std::optional<uint32_t> upload = std::nullopt);
 
-// Drops the pending image. Any thread.
-void decline_firmware(App& app);
+// Drops the pending image (only `upload`'s, when given). Any thread.
+void decline_firmware(App& app, std::optional<uint32_t> upload = std::nullopt);
 
 // FirmwareUpdateService::Deps::restart: lets the "confirmed" event reach
 // the browser (at most 500 ms), writes what waits for flash

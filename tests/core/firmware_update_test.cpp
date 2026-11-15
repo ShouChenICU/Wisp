@@ -336,6 +336,28 @@ TEST(FirmwareUpdate, FailedActivationReportsAndFreesTheSlot) {
     EXPECT_TRUE(fx.upload(make_firmware_image()).ok());
 }
 
+// An answer names the image it was asked for: one for an image no longer
+// pending (declined, then another uploaded) neither installs nor drops the
+// image pending now.
+TEST(FirmwareUpdate, AnswerForAnotherImageIsRefused) {
+    Fixture fx;
+    ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
+    const std::optional<wisp::core::FirmwarePending> first = fx.service->pending();
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(fx.service->decline(first->upload).ok());
+    ASSERT_TRUE(fx.upload(make_firmware_image()).ok());
+    const std::optional<wisp::core::FirmwarePending> second = fx.service->pending();
+    ASSERT_TRUE(second.has_value());
+    EXPECT_NE(second->upload, first->upload);
+
+    EXPECT_EQ(fx.service->confirm(first->upload).failure, FirmwareFailure::NotPending);
+    EXPECT_EQ(fx.service->decline(first->upload).failure, FirmwareFailure::NotPending);
+    EXPECT_EQ(fx.updater.activations, 0);
+    EXPECT_TRUE(fx.service->pending());
+    EXPECT_TRUE(fx.service->confirm(second->upload).ok());
+    EXPECT_EQ(fx.updater.activations, 1);
+}
+
 TEST(FirmwareUpdate, DeclineOrTimeoutDiscards) {
     Fixture fx;
     // Declined on the device.

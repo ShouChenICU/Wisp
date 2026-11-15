@@ -31,7 +31,7 @@ const core::StateCell<core::FirmwareProgress>& firmware_progress(App& app) {
     return app.impl_->firmware->progress_cell();
 }
 
-bool start_firmware_install(App& app) {
+bool start_firmware_install(App& app, std::optional<uint32_t> upload) {
     App::Impl& impl = *app.impl_;
     std::lock_guard<os::Mutex> lock(impl.firmware_mutex);
     if (!impl.firmware) return false;
@@ -43,20 +43,26 @@ bool start_firmware_install(App& app) {
         impl.firmware_task.reset();
     }
     impl.firmware_task =
-        os::Task::spawn({.name = "wisp.fwup", .stack_bytes = kInstallStackBytes}, [&app] {
-            core::FirmwareOutcome r = app.impl_->firmware->confirm();
-            if (!r.ok()) WLOG_E(kTag, "installing the firmware failed: %s", r.message.c_str());
+        os::Task::spawn({.name = "wisp.fwup", .stack_bytes = kInstallStackBytes}, [&app, upload] {
+            core::FirmwareOutcome r = app.impl_->firmware->confirm(upload);
+            if (r.failure == core::FirmwareFailure::NotPending) {
+                // The image the user said yes to was declined or timed out
+                // meanwhile; another one may be pending, with its own dialog.
+                WLOG_I(kTag, "firmware answered no longer pending; nothing installed");
+            } else if (!r.ok()) {
+                WLOG_E(kTag, "installing the firmware failed: %s", r.message.c_str());
+            }
         });
     if (!impl.firmware_task) {
         WLOG_E(kTag, "firmware install task could not start; image dropped");
-        (void)impl.firmware->decline();
+        (void)impl.firmware->decline(upload);
         return false;
     }
     return true;
 }
 
-void decline_firmware(App& app) {
-    if (core::FirmwareUpdateService* fw = app.impl_->firmware.get()) (void)fw->decline();
+void decline_firmware(App& app, std::optional<uint32_t> upload) {
+    if (core::FirmwareUpdateService* fw = app.impl_->firmware.get()) (void)fw->decline(upload);
 }
 
 void restart_for_firmware(App& app) {

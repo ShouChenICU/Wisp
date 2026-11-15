@@ -751,6 +751,46 @@ TEST_F(SystemDutiesTest, FirmwareDialogEndsAtTheLastOfTenChangesWithTheUiHeld) {
     h->app->ui()->set_paused(false);
 }
 
+// "Yes" answers the image its dialog showed. Image A is declined and B
+// received while the UI task is held inside a job that then taps "yes" on
+// A's dialog, still on screen: nothing installs, and B is asked.
+TEST_F(SystemDutiesTest, YesForAnImageNoLongerPendingInstallsNothing) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    opts.with_firmware = true;
+    boot(opts);
+    const std::string token = pair_browser();
+    ASSERT_TRUE(wait_until([&] { return !top_says("配对请求"); }, 3000));
+    EXPECT_EQ(upload(token, "0.3.0"), 202);
+    ASSERT_TRUE(wait_until([&] { return top_says("0.2.0\n→ 0.3.0"); }, 3000));
+
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto clicked = std::make_shared<std::atomic<bool>>(false);
+    ASSERT_TRUE(h->app->ui()->post([entered, gate, clicked] {
+        entered->give();
+        gate->take(wisp::os::kForever);
+        lv_obj_t* yes = find_button_with_label(lv_layer_top(), "是");
+        if (yes == nullptr) return;
+        lv_obj_send_event(yes, LV_EVENT_CLICKED, nullptr);
+        clicked->store(true);
+    }));
+    ASSERT_TRUE(entered->take(3000));
+    wisp::app::decline_firmware(*h->app);
+    EXPECT_EQ(upload(token, "0.4.0"), 202);
+    gate->give();
+
+    EXPECT_TRUE(wait_until([&] { return top_says("0.2.0\n→ 0.4.0"); }, 3000));
+    ASSERT_TRUE(clicked->load());
+    wisp::app::join_firmware_install(*h->app);
+    EXPECT_EQ(h->firmware->activations, 0);
+    EXPECT_EQ(h->reboots.load(), 0);
+    const std::optional<wisp::core::FirmwarePending> pending = wisp::app::pending_firmware(*h->app);
+    ASSERT_TRUE(pending.has_value());
+    EXPECT_EQ(pending->next, "0.4.0");
+    EXPECT_EQ(msgboxes(), 1);
+}
+
 // The duties stopped and started again (the same object) with an image
 // still unanswered: its dialog went with the stop, the image still waits,
 // so the start asks again, once. A declined image is not asked again.

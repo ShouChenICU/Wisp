@@ -437,7 +437,7 @@ void SystemDuties::show_firmware_dialog() {
         // As for the factory reset: one confirm dialog at a time, and the
         // browser hears "rejected" now.
         WLOG_I(kTag, "firmware update refused: another dialog is open");
-        decline_firmware(app_);
+        decline_firmware(app_, pending->upload);
         return;
     }
     // One version per line: a git-described version is about as wide as
@@ -448,8 +448,11 @@ void SystemDuties::show_firmware_dialog() {
         text += "\n";
         text += ui::tr(ui::StrId::FirmwareDowngrade);
     }
-    fw_box_ = system_.open_confirm(ui::StrId::FirmwareTitle, text,
-                                   [this](bool yes) { on_firmware_answer(yes); });
+    // The answer is for the image shown: by the time it comes, this one
+    // may have been declined or timed out and another received.
+    fw_box_ = system_.open_confirm(
+        ui::StrId::FirmwareTitle, text,
+        [this, upload = pending->upload](bool yes) { on_firmware_answer(yes, upload); });
     wake_screen();
     WLOG_I(kTag, "firmware %s: waiting for confirmation on the screen", pending->next.c_str());
 }
@@ -582,13 +585,13 @@ void SystemDuties::on_reset_answer(bool yes) {
     }
 }
 
-void SystemDuties::on_firmware_answer(bool yes) {
+void SystemDuties::on_firmware_answer(bool yes, uint32_t upload) {
     fw_box_ = nullptr;
     if (yes) {
         // Off the UI thread: switching the boot slot re-verifies the image.
-        (void)start_firmware_install(app_);
+        (void)start_firmware_install(app_, upload);
     } else {
-        decline_firmware(app_);
+        decline_firmware(app_, upload);
     }
 }
 

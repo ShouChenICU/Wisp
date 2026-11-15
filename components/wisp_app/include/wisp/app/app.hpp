@@ -478,8 +478,8 @@ private:
     // its state and "wisp.fwup" task here.
     friend std::optional<core::FirmwarePending> pending_firmware(App&);
     friend const core::StateCell<core::FirmwareProgress>& firmware_progress(App&);
-    friend bool start_firmware_install(App&);
-    friend void decline_firmware(App&);
+    friend bool start_firmware_install(App&, std::optional<uint32_t>);
+    friend void decline_firmware(App&, std::optional<uint32_t>);
     friend void restart_for_firmware(App&);
     friend void join_firmware_install(App&);
     // src/storage_io.hpp.

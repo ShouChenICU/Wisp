@@ -153,6 +153,7 @@ std::optional<FirmwarePending> FirmwareUpdateService::pending() const {
     p.next = version_;
     auto order = compare_firmware_versions(p.next, p.current);
     p.downgrade = order && *order < 0;
+    p.upload = upload_id_;
     return p;
 }
 
@@ -377,11 +378,11 @@ void FirmwareUpdateService::abort(uint32_t id) {
     (void)fail_upload(id, FirmwareFailure::None, "connection closed mid-upload", "aborted");
 }
 
-FirmwareOutcome FirmwareUpdateService::confirm() {
+FirmwareOutcome FirmwareUpdateService::confirm(std::optional<uint32_t> upload) {
     std::string version;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (state_ != State::Pending) {
+        if (state_ != State::Pending || (upload && *upload != upload_id_)) {
             return outcome(FirmwareFailure::NotPending, "no firmware awaits confirmation");
         }
         // Installing keeps every other upload and answer out while the
@@ -417,11 +418,11 @@ FirmwareOutcome FirmwareUpdateService::confirm() {
     return {};
 }
 
-FirmwareOutcome FirmwareUpdateService::decline() {
+FirmwareOutcome FirmwareUpdateService::decline(std::optional<uint32_t> upload) {
     std::string version;
     {
         std::lock_guard<os::Mutex> lock(mutex_);
-        if (state_ != State::Pending) {
+        if (state_ != State::Pending || (upload && *upload != upload_id_)) {
             return outcome(FirmwareFailure::NotPending, "no firmware awaits confirmation");
         }
         version = version_;
