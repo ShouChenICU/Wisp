@@ -319,6 +319,9 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-2-cells.md`. Simulator an
 
 Source: `docs/superpowers/plans/2026-11-14-state-cells-3-subscribers.md`. Simulator and unit tests only so far.
 
+- NOT RUN: the firmware for both boards has not been built on this branch since these consumers moved to the cells; the ESP-side code was compiled on the host only where it is shared.
+- NOT RUN: standby and wake with a scene in front, with the status panel open and with the hardware diagnostics open: each follows as before (the scene is hidden and shown again, the panel closes at standby, the diagnostics' sampler pauses and resumes).
+- NOT RUN: `mem` over an hour of use (turns, scenes opened and closed, the diagnostics and the panel opened and closed, standby and wake): `cell_subs=` stays stable, with no growth (no leaked subscription).
 - NOT RUN: `WISP_PERF` on Home while listening and while speaking: the wisp's level animation is smooth at about 20 Hz (Home's timer runs every 50 ms then and passes only the level on between full refreshes), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
 - NOT RUN: `WISP_PERF` with the talk overlay up over a sub-page or a scene while listening and while speaking: its level bar animates at about 20 Hz while it shows Listening (the shell's timer runs every 50 ms then and moves only the bar, no full `update_talk()`), and the frame rate is not below the baseline in `docs/hardware/<board>.md`.
 
