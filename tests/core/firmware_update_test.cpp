@@ -55,13 +55,13 @@ struct Recorder {
 };
 
 struct Fixture {
-    explicit Fixture(bool with_updater = true, bool can_confirm = true, bool can_restart = true,
+    explicit Fixture(bool with_updater = true, bool confirmable = true, bool can_restart = true,
                      StorageWorker* worker = nullptr, uint32_t chunk_timeout_ms = 0) {
         recorder.attach(bus);
         FirmwareUpdateService::Deps deps;
         deps.updater = with_updater ? &updater : nullptr;
         deps.running_version = "0.1.0-10-g1111111";
-        if (can_confirm) deps.request_confirm = [this] { ++confirm_requests; };
+        deps.confirmable = confirmable;
         if (can_restart) deps.restart = [this] { ++restarts; };
         deps.now_ms = [this] { return now; };
         if (chunk_timeout_ms != 0) deps.chunk_timeout_ms = chunk_timeout_ms;
@@ -89,10 +89,16 @@ struct Fixture {
     }
 
     std::string state(size_t i) { return events().at(i).at("state").as_string(); }
+    // How often the device was asked: the "received" outcomes so far (the
+    // screen follows the progress cell and asks on each).
+    int confirm_requests() {
+        int n = 0;
+        for (const Properties& p : events()) n += p.at("state").as_string() == "received" ? 1 : 0;
+        return n;
+    }
     std::string last_state() { return events().back().at("state").as_string(); }
 
     FakeFirmwareUpdater updater;
-    int confirm_requests = 0;
     int restarts = 0;
     uint64_t now = 1000;
     Recorder recorder;
@@ -119,10 +125,12 @@ TEST(FirmwareUpdate, StatusReportsTheRunningImage) {
     EXPECT_EQ(none.service->begin(4096, &id).failure, FirmwareFailure::Unsupported);
 }
 
-TEST(FirmwareUpdate, NoConfirmationNoUpload) {
-    Fixture fx(/*with_updater=*/true, /*can_confirm=*/false);
+TEST(FirmwareUpdate, UploadRefusedWithoutAScreen) {
+    Fixture fx(/*with_updater=*/true, /*confirmable=*/false);
     uint32_t id = 0;
-    EXPECT_EQ(fx.service->begin(4096, &id).failure, FirmwareFailure::Unavailable);
+    const FirmwareOutcome r = fx.service->begin(4096, &id);
+    EXPECT_EQ(r.failure, FirmwareFailure::Unavailable);
+    EXPECT_EQ(r.message, "no screen to confirm an update on");
     EXPECT_EQ(fx.updater.begins, 0);
 }
 
@@ -180,7 +188,7 @@ TEST(FirmwareUpdate, WrongBoardRejectedBeforeWriting) {
     EXPECT_EQ(fx.state(0), "failed");
     EXPECT_EQ(fx.events()[0].at("error").as_string(), "wrong_board");
     EXPECT_EQ(fx.events()[0].at("version").as_string(), "0.3.0");
-    EXPECT_EQ(fx.confirm_requests, 0);
+    EXPECT_EQ(fx.confirm_requests(), 0);
 
     // The upload is over: later pieces are refused, and the slot is free.
     EXPECT_FALSE(fx.service->write(id, all.subspan(4100, 100)).ok());
@@ -206,7 +214,7 @@ TEST(FirmwareUpdate, CorruptImageFailsVerification) {
     EXPECT_EQ(fx.updater.finishes, 1);
     EXPECT_EQ(fx.last_state(), "failed");
     EXPECT_FALSE(fx.service->pending());
-    EXPECT_EQ(fx.confirm_requests, 0);
+    EXPECT_EQ(fx.confirm_requests(), 0);
     EXPECT_TRUE(fx.upload(make_firmware_image()).ok());
 }
 
@@ -244,7 +252,7 @@ TEST(FirmwareUpdate, ReceivedAsksTheDevice) {
     ASSERT_EQ(fx.events().size(), 1u);
     EXPECT_EQ(fx.state(0), "received");
     EXPECT_EQ(fx.events()[0].at("version").as_string(), "0.1.0-20-g2222222");
-    EXPECT_EQ(fx.confirm_requests, 1);
+    EXPECT_EQ(fx.confirm_requests(), 1);
 
     auto pending = fx.service->pending();
     ASSERT_TRUE(pending);
@@ -276,7 +284,7 @@ TEST(FirmwareUpdate, UnprintableVersionRejectedBeforeWriting) {
     ASSERT_EQ(fx.events().size(), 1u);
     EXPECT_EQ(fx.state(0), "failed");
     EXPECT_EQ(fx.events()[0].at("version").as_string(), "");
-    EXPECT_EQ(fx.confirm_requests, 0);
+    EXPECT_EQ(fx.confirm_requests(), 0);
 }
 
 TEST(FirmwareUpdate, OlderImageIsMarkedDowngrade) {

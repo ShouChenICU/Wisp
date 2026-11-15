@@ -129,8 +129,9 @@ private:
     // UI thread: the power-key inbox's handler, once per short or long
     // press, in order.
     void on_power_key(const core::ButtonEdge& edge);
-    // UI thread: the firmware progress cell's callback. Any phase may open
-    // or close the update dialog.
+    // UI thread: the firmware progress cell's callback. Opens the update
+    // dialog for a "received" not yet handled, closes it on any other
+    // phase.
     void on_firmware_progress(const core::FirmwareProgress& progress);
     // UI thread: opens, refreshes or closes the provisioning card to match
     // the Wi-Fi service.
@@ -149,10 +150,6 @@ private:
     void on_reset_status(const ResetStatus& status);
     void show_reset_dialog();
     void close_reset_dialog();
-    // UI thread: takes a pending firmware request and shows the dialog for
-    // it, or closes the dialog once nothing awaits an answer (declined
-    // elsewhere, timed out).
-    void sync_firmware();
     void show_firmware_dialog();
     void close_firmware_dialog();
     // UI thread: the settings cell's callback. Brings ui::lang() (the
@@ -217,6 +214,10 @@ private:
     // The firmware-update confirmation; the third kind of dialog, likewise
     // never stacked on the other two.
     lv_obj_t* fw_box_ = nullptr;
+    // The seq of the last "received" shown (or declined), as
+    // handled_reset_seq_. The service is rebuilt by every App::start() and
+    // its seq starts again, as does this object, built with it.
+    uint32_t handled_fw_seq_ = 0;
 
     // Cleared by stop(): a post queued before it then does nothing. Read
     // and cleared on the UI thread only.

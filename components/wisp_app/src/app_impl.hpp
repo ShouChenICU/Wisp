@@ -295,9 +295,6 @@ struct App::Impl {
     std::unique_ptr<core::FirmwareUpdateService> firmware;
     os::Mutex firmware_mutex;
     std::unique_ptr<os::Task> firmware_task;
-    // An image awaits the user's answer and no screen has taken it up yet
-    // (take_firmware_request()), kept for the same reason as reset_pending.
-    std::atomic<bool> firmware_pending{false};
 
     // The "wisp.console" task (console_task.hpp): started last by
     // App::start(), stopped first by App::stop().

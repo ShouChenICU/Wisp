@@ -476,8 +476,6 @@ private:
     friend const core::StateCell<ResetStatus>& reset_status(App&);
     // The firmware update's confirmation (src/firmware_confirm.hpp) keeps
     // its state and "wisp.fwup" task here.
-    friend void request_firmware_confirm(App&);
-    friend bool take_firmware_request(App&);
     friend std::optional<core::FirmwarePending> pending_firmware(App&);
     friend const core::StateCell<core::FirmwareProgress>& firmware_progress(App&);
     friend bool start_firmware_install(App&);

@@ -110,8 +110,7 @@ void SystemDuties::start() {
     // On the UI dispatcher: each callback runs here, on the UI thread, and
     // first with the cell's current value, so the cards show what was
     // announced before (networking starts first) one UI iteration after
-    // start(). The calls below still show the rest at once; their
-    // callbacks then find nothing new.
+    // start().
     settings_sub_ = app_.system_settings().cell().subscribe(
         [this](const core::SystemSettingsValues& v) { sync_system_language(v); }, &ui_);
     if (net::WifiService* wifi = app_.wifi()) {
@@ -128,7 +127,6 @@ void SystemDuties::start() {
     fw_sub_ = firmware_progress(app_).subscribe(
         [this](const core::FirmwareProgress& p) { on_firmware_progress(p); }, &ui_);
 
-    sync_firmware();
     refresh_timer_ = lv_timer_create(&SystemDuties::refresh_timer_cb, kUiRefreshMs, this);
 
     perf_timer_ = std::make_unique<os::Timer>("wisp.perf", kPerfReportMs, /*periodic=*/true,
@@ -175,6 +173,9 @@ void SystemDuties::stop() {
     // status: the next start() asks it again.
     if (reset_box_ != nullptr) handled_reset_seq_ = 0;
     close_reset_dialog();
+    // Likewise an image still waiting for its answer (until the service's
+    // timeout).
+    if (fw_box_ != nullptr) handled_fw_seq_ = 0;
     close_firmware_dialog();
     // The cards live on the top layer.
     setup_card_.close();
@@ -234,15 +235,21 @@ void SystemDuties::on_power_key(const core::ButtonEdge& edge) {
 }
 
 void SystemDuties::on_firmware_progress(const core::FirmwareProgress& progress) {
-    // The service moves this cell to "received" just before it raises the
-    // request flag that sync_firmware() takes, so a call running in between
-    // would find no flag, and nothing else would open the dialog: "received"
-    // opens it itself. show_firmware_dialog() shows only what
-    // pending_firmware() still holds, once (fw_box_); the flag, taken
-    // later, then finds the dialog open or the image answered (an answer
-    // clears it).
-    if (progress.phase == core::FirmwareProgress::Phase::Received) show_firmware_dialog();
-    sync_firmware();
+    // As for the reset: a "received" this object has not handled opens the
+    // dialog -- in place of one still open for an earlier image, which a
+    // call standing for several moves can leave behind -- and every other
+    // phase (the answer, the timeout, a failure) closes it. With another
+    // dialog open, show_firmware_dialog() declines the image, so the
+    // browser hears "rejected" right after "received".
+    if (progress.phase == core::FirmwareProgress::Phase::Received) {
+        if (progress.seq != handled_fw_seq_) {
+            handled_fw_seq_ = progress.seq;
+            close_firmware_dialog();
+            show_firmware_dialog();
+        }
+    } else {
+        close_firmware_dialog();
+    }
 }
 
 void SystemDuties::refresh_timer_cb(lv_timer_t* timer) {
@@ -416,15 +423,6 @@ void SystemDuties::close_reset_dialog() {
     }
     system_.close_confirm(reset_box_);
     reset_box_ = nullptr;
-}
-
-void SystemDuties::sync_firmware() {
-    if (take_firmware_request(app_)) {
-        show_firmware_dialog();
-    }
-    if (fw_box_ != nullptr && !pending_firmware(app_)) {
-        close_firmware_dialog();
-    }
 }
 
 void SystemDuties::show_firmware_dialog() {

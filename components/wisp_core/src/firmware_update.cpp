@@ -198,7 +198,7 @@ FirmwareOutcome FirmwareUpdateService::begin(size_t size, uint32_t* id) {
     if (deps_.updater == nullptr) {
         return outcome(FirmwareFailure::Unsupported, "this board has no OTA slots");
     }
-    if (!deps_.request_confirm) {
+    if (!deps_.confirmable) {
         return outcome(FirmwareFailure::Unavailable, "no screen to confirm an update on");
     }
     std::lock_guard<os::Mutex> lock(mutex_);
@@ -368,7 +368,6 @@ FirmwareOutcome FirmwareUpdateService::end(uint32_t id) {
     }
     WLOG_I(kTag, "firmware %s received; waiting for confirmation on the device", version.c_str());
     publish(FirmwareProgress::Phase::Received, version);
-    deps_.request_confirm();
     FirmwareOutcome done;
     done.version = std::move(version);
     return done;

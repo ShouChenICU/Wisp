@@ -64,10 +64,7 @@ struct FirmwareFixture {
             FirmwareUpdateService::Deps deps;
             deps.updater = &updater;
             deps.running_version = "0.2.0-test";
-            deps.request_confirm = [this] {
-                ++confirm_requests;
-                if (on_confirm_request) on_confirm_request();
-            };
+            deps.confirmable = true;
             service = std::make_unique<FirmwareUpdateService>(std::move(deps), f.bus, worker);
         }
         // AdminFixture's bus is started.
@@ -134,10 +131,13 @@ struct FirmwareFixture {
     std::mutex events_mutex;
     std::vector<Properties> recorded;
     wisp::core::SubscriptionId events_sub = 0;
-    int confirm_requests = 0;
-    // Runs inside the service's request_confirm, like a screen that
-    // answers at once.
-    std::function<void()> on_confirm_request;
+    // How often the device was asked: the "received" outcomes so far (a
+    // screen follows the progress cell and asks on each).
+    int confirm_requests() {
+        int n = 0;
+        for (const Properties& p : events()) n += p.at("state").as_string() == "received" ? 1 : 0;
+        return n;
+    }
     std::unique_ptr<FirmwareUpdateService> service;
     std::string token;
     wisp::net::StreamHandler stream;
@@ -166,7 +166,7 @@ TEST(AdminFirmware, InfoAndUploadRoutes) {
     EXPECT_EQ(res.status, 202) << res.body;
     EXPECT_EQ(at(body_json(res), "version").as_string(), "0.3.0");
     EXPECT_EQ(response_header(res, "Cache-Control"), "no-store");
-    EXPECT_EQ(fx.confirm_requests, 1);
+    EXPECT_EQ(fx.confirm_requests(), 1);
     EXPECT_EQ(fx.updater.written, image);
     EXPECT_EQ(at(fx.info(), "pending").as_string(), "0.3.0");
 
@@ -188,14 +188,23 @@ TEST(AdminFirmware, InfoAndUploadRoutes) {
 }
 
 TEST(AdminFirmware, AcceptedVersionSurvivesAnImmediateAnswer) {
-    // Another dialog is open, so the device declines inside end(): the
-    // 202 still names the image that was received.
+    // Another dialog is open, so the device declines as soon as it sees
+    // "received" (a follower of the progress cell, on the bus here as the
+    // screen's is on the UI thread), maybe before end() returns: the 202
+    // still names the image that was received.
     FirmwareFixture fx;
-    fx.on_confirm_request = [&fx] { (void)fx.service->decline(); };
+    wisp::core::CellSubscription screen =
+        fx.service->progress_cell().subscribe([&fx](const wisp::core::FirmwareProgress& p) {
+            if (p.phase == wisp::core::FirmwareProgress::Phase::Received) {
+                (void)fx.service->decline();
+            }
+        });
     ImageSpec spec;
     spec.version = "0.3.0";
     HttpResponse res = fx.upload(make_firmware_image(spec));
     EXPECT_EQ(res.status, 202) << res.body;
+    ASSERT_TRUE(wisp::test::wait_until([&fx] { return fx.events().size() == 2u; }, 3000));
+    screen.reset();
     EXPECT_EQ(at(body_json(res), "version").as_string(), "0.3.0");
     ASSERT_EQ(fx.events().size(), 2u);
     EXPECT_EQ(fx.events()[1].at("state").as_string(), "rejected");
@@ -242,7 +251,7 @@ TEST(AdminFirmware, UploadPassesTheSameChecksAsTheApi) {
 
     // None of it reached the platform or the device.
     EXPECT_EQ(fx.updater.begins, 0);
-    EXPECT_EQ(fx.confirm_requests, 0);
+    EXPECT_EQ(fx.confirm_requests(), 0);
     EXPECT_TRUE(fx.events().empty());
 }
 

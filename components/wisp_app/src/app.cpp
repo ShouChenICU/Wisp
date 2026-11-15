@@ -515,14 +515,14 @@ Result<void> App::start() {
     impl_->power_timer->start();
 
     // The firmware update service, before networking routes uploads to
-    // it. Only a device with a screen can confirm an update.
-    impl_->firmware_pending.store(false);
+    // it. Only a device with a screen can confirm an update: the system
+    // duties follow its progress cell there.
     // Every OTA call that touches flash runs on the storage worker (or
     // right here without one, as on a board without scenes).
     core::FirmwareUpdateService::Deps firmware_deps;
     firmware_deps.updater = impl_->platform.firmware.get();
     firmware_deps.running_version = impl_->platform.firmware_version;
-    if (impl_->ui) firmware_deps.request_confirm = [this] { request_firmware_confirm(*this); };
+    firmware_deps.confirmable = impl_->ui != nullptr;
     firmware_deps.restart = [this] { restart_for_firmware(*this); };
     impl_->firmware = std::make_unique<core::FirmwareUpdateService>(std::move(firmware_deps),
                                                                     impl_->bus, storage_worker());

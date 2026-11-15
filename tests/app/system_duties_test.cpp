@@ -674,6 +674,135 @@ TEST_F(SystemDutiesTest, UnansweredResetRequestIsAskedAgainAfterARestart) {
     EXPECT_EQ(msgboxes(), 0);
 }
 
+namespace {
+
+// The firmware states the system.firmware events announced so far.
+std::vector<std::string> firmware_states(UiNetHarness& h) {
+    std::vector<std::string> out;
+    for (const auto& e : h.topic("system.firmware"))
+        out.push_back(e.payload.at("state").as_string());
+    return out;
+}
+
+}  // namespace
+
+// An image received while the duties were stopped opens the dialog at
+// their start: the progress cell's first delivery, with the bus held and
+// no LVGL timer running.
+TEST_F(SystemDutiesTest, FirmwareReceivedBeforeStartOpensTheDialog) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    opts.with_firmware = true;
+    boot(opts);
+    const std::string token = pair_browser();
+    ASSERT_TRUE(wait_until([&] { return !top_says("配对请求"); }, 3000));
+    stop_duties();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    EXPECT_EQ(upload(token, "0.3.0"), 202);
+    flood.flood(256);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_FALSE(top_says("固件更新"));
+
+    start_duties();
+    EXPECT_TRUE(wait_until([&] { return top_says("0.2.0\n→ 0.3.0"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::firmware_progress(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// Ten moves of the progress cell (five images declined and received)
+// while the UI task is held: one call follows, for the last, and the
+// dialog shows the last image, not the one it showed before.
+TEST_F(SystemDutiesTest, FirmwareDialogEndsAtTheLastOfTenChangesWithTheUiHeld) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    opts.with_firmware = true;
+    boot(opts);
+    const std::string token = pair_browser();
+    ASSERT_TRUE(wait_until([&] { return !top_says("配对请求"); }, 3000));
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    EXPECT_EQ(upload(token, "0.3.0"), 202);
+    ASSERT_TRUE(wait_until([&] { return top_says("0.2.0\n→ 0.3.0"); }, 3000));
+    {
+        UiHold hold(h->app->ui());
+        for (int i = 1; i <= 5; ++i) {
+            wisp::app::decline_firmware(*h->app);
+            EXPECT_EQ(upload(token, "0.4." + std::to_string(i)), 202);
+        }
+        flood.flood(256);
+        hold.release();
+    }
+    EXPECT_TRUE(wait_until([&] { return top_says("0.2.0\n→ 0.4.5"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::firmware_progress(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+    EXPECT_FALSE(top_says("0.3.0"));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// The duties stopped and started again (the same object) with an image
+// still unanswered: its dialog went with the stop, the image still waits,
+// so the start asks again, once. A declined image is not asked again.
+TEST_F(SystemDutiesTest, UnansweredFirmwareIsAskedAgainAfterARestart) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    opts.with_firmware = true;
+    boot(opts);
+    const std::string token = pair_browser();
+    ASSERT_TRUE(wait_until([&] { return !top_says("配对请求"); }, 3000));
+
+    EXPECT_EQ(upload(token, "0.3.0"), 202);
+    ASSERT_TRUE(wait_until([&] { return top_says("固件更新"); }, 3000));
+    stop_duties();
+    EXPECT_EQ(msgboxes(), 0);
+    start_duties();
+    EXPECT_TRUE(wait_until([&] { return top_says("0.2.0\n→ 0.3.0"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::firmware_progress(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+
+    ASSERT_TRUE(click("否"));
+    ASSERT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
+    stop_duties();
+    start_duties();
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::firmware_progress(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 0);
+}
+
+// One confirm dialog at a time: with the power-off question up, an image
+// received is declined at once ("received", then "rejected"), and the
+// power-off question stays.
+TEST_F(SystemDutiesTest, FirmwareReceivedWithAnotherDialogOpenIsRejected) {
+    UiNetOptions opts;
+    opts.with_server = true;
+    opts.with_firmware = true;
+    boot(opts);
+    const std::string token = pair_browser();
+    ASSERT_TRUE(wait_until([&] { return !top_says("配对请求"); }, 3000));
+    press(Kind::Long);
+    ASSERT_TRUE(wait_until([&] { return top_says("关机"); }, 3000));
+
+    EXPECT_EQ(upload(token, "0.3.0"), 202);
+    ASSERT_TRUE(wait_until([&] { return firmware_states(*h).size() == 2; }, 3000));
+    EXPECT_EQ(firmware_states(*h), (std::vector<std::string>{"received", "rejected"}));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+    EXPECT_TRUE(top_says("关机"));
+    EXPECT_FALSE(top_says("固件更新"));
+}
+
 // A language stored while the duties were stopped is applied at their
 // start: the settings cell's first delivery, with the bus held and no
 // LVGL timer running. The pairing card opened meanwhile shows in it.

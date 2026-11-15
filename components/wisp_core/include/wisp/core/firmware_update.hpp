@@ -16,9 +16,9 @@
 // the first one has left Pending (or Aborting). write() checks the image as soon as its first
 // kFirmwareHeadBytes have arrived and refuses a foreign one before a single
 // byte reaches FirmwareUpdater::write(). end() has the platform verify the
-// whole image, moves the progress cell to Received (published as
-// system.firmware {state:"received", version}) and asks the device's user
-// to confirm (Deps::request_confirm). confirm() makes the new image the
+// whole image and moves the progress cell to Received (published as
+// system.firmware {state:"received", version}): the device's screen,
+// following that cell, asks its user to confirm. confirm() makes the new image the
 // boot image, moves the cell to Confirmed ({state:"confirmed"}) and calls
 // Deps::restart; decline() and the confirmation timeout move it to
 // Rejected ({state:"rejected"}) and drop the image. A failure after
@@ -180,9 +180,10 @@ public:
         // Null: this board has no OTA slots; every upload is Unsupported.
         FirmwareUpdater* updater = nullptr;
         std::string running_version;
-        // Shows the confirmation dialog. Empty: nothing on the device can
-        // confirm, so uploads are refused as Unavailable.
-        std::function<void()> request_confirm;
+        // Something on the device follows progress_cell() and asks the
+        // user on Received (a screen). False: nobody could answer, so
+        // uploads are refused as Unavailable.
+        bool confirmable = false;
         // Restarts into the activated image; called after "confirmed".
         std::function<void()> restart;
         std::function<uint64_t()> now_ms;

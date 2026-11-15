@@ -330,7 +330,7 @@ Notes for the next state-cell plan (removing the periodic compensations).
 - `PowerSupply` has no `known` flag: after a failed read the supply cell keeps the last good sample, so NetWiring's powered-Wi-Fi check reads `PowerMonitor::last_status()` instead of the cell. A `known` flag (false after a failed read) would let followers read only the cell and be woken by a failed read.
 - The UI-thread `sync_wifi()`/`sync_pairing()` of the system duties take the Wi-Fi and pairing services' mutexes, which are held across driver calls and persistence; read the snapshot cells instead.
 - Untested abort paths: the agent failing to start followed by `App::stop()`, and a failed `VoiceWiring::start()`. Both release every subscription by reading the code; a leak would abort in `~StateCell`, but no test drives either path.
-- At start the system duties call `sync_wifi()` twice (the Wi-Fi and hotspot cells' first deliveries), and `sync_firmware()` twice (the start-time call and the cell's first delivery), until that start-time sync goes.
+- At start the system duties call `sync_wifi()` twice (the Wi-Fi and hotspot cells' first deliveries).
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
 - A standby and a wake handled inside one UI loop iteration coalesce to `Active` for the status shell, which then leaves the pull-down panel open across the blink. Power key presses are seconds apart, so this needs two posted jobs drained together.
 

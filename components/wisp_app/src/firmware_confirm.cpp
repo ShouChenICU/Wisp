@@ -22,10 +22,6 @@ constexpr size_t kInstallStackBytes = 6144;
 
 }  // namespace
 
-void request_firmware_confirm(App& app) { app.impl_->firmware_pending.store(true); }
-
-bool take_firmware_request(App& app) { return app.impl_->firmware_pending.exchange(false); }
-
 std::optional<core::FirmwarePending> pending_firmware(App& app) {
     core::FirmwareUpdateService* fw = app.impl_->firmware.get();
     return fw != nullptr ? fw->pending() : std::nullopt;
@@ -38,7 +34,6 @@ const core::StateCell<core::FirmwareProgress>& firmware_progress(App& app) {
 bool start_firmware_install(App& app) {
     App::Impl& impl = *app.impl_;
     std::lock_guard<os::Mutex> lock(impl.firmware_mutex);
-    impl.firmware_pending.store(false);
     if (!impl.firmware) return false;
     // A task left from an earlier install whose activation failed has
     // returned already: the service only had another image pending
@@ -61,7 +56,6 @@ bool start_firmware_install(App& app) {
 }
 
 void decline_firmware(App& app) {
-    app.impl_->firmware_pending.store(false);
     if (core::FirmwareUpdateService* fw = app.impl_->firmware.get()) (void)fw->decline();
 }
 
