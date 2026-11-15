@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/base/error.hpp"
@@ -11,6 +12,9 @@
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
+
+static_assert(std::is_trivially_copyable_v<hal::PowerLevel>,
+              "a set() of the level must not allocate");
 
 namespace {
 
@@ -32,7 +36,7 @@ int64_t valid_or(int64_t value, bool (*valid)(int64_t), int64_t def) {
 void power_state_mirror(core::EventBus& bus, const hal::PowerLevel&, const hal::PowerLevel& after) {
     core::Event e;
     e.topic = core::topics::kPowerState;
-    e.source = "app.power";
+    e.source = kPowerManagerSource;
     e.payload = wisp::Properties{{"state", wisp::Value(std::string(hal::to_string(after)))}};
     bus.publish(std::move(e));
 }

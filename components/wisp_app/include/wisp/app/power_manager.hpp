@@ -94,6 +94,10 @@ class UiRuntime;
 
 namespace wisp::app {
 
+// Event::source of power.state, which the level cell's mirror publishes:
+// the value PowerManager has always published it with.
+inline constexpr char kPowerManagerSource[] = "app.power";
+
 struct PowerManagerDeps {
     core::EventBus& bus;
     core::DeviceRegistry& registry;
@@ -273,9 +277,10 @@ private:
     // go_to() calls so far, guarded by transition_mutex_: a transition that
     // released the lock can tell another one ran meanwhile.
     uint64_t transitions_ = 0;
-    // Set only under transition_mutex_. Declared after bus_, so it is
-    // destroyed while the bus is still there. Starts at Active without an
-    // event: nothing announced a level at boot before the cell either.
+    // Set only under transition_mutex_. Declared after bus_, which its
+    // constructor uses; PowerManager itself is destroyed before the bus
+    // stops (App::stop()). Starts at Active without an event: nothing
+    // announced a level at boot before the cell either.
     core::StateCell<hal::PowerLevel> level_cell_;
     std::atomic<uint64_t> last_activity_ms_;
     std::atomic<bool> power_key_owned_{false};
