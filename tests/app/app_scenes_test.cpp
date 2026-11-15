@@ -25,6 +25,7 @@
 
 #include "scene_wiring.hpp"
 #include "self_check_layout.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
@@ -395,6 +396,36 @@ TEST(AppScenes, StandbyHidesAndWakeShows) {
     EXPECT_EQ(scene_log("counter"), (std::vector<std::string>{"show", "hide", "show"}));
 }
 
+// The runtime follows the power level's cell, not power.state: a standby
+// entered while wisp.bus is stalled and its events are dropped still hides
+// the scene once the bus runs, and waking the same way shows it.
+TEST(AppScenes, SceneHidesInStandbyFlooded) {
+    Booted b;
+    put_scene(b.h.root, "counter", "计数器", kCounter);
+    ASSERT_TRUE(b.start());
+    ASSERT_TRUE(b.h.app->scenes()->open("counter"));
+    ASSERT_TRUE(wait_until([] { return count_of(scene_log("counter"), "show") == 1; }, 3000));
+
+    wisp::app::PowerManager* pm = b.h.app->power_manager();
+    {
+        wisp::test::BusFlood flood(b.h.app->bus());
+        flood.hold();
+        run_on_ui_blocking(b.h.app->ui(), [&] { pm->enter_standby(); });
+        flood.flood(200);
+        flood.release();
+    }
+    EXPECT_TRUE(wait_until([] { return count_of(scene_log("counter"), "hide") == 1; }, 3000));
+    {
+        wisp::test::BusFlood flood(b.h.app->bus());
+        flood.hold();
+        run_on_ui_blocking(b.h.app->ui(), [&] { pm->exit_standby(); });
+        flood.flood(200);
+        flood.release();
+    }
+    EXPECT_TRUE(wait_until([] { return count_of(scene_log("counter"), "show") == 2; }, 3000));
+    EXPECT_EQ(scene_log("counter"), (std::vector<std::string>{"show", "hide", "show"}));
+}
+
 // Spec 6.1: the IMU is off with no subscribers. The self-check screen reads
 // it only while it shows: a scene in front covers it, and with a scene
 // that does not use the IMU nobody holds it.
@@ -705,7 +736,7 @@ TEST(AppScenes, DeleteSceneWithoutDialog) {
     const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
     run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
     wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
-    wiring.start_runtime([] { return false; });
+    wiring.start_runtime(nullptr);  // no PowerManager: always visible
     ASSERT_TRUE(wiring.runtime()->open("counter"));
 
     auto remove = [&](bool with_data) {
@@ -917,7 +948,7 @@ TEST(AppScenes, DeleteAfterStopRuntimeIsRefused) {
     const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
     run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
     wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
-    wiring.start_runtime([] { return false; });
+    wiring.start_runtime(nullptr);  // no PowerManager: always visible
 
     wiring.stop_runtime();
     run_on_ui_blocking(&ui, [&] { layer.reset(); });
@@ -953,7 +984,7 @@ TEST(AppScenes, AskDeleteFromTheUiThreadNeverWaits) {
     const wisp::hal::ScreenShape shape{wisp::hal::ScreenShapeKind::Rect, 480, 480, 0};
     run_on_ui_blocking(&ui, [&] { layer = std::make_unique<wisp::ui::SystemLayer>(shape); });
     wiring.build_runtime(ui, *layer, shape, [] { return wisp::Value(); }, [] {});
-    wiring.start_runtime([] { return false; });
+    wiring.start_runtime(nullptr);  // no PowerManager: always visible
     auto dialog = [&] {
         return run_on_ui_thread(
             &ui, [] { return find_label_text_containing(lv_layer_top(), "删除场景“"); });
@@ -1289,6 +1320,97 @@ TEST(AppScenes, CardRemovalChangesAvailabilityWithoutRelist) {
     got = r.list();
     EXPECT_TRUE(ListingRig::find(got, "photos")->available);
     EXPECT_EQ(ListingRig::find(got, "clock")->name, "时钟");
+}
+
+namespace {
+
+// SceneFiles' recounts of the card, seen through the line each one logs
+// for the files of a scene that is not installed ("ghost").
+struct RecountTap : wisp::LogSink {
+    RecountTap() { wisp::log::add_sink(this); }
+    ~RecountTap() override { wisp::log::remove_sink(this); }
+    RecountTap(const RecountTap&) = delete;
+    RecountTap& operator=(const RecountTap&) = delete;
+    void write(const wisp::LogRecord& rec) override {
+        if (std::string_view(rec.tag) == "scene_files" &&
+            std::string_view(rec.msg).find("ghost/files") != std::string_view::npos)
+            ++recounts;
+    }
+    std::atomic<size_t> recounts{0};
+};
+
+// Files on the card of a scene that is not installed. scan() looks at the
+// card only once <int>/scenes exists.
+void put_ghost(const ListingRig& r) {
+    fs::create_directories(fs::path(r.in) / "scenes");
+    const fs::path dir = fs::path(r.sd) / "wisp" / "library" / "scenes" / "ghost" / "files";
+    fs::create_directories(dir);
+    std::ofstream(dir / "song.mp3") << "music";
+}
+
+// Everything the card cell's callback queued has run on the worker.
+void settle(ListingRig& r) {
+    ASSERT_TRUE(r.bus.wait_idle(3000));
+    ASSERT_TRUE(r.wiring->worker().drain(3000));
+}
+
+}  // namespace
+
+// The card coming back recounts its scenes' files on the worker, once;
+// subscribing does not count it again (the current value is no change).
+TEST(AppScenes, CardChangeRecountsSceneFiles) {
+    ListingRig r(/*card_in=*/true);
+    put_ghost(r);
+    RecountTap tap;
+    r.start();
+    settle(r);
+    // start_storage()'s scan() alone.
+    EXPECT_EQ(tap.recounts.load(), 1u);
+    tap.recounts = 0;
+
+    r.sd_dev->online_flag = false;
+    r.refresh();
+    settle(r);
+    // Out: nothing on the card to count.
+    EXPECT_EQ(tap.recounts.load(), 0u);
+    r.sd_dev->online_flag = true;
+    r.refresh();
+    ASSERT_TRUE(wait_until([&] { return tap.recounts.load() >= 1; }, 3000));
+    settle(r);
+    EXPECT_EQ(tap.recounts.load(), 1u);
+}
+
+// Out and back in while wisp.bus is stalled and its events are dropped:
+// the cell still says the card changed, so the files are recounted and
+// the listing asks again whether each scene can run, though `online`
+// reads as it did before.
+TEST(AppScenes, TwoQuickCardChangesRecountAtLeastOnce) {
+    ListingRig r(/*card_in=*/true);
+    put_ghost(r);
+    r.put("photos", "相册", R"(,"files":"sd")");
+    r.start();
+    ASSERT_EQ(r.list().scenes.size(), 1u);
+    ASSERT_TRUE(r.list().cached);
+    settle(r);
+    RecountTap tap;
+    {
+        wisp::test::BusFlood flood(r.bus);
+        flood.hold();
+        r.sd_dev->online_flag = false;
+        r.refresh();
+        r.sd_dev->online_flag = true;
+        r.refresh();
+        flood.flood(200);
+        flood.release();
+    }
+    ASSERT_TRUE(wait_until([&] { return tap.recounts.load() >= 1; }, 3000));
+    settle(r);
+    EXPECT_GE(tap.recounts.load(), 1u);
+    EXPECT_LE(tap.recounts.load(), 2u);
+    const wisp::shell::ShellListing got = r.list();
+    EXPECT_FALSE(got.cached);
+    EXPECT_TRUE(ListingRig::find(got, "photos")->available);
+    EXPECT_TRUE(r.list().cached);
 }
 
 // Whether a scene has data is read when asked, so data written after a

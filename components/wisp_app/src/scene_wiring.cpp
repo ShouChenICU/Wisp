@@ -101,15 +101,18 @@ void SceneWiring::start_storage() {
     }
     core::SceneFiles* files = files_.get();
     if (files != nullptr) {
-        // The card's scenes are counted again on the worker (spec 7.2).
-        for (const char* topic :
-             {core::topics::kStorageSdInserted, core::topics::kStorageSdRemoved}) {
-            sd_subs_.push_back(deps_.bus.subscribe(topic, [this, files](const core::Event&) {
+        // The card's scenes are counted again on the worker (spec 7.2),
+        // once for each change this sees. `changes` starts at the current
+        // count, so the first delivery (the value now) counts nothing.
+        sd_sub_ = deps_.storage.sd_cell().subscribe(
+            [this, files,
+             changes = deps_.storage.sd_cell().get().changes](const core::SdStatus& sd) mutable {
+                if (sd.changes == changes) return;
+                changes = sd.changes;
                 sd_changes_.fetch_add(1);
                 if (!worker_.submit([files] { files->on_sd_changed(); }))
                     WLOG_W(kTag, "storage worker busy: scene files on the card not recounted");
-            }));
-        }
+            });
     }
 
     // On the worker, like every file job; nothing lists or opens a scene
@@ -189,7 +192,7 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
     notices_ = notices;
 }
 
-void SceneWiring::start_runtime(std::function<bool()> standby) {
+void SceneWiring::start_runtime(const core::StateCell<hal::PowerLevel>* power) {
     if (!runtime_ || runtime_started_) return;
     if (http_) {
         if (auto r = http_->start(); !r) {
@@ -202,13 +205,17 @@ void SceneWiring::start_runtime(std::function<bool()> standby) {
         return;
     }
     runtime_started_ = true;
-    // The state is read rather than taken from the payload, so a late
-    // event cannot leave the scene hidden on a lit screen.
-    scene::SceneRuntime* rt = runtime_.get();
-    power_sub_ = deps_.bus.subscribe(core::topics::kPowerState, [rt, standby](const core::Event&) {
-        rt->set_visible(!standby());
-    });
-    if (standby()) rt->set_visible(false);
+    // Each call reads the level from the cell, the latest by construction,
+    // so a late delivery cannot leave the scene hidden on a lit screen. Set
+    // here too, so the first frame after start is right before wisp.bus
+    // runs; the subscription's first delivery then repeats it.
+    if (power != nullptr) {
+        scene::SceneRuntime* rt = runtime_.get();
+        rt->set_visible(power->get() < hal::PowerLevel::Standby);
+        power_sub_ = power->subscribe([rt](const hal::PowerLevel& level) {
+            rt->set_visible(level < hal::PowerLevel::Standby);
+        });
+    }
     if (repo_->dev()) start_watching();
 }
 
@@ -261,10 +268,7 @@ void SceneWiring::poll_scenes() {
 void SceneWiring::stop_runtime() {
     // A poll already queued finds the runtime stopped and reloads nothing.
     if (watch_timer_) watch_timer_->stop();
-    if (power_sub_ != 0) {
-        deps_.bus.unsubscribe(power_sub_);
-        power_sub_ = 0;
-    }
+    power_sub_.reset();
     if (runtime_) runtime_->stop();
     runtime_started_ = false;
     // App::stop() destroys the system layer next, while the admin server
@@ -280,8 +284,7 @@ void SceneWiring::stop_runtime() {
 
 void SceneWiring::stop() {
     stop_runtime();
-    for (core::SubscriptionId id : sd_subs_) deps_.bus.unsubscribe(id);
-    sd_subs_.clear();
+    sd_sub_.reset();
     if (http_) http_->stop();
     if (!worker_.drain(kDrainMs)) {
         WLOG_W(kTag, "storage worker still busy after %u ms; stopping it",

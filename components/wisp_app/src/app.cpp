@@ -788,7 +788,7 @@ Result<void> App::start() {
                 net::TimeSyncService* sync = impl->net ? impl->net->time_sync() : nullptr;
                 rt->attach_time_sync(sync != nullptr ? &sync->result_cell() : nullptr);
             }
-            scenes->start_runtime([impl] { return impl->power_manager->standby(); });
+            scenes->start_runtime(&impl->power_manager->level_cell());
         }
         // Once the runtime its tools drive runs.
         if (impl_->agent) {

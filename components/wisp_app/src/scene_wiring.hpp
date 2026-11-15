@@ -15,17 +15,19 @@
 //   - the SceneFiles (wisp.files, scene-device spec 7.2) over <int>/scenes
 //     and the SD card's library, even in dev mode (StorageManager moves
 //     files only inside a storage mount). Its scan() follows recover() on
-//     the worker; storage.sd.inserted/removed recount the card's scenes
-//     there. Deleting a scene with its data also clears its files;
+//     the worker; each change of StorageManager::sd_cell() recounts the
+//     card's scenes there. Deleting a scene with its data also clears its
+//     files;
 //   - with a screen (build_runtime(), after the system layer): the
 //     scenes' HTTP proxy (given Platform::http_client) and the
 //     SceneRuntime, built before networking so the admin routes can be
 //     handed them, and started (start_runtime()) once the home screen is
 //     up -- a scene's view replaces whatever screen is in front and goes
 //     back to it.
-//     The runtime then follows power.state: standby hides the scene, waking
-//     shows it. The system layer's back gesture is the runtime's "back":
-//     a scene that declares "background" goes there, any other closes.
+//     The runtime then follows PowerManager::level_cell(): standby hides
+//     the scene, waking shows it. The system layer's back gesture is the
+//     runtime's "back": a scene that declares "background" goes there, any
+//     other closes.
 //     The runtime's notices become system notifications (scene-device
 //     spec 3.2, 3.5, 3.6). Its background list is
 //     <System>/scenes/background.json, restored by restore_background()
@@ -67,9 +69,11 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
@@ -124,9 +128,11 @@ public:
                        core::SensorService* sensors = nullptr,
                        const core::StateCell<core::PowerSupply>* supply = nullptr,
                        const core::StateCell<core::SystemSettingsValues>* settings = nullptr);
-    // Starts the proxy and the runtime and follows power.state;
-    // `standby` reads whether the screen is off now.
-    void start_runtime(std::function<bool()> standby);
+    // Starts the proxy and the runtime and follows the power level
+    // (PowerManager::level_cell()): Standby and below hide the scene.
+    // `power` must outlive stop_runtime(); null (no PowerManager) keeps the
+    // scene visible.
+    void start_runtime(const core::StateCell<hal::PowerLevel>* power);
     // SceneRuntime::restore_background() once the runtime runs; App calls
     // it as it publishes system.boot.completed. Never waits.
     void restore_background();
@@ -166,10 +172,10 @@ public:
     //   - the scenes SceneRepository::changed_since() names (an install,
     //     update, remove or recovered install): their scene.json and icon;
     //   - whether each scene can run, when the card went in or out
-    //     (storage.sd.inserted/removed, or SceneFiles::sd_online() reading
-    //     otherwise than last time). With the card out it cannot change
-    //     otherwise: a scene's files keep the place their first write
-    //     picked, and only deleting the scene removes them.
+    //     (StorageManager::sd_cell() changed, or SceneFiles::sd_online()
+    //     reading otherwise than last time). With the card out it cannot
+    //     change otherwise: a scene's files keep the place their first
+    //     write picked, and only deleting the scene removes them.
     // Running in the background comes from the runtime each time, never
     // from storage. An icon comes as its bytes when read for this call and
     // as its icon_hash alone after that (shell_icon() reads it again).
@@ -262,10 +268,11 @@ private:
     // wisp.files, over <int>/scenes (and the card); built with the
     // repository, counted on the worker after recover().
     os::LargeUnique<core::SceneFiles> files_;
-    // storage.sd.inserted/removed, which recount the card's scenes.
-    std::vector<core::SubscriptionId> sd_subs_;
-    // Bumped by those events (on the bus thread); shell_scenes() then
-    // asks again whether each scene can run.
+    // StorageManager::sd_cell(), whose changes recount the card's scenes.
+    // Released in stop(): the storage outlives this object.
+    core::CellSubscription sd_sub_;
+    // Bumped by that subscription (on wisp.bus) for each change it sees;
+    // shell_scenes() then asks again whether each scene can run.
     std::atomic<uint64_t> sd_changes_{0};
     // shell_scenes()'s listing, sorted by id; worker only. `listed_` is
     // false until one has been read (and after a failed read), `listed_gen_`
@@ -294,7 +301,8 @@ private:
     os::LargeUnique<scene::DirWatcher> watcher_;
     std::unique_ptr<os::Timer> watch_timer_;
     std::atomic<bool> poll_queued_{false};
-    core::SubscriptionId power_sub_ = 0;
+    // PowerManager::level_cell(); released in stop_runtime().
+    core::CellSubscription power_sub_;
     // Read by the delete dialog's answer on the UI thread.
     std::atomic<bool> runtime_started_{false};
 };
