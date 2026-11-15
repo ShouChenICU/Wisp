@@ -118,6 +118,8 @@ wisp_test(NAME power_monitor_test SRCS core/power_monitor_test.cpp
 wisp_test(NAME align_test SRCS ui/align_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME lv_heap_test SRCS ui/lv_heap_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME strings_test SRCS ui/strings_test.cpp LIBS wisp_ui wisp_port_sim_os)
+wisp_test(NAME setting_labels_test SRCS ui/setting_labels_test.cpp LIBS wisp_ui wisp_port_sim_os)
+target_compile_definitions(setting_labels_test PRIVATE WISP_WEB_I18N_DIR="${WISP_ROOT}/web/app/i18n")
 wisp_test(NAME clock_text_test SRCS ui/clock_text_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME ui_drag_test SRCS ui/drag_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)

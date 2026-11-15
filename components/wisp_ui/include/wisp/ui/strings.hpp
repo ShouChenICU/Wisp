@@ -26,6 +26,8 @@
 #include <string>
 #include <string_view>
 
+#include "wisp/core/settings_schema.hpp"
+
 namespace wisp::ui {
 
 enum class Lang : uint8_t { Zh, Ja, En };
@@ -599,6 +601,16 @@ Lang lang();
 // nullopt.
 std::optional<Lang> parse_lang(std::string_view code);
 const char* lang_code(Lang lang);
+
+// The stored language (core::LangCode) and the UI language share their
+// order, so the bridge is a cast; the asserts keep the two enums in step.
+static_assert(static_cast<int>(Lang::Zh) == static_cast<int>(core::LangCode::Zh));
+static_assert(static_cast<int>(Lang::Ja) == static_cast<int>(core::LangCode::Ja));
+static_assert(static_cast<int>(Lang::En) == static_cast<int>(core::LangCode::En));
+static_assert(std::size(kAllLangs) == std::size(core::kLangCodeValues));
+
+constexpr Lang to_lang(core::LangCode c) { return static_cast<Lang>(c); }
+constexpr core::LangCode to_lang_code(Lang l) { return static_cast<core::LangCode>(l); }
 
 namespace detail {
 // The raw table entry for `id` in `lang`, or nullptr if that table has
