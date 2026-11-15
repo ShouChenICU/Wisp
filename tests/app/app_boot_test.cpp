@@ -37,6 +37,7 @@
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
+#include "wisp/core/sensor_service.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
@@ -72,6 +73,8 @@ struct MakeAppOptions {
     std::shared_ptr<FakeStorage> sd;
     // Every settings write_batch() first sleeps this long.
     uint32_t settings_write_delay_ms = 0;
+    // Registered as "power.main" when set: PowerMonitor samples it.
+    std::shared_ptr<wisp::test::FakePower> power;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -128,6 +131,7 @@ public:
                                               /*removable=*/false));
         }
         if (opts_.sd) maybe_register(registry, report, opts_.sd);
+        if (opts_.power) maybe_register(registry, report, opts_.power);
         maybe_register(registry, report, std::make_shared<FakeImu>("imu.main"));
         maybe_register(registry, report, std::make_shared<FakeButton>("button.power"));
     }
@@ -416,14 +420,32 @@ TEST(AppBoot, StopUndoesStandbyQueuedJustBeforeTheCheck) {
     EXPECT_TRUE(h.display->powered());
 }
 
+// A FakePower at `percent`, neither charging nor on USB.
+wisp::hal::PowerStatus battery_at(int percent, bool charging = false, bool usb = false) {
+    wisp::hal::PowerStatus s;
+    s.battery_percent = percent;
+    s.charging = charging;
+    s.usb_present = usb;
+    return s;
+}
+
+// Sets `power`'s status and returns once PowerMonitor has sampled it: the
+// sample that called status() next may have read the old one, so this
+// waits for the one after it.
+void sample_at(wisp::test::FakePower& power, const wisp::hal::PowerStatus& status) {
+    power.set_status(status);
+    const int from = power.status_calls.load();
+    ASSERT_TRUE(wait_until([&] { return power.status_calls.load() >= from + 2; }, 5000));
+}
+
 TEST(AppNotifications, BatteryLowPostsSystemNotice) {
-    auto h = make_app({.with_display = false});
+    auto power = std::make_shared<wisp::test::FakePower>("power.main");
+    power->set_status(battery_at(12));
+    auto h = make_app({.with_display = false, .power = power});
     ASSERT_TRUE(h.app.start());
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
-    h.app.bus().publish(
-        {"power.battery.low", "power.main", 0, {{"battery_percent", wisp::Value(int64_t{12})}}});
-    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 5000));
     auto n = notes->unread()[0];
     EXPECT_EQ(n.source, "system");
     EXPECT_EQ(n.code, "battery_low");
@@ -431,32 +453,138 @@ TEST(AppNotifications, BatteryLowPostsSystemNotice) {
     EXPECT_EQ(n.action, "");
 }
 
+// The owner raises `low` once per hysteresis cycle, so the second notice
+// needs the battery back above the threshold + 5 in between.
 TEST(AppNotifications, BatteryLowKeepsOneNoticeAndChargingClearsIt) {
-    auto h = make_app({.with_display = false});
+    auto power = std::make_shared<wisp::test::FakePower>("power.main");
+    power->set_status(battery_at(50));
+    auto h = make_app({.with_display = false, .power = power});
     ASSERT_TRUE(h.app.start());
     wisp::core::NotificationService* notes = h.app.notifications();
     ASSERT_NE(notes, nullptr);
-    auto low = [&](int64_t pct) {
-        h.app.bus().publish(
-            {"power.battery.low", "power.main", 0, {{"battery_percent", wisp::Value(pct)}}});
-        ASSERT_TRUE(h.app.bus().wait_idle(2000));
-    };
-    low(12);
-    low(9);
+    sample_at(*power, battery_at(12));
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
+    sample_at(*power, battery_at(25));
+    sample_at(*power, battery_at(9));
+    ASSERT_TRUE(wait_until([&] { return notes->unread()[0].arg == "9"; }, 2000));
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
     ASSERT_EQ(notes->unread_count(), 1u);
     EXPECT_EQ(notes->unread()[0].arg, "9");
 
-    h.app.bus().publish({"power.charging.changed",
-                         "power.main",
-                         0,
-                         {{"charging", wisp::Value(false)}, {"usb_present", wisp::Value(false)}}});
+    // USB without charging: the supply moves, the notice stays.
+    sample_at(*power, battery_at(9, /*charging=*/false, /*usb=*/true));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     EXPECT_EQ(notes->unread_count(), 1u);
-    h.app.bus().publish({"power.charging.changed",
-                         "power.main",
-                         0,
-                         {{"charging", wisp::Value(true)}, {"usb_present", wisp::Value(true)}}});
+    sample_at(*power, battery_at(9, /*charging=*/true, /*usb=*/true));
     EXPECT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
+}
+
+// The notices follow the supply cell: the percent falls through the
+// threshold and on while wisp.bus is held and flooded (power.battery.low
+// is dropped); once it runs, App sees the last supply in one call and
+// posts one notice with the last percent.
+TEST(AppNotifications, LowBatteryNoticeFollowsTheSupplyFlooded) {
+    auto power = std::make_shared<wisp::test::FakePower>("power.main");
+    power->set_status(battery_at(50));
+    auto h = make_app({.with_display = false, .power = power});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    sample_at(*power, battery_at(50));
+
+    wisp::test::BusFlood flood(h.app.bus());
+    flood.hold();
+    for (int pct : {14, 12, 10}) sample_at(*power, battery_at(pct));
+    flood.flood(200);
+    EXPECT_EQ(notes->unread_count(), 0u);
+    flood.release();
+
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    ASSERT_EQ(notes->unread_count(), 1u);
+    EXPECT_EQ(notes->unread()[0].code, "battery_low");
+    EXPECT_EQ(notes->unread()[0].arg, "10");
+}
+
+// A battery that is low from the first sample posts the notice once, and
+// later samples at the same level do not post it again.
+TEST(AppNotifications, BatteryLowAtBootPostsOneNotice) {
+    auto power = std::make_shared<wisp::test::FakePower>("power.main");
+    power->set_status(battery_at(9));
+    auto h = make_app({.with_display = false, .power = power});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 5000));
+    sample_at(*power, battery_at(8));
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    ASSERT_EQ(notes->unread_count(), 1u);
+    EXPECT_EQ(notes->unread()[0].arg, "9");
+}
+
+// Charging dismisses the notice; the battery is still below the threshold,
+// so `low` stays set and nothing posts it again.
+TEST(AppNotifications, ChargingDismissesTheNotice) {
+    auto power = std::make_shared<wisp::test::FakePower>("power.main");
+    power->set_status(battery_at(50));
+    auto h = make_app({.with_display = false, .power = power});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    sample_at(*power, battery_at(12));
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 2000));
+    sample_at(*power, battery_at(12, /*charging=*/true, /*usb=*/true));
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 0; }, 2000));
+    sample_at(*power, battery_at(13, /*charging=*/true, /*usb=*/true));
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    EXPECT_EQ(notes->unread_count(), 0u);
+}
+
+// A first sample that is both charging and low: the charging edge is
+// handled before the low edge, so the notice is posted and kept, as the
+// event order (power.charging.changed, then power.battery.low) did.
+TEST(AppNotifications, ChargingAndLowAtBootKeepsTheNotice) {
+    auto power = std::make_shared<wisp::test::FakePower>("power.main");
+    power->set_status(battery_at(9, /*charging=*/true, /*usb=*/true));
+    auto h = make_app({.with_display = false, .power = power});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    ASSERT_TRUE(wait_until([&] { return notes->unread_count() == 1; }, 5000));
+    sample_at(*power, battery_at(9, /*charging=*/true, /*usb=*/true));
+    ASSERT_TRUE(h.app.bus().wait_idle(2000));
+    EXPECT_EQ(notes->unread_count(), 1u);
+}
+
+// The sensors follow the power level cell: standby entered while wisp.bus
+// is held and flooded (power.state is dropped) pauses the IMU once the bus
+// runs again, and waking resumes it.
+TEST(AppBoot, SensorsPauseInStandbyFlooded) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::SensorService* sensors = h.app.sensors();
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(sensors, nullptr);
+    ASSERT_NE(pm, nullptr);
+    auto sub = sensors->subscribe(wisp::core::SensorKind::Accel, 50, "test",
+                                  [](const wisp::core::SensorBatch&) {});
+    ASSERT_TRUE(sub);
+    ASSERT_EQ(sensors->imu_rate(), 50u);
+
+    {
+        wisp::test::BusFlood flood(h.app.bus());
+        flood.hold();
+        pm->enter_standby();
+        ASSERT_TRUE(pm->standby());
+        flood.flood(200);
+        EXPECT_EQ(sensors->imu_rate(), 50u);
+        flood.release();
+    }
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 0; }, 2000));
+
+    pm->exit_standby();
+    EXPECT_TRUE(wait_until([&] { return sensors->imu_rate() == 50u; }, 2000));
+    sensors->unsubscribe(sub.value());
 }
 
 TEST(AppNotifications, WakeLockReminderPosts) {

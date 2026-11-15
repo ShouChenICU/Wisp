@@ -45,6 +45,7 @@
 #include "wisp/core/power_monitor.hpp"
 #include "wisp/core/reminders.hpp"
 #include "wisp/core/sensor_service.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/topics.hpp"
@@ -156,9 +157,10 @@ struct App::Impl {
     // The IMU shared between the scenes (wisp.sensor) and the self-check
     // screen (scene-device spec 6.1). Built by start() before the scene
     // runtime and the screen, which hold pointers to it; stopped and reset
-    // by stop() once both are gone. Follows power.state (sensor_sub).
+    // by stop() once both are gone. Follows PowerManager's level cell
+    // (sensors_power_sub), released before power_manager goes.
     std::unique_ptr<core::SensorService> sensors;
-    core::SubscriptionId sensor_sub = 0;
+    core::CellSubscription sensors_power_sub;
     // What a posted, tapped or acted-on notification does (wake, sound,
     // banner, its scene). Built once the scene runtime is, stopped first
     // by App::stop().
@@ -167,8 +169,9 @@ struct App::Impl {
     // screen): built once networking is, stopped first by App::stop()
     // after the console, before the router and the system layer.
     os::LargeUnique<StatusShell> status_shell;
-    core::SubscriptionId battery_sub = 0;
-    core::SubscriptionId charging_sub = 0;
+    // The low-battery notice follows PowerMonitor's supply cell; released
+    // with the notifications in App::stop(), before power_monitor goes.
+    core::CellSubscription supply_sub;
     // Platform::wall_s, or std::time().
     int64_t wall_now() const {
         return platform.wall_s ? platform.wall_s() : static_cast<int64_t>(std::time(nullptr));

@@ -251,26 +251,6 @@ Result<void> App::start() {
             }
             if (!r) WLOG_W("app", "scene order not loaded: %s", r.error().message.c_str());
         }
-        impl->battery_sub =
-            impl->bus.subscribe(core::topics::kPowerBatteryLow, [notes](const core::Event& e) {
-                const Value* pct = nullptr;
-                if (auto it = e.payload.find("battery_percent"); it != e.payload.end())
-                    pct = &it->second;
-                const std::string arg = pct != nullptr && pct->type() == Value::Type::Int
-                                            ? std::to_string(pct->as_int())
-                                            : std::string();
-                // One low-battery notice, with the latest level.
-                notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
-                notes->post_system(core::notice::kBatteryLow, arg);
-            });
-        impl->charging_sub =
-            impl->bus.subscribe(core::topics::kPowerChargingChanged, [notes](const core::Event& e) {
-                auto it = e.payload.find("charging");
-                if (it != e.payload.end() && it->second.type() == Value::Type::Bool &&
-                    it->second.as_bool()) {
-                    notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
-                }
-            });
         impl->scene_state_sub = impl->bus.subscribe(
             core::topics::kSceneState,
             [notes, recents = impl->recents.get()](const core::Event& e) {
@@ -390,6 +370,28 @@ Result<void> App::start() {
     impl_->power_monitor = std::make_unique<core::PowerMonitor>(
         impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
     impl_->power_monitor->start();
+    if (impl_->notifications) {
+        // One low-battery notice, with the level it fell to; charging clears
+        // it. Edges of the supply cell: each is acted on against the value
+        // last seen, so a coalesced call acts once. `low` starts clear so a
+        // supply that is already low when this subscribes still posts. The
+        // charging edge goes first: a first sample that is both charging and
+        // low posts the notice and keeps it, as the events' order did.
+        const core::StateCell<core::PowerSupply>& supply = impl_->power_monitor->supply();
+        impl_->supply_sub = supply.subscribe([notes = impl_->notifications.get(), low = false,
+                                              charging = supply.get().charging](
+                                                 const core::PowerSupply& s) mutable {
+            if (s.charging && !charging) {
+                notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
+            }
+            if (s.low && !low) {
+                notes->dismiss_code(core::notice::kBatteryLow, core::DismissReason::Dismiss);
+                notes->post_system(core::notice::kBatteryLow, std::to_string(s.battery_percent));
+            }
+            charging = s.charging;
+            low = s.low;
+        });
+    }
 
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
@@ -401,21 +403,13 @@ Result<void> App::start() {
 
     // The IMU's subscribers, before the scene runtime and the self-check
     // screen that read it. Standby and deep standby pause every
-    // subscription (spec 6.1); the state comes from the payload, as the
-    // service keeps no reference to PowerManager.
+    // subscription (spec 6.1): App follows PowerManager's level cell for
+    // it once PowerManager exists, as the service keeps no reference to it.
     impl_->sensors = std::make_unique<core::SensorService>(
         impl_->registry.get<hal::Imu>("imu.main"), impl_->occupancy);
     if (auto r = impl_->sensors->start(); !r) {
         WLOG_W("app", "sensors off: %s", r.error().message.c_str());
     }
-    impl_->sensor_sub = impl_->bus.subscribe(
-        core::topics::kPowerState, [sensors = impl_->sensors.get()](const core::Event& e) {
-            auto it = e.payload.find("state");
-            if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
-            const std::string& state = it->second.as_string();
-            sensors->set_standby(state == "standby" || state == "deep_standby");
-        });
-
     impl_->power_manager = std::make_unique<PowerManager>(PowerManagerDeps{
         .bus = impl_->bus,
         .registry = impl_->registry,
@@ -440,6 +434,11 @@ Result<void> App::start() {
         // started); PowerManager dims relative to it.
         impl_->power_manager->set_brightness(static_cast<uint8_t>(boot_brightness));
     }
+    // Standby and deep standby pause every IMU subscription (spec 6.1).
+    impl_->sensors_power_sub = impl_->power_manager->level_cell().subscribe(
+        [sensors = impl_->sensors.get()](const hal::PowerLevel& level) {
+            sensors->set_standby(level >= hal::PowerLevel::Standby);
+        });
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true, [this] {
             const uint64_t now = os::now_ms();
@@ -933,10 +932,9 @@ void App::stop() {
     // Notifications: nothing new from the bus, no more saves on the timer,
     // then whatever is still unsaved goes to the worker before it stops.
     if (impl_->notifications) {
-        impl_->bus.unsubscribe(impl_->battery_sub);
-        impl_->bus.unsubscribe(impl_->charging_sub);
+        impl_->supply_sub.reset();
         impl_->bus.unsubscribe(impl_->scene_state_sub);
-        impl_->battery_sub = impl_->charging_sub = impl_->scene_state_sub = 0;
+        impl_->scene_state_sub = 0;
         impl_->notifications->close();
         if (!impl_->notifications->flush(kNotifyFlushMs)) {
             WLOG_W("app", "notifications not saved before shutdown");
@@ -982,8 +980,7 @@ void App::stop() {
 
     // Nothing subscribes any more: the scene runtime and the self-check
     // screen are gone.
-    impl_->bus.unsubscribe(impl_->sensor_sub);
-    impl_->sensor_sub = 0;
+    impl_->sensors_power_sub.reset();
     if (impl_->sensors) {
         impl_->sensors->stop();
         impl_->sensors.reset();
