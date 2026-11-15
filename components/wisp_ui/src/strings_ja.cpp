@@ -321,18 +321,6 @@ const char* strings_ja(StrId id) {
             return "{} {} → {}";
         case StrId::AgentNoteDevice:
             return "デバイス {}：{}";
-        case StrId::AgentSetBrightness:
-            return "明るさ";
-        case StrId::AgentSetVolume:
-            return "音量";
-        case StrId::AgentSetNotifyVol:
-            return "通知音量";
-        case StrId::AgentSetScreenOff:
-            return "画面オフまでの時間";
-        case StrId::AgentSetLanguage:
-            return "言語";
-        case StrId::AgentSetTimeFormat:
-            return "時刻の表示";
         case StrId::AgentConfirmTitle:
             return "Agent の確認";
         case StrId::AgentAllow:

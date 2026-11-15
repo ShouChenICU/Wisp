@@ -315,18 +315,6 @@ const char* strings_zh(StrId id) {
             return "{} {} → {}";
         case StrId::AgentNoteDevice:
             return "设备 {}：{}";
-        case StrId::AgentSetBrightness:
-            return "亮度";
-        case StrId::AgentSetVolume:
-            return "音量";
-        case StrId::AgentSetNotifyVol:
-            return "提示音量";
-        case StrId::AgentSetScreenOff:
-            return "熄屏时间";
-        case StrId::AgentSetLanguage:
-            return "语言";
-        case StrId::AgentSetTimeFormat:
-            return "时间格式";
         case StrId::AgentConfirmTitle:
             return "Agent 请求确认";
         case StrId::AgentAllow:

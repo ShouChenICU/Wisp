@@ -105,6 +105,34 @@ TEST_F(DeviceTools, SettingsGetListsSixKeys) {
     EXPECT_EQ(s->find("language")->as_string(), "zh");
 }
 
+TEST_F(DeviceTools, SettingsGetDescriptionIsGenerated) {
+    const wisp::agent::ToolDef* get = tools->find("settings.get");
+    ASSERT_NE(get, nullptr);
+    EXPECT_EQ(std::string(get->description),
+              "The settings the agent may change: brightness (10 to 255), volume (percent, 0 to "
+              "100), screen_off_s (seconds, 0 never, or 15 to 3600), language (zh, ja, en), "
+              "notify_vol (percent, 0 to 100), time_24h (true: 24-hour clock, false: 12-hour).");
+}
+
+TEST_F(DeviceTools, SettingsSetSchemaListsTheAgentKeys) {
+    const wisp::agent::ToolDef* set = tools->find("settings.set");
+    ASSERT_NE(set, nullptr);
+    auto schema = wisp::from_json(set->schema_json);
+    ASSERT_TRUE(schema) << set->schema_json;
+    const Value* props = schema.value().find("properties");
+    ASSERT_NE(props, nullptr);
+    const Value* key = props->find("key");
+    ASSERT_NE(key, nullptr);
+    const Value* values = key->find("enum");
+    ASSERT_NE(values, nullptr);
+    std::vector<std::string> keys;
+    for (const Value& v : values->as_list()) keys.push_back(v.as_string());
+    EXPECT_EQ(keys, (std::vector<std::string>{"brightness", "volume", "screen_off_s", "language",
+                                              "notify_vol", "time_24h"}));
+    EXPECT_EQ(wisp::to_json(*props->find("value")), R"({"type":["integer","string","boolean"]})");
+    EXPECT_EQ(wisp::to_json(*schema.value().find("required")), R"(["key","value"])");
+}
+
 TEST_F(DeviceTools, SettingsSetValidatesLikeTheWebPage) {
     ToolOutput low = call("settings_set", R"({"key":"brightness","value":5})");
     ASSERT_FALSE(low.ok);
@@ -123,7 +151,8 @@ TEST_F(DeviceTools, SettingsSetValidatesLikeTheWebPage) {
 
     ToolOutput lang = call("settings_set", R"({"key":"language","value":"en"})");
     ASSERT_TRUE(lang.ok) << wisp::to_json(lang.result);
-    EXPECT_EQ(lang.note, "语言 zh → en");
+    // The settings page's label (settings-schema decision 7).
+    EXPECT_EQ(lang.note, "系统语言 zh → en");
     ToolOutput h12 = call("settings_set", R"({"key":"time_24h","value":false})");
     ASSERT_TRUE(h12.ok) << wisp::to_json(h12.result);
     EXPECT_EQ(h12.note, "时间格式 24h → 12h");
@@ -140,7 +169,8 @@ TEST_F(DeviceTools, SettingsRunOnTheWorker) {
     ASSERT_TRUE(call("settings_get", "").ok);
     ASSERT_TRUE(call("settings_set", R"({"key":"notify_vol","value":10})").ok);
     ASSERT_TRUE(call("settings_set", R"({"key":"screen_off_s","value":30})").ok);
-    EXPECT_GE(submitted, 3);
+    // settings.get reads the cell (memory); only the writes are flash jobs.
+    EXPECT_EQ(submitted, 2);
     EXPECT_GT(backend.gets, 0);
     EXPECT_EQ(backend.gets_off_thread, 0);
     EXPECT_FALSE(backend.off_thread);

@@ -61,7 +61,7 @@ struct DeviceToolDeps {
     // occupancy, shape, safe_area (a missing one is null). It must not
     // touch flash: it runs on the agent's thread.
     std::function<Value()> status;
-    // Read and written only inside submit_io jobs (NVS is flash).
+    // Read from its cell; written inside submit_io jobs (NVS is flash).
     core::SystemSettings& settings;
     core::NotificationService& notes;
     std::function<bool(std::function<void()>)> submit_io;

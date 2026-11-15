@@ -318,18 +318,6 @@ const char* strings_en(StrId id) {
             return "{} {} → {}";
         case StrId::AgentNoteDevice:
             return "Device {}: {}";
-        case StrId::AgentSetBrightness:
-            return "Brightness";
-        case StrId::AgentSetVolume:
-            return "Volume";
-        case StrId::AgentSetNotifyVol:
-            return "Alert volume";
-        case StrId::AgentSetScreenOff:
-            return "Screen off after";
-        case StrId::AgentSetLanguage:
-            return "Language";
-        case StrId::AgentSetTimeFormat:
-            return "Time format";
         case StrId::AgentConfirmTitle:
             return "Agent request";
         case StrId::AgentAllow:

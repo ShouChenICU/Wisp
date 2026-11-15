@@ -1,15 +1,20 @@
 // device.status, settings.get, settings.set, notify.list and
 // notify.dismiss (agent-core spec 4.4): thin adapters over App's status
 // provider, SystemSettings and NotificationService. They run on the
-// agent's thread; SystemSettings reads and writes NVS, which is flash, so
-// every call into it is a job on the storage worker (run_io).
+// agent's thread. settings.get reads the settings cell (memory);
+// SystemSettings::set() writes NVS, which is flash, so settings.set is a
+// job on the storage worker (run_io). The settings tools' keys, ranges and
+// description come from the schema table (wisp/core/settings_schema.hpp).
 
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "tool_io.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/settings_schema.hpp"
+#include "wisp/ui/setting_labels.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/system_notice.hpp"
 
@@ -24,29 +29,104 @@ using detail::run_io;
 
 constexpr uint32_t kIoMs = 5000;
 
-// The keys the agent may read and change, with what the note calls them.
-struct SettingKey {
-    const char* key;
-    ui::StrId label;
-};
-constexpr SettingKey kKeys[] = {
-    {"brightness", ui::StrId::AgentSetBrightness}, {"volume", ui::StrId::AgentSetVolume},
-    {"notify_vol", ui::StrId::AgentSetNotifyVol},  {"screen_off_s", ui::StrId::AgentSetScreenOff},
-    {"language", ui::StrId::AgentSetLanguage},     {"time_24h", ui::StrId::AgentSetTimeFormat},
-};
+bool agent_row(const core::SettingSpec& spec) { return (spec.flags & core::kSettingAgent) != 0; }
 
-Map agent_view(const core::SystemSettingsValues& v) {
-    Map all = core::to_map(v);
+// One clause of settings.get's description; the format is pinned by
+// DeviceTools.SettingsGetDescriptionIsGenerated.
+std::string describe_setting(const core::SettingSpec& spec) {
+    std::string out(spec.name);
+    out += " (";
+    switch (spec.type) {
+        case core::SettingType::Int:
+            switch (spec.unit) {
+                case core::SettingUnit::Seconds:
+                    out += "seconds, ";
+                    break;
+                case core::SettingUnit::Minutes:
+                    out += "minutes, ";
+                    break;
+                case core::SettingUnit::UtcOffsetMinutes:
+                    out += "minutes east of UTC, ";
+                    break;
+                case core::SettingUnit::Percent:
+                    out += "percent, ";
+                    break;
+                case core::SettingUnit::None:
+                case core::SettingUnit::Level:
+                case core::SettingUnit::Steps:
+                    break;
+            }
+            if ((spec.flags & core::kSettingZeroNever) != 0) out += "0 never, or ";
+            out += std::to_string(spec.min) + " to " + std::to_string(spec.max);
+            break;
+        case core::SettingType::Enum:
+            for (size_t i = 0; i < spec.enum_values.size(); ++i) {
+                if (i > 0) out += ", ";
+                out += spec.enum_values[i];
+            }
+            break;
+        case core::SettingType::Bool:
+            if (spec.name == "time_24h") {
+                out += "true: 24-hour clock, false: 12-hour";
+            } else if (spec.name == "tts_mute") {
+                out += "true: replies are shown but not spoken";
+            } else {
+                out += "true or false";
+            }
+            break;
+        case core::SettingType::HostList:
+            out += "comma-separated host names";
+            break;
+    }
+    out += ")";
+    return out;
+}
+
+os::LargeString get_description() {
+    os::LargeString out = "The settings the agent may change: ";
+    bool first = true;
+    for (const core::SettingSpec& spec : core::kSettingsSchema) {
+        if (!agent_row(spec)) continue;
+        if (!first) out += ", ";
+        first = false;
+        out += describe_setting(spec);
+    }
+    out += ".";
+    return out;
+}
+
+os::LargeString set_schema() {
+    os::LargeString out = R"({"type":"object","properties":{"key":{"type":"string","enum":[)";
+    bool first = true;
+    for (const core::SettingSpec& spec : core::kSettingsSchema) {
+        if (!agent_row(spec)) continue;
+        if (!first) out += ",";
+        first = false;
+        out += "\"";
+        out += spec.name;
+        out += "\"";
+    }
+    out += R"(]},"value":{"type":["integer","string","boolean"]}},"required":["key","value"]})";
+    return out;
+}
+
+// The agent rows under their wire names.
+Map agent_view(const core::SettingsSnapshot& v) {
     Map out;
-    for (const SettingKey& k : kKeys) {
-        auto it = all.find(k.key);
-        out[k.key] = it != all.end() ? it->second : Value();
+    for (const core::SettingSpec& spec : core::kSettingsSchema) {
+        if (agent_row(spec))
+            out[std::string(spec.name)] = core::setting_value(v, core::setting_id_of(spec));
     }
     return out;
 }
 
+// As the settings page shows the value: tts_mute is the page's "spoken
+// replies" switch, so it reads inverted (settings-schema decision 7).
 std::string text_of(const std::string& key, const Value& v) {
-    if (key == "time_24h" && v.type() == Value::Type::Bool) return v.as_bool() ? "24h" : "12h";
+    if (v.type() == Value::Type::Bool) {
+        if (key == "time_24h") return v.as_bool() ? "24h" : "12h";
+        if (key == "tts_mute") return v.as_bool() ? "off" : "on";
+    }
     if (v.type() == Value::Type::String) return v.as_string();
     if (v.type() == Value::Type::Int) return std::to_string(v.as_int());
     return to_json(v);
@@ -81,17 +161,11 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
 
     WISP_TRY(reg.add({
         .name = "settings.get",
-        .description = "The settings the agent may change: brightness (10-255), volume and "
-                       "notify_vol (0-100), screen_off_s (0 never, or 15-3600), language "
-                       "(zh, ja, en) and time_24h (true: 24-hour clock, false: 12-hour).",
+        .description = get_description(),
         .thread = ToolThread::Agent,
         .run =
-            [d](const Value&, ToolCtx& ctx) {
-                auto r = run_io<Map>(
-                    d->submit_io, [d]() { return Result<Map>::ok(agent_view(d->settings.get())); },
-                    kIoMs, ctx);
-                if (!r) return fail(r.error());
-                return done({{"settings", Value(std::move(r.value()))}});
+            [d](const Value&, ToolCtx&) {
+                return done({{"settings", Value(agent_view(d->settings.cell().get()))}});
             },
     }));
 
@@ -99,10 +173,7 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
         .name = "settings.set",
         .description = "Changes one setting, checked as the settings page checks it; see "
                        "settings.get for the keys and ranges.",
-        .schema_json = R"({"type":"object","properties":{"key":{"type":"string","enum":)"
-                       R"(["brightness","volume","notify_vol","screen_off_s","language",)"
-                       R"("time_24h"]},"value":{"type":["integer","string","boolean"]}},)"
-                       R"("required":["key","value"]})",
+        .schema_json = set_schema(),
         .risk = ToolRisk::Note,
         .thread = ToolThread::Agent,
         .run =
@@ -122,15 +193,16 @@ Result<void> add_device_tools(ToolRegistry& reg, DeviceToolDeps deps) {
                     },
                     kIoMs, ctx);
                 if (!r) return fail(r.error());
-                ui::StrId label = ui::StrId::AgentSetBrightness;
-                for (const SettingKey& k : kKeys) {
-                    if (key == k.key) label = k.label;
-                }
                 const ui::Lang lang = lang_of(ctx);
+                // set() accepted the key, so it is an agent row; every agent
+                // row has a device label (DeviceTools tests).
+                const core::SettingSpec* spec = core::find_setting(key);
+                const std::optional<ui::StrId> label =
+                    spec != nullptr ? ui::setting_label(spec->label) : std::nullopt;
                 std::string note =
                     ui::tr_fill_n(ui::StrId::AgentNoteSetting, lang,
-                                  {ui::tr(label, lang), text_of(key, r.value().before),
-                                   text_of(key, r.value().after)});
+                                  {label ? std::string(ui::tr(*label, lang)) : key,
+                                   text_of(key, r.value().before), text_of(key, r.value().after)});
                 return done({{"key", Value(key)}, {"value", r.value().after}}, std::move(note));
             },
     }));
