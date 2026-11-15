@@ -359,14 +359,6 @@ struct Sensor {
 // A completion the store bindings will send.
 struct StoreDone {};
 
-// A device event for the scenes' wisp.device handlers (sent with
-// instance 0 from the event bus). It only says what to look at: the
-// task reads the state itself (SceneRuntime::lang_), so a dropped one is
-// made up for at the next minute.
-struct Device {
-    DeviceEvent kind = DeviceEvent::Battery;
-};
-
 // check_sources(): compile the files the job holds.
 struct CheckSources {
     std::shared_ptr<SourceCheckJob> job;
@@ -377,13 +369,9 @@ struct CheckBuild {
     std::shared_ptr<BuildCheckJob> job;
 };
 
-// A network time sync set the wall clock: each scene whose minute ticks
-// gets one "minute" with the new time and its minute ticker is re-based,
-// so the jump it would also see does not fire a second one.
-struct ClockSet {};
-
-// SceneStoreDeps::schedule() added a delayed call: wakes the task so it
-// takes the new deadline into account.
+// SceneStoreDeps::schedule() added a delayed call, or a state cell asked
+// for a device check (SceneRuntime::pending_device_): wakes the task so it
+// takes the new deadline, or the check, into account.
 struct Wake {};
 
 // restore_background(): the background list as the worker read it from
@@ -433,10 +421,9 @@ struct ToolStop {
 // stop(): close every scene and end the task.
 struct Quit {};
 
-using Body =
-    std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, Completed,
-                 StoreDone, Device, ClockSet, CheckSources, Wake, Restore, Notify, Sensor, Quit,
-                 CheckBuild, Eval, StoreDump, StoreSet, LuaRun, LuaStop, ToolCall, ToolStop>;
+using Body = std::variant<Load, Open, Close, Exit, Reload, Show, Hide, Event, ListRange, Completed,
+                          StoreDone, CheckSources, Wake, Restore, Notify, Sensor, Quit, CheckBuild,
+                          Eval, StoreDump, StoreSet, LuaRun, LuaStop, ToolCall, ToolStop>;
 
 }  // namespace msg
 

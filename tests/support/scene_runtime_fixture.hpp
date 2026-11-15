@@ -5,8 +5,10 @@
 // helpers to install packages and read what the scenes logged and showed.
 // configure_deps() and configure_config() let a test fill in the optional
 // SceneRuntimeDeps fields and the config before start() makes the
-// runtime, and ui_config reaches the UiRuntime as it is. UiStall holds
-// the UI thread up.
+// runtime, and ui_config reaches the UiRuntime as it is. With follow_cells
+// set, start() hands the runtime the fixture's own supply, settings and
+// time-sync cells, which a test then sets as their owners would. UiStall
+// holds the UI thread up.
 
 #include <gtest/gtest.h>
 
@@ -31,9 +33,13 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/core/scene_repository.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/system_settings.hpp"
+#include "wisp/core/time_sync_result.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/system_layer.hpp"
@@ -166,10 +172,15 @@ protected:
             indev = lv_indev_get_next(nullptr);
         });
         wisp::scene::SceneRuntimeDeps deps{bus, *storage, worker, *repo, *ui, *layer, shape};
+        if (follow_cells) {
+            deps.supply = &supply_cell;
+            deps.settings = &settings_cell;
+        }
         if (configure_deps) configure_deps(deps);
         wisp::scene::SceneRuntimeConfig config;
         if (configure_config) configure_config(config);
         rt = std::make_unique<wisp::scene::SceneRuntime>(std::move(deps), config);
+        if (follow_cells) rt->attach_time_sync(&time_cell);
         ASSERT_TRUE(rt->start());
     }
 
@@ -258,6 +269,14 @@ protected:
     std::string in;
     wisp::core::DeviceRegistry registry;
     wisp::core::EventBus bus;
+    // The cells start() hands the runtime with follow_cells; the test plays
+    // their owners (PowerMonitor, SystemSettings, TimeSyncService). Declared
+    // before rt, whose subscriptions to them stop() releases.
+    bool follow_cells = false;
+    wisp::core::StateCell<wisp::core::PowerSupply> supply_cell{bus, wisp::core::PowerSupply{}};
+    wisp::core::StateCell<wisp::core::SystemSettingsValues> settings_cell{
+        bus, wisp::core::SystemSettingsValues{}};
+    wisp::core::StateCell<wisp::core::TimeSyncResult> time_cell{bus, wisp::core::TimeSyncResult{}};
     std::unique_ptr<wisp::core::StorageManager> storage;
     wisp::core::StorageWorker worker;
     std::unique_ptr<wisp::core::SceneRepository> repo;

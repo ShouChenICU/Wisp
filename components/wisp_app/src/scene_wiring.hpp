@@ -113,14 +113,17 @@ public:
     // `wake` turns a sleeping screen on for the delete confirmation (UI
     // thread). `locks` backs wisp.power; the runtime's notices (a scene
     // that failed in the background, ...) become system notifications in
-    // `notices`. Either may be null; both must outlive the runtime. Needs
-    // start_storage() to have made a repository; without one, or without
-    // the memory for it, there is no runtime.
+    // `notices`. Either may be null; both must outlive the runtime.
+    // `supply` and `settings` are SceneRuntimeDeps::supply and ::settings
+    // (null: none). Needs start_storage() to have made a repository;
+    // without one, or without the memory for it, there is no runtime.
     void build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system, const hal::ScreenShape& shape,
                        std::function<Value()> device_status, std::function<void()> wake,
                        core::WakeLockRegistry* locks = nullptr,
                        core::NotificationService* notices = nullptr,
-                       core::SensorService* sensors = nullptr);
+                       core::SensorService* sensors = nullptr,
+                       const core::StateCell<core::PowerSupply>* supply = nullptr,
+                       const core::StateCell<core::SystemSettingsValues>* settings = nullptr);
     // Starts the proxy and the runtime and follows power.state;
     // `standby` reads whether the screen is off now.
     void start_runtime(std::function<bool()> standby);

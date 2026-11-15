@@ -34,6 +34,7 @@ protected:
     void SetUp() override {
         SceneRuntimeFixture::SetUp();
         wisp::ui::set_lang(wisp::ui::Lang::Zh);
+        follow_cells = true;
         status = Value(
             Map{{"battery", Value(Map{{"percent", Value(int64_t{80})}, {"charging", Value(true)}})},
                 {"wifi", Value("connected")}});
@@ -60,12 +61,21 @@ protected:
         return wait_until([&] { return scene_log(id).size() >= n; }, ms);
     }
 
-    void publish(const std::string& topic, wisp::Properties payload) {
-        wisp::core::Event e;
-        e.topic = topic;
-        e.source = "test";
-        e.payload = std::move(payload);
-        bus.publish(std::move(e));
+    // As SystemSettings::set() leaves the settings cell.
+    template <class F>
+    bool change_settings(F&& f) {
+        return settings_cell.update(
+            [&](wisp::core::SystemSettingsValues& v) { std::forward<F>(f)(v); });
+    }
+
+    // As TimeSyncService leaves its cell after an attempt.
+    void sync_attempt(wisp::core::TimeSyncResult::Outcome outcome, int64_t time = 0) {
+        time_cell.update([&](wisp::core::TimeSyncResult& r) {
+            r.outcome = outcome;
+            r.server.assign("pool.ntp.org");
+            r.time = time;
+            ++r.attempts;
+        });
     }
 
     std::string corner_radius_on(const char* shape) {
@@ -404,44 +414,40 @@ wisp.device.on("minute", function(i) print("minute", i.time) end)
 }
 
 TEST_F(SceneApiTest, BatteryAndLangEvents) {
+    supply_cell.set(wisp::core::PowerSupply{true, true, 80, false});
     start();
     install("dev", std::string(R"(
 wisp.device.on("battery", function(i) print("battery", i.battery, i.charging) end)
 wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang) end)
 )") + kScreen);
     ASSERT_TRUE(rt->open("dev"));
-    // Nothing changed: no event.
-    publish("power.charging.changed", {{"charging", Value(true)}});
-    publish("system.settings", {{"language", Value("zh")}, {"brightness", Value(int64_t{100})}});
+    // Nothing changed: no event. The USB move wakes the battery check,
+    // which finds the percent and charging the scene already saw.
+    supply_cell.update([](wisp::core::PowerSupply& p) { p.usb_present = false; });
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 100; });
     wisp::os::sleep_ms(150);
     EXPECT_TRUE(scene_log("dev").empty());
 
     set_status(Value(
         Map{{"battery", Value(Map{{"percent", Value(int64_t{79})}, {"charging", Value(false)}})}}));
-    publish("power.charging.changed", {{"charging", Value(false)}});
+    supply_cell.set(wisp::core::PowerSupply{false, false, 79, false});
     ASSERT_TRUE(wait_log("dev", 1));
-    publish("power.charging.changed", {{"charging", Value(false)}});
+    supply_cell.set(wisp::core::PowerSupply{false, false, 79, false});
     // A settings change that is not the language does not fire.
-    publish("system.settings", {{"language", Value("zh")}, {"brightness", Value(int64_t{50})}});
-    publish("system.settings", {{"language", Value("en")}, {"brightness", Value(int64_t{50})}});
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 50; });
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.language = "en"; });
     ASSERT_TRUE(wait_log("dev", 2));
-    publish("system.settings", {{"language", Value("en")}, {"brightness", Value(int64_t{60})}});
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 60; });
     wisp::os::sleep_ms(150);
     EXPECT_EQ(scene_log("dev"), (std::vector<std::string>{"battery\t79\tfalse", "lang\ten\ten"}));
 }
 
-// info().utc_offset starts as the runtime was given it (App reads the
-// setting before the scene task starts) and then follows the
-// system.settings event: the scene task never reads Settings, so it never
-// touches flash for it. A changed offset fires "minute", as the local time
-// a scene shows has moved.
+// info().utc_offset follows the settings cell: the scene task never reads
+// Settings, so it never touches flash for it. A changed offset fires
+// "minute", as the local time a scene shows has moved.
 TEST_F(SceneApiTest, UtcOffsetFollowsSettings) {
     wall = kNoon;
-    auto base = configure_deps;
-    configure_deps = [base](wisp::scene::SceneRuntimeDeps& d) {
-        base(d);
-        d.utc_offset_min = 330;
-    };
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 330; });
     start();
     install("tz", std::string(R"(
 print("open", wisp.device.info().utc_offset)
@@ -451,17 +457,14 @@ wisp.device.on("minute", function(i) print("minute", i.utc_offset, wisp.device.i
     ASSERT_TRUE(rt->check_sources({}));
     EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"open\t330"}));
 
-    // The same offset, or a value no setting can have: nothing fires.
-    publish("system.settings",
-            {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{330})}});
-    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value("0")}});
-    publish("system.settings",
-            {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{900})}});
-    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{0})}});
+    // The same offset: nothing fires.
+    EXPECT_FALSE(
+        change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 330; }));
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 0; });
     ASSERT_TRUE(wait_log("tz", 2));
-    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{0})}});
-    publish("system.settings",
-            {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{-570})}});
+    EXPECT_FALSE(
+        change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 0; }));
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = -570; });
     ASSERT_TRUE(wait_log("tz", 3));
     bus.wait_idle(1000);
     ASSERT_TRUE(rt->check_sources({}));
@@ -482,7 +485,7 @@ wisp.device.on("minute", function(i) print("minute", i.utc_offset) end)
 )") + kScreen);
     ASSERT_TRUE(rt->open("tz"));
     rt->set_visible(false);
-    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{60})}});
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 60; });
     bus.wait_idle(1000);
     ASSERT_TRUE(rt->check_sources({}));
     EXPECT_TRUE(scene_log("tz").empty());
@@ -503,10 +506,8 @@ wisp.device.on("minute", function(i) print("minute", i.time) end)
 )") + kScreen);
     ASSERT_TRUE(rt->open("ts"));
     ASSERT_TRUE(rt->check_sources({}));
-    publish("system.time", {{"state", Value("failed")}, {"server", Value("pool.ntp.org")}});
-    publish("system.time", {{"state", Value("synced")},
-                            {"server", Value("pool.ntp.org")},
-                            {"time", Value(int64_t{kNoon})}});
+    sync_attempt(wisp::core::TimeSyncResult::Outcome::Failed);
+    sync_attempt(wisp::core::TimeSyncResult::Outcome::Synced, kNoon);
     ASSERT_TRUE(wait_log("ts", 1));
     bus.wait_idle(1000);
     wisp::os::sleep_ms(150);
@@ -526,9 +527,7 @@ wisp.device.on("minute", function(i) print("minute", i.time) end)
     ASSERT_TRUE(rt->check_sources({}));
     const size_t before = scene_log("ts").size();
     wall = kNoon + 3600;
-    publish("system.time", {{"state", Value("synced")},
-                            {"server", Value("pool.ntp.org")},
-                            {"time", Value(int64_t{kNoon + 3600})}});
+    sync_attempt(wisp::core::TimeSyncResult::Outcome::Synced, kNoon + 3600);
     ASSERT_TRUE(wait_log("ts", before + 1));
     bus.wait_idle(1000);
     wisp::os::sleep_ms(300);
@@ -550,9 +549,7 @@ wisp.device.on("minute", function(i) print("minute", i.time) end)
     ASSERT_TRUE(rt->check_sources({}));
     const size_t before = scene_log("ts").size();
     wall = kNoon;
-    publish("system.time", {{"state", Value("synced")},
-                            {"server", Value("pool.ntp.org")},
-                            {"time", Value(int64_t{kNoon})}});
+    sync_attempt(wisp::core::TimeSyncResult::Outcome::Synced, kNoon);
     ASSERT_TRUE(wait_log("ts", before + 1));
     bus.wait_idle(1000);
     wisp::os::sleep_ms(300);
@@ -572,9 +569,7 @@ wisp.device.on("minute", function(i) print("minute") end)
 )") + kScreen);
     ASSERT_TRUE(rt->open("ts"));
     rt->set_visible(false);
-    publish("system.time", {{"state", Value("synced")},
-                            {"server", Value("pool.ntp.org")},
-                            {"time", Value(int64_t{kNoon})}});
+    sync_attempt(wisp::core::TimeSyncResult::Outcome::Synced, kNoon);
     bus.wait_idle(1000);
     wisp::os::sleep_ms(150);
     ASSERT_TRUE(rt->check_sources({}));
@@ -586,9 +581,8 @@ wisp.device.on("minute", function(i) print("minute") end)
     EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"minute"}));
 }
 
-// info().time_24h (the Settings time format) starts true, takes App's
-// seed and then follows the system.settings event; a change fires
-// "minute", since a clock on screen has to be written again.
+// info().time_24h (the Settings time format) follows the settings cell; a
+// change fires "minute", since a clock on screen has to be written again.
 TEST_F(SceneApiTest, Time24hFollowsSettings) {
     wall = kNoon;
     start();
@@ -600,47 +594,51 @@ wisp.device.on("minute", function(i) print("minute", tostring(i.time_24h)) end)
     ASSERT_TRUE(rt->check_sources({}));
     EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"open\ttrue"}));
 
-    // The same value, or one of the wrong type: nothing fires.
-    publish("system.settings", {{"language", Value("zh")}, {"time_24h", Value(true)}});
-    publish("system.settings", {{"language", Value("zh")}, {"time_24h", Value(int64_t{0})}});
-    publish("system.settings", {{"language", Value("zh")}, {"time_24h", Value(false)}});
+    // The same value: nothing fires.
+    EXPECT_FALSE(change_settings([](wisp::core::SystemSettingsValues& v) { v.time_24h = true; }));
+    change_settings([](wisp::core::SystemSettingsValues& v) { v.time_24h = false; });
     ASSERT_TRUE(wait_log("tf", 2));
     bus.wait_idle(1000);
     ASSERT_TRUE(rt->check_sources({}));
     EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"open\ttrue", "minute\tfalse"}));
-    // A seed loses to the event already seen.
-    rt->seed_time_24h(true);
+    // The value outlives the scene.
     ASSERT_TRUE(rt->reload("tf"));
     EXPECT_EQ(scene_log("tf").back(), "open\tfalse");
 }
 
-TEST_F(SceneApiTest, Time24hSeed) {
+// A runtime started after the settings changed shows them at once: the
+// cell's value at start is what info() reports.
+TEST_F(SceneApiTest, SettingsCellAtStartShowsInInfo) {
+    change_settings([](wisp::core::SystemSettingsValues& v) {
+        v.language = "en";
+        v.utc_offset_min = 330;
+        v.time_24h = false;
+    });
     start();
-    install("tf", std::string(R"(
-scene.on_show = function() print("tf", tostring(wisp.device.info().time_24h)) end
+    install("cfg", std::string(R"(
+local i = wisp.device.info()
+scene.on_show = function() print(i.lang, i.utc_offset, tostring(i.time_24h)) end
 )") + kScreen);
-    rt->seed_time_24h(false);
-    ASSERT_TRUE(rt->open("tf"));
-    EXPECT_EQ(scene_log("tf"), (std::vector<std::string>{"tf\tfalse"}));
+    ASSERT_TRUE(rt->open("cfg"));
+    EXPECT_EQ(scene_log("cfg"), (std::vector<std::string>{"en\t330\tfalse"}));
 }
 
-// App seeds the offset it reads after start(): a seed loses to any
-// system.settings event the runtime has already seen, which carries a
-// value at least as new.
-TEST_F(SceneApiTest, UtcOffsetSeedNeverOverridesAnEvent) {
+// Without a settings cell (a runtime built without SystemSettings) info()
+// reports SceneRuntimeDeps::utc_offset_min, ui::lang() and 24-hour time.
+TEST_F(SceneApiTest, InfoWithoutASettingsCell) {
+    follow_cells = false;
+    auto base = configure_deps;
+    configure_deps = [base](wisp::scene::SceneRuntimeDeps& d) {
+        base(d);
+        d.utc_offset_min = 330;
+    };
     start();
-    install("tz", std::string(R"(
-scene.on_show = function() print("tz", wisp.device.info().utc_offset) end
+    install("cfg", std::string(R"(
+local i = wisp.device.info()
+scene.on_show = function() print(i.lang, i.utc_offset, tostring(i.time_24h)) end
 )") + kScreen);
-    rt->seed_utc_offset(330);
-    ASSERT_TRUE(rt->open("tz"));
-    publish("system.settings", {{"language", Value("zh")}, {"utc_offset_min", Value(int64_t{0})}});
-    bus.wait_idle(1000);
-    rt->seed_utc_offset(540);
-    // Out of range: ignored.
-    rt->seed_utc_offset(5000);
-    ASSERT_TRUE(rt->reload("tz"));
-    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"tz\t330", "tz\t0"}));
+    ASSERT_TRUE(rt->open("cfg"));
+    EXPECT_EQ(scene_log("cfg"), (std::vector<std::string>{"zh\t330\ttrue"}));
 }
 
 }  // namespace

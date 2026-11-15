@@ -25,6 +25,7 @@
 
 #include "lvgl.h"
 #include "scene_message.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/scene_runtime_fixture.hpp"
@@ -33,10 +34,13 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/core/scene_install.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/system_settings.hpp"
+#include "wisp/core/time_sync_result.hpp"
 #include "wisp/core/zip.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/scene/patch_batch.hpp"
@@ -81,7 +85,56 @@ return ui.screen {
 }
 )";
 
-class SceneRuntimeTest : public wisp::test::SceneRuntimeFixture {};
+// 2026-11-04 12:00:00 UTC.
+constexpr int64_t kDeviceNoon = 1793793600;
+
+class SceneRuntimeTest : public wisp::test::SceneRuntimeFixture {
+protected:
+    void TearDown() override {
+        gate.release();
+        SceneRuntimeFixture::TearDown();
+        wisp::ui::set_lang(wisp::ui::Lang::Zh);
+    }
+
+    // The device-event tests: the runtime follows the fixture's cells;
+    // device_status() answers from `status` (or stops at `gate` once
+    // armed), and the wall clock stands still at kDeviceNoon, so no minute
+    // boundary passes and every "minute" a scene logs is one a cell sent.
+    void follow_device_cells() {
+        wisp::ui::set_lang(wisp::ui::Lang::Zh);
+        follow_cells = true;
+        configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
+            d.device_status = [this] {
+                gate.device_status();
+                std::lock_guard<std::mutex> lock(status_mu);
+                return status;
+            };
+            d.wall_clock = [] { return kDeviceNoon; };
+        };
+    }
+
+    void set_battery(int64_t percent, bool charging) {
+        std::lock_guard<std::mutex> lock(status_mu);
+        status = wisp::Value(
+            wisp::Map{{"battery", wisp::Value(wisp::Map{{"percent", wisp::Value(percent)},
+                                                        {"charging", wisp::Value(charging)}})}});
+    }
+
+    bool wait_log(const std::string& id, size_t n, uint32_t ms = 2000) {
+        return wait_until([&] { return scene_log(id).size() >= n; }, ms);
+    }
+
+    // Every cell callback has run and the scene task has passed the top
+    // of its loop after them: whatever they set has been delivered.
+    void settle() {
+        ASSERT_TRUE(bus.wait_idle(1000));
+        ASSERT_TRUE(rt->check_sources({}));
+    }
+
+    std::mutex status_mu;
+    wisp::Value status;
+    wisp::test::StallGate gate;
+};
 
 TEST_F(SceneRuntimeTest, OpensCounterAndAppliesClick) {
     start();
@@ -1053,6 +1106,163 @@ return ui.screen {
             return false;
         },
         1000));
+}
+
+// --- Device events from the supply, settings and time-sync cells ---------
+
+const char* kDeviceScene = R"(
+print("open", wisp.device.info().lang, wisp.device.info().utc_offset,
+      tostring(wisp.device.info().time_24h))
+wisp.device.on("minute", function(i) print("minute", i.utc_offset) end)
+wisp.device.on("battery", function(i) print("battery", i.battery, i.charging) end)
+wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang) end)
+return ui.screen {
+  ui.button { ref = "stall", text = "stall", on_click = function() wisp.device.info() end },
+}
+)";
+
+// A change made while the scene queue is full is not lost: it waits in the
+// runtime's pending bits and reaches the scene once the task runs again.
+TEST_F(SceneRuntimeTest, TimeZoneChangeSurvivesAFullQueue) {
+    follow_device_cells();
+    configure_config = [](wisp::scene::SceneRuntimeConfig& c) { c.queue_capacity = 4; };
+    start();
+    install("tz", kDeviceScene);
+    ASSERT_TRUE(rt->open("tz"));
+    ASSERT_TRUE(wait_label("stall"));
+    settle();
+    ASSERT_EQ(scene_log("tz"), (std::vector<std::string>{"open\tzh\t480\ttrue"}));
+
+    // Holds the scene task inside the click's wisp.device.info().
+    gate.arm();
+    ASSERT_TRUE(rt->click_ref("stall"));
+    ASSERT_TRUE(gate.wait_entered());
+    // Fills the queue: each close of a scene that is not open is one
+    // message, until one is refused.
+    auto refused = std::make_shared<std::atomic<int>>(0);
+    auto close_one = [&] {
+        rt->close_async("none", [refused](wisp::Result<void> r) {
+            if (!r && r.error().message == "scene queue full") ++*refused;
+        });
+    };
+    for (int i = 0; i < 100 && refused->load() == 0; ++i) close_one();
+    ASSERT_EQ(refused->load(), 1);
+
+    ASSERT_TRUE(
+        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 60; }));
+    ASSERT_TRUE(bus.wait_idle(1000));
+    // Still full after the callback ran: its wake-up found no room either.
+    close_one();
+    ASSERT_EQ(refused->load(), 2);
+
+    gate.release();
+    ASSERT_TRUE(wait_log("tz", 2));
+    settle();
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"open\tzh\t480\ttrue", "minute\t60"}));
+}
+
+TEST_F(SceneRuntimeTest, LanguageChangeReachesScenes) {
+    follow_device_cells();
+    start();
+    install("lang", kDeviceScene);
+    ASSERT_TRUE(rt->open("lang"));
+    settle();
+    // Another setting moves: no "lang".
+    ASSERT_TRUE(
+        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.brightness = 50; }));
+    settle();
+    ASSERT_EQ(scene_log("lang"), (std::vector<std::string>{"open\tzh\t480\ttrue"}));
+    ASSERT_TRUE(
+        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.language = "en"; }));
+    ASSERT_TRUE(wait_log("lang", 2));
+    settle();
+    EXPECT_EQ(scene_log("lang"), (std::vector<std::string>{"open\tzh\t480\ttrue", "lang\ten\ten"}));
+}
+
+// "battery" fires on a change of charging, as it did on each
+// power.charging.changed; a percent step alone waits for the minute check
+// (spec 3.6: what scenes receive is unchanged).
+TEST_F(SceneRuntimeTest, ChargingChangeReachesScenes) {
+    follow_device_cells();
+    supply_cell.set(wisp::core::PowerSupply{true, true, 80, false});
+    set_battery(80, true);
+    start();
+    install("bat", kDeviceScene);
+    ASSERT_TRUE(rt->open("bat"));
+    settle();
+    set_battery(80, false);
+    ASSERT_TRUE(supply_cell.set(wisp::core::PowerSupply{false, true, 80, false}));
+    ASSERT_TRUE(wait_log("bat", 2));
+    settle();
+    set_battery(79, false);
+    ASSERT_TRUE(supply_cell.set(wisp::core::PowerSupply{false, true, 79, false}));
+    settle();
+    EXPECT_EQ(scene_log("bat"),
+              (std::vector<std::string>{"open\tzh\t480\ttrue", "battery\t80\tfalse"}));
+}
+
+// A runtime started after the settings, the supply and the clock moved
+// shows their values at once and sends no event for them: the values at
+// subscription are the ones it starts from. The bus is held until the
+// scene is open, so a first delivery that wrongly counted as a change
+// would reach it.
+TEST_F(SceneRuntimeTest, NoDeviceEventAtStart) {
+    follow_device_cells();
+    wisp::core::SystemSettingsValues v;
+    v.language = "en";
+    v.utc_offset_min = 60;
+    v.time_24h = false;
+    settings_cell.set(v);
+    supply_cell.set(wisp::core::PowerSupply{true, true, 80, false});
+    wisp::core::TimeSyncResult synced;
+    synced.outcome = wisp::core::TimeSyncResult::Outcome::Synced;
+    synced.time = kDeviceNoon;
+    synced.attempts = 3;
+    time_cell.set(synced);
+    wisp::test::BusFlood flood(bus);
+    flood.hold();
+    start();
+    install("cold", kDeviceScene);
+    ASSERT_TRUE(rt->open("cold"));
+    flood.release();
+    settle();
+    EXPECT_EQ(scene_log("cold"), (std::vector<std::string>{"open\ten\t60\tfalse"}));
+}
+
+// A sync redraws the clocks once; a failed attempt moved nothing.
+TEST_F(SceneRuntimeTest, SyncedTimeRedrawsOnceFailedDoesNot) {
+    follow_device_cells();
+    start();
+    install("ts", kDeviceScene);
+    ASSERT_TRUE(rt->open("ts"));
+    settle();
+    ASSERT_TRUE(time_cell.update([](wisp::core::TimeSyncResult& r) {
+        r.outcome = wisp::core::TimeSyncResult::Outcome::Failed;
+        ++r.attempts;
+    }));
+    settle();
+    ASSERT_EQ(scene_log("ts"), (std::vector<std::string>{"open\tzh\t480\ttrue"}));
+    ASSERT_TRUE(time_cell.update([](wisp::core::TimeSyncResult& r) {
+        r.outcome = wisp::core::TimeSyncResult::Outcome::Synced;
+        r.time = kDeviceNoon;
+        ++r.attempts;
+    }));
+    ASSERT_TRUE(wait_log("ts", 2));
+    settle();
+    EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"open\tzh\t480\ttrue", "minute\t480"}));
+}
+
+// The time-sync cell's owner may go before the runtime (App::stop()
+// destroys the network before the scenes): stop() lets go of every cell,
+// also on a runtime stopped before.
+TEST_F(SceneRuntimeTest, StopReleasesTheCells) {
+    follow_device_cells();
+    start();
+    EXPECT_EQ(bus.cell_subscriptions(), 3u);
+    rt->stop();
+    EXPECT_EQ(bus.cell_subscriptions(), 0u);
+    rt->stop();
+    EXPECT_EQ(bus.cell_subscriptions(), 0u);
 }
 
 }  // namespace

@@ -500,7 +500,9 @@ Result<void> App::start() {
                     impl->power_manager->exit_standby();
                 }
             },
-            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get());
+            &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get(),
+            impl_->power_monitor ? &impl_->power_monitor->supply() : nullptr,
+            &impl_->system_settings.cell());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {
@@ -778,15 +780,13 @@ Result<void> App::start() {
         // Only now: a scene's view remembers the screen it replaces and
         // loads it again when it goes, so that must be the home screen.
         if (scenes != nullptr) {
-            scenes->start_runtime([impl] { return impl->power_manager->standby(); });
-            // Read on this task once the runtime follows system.settings, so
-            // a change stored meanwhile is either read here or arrives as
-            // its event; the scene task never reads Settings itself.
+            // NetWiring, the time-sync cell's owner, is built after the
+            // runtime and destroyed before it: stop_runtime() lets go first.
             if (scene::SceneRuntime* rt = scenes->runtime()) {
-                const core::SystemSettingsValues now = impl->system_settings.get();
-                rt->seed_utc_offset(now.utc_offset_min);
-                rt->seed_time_24h(now.time_24h);
+                net::TimeSyncService* sync = impl->net ? impl->net->time_sync() : nullptr;
+                rt->attach_time_sync(sync != nullptr ? &sync->result_cell() : nullptr);
             }
+            scenes->start_runtime([impl] { return impl->power_manager->standby(); });
         }
         // Once the runtime its tools drive runs.
         if (impl_->agent) {

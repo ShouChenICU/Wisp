@@ -190,22 +190,28 @@
 // scene in front that does not declare "background" pause and its ticker
 // is not polled; a scene that declares it keeps both going. Screen on:
 // paused timers resume (each missed one fires once), the scene in front
-// gets a "minute" at once, then on_show. "battery" fires when the
-// percentage or charging differ from what the scene last saw, checked on
-// each power.charging.changed and each minute; "lang" when the language
-// of the last system.settings event differs from the one the scene last
-// saw, checked on each such event and each minute. info().lang is the
-// language of the last system.settings event, ui::lang() before any
-// (ui::set_lang() runs on the UI thread and may lag the event).
-// info().utc_offset is that event's utc_offset_min, else the
-// seed_utc_offset() value, else SceneRuntimeDeps::utc_offset_min; when an
-// event changes it, "minute" fires at once for every scene whose minute
-// ticks, since the local time a scene shows has moved. A system.time
-// event of state "synced" (net::TimeSyncService) fires it the same way,
-// the wall clock itself may have moved, unless the minute the clock now
-// reads already fired. info().time_24h (the Settings time format) is that
-// event's time_24h, else the seed_time_24h() value, else true; a change
-// fires "minute" the same way.
+// gets a "minute" at once, then on_show. Device events come from state
+// cells (SceneRuntimeDeps::supply and ::settings, attach_time_sync()):
+// their callbacks, on wisp.bus, only set a bit in pending_device_ and
+// push a wake-up, and the scene task takes the bits at the top of every
+// loop step, so a change made while the queue is full waits there instead
+// of being lost, and several changes between two steps are one check.
+// "battery" fires when the percentage or charging differ from what the
+// scene last saw, checked on each change of the supply's charging or USB
+// state and each minute (a percent step alone waits for the minute);
+// "lang" when the settings' language differs from the one the scene last
+// saw, checked on each change of it and each minute. info().lang is the
+// settings cell's language (ui::set_lang() runs on the UI thread and may
+// lag it), ui::lang() without the cell. info().utc_offset is the cell's
+// utc_offset_min, SceneRuntimeDeps::utc_offset_min without it; when it
+// changes, "minute" fires at once for every scene whose minute ticks,
+// since the local time a scene shows has moved. A finished time-sync
+// attempt that synced (net::TimeSyncService) fires it the same way, the
+// wall clock itself may have moved, unless the minute the clock now reads
+// already fired. info().time_24h (the Settings time format) is the cell's
+// time_24h, true without it; a change fires "minute" the same way. The
+// values at start are the ones the runtime starts from: no event for
+// them.
 //
 // Results: every VM (a scene's, the agent's run) has a CompletionBox
 // (completion_box.hpp), made with the VM. A finished wisp.http or
@@ -319,6 +325,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/power_monitor.hpp"
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_host.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -327,6 +334,8 @@
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/core/system_settings.hpp"
+#include "wisp/core/time_sync_result.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
@@ -495,8 +504,7 @@ struct SceneRuntimeDeps {
     // the scene task, same rule.
     std::function<int64_t()> wall_clock;
     // The time zone wisp.device.info().utc_offset reports (minutes east of
-    // UTC) until seed_utc_offset() or a system.settings event says
-    // otherwise.
+    // UTC) when there is no `settings` cell.
     int utc_offset_min = 480;
     // wisp.power; null: keep_screen_on() returns nil, "unavailable". Must
     // outlive the runtime.
@@ -517,6 +525,15 @@ struct SceneRuntimeDeps {
     // they raise. Its jobs run on `worker`. Must outlive the runtime and
     // the worker's last job.
     core::SceneFiles* files = nullptr;
+    // PowerMonitor::supply(): a change of charging or USB checks "battery"
+    // (file header). null: the minute checks only. Followed from start()
+    // to stop(); must outlive that.
+    const core::StateCell<core::PowerSupply>* supply = nullptr;
+    // SystemSettings::cell(): info()'s lang, utc_offset and time_24h, and
+    // the "minute" and "lang" their changes fire. null: the fallbacks in
+    // the file header. Read on the scene task and by device_info()'s other
+    // callers (memory only); followed from start() to stop().
+    const core::StateCell<core::SystemSettingsValues>* settings = nullptr;
 };
 
 struct SceneRuntimeConfig {
@@ -561,13 +578,11 @@ public:
     // The screen went off (false) or on (true): scene.on_hide() for the
     // scene in front and a flush of every store, or scene.on_show(). Never
     // waits.
-    // The time zone setting, read by App (which may touch flash) after
-    // start(): from then on a change also arrives as a system.settings
-    // event, so a seed loses to any event already seen, whose value is at
-    // least as new. Values outside -720..840 are ignored. Any thread.
-    void seed_utc_offset(int minutes);
-    // The time format setting (sys/time_24h), the same way.
-    void seed_time_24h(bool h24);
+    // TimeSyncService::result_cell(), whose owner is built after the
+    // runtime: a synced attempt fires "minute" (file header). Before
+    // start(); null (no time sync): nothing. Followed until stop(), which
+    // must come before the cell's owner goes.
+    void attach_time_sync(const core::StateCell<core::TimeSyncResult>* cell);
     // The screen went on or off. Any thread. The wanted state is kept and
     // the scene task catches up with it on its next pass, so a message
     // dropped on a full queue only delays it.
@@ -975,7 +990,7 @@ private:
     // The agent run's deadline, then the minutes (and the battery checks
     // with them).
     void run_scene_clock();
-    // A network time sync set the wall clock (system.time "synced").
+    // A network time sync set the wall clock (an attempt that synced).
     void clock_set();
     void minute(uint32_t instance);
     // `ev` for every scene (battery and lang only if they changed for it).
@@ -1129,19 +1144,21 @@ private:
     // to it after every pass (follow_visibility()).
     std::atomic<bool> want_visible_{true};
     bool quit_ = false;
-    // The ui::Lang of the last system.settings event, -1 before any. Set
-    // by the bus's dispatcher, read by the scene task.
-    std::atomic<int> lang_{-1};
-    // kUnsetOffset until seeded or set by an event.
-    static constexpr int kUnsetOffset = INT32_MIN;
-    std::atomic<int> utc_offset_min_{kUnsetOffset};
-    // utc_offset_min_, or SceneRuntimeDeps::utc_offset_min while unset.
-    int utc_offset_min() const;
-    // 1 (24-hour) or 0 (12-hour); -1 until seeded or set by an event.
-    std::atomic<int> time_24h_{-1};
-    core::SubscriptionId power_sub_ = 0;
-    core::SubscriptionId settings_sub_ = 0;
-    core::SubscriptionId time_sub_ = 0;
+    // The device checks the cells asked for and the scene task has not
+    // run yet (file header): set by the cells' callbacks on wisp.bus,
+    // taken whole by take_device_changes().
+    static constexpr uint8_t kBattery = 1, kMinute = 2, kLang = 4, kClockSet = 8;
+    std::atomic<uint8_t> pending_device_{0};
+    // Sets `bits` and wakes the scene task. Any thread; never waits.
+    void note_device(uint8_t bits);
+    // Scene task: runs the checks pending_device_ holds.
+    void take_device_changes();
+    const core::StateCell<core::TimeSyncResult>* time_sync_ = nullptr;
+    // Made in start(), released in stop() before anything else: the
+    // time-sync cell's owner goes before the runtime.
+    core::CellSubscription supply_sub_;
+    core::CellSubscription settings_sub_;
+    core::CellSubscription time_sub_;
 
     // UI thread only.
     struct UiSide;

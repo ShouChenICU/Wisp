@@ -148,20 +148,8 @@ SceneRuntime::SceneRuntime(SceneRuntimeDeps deps, SceneRuntimeConfig config)
     config_.max_background = std::min(config_.max_background, kMaxBackground);
 }
 
-void SceneRuntime::seed_utc_offset(int minutes) {
-    if (minutes < -720 || minutes > 840) return;
-    int unset = kUnsetOffset;
-    utc_offset_min_.compare_exchange_strong(unset, minutes);
-}
-
-void SceneRuntime::seed_time_24h(bool h24) {
-    int unset = -1;
-    time_24h_.compare_exchange_strong(unset, h24 ? 1 : 0);
-}
-
-int SceneRuntime::utc_offset_min() const {
-    const int v = utc_offset_min_.load();
-    return v == kUnsetOffset ? deps_.utc_offset_min : v;
+void SceneRuntime::attach_time_sync(const core::StateCell<core::TimeSyncResult>* cell) {
+    time_sync_ = cell;
 }
 
 SceneRuntime::~SceneRuntime() {
@@ -192,61 +180,61 @@ Result<void> SceneRuntime::start() {
         deps_.ui.set_frame_hook({});
         return Result<void>::err(ErrorCode::NoMemory, "cannot start the scene task");
     }
-    // The bus's dispatcher only queues a message: the scene task reads
-    // the state itself, so a dropped or late event cannot leave stale data.
-    power_sub_ =
-        deps_.bus.subscribe(core::topics::kPowerChargingChanged, [this](const core::Event&) {
-            push(make_message("", 0, msg::Device{DeviceEvent::Battery}), 0);
+    // Each callback, on wisp.bus, compares with the value it last saw
+    // (the one at subscription to begin with, so the first call, which
+    // delivers the current value, asks for nothing) and only sets a bit:
+    // the scene task reads the values themselves when it runs the check.
+    if (deps_.supply != nullptr) {
+        supply_sub_ = deps_.supply->subscribe(
+            [this, last = deps_.supply->get()](const core::PowerSupply& now) mutable {
+                // Not on battery_percent: "battery" for a percent step waits
+                // for the minute check, as it always has (file header).
+                if (now.charging == last.charging && now.usb_present == last.usb_present) return;
+                last = now;
+                note_device(kBattery);
+            });
+    }
+    if (deps_.settings != nullptr) {
+        struct Seen {
+            int utc_offset_min;
+            bool time_24h;
+            std::optional<ui::Lang> lang;
+        };
+        const Seen first = deps_.settings->read([](const core::SystemSettingsValues& v) {
+            return Seen{v.utc_offset_min, v.time_24h, ui::parse_lang(v.language)};
         });
-    settings_sub_ =
-        deps_.bus.subscribe(core::topics::kSystemSettings, [this](const core::Event& e) {
-            auto tz = e.payload.find("utc_offset_min");
-            if (tz != e.payload.end() && tz->second.type() == Value::Type::Int &&
-                tz->second.as_int() >= -720 && tz->second.as_int() <= 840) {
-                const int now = static_cast<int>(tz->second.as_int());
-                int before = utc_offset_min_.exchange(now);
-                if (before == kUnsetOffset) before = deps_.utc_offset_min;
-                if (before != now &&
-                    !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
-                    WLOG_W(kTag,
-                           "time zone change not passed on now (scene queue full): next minute");
-            }
-            auto h24 = e.payload.find("time_24h");
-            if (h24 != e.payload.end() && h24->second.type() == Value::Type::Bool) {
-                const int now = h24->second.as_bool() ? 1 : 0;
-                int before = time_24h_.exchange(now);
-                if (before < 0) before = 1;
-                if (before != now &&
-                    !push(make_message("", 0, msg::Device{DeviceEvent::Minute}), 0) && running_)
-                    WLOG_W(kTag,
-                           "time format change not passed on now (scene queue full): next minute");
-            }
-            auto it = e.payload.find("language");
-            if (it == e.payload.end() || it->second.type() != Value::Type::String) return;
-            auto lang = ui::parse_lang(it->second.as_string());
-            if (!lang) return;
-            lang_.store(static_cast<int>(*lang));
-            if (!push(make_message("", 0, msg::Device{DeviceEvent::Lang}), 0) && running_)
-                WLOG_W(kTag, "language change not passed on now (scene queue full): next minute");
-        });
-    // A sync may have moved the wall clock: a clock should redraw now, not
-    // at the next minute boundary of the new time (clock_set()).
-    time_sub_ = deps_.bus.subscribe(core::topics::kSystemTime, [this](const core::Event& e) {
-        auto state = e.payload.find("state");
-        if (state == e.payload.end() || state->second.type() != Value::Type::String ||
-            state->second.as_string() != "synced")
-            return;
-        if (!push(make_message("", 0, msg::ClockSet{}), 0) && running_)
-            WLOG_W(kTag, "time sync not passed on now (scene queue full): next minute");
-    });
+        settings_sub_ = deps_.settings->subscribe(
+            [this, last = first](const core::SystemSettingsValues& now) mutable {
+                uint8_t bits = 0;
+                if (now.utc_offset_min != last.utc_offset_min || now.time_24h != last.time_24h)
+                    bits |= kMinute;
+                const std::optional<ui::Lang> lang = ui::parse_lang(now.language);
+                if (lang != last.lang) bits |= kLang;
+                last = Seen{now.utc_offset_min, now.time_24h, lang};
+                if (bits != 0) note_device(bits);
+            });
+    }
+    if (time_sync_ != nullptr) {
+        // A sync may have moved the wall clock: a clock should redraw now,
+        // not at the next minute boundary of the new time (clock_set()).
+        // Every attempt moves `attempts`, so two syncs in a row are two.
+        time_sub_ = time_sync_->subscribe(
+            [this, last = time_sync_->get().attempts](const core::TimeSyncResult& now) mutable {
+                if (now.attempts == last) return;
+                last = now.attempts;
+                if (now.outcome == core::TimeSyncResult::Outcome::Synced) note_device(kClockSet);
+            });
+    }
     return Result<void>::ok();
 }
 
 void SceneRuntime::stop() {
+    // First and on every path: App::stop() destroys the time-sync cell's
+    // owner before the runtime, so none may be left to the destructor.
+    supply_sub_.reset();
+    settings_sub_.reset();
+    time_sub_.reset();
     if (!started_ || !running_.exchange(false)) return;
-    deps_.bus.unsubscribe(power_sub_);
-    deps_.bus.unsubscribe(settings_sub_);
-    deps_.bus.unsubscribe(time_sub_);
     if (task_) {
         // The task keeps taking messages, so this always gets in.
         auto quit = make_message("", 0, msg::Quit{});
@@ -694,7 +682,24 @@ void SceneRuntime::schedule(uint32_t ms, std::function<void()> fn) {
     push(make_message("", 0, msg::Wake{}), 0);
 }
 
+void SceneRuntime::note_device(uint8_t bits) {
+    pending_device_.fetch_or(bits);
+    // A wake-up the full queue refuses needs no word: the task is busy and
+    // takes the bits at the top of its next step.
+    push(make_message("", 0, msg::Wake{}), 0);
+}
+
 // --- Scene task --------------------------------------------------------------
+
+void SceneRuntime::take_device_changes() {
+    const uint8_t bits = pending_device_.exchange(0);
+    if (bits == 0) return;
+    if ((bits & kMinute) != 0) device_event(DeviceEvent::Minute);
+    if ((bits & kBattery) != 0) device_event(DeviceEvent::Battery);
+    if ((bits & kLang) != 0) device_event(DeviceEvent::Lang);
+    if ((bits & kClockSet) != 0) clock_set();
+    close_if_asked();
+}
 
 void SceneRuntime::run() {
     // A message from the queue, handled as it always was.
@@ -719,6 +724,8 @@ void SceneRuntime::run() {
     // before every wait, so a wake-up the full queue refused is never
     // needed: the task only sleeps when no box holds anything.
     while (!quit_) {
+        // Every step, however it woke (a message, a timer, a timeout).
+        take_device_changes();
         housekeeping();
         const uint64_t now = os::now_ms();
         const bool front = front_has_work(now);
@@ -958,10 +965,6 @@ void SceneRuntime::handle(SceneMessage& m) {
         } else if (s != nullptr && s->scene) {
             run_step(*s, s->scene->list_range(b->list, b->first, b->count));
         }
-    } else if (auto* b = std::get_if<msg::Device>(&body)) {
-        device_event(b->kind);
-    } else if (std::holds_alternative<msg::ClockSet>(body)) {
-        clock_set();
     } else if (std::holds_alternative<msg::Completed>(body)) {
         // A wake-up only: the lanes take the results from the box. One for
         // an instance that is gone is stale.
@@ -1022,7 +1025,7 @@ void SceneRuntime::handle(SceneMessage& m) {
         for (uint32_t instance : instances())
             if (Slot* s = find(instance)) close_slot(*s);
     }
-    // msg::Wake: run() looks at the deadlines next.
+    // msg::Wake: run() looks at the deadlines and the device checks next.
 }
 
 void SceneRuntime::notify(const std::string& id, const std::string& note_id) {
@@ -2193,11 +2196,19 @@ DeviceInfo SceneRuntime::device_info() const {
     i.shape = deps_.shape;
     i.safe = hal::safe_rect(deps_.shape);
     i.status_area = ui::SystemLayer::status_area(deps_.shape);
-    const int set = lang_.load();
-    const char* lang = ui::lang_code(set < 0 ? ui::lang() : static_cast<ui::Lang>(set));
-    std::snprintf(i.lang, sizeof(i.lang), "%s", lang);
-    i.utc_offset_min = utc_offset_min();
-    i.time_24h = time_24h_.load() != 0;
+    // Also called off the scene task (check_build.cpp): a cell read is
+    // memory only, from any thread.
+    std::optional<ui::Lang> lang;
+    i.utc_offset_min = deps_.utc_offset_min;
+    i.time_24h = true;
+    if (deps_.settings != nullptr) {
+        deps_.settings->read([&](const core::SystemSettingsValues& v) {
+            lang = ui::parse_lang(v.language);
+            i.utc_offset_min = v.utc_offset_min;
+            i.time_24h = v.time_24h;
+        });
+    }
+    std::snprintf(i.lang, sizeof(i.lang), "%s", ui::lang_code(lang ? *lang : ui::lang()));
     if (auto t = wall_now()) {
         i.has_time = true;
         i.time = *t;
@@ -2257,9 +2268,9 @@ void SceneRuntime::run_scene_clock() {
 }
 
 void SceneRuntime::clock_set() {
-    // Fires once and records the new minute, so the poll after the message
-    // sees no jump; a poll that already saw it (the task woke between the
-    // clock moving and this message) already fired, and this adds nothing.
+    // Fires once and records the new minute, so the poll after it sees no
+    // jump; a poll that already saw it (the task woke between the clock
+    // moving and this check) already fired, and this adds nothing.
     // A scene whose minute does not tick now gets one when the screen
     // comes on.
     for (uint32_t instance : instances()) {
@@ -2294,7 +2305,7 @@ void SceneRuntime::run_timers_of(Slot& front) {
 void SceneRuntime::minute(uint32_t instance) {
     const DeviceInfo info = device_info();
     fire(instance, DeviceEvent::Minute, info);
-    // Also catches a battery or lang message the full queue dropped.
+    // Also catches a percent step, which wakes no battery check.
     device_event(instance, DeviceEvent::Battery, info);
     device_event(instance, DeviceEvent::Lang, info);
 }
