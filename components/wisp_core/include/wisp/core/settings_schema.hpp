@@ -321,6 +321,18 @@ consteval bool int_choices_valid() {
     return true;
 }
 
+// Strictly ascending: a page that lists a stored value missing from the
+// choices puts it in order among them (the Shell settings page), and a
+// zero-means-never row's 0 is its first choice.
+consteval bool int_choices_ascending() {
+    for (const SettingSpec& spec : kSettingsSchema) {
+        for (size_t i = 1; i < spec.int_choices.size(); ++i) {
+            if (spec.int_choices[i - 1] >= spec.int_choices[i]) return false;
+        }
+    }
+    return true;
+}
+
 consteval bool scene_flag_matches_scene_name() {
     for (const SettingSpec& spec : kSettingsSchema) {
         if (((spec.flags & kSettingScene) != 0) == spec.scene_name.empty()) return false;
@@ -362,6 +374,7 @@ static_assert(schema_check::store_names_unique(), "two settings share a (ns, key
 static_assert(schema_check::store_names_fit(), "a settings ns or key is not 1-15 characters");
 static_assert(schema_check::defaults_valid(), "a setting's default breaks its own rule");
 static_assert(schema_check::int_choices_valid(), "a setting's choice breaks its own rule");
+static_assert(schema_check::int_choices_ascending(), "a setting's choices are not ascending");
 static_assert(schema_check::scene_flag_matches_scene_name(),
               "kSettingScene must be set exactly when scene_name is non-empty");
 static_assert(schema_check::shown_rows_have_labels(), "a setting a surface shows has no label");

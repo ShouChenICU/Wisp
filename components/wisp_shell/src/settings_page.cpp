@@ -74,8 +74,8 @@ SettingIcons icons_of(SettingId id) {
 }
 
 // The Row a choice setting's value row is known by (for tests and the
-// simulator's checks).
-SettingsPage::Row row_of(SettingId id) {
+// simulator's checks); Row::Count for a setting with no value row.
+constexpr SettingsPage::Row row_of(SettingId id) {
     using Row = SettingsPage::Row;
     switch (id) {
         case SettingId::ScreenOffS:
@@ -92,6 +92,32 @@ SettingsPage::Row row_of(SettingId id) {
             return Row::Count;
     }
 }
+
+// A choice row's options and their text come from the row's int_choices,
+// except for the two settings shown as words: the language (kLanguageOrder)
+// and the time format (24 h / 12 h).
+constexpr bool worded_choice(SettingId id) {
+    return id == SettingId::Language || id == SettingId::Time24h;
+}
+
+// Every Choice row has its own value row (add_value_row indexes rows_ by
+// it), and is either worded or an Int row listing int_choices.
+consteval bool choice_rows_mapped() {
+    for (size_t i = 0; i < std::size(kSettingRows); ++i) {
+        const SettingRow& row = kSettingRows[i];
+        if (row.widget != SettingWidget::Choice) continue;
+        if (row_of(row.id) == SettingsPage::Row::Count) return false;
+        if (!worded_choice(row.id) && core::setting_spec(row.id).type != core::SettingType::Int)
+            return false;
+        for (size_t j = i + 1; j < std::size(kSettingRows); ++j) {
+            if (kSettingRows[j].widget == SettingWidget::Choice &&
+                row_of(kSettingRows[j].id) == row_of(row.id))
+                return false;
+        }
+    }
+    return true;
+}
+static_assert(choice_rows_mapped(), "a Choice row has no value row of its own or no options");
 
 // Every shown setting has a label (SettingLabels.EveryDeviceShownKeyHasALabel).
 ui::StrId label_of(SettingId id) {
@@ -144,45 +170,30 @@ std::vector<int> int_options(const SettingSpec& spec, int current) {
 
 // A choice row's value as its row and choice page read.
 std::string option_text(SettingId id, const Value& v) {
+    if (id == SettingId::Language)
+        return ui::tr(lang_name(
+            core::parse_lang_code(v.as_string()).value_or(core::setting_init<core::LangCode>(id))));
+    if (id == SettingId::Time24h)
+        return ui::tr(v.as_bool() ? ui::StrId::SettingsClock24 : ui::StrId::SettingsClock12);
     const SettingSpec& spec = core::setting_spec(id);
-    switch (spec.type) {
-        case core::SettingType::Int: {
-            const int n = static_cast<int>(v.as_int());
-            if (spec.unit == core::SettingUnit::Seconds) return SettingsPage::duration_text(n);
-            if (spec.unit == core::SettingUnit::UtcOffsetMinutes) return time_zone_text(n);
-            return std::to_string(n);
-        }
-        case core::SettingType::Enum:
-            return ui::tr(lang_name(core::parse_lang_code(v.as_string())
-                                        .value_or(core::setting_init<core::LangCode>(id))));
-        case core::SettingType::Bool:
-            // The only Bool choice row is the time format.
-            return ui::tr(v.as_bool() ? ui::StrId::SettingsClock24 : ui::StrId::SettingsClock12);
-        case core::SettingType::HostList:
-            break;
-    }
-    return v.as_string();
+    const int n = static_cast<int>(v.as_int());
+    if (spec.unit == core::SettingUnit::Seconds) return SettingsPage::duration_text(n);
+    if (spec.unit == core::SettingUnit::UtcOffsetMinutes) return time_zone_text(n);
+    return std::to_string(n);
 }
 
 // The choices of a choice row, as the values written.
 std::vector<Value> options_of(SettingId id, const core::SettingsSnapshot& now) {
-    const SettingSpec& spec = core::setting_spec(id);
     std::vector<Value> out;
-    switch (spec.type) {
-        case core::SettingType::Int:
-            for (int v : int_options(spec, static_cast<int>(core::setting_value(now, id).as_int())))
-                out.emplace_back(static_cast<int64_t>(v));
-            break;
-        case core::SettingType::Enum:
-            // The only Enum row is the language, listed in the page's own order.
-            for (core::LangCode code : SettingsPage::kLanguageOrder)
-                out.emplace_back(std::string(core::lang_code(code)));
-            break;
-        case core::SettingType::Bool:
-            out = {Value(true), Value(false)};
-            break;
-        case core::SettingType::HostList:
-            break;
+    if (id == SettingId::Language) {
+        for (core::LangCode code : SettingsPage::kLanguageOrder)
+            out.emplace_back(std::string(core::lang_code(code)));
+    } else if (id == SettingId::Time24h) {
+        out = {Value(true), Value(false)};
+    } else {
+        const int current = static_cast<int>(core::setting_value(now, id).as_int());
+        for (int v : int_options(core::setting_spec(id), current))
+            out.emplace_back(static_cast<int64_t>(v));
     }
     return out;
 }

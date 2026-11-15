@@ -51,6 +51,17 @@ WISP_CONNECTIONS_SCREENSHOTS=/tmp/wisp-connections \
   --gtest_also_run_disabled_tests --gtest_filter='*ConnectionsPreview*'
 ```
 
+The settings page preview (the page from its top to its last row, and the
+screen-off choice page at both ends, on rect 480, circle 466 and rounded_rect
+480) runs the same way:
+
+```bash
+mkdir -p /tmp/wisp-settings
+WISP_SETTINGS_SCREENSHOTS=/tmp/wisp-settings \
+  build/sim/tests/shell_settings_page_test \
+  --gtest_also_run_disabled_tests --gtest_filter='*SettingsPreview*'
+```
+
 For direct CTest use, configure with `-DWISP_FULL_SMOKE=ON` for every simulator
 scenario or `-DWISP_FULL_SMOKE=OFF` for core scenarios. `tools/ci.sh` sets this
 explicitly on each run so a previous full run cannot change the next daily run.

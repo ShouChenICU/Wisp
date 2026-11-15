@@ -323,6 +323,23 @@ TEST_P(SubPageShapes, EverythingVisibleAtScrollEnds) {
             for (size_t i = 0; i < c->count(); ++i) EXPECT_GE(lv_obj_get_height(c->row(i)), 48);
             check_ends(c->list(), c->row(0), c->row(c->count() - 1));
         });
+        // A short one too: seven rows nearly fit without scrolling on the
+        // round 466 screen, where the ends are easiest to cut off.
+        h->show(Page::Settings);
+        ASSERT_TRUE(h->ui_until([&] { return h->shell().choice_page() == nullptr; }));
+        h->on_ui([&] {
+            lv_obj_send_event(
+                h->shell().settings_page()->row(wisp::shell::SettingsPage::Row::ScreenOff),
+                LV_EVENT_CLICKED, nullptr);
+        });
+        ASSERT_TRUE(h->ui_until([&] { return h->shell().choice_page() != nullptr; }));
+        h->on_ui([&] {
+            wisp::shell::ChoicePage* c = h->shell().choice_page();
+            lv_obj_update_layout(c->list());
+            ASSERT_EQ(c->count(), 7u);
+            for (size_t i = 0; i < c->count(); ++i) EXPECT_GE(lv_obj_get_height(c->row(i)), 48);
+            check_ends(c->list(), c->row(0), c->row(c->count() - 1));
+        });
     }
 }
 

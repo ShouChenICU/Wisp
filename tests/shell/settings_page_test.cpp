@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -628,3 +630,67 @@ TEST_F(SettingsPageTest, NoRestartOrPowerOffWithoutThePlatform) {
     EXPECT_EQ(page()->row(Row::PowerOff), nullptr);
     EXPECT_NE(page()->row(Row::Diagnostics), nullptr);
 }
+
+namespace {
+
+struct PreviewShape {
+    const char* shape;
+    int32_t size;
+};
+
+class SettingsPreview : public SettingsPageTest,
+                        public ::testing::WithParamInterface<PreviewShape> {
+protected:
+    // Writes the screen as <dir>/<shape>-<size>-<name>.ppm when
+    // WISP_SETTINGS_SCREENSHOTS names a directory.
+    void screenshot(const std::string& name) {
+        const char* dir = std::getenv("WISP_SETTINGS_SCREENSHOTS");
+        if (!dir) return;
+        const PreviewShape& p = GetParam();
+        harness->on_ui([] { lv_obj_update_layout(lv_screen_active()); });
+        auto shot = harness->ui().snapshot_rgb888();
+        ASSERT_TRUE(shot);
+        std::ofstream file(
+            std::string(dir) + "/" + p.shape + "-" + std::to_string(p.size) + "-" + name + ".ppm",
+            std::ios::binary);
+        ASSERT_TRUE(file);
+        file << "P6\n" << p.size << " " << p.size << "\n255\n";
+        file.write(reinterpret_cast<const char*>(shot.value().data()), shot.value().size());
+    }
+};
+
+}  // namespace
+
+// A manual preview (docs/testing.md): the settings page from its top to its
+// last row, and the screen-off choice page at both ends.
+TEST_P(SettingsPreview, DISABLED_PageAndChoice) {
+    const PreviewShape& p = GetParam();
+    boot(p.shape, p.size, p.size);
+    harness->on_ui([&] { lv_obj_scroll_to_y(page()->list(), 0, LV_ANIM_OFF); });
+    screenshot("settings-0");
+    // A screen's height less a row at a time, so each shot overlaps the last.
+    for (int step = 1; step < 20; ++step) {
+        bool at_end = false;
+        harness->on_ui([&] {
+            lv_obj_scroll_by(page()->list(), 0, -(p.size - 96), LV_ANIM_OFF);
+            lv_obj_update_layout(page()->list());
+            at_end = lv_obj_get_scroll_bottom(page()->list()) <= 0;
+        });
+        screenshot("settings-" + std::to_string(step));
+        if (at_end) break;
+    }
+    tap_row(Row::ScreenOff);
+    ASSERT_TRUE(harness->ui_until([&] { return choice() != nullptr; }));
+    harness->on_ui([&] { lv_obj_scroll_to_y(choice()->list(), 0, LV_ANIM_OFF); });
+    screenshot("screen-off-top");
+    harness->on_ui([&] { lv_obj_scroll_to_y(choice()->list(), LV_COORD_MAX, LV_ANIM_OFF); });
+    screenshot("screen-off-bottom");
+}
+
+INSTANTIATE_TEST_SUITE_P(ScreenShapes, SettingsPreview,
+                         ::testing::Values(PreviewShape{"rect", 480}, PreviewShape{"circle", 466},
+                                           PreviewShape{"rounded_rect", 480}),
+                         [](const ::testing::TestParamInfo<PreviewShape>& info) {
+                             return std::string(info.param.shape) + "_" +
+                                    std::to_string(info.param.size);
+                         });
