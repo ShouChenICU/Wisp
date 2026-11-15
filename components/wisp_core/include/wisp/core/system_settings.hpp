@@ -156,8 +156,9 @@ public:
     // a value of the wrong type or an out-of-range value fails the whole batch with InvalidArgument
     // before anything is written. If the backend fails partway, the keys already written are
     // restored (best effort) and the backend's error returned; apply_brightness and the event
-    // only happen once the whole batch is stored. Every stored batch publishes exactly one
-    // system.settings event, after apply_brightness.
+    // only happen once the whole batch is stored. When a restore fails too, the cell is reseeded
+    // from what storage then holds (no event), so it never stays behind storage. Every stored
+    // batch publishes exactly one system.settings event, after apply_brightness.
     Result<void> set(const std::map<std::string, Value>& changes);
 
 private:

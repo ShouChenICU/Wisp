@@ -212,6 +212,11 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
                            undo.error().message.c_str());
                 }
             }
+            // A failed undo leaves part of the batch stored: the cell takes
+            // what storage holds now (a no-op when the rollback worked), so
+            // no follower stays behind storage until the next batch. A
+            // seed, as the batch failed: no system.settings event.
+            cell_.seed(get());
             return r;
         }
         written.push_back(Undo{spec, std::move(previous)});

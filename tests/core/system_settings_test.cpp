@@ -294,22 +294,25 @@ namespace {
 
 // Delegates to a real backend but fails the Nth set() call, to check that a
 // storage failure partway through a batch leaves no partial write behind.
+// With `fail_after`, every set() and erase() from the Nth on fails too, so
+// the batch's rollback fails as well.
 class FlakyBackend : public wisp::core::SettingsBackend {
 public:
-    FlakyBackend(wisp::core::SettingsBackend& inner, int fail_on_set)
-        : inner_(inner), fail_on_set_(fail_on_set) {}
+    FlakyBackend(wisp::core::SettingsBackend& inner, int fail_on_set, bool fail_after = false)
+        : inner_(inner), fail_on_set_(fail_on_set), fail_after_(fail_after) {}
 
     wisp::Result<wisp::Value> get(const std::string& ns, const std::string& key) override {
         return inner_.get(ns, key);
     }
     wisp::Result<void> set(const std::string& ns, const std::string& key,
                            const wisp::Value& value) override {
-        if (++sets_ == fail_on_set_) {
+        if (++sets_ == fail_on_set_ || failing()) {
             return wisp::Result<void>::err(ErrorCode::IoError, "injected");
         }
         return inner_.set(ns, key, value);
     }
     wisp::Result<void> erase(const std::string& ns, const std::string& key) override {
+        if (failing()) return wisp::Result<void>::err(ErrorCode::IoError, "injected");
         return inner_.erase(ns, key);
     }
     wisp::Result<void> erase_all() override { return inner_.erase_all(); }
@@ -321,8 +324,11 @@ public:
     }
 
 private:
+    bool failing() const { return fail_after_ && sets_ >= fail_on_set_; }
+
     wisp::core::SettingsBackend& inner_;
     int fail_on_set_;
+    bool fail_after_;
     int sets_ = 0;
 };
 
@@ -434,6 +440,29 @@ TEST(SystemSettings, RejectedOrFailedBatchLeavesTheCell) {
     EXPECT_EQ(r.error().code, ErrorCode::IoError);
     EXPECT_EQ(settings.cell().revision(), cell_revision);
     EXPECT_TRUE(settings.cell().get() == SystemSettingsValues{});
+    EXPECT_TRUE(recorder.all(bus).empty());
+}
+
+// A batch whose rollback fails too leaves part of it stored: the cell is
+// reseeded from what storage now holds, so its followers do not stay
+// behind storage until the next batch, and, as the batch failed, nothing
+// is published.
+TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
+    JsonFileSettingsBackend inner((wisp::test::temp_dir() / "settings.json").string());
+    FlakyBackend flaky(inner, /*fail_on_set=*/2, /*fail_after=*/true);
+    Recorder recorder;
+    EventBus bus;
+    std::vector<uint8_t> applied;
+    SystemSettings settings(flaky, bus, [&](uint8_t level) { applied.push_back(level); });
+    recorder.attach(bus);
+    // brightness is written, volume fails, erasing brightness again fails.
+    auto r = settings.set({{"brightness", 100}, {"volume", 10}});
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, ErrorCode::IoError);
+    EXPECT_EQ(settings.get().brightness, 100);
+    EXPECT_EQ(settings.get().volume, SystemSettingsValues{}.volume);
+    EXPECT_TRUE(settings.cell().get() == settings.get());
+    EXPECT_TRUE(applied.empty());
     EXPECT_TRUE(recorder.all(bus).empty());
 }
 
