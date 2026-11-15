@@ -1,9 +1,11 @@
 #include "wisp/core/button_service.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <utility>
 
+#include "wisp/core/dispatcher.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/roles.hpp"
 
@@ -34,7 +36,20 @@ ButtonService::ButtonService(DeviceRegistry& registry, EventBus& bus, uint32_t l
                              uint32_t poll_ms)
     : registry_(registry), bus_(bus), long_press_ms_(long_press_ms), poll_ms_(poll_ms) {}
 
-ButtonService::~ButtonService() { stop(); }
+ButtonService::~ButtonService() {
+    stop();
+    size_t left = 0;
+    {
+        std::lock_guard<os::Mutex> listeners_lock(listeners_mutex_);
+        left = listeners_.size();
+    }
+    if (left != 0) {
+        char what[80];
+        std::snprintf(what, sizeof(what), "ButtonService destroyed with %u listener%s",
+                      static_cast<unsigned>(left), left == 1 ? "" : "s");
+        dispatch_misuse(what);
+    }
+}
 
 Result<void> ButtonService::start() {
     std::lock_guard<os::Mutex> lifecycle_lock(lifecycle_mutex_);
@@ -495,10 +510,20 @@ uint32_t ButtonService::add_listener(ButtonListener fn) {
 }
 
 void ButtonService::remove_listener(uint32_t id) {
-    std::lock_guard<os::Mutex> listeners_lock(listeners_mutex_);
-    listeners_.erase(std::remove_if(listeners_.begin(), listeners_.end(),
-                                    [id](const Listener& l) { return l.id == id; }),
-                     listeners_.end());
+    // Destroyed after the unlock: the function's captures may own
+    // anything, and their destructors must not run under the listener
+    // lock that every edge waits on.
+    ButtonListener removed;
+    {
+        std::lock_guard<os::Mutex> listeners_lock(listeners_mutex_);
+        auto it = std::find_if(listeners_.begin(), listeners_.end(),
+                               [id](const Listener& l) { return l.id == id; });
+        if (it == listeners_.end()) {
+            return;
+        }
+        removed = std::move(it->fn);
+        listeners_.erase(it);
+    }
 }
 
 void ButtonService::emit_for_test(std::string_view id, ButtonEdge::Kind kind, uint64_t at_us) {

@@ -35,7 +35,9 @@ struct ButtonEdge {
     Kind kind = Kind::Down;
     // os::now_us() base: the confirmed edge (Down, Up, Short; Short has
     // its Up's time) or the long-press deadline, Down + the long-press
-    // threshold (Long), however late the service noticed it.
+    // threshold (Long), however late the service noticed it. A PollOnly
+    // key's edges come from the poll time, so they have millisecond
+    // resolution.
     uint64_t at_us = 0;
 };
 using ButtonListener = os::LargeFunction<void(const ButtonEdge&)>;
@@ -67,7 +69,9 @@ public:
     // wisp.button worker, the fallback polling timer's task (the esp_timer
     // task on the device), the thread calling poll() (tests), or once the
     // start() caller when the worker cannot be created -- never in an ISR,
-    // whose sink only queues a record for the worker. A listener runs
+    // whose sink only queues a record for the worker. Delivery is
+    // serialised: every path holds the state lock, so listener calls
+    // never overlap, even across those threads. A listener runs
     // under ButtonService's state lock and its listener lock, so it may
     // only push into an EdgeInbox, store an atomic, update a state cell or
     // schedule a dispatch slot: it must not block, touch flash, or call
@@ -80,13 +84,16 @@ public:
     // follower may call them from any thread while buttons are pressed
     // and the service runs, provided it holds no lock its own listener
     // takes. Every listener must be removed before ButtonService is
-    // destroyed.
+    // destroyed; the destructor reports one left as misuse
+    // (dispatch_misuse(): an abort on the host, an error log on the
+    // device).
     //
     // Any thread; allocates (Mem::Large). Ids start at 1 and are never 0.
     uint32_t add_listener(ButtonListener fn);
     // Any thread. When it returns, the listener is not running on any
     // thread and is never called again: a call in progress elsewhere is
-    // waited for. Unknown or already removed ids are ignored.
+    // waited for. The function is destroyed after the listener lock is
+    // released. Unknown or already removed ids are ignored.
     void remove_listener(uint32_t id);
     // Runs the path of a real edge -- listeners, then the bus event
     // "<id>.<edge>" with source `id` -- for a button that need not exist,

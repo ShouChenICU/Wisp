@@ -15,7 +15,9 @@
 #include <vector>
 
 #include "support/fake_devices.hpp"
+#include "support/wait.hpp"
 #include "wisp/core/device_registry.hpp"
+#include "wisp/core/dispatcher.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
@@ -1140,13 +1142,34 @@ struct SeenEdge {
     bool operator==(const SeenEdge&) const = default;
 };
 
+// Removes its listener when the scope ends: declared after what the
+// listener captures, it goes first, and the service never outlives a
+// listener (its destructor reports one left).
+struct ScopedListener {
+    ScopedListener(ButtonService& service, wisp::core::ButtonListener fn)
+        : service(service), id(service.add_listener(std::move(fn))) {}
+    ~ScopedListener() { service.remove_listener(id); }
+    ScopedListener(const ScopedListener&) = delete;
+    ScopedListener& operator=(const ScopedListener&) = delete;
+    ButtonService& service;
+    const uint32_t id;
+};
+
+std::mutex g_misuse_mu;
+std::vector<std::string> g_misuses;
+void record_misuse(const char* what) {
+    std::lock_guard<std::mutex> lock(g_misuse_mu);
+    g_misuses.emplace_back(what);
+}
+
 }  // namespace
 
 TEST(ButtonService, ListenerGetsEveryEdgeInOrderWithItsTime) {
     Fixture f;
     std::vector<SeenEdge> seen;  // poll() runs the listeners on this thread
-    f.svc.add_listener(
-        [&](const ButtonEdge& e) { seen.push_back({std::string(e.id.view()), e.kind, e.at_us}); });
+    ScopedListener listener(f.svc, [&](const ButtonEdge& e) {
+        seen.push_back({std::string(e.id.view()), e.kind, e.at_us});
+    });
 
     // A press of 1.2 s. The poll at 1100 ms finds the long deadline past:
     // Long carries the deadline (Down + 1 s), not the time it was found.
@@ -1176,8 +1199,9 @@ TEST(EdgeEvent, ListenerTimesAreTheConfirmedEdges) {
     EventBus bus;
     ButtonService service(registry, bus);
     std::vector<SeenEdge> seen;
-    service.add_listener(
-        [&](const ButtonEdge& e) { seen.push_back({std::string(e.id.view()), e.kind, e.at_us}); });
+    ScopedListener listener(service, [&](const ButtonEdge& e) {
+        seen.push_back({std::string(e.id.view()), e.kind, e.at_us});
+    });
 
     service.poll(0);
     ASSERT_TRUE(button->emit(true, 0));
@@ -1209,13 +1233,27 @@ TEST(ButtonService, RemovedListenerIsNeverCalledAgain) {
         if (removed.load()) ++calls_after_removal;
     });
     EXPECT_GE(id, 1u);
+    // Whatever assertion fails below, the worker is let out of the
+    // listener and the remover joined before the fixture's stop(), which
+    // would otherwise wait for the parked worker forever; then the
+    // listener is removed (again: a no-op once the remover ran).
+    std::thread remover;
+    wisp::os::Semaphore remover_started{1, 0};
+    wisp::os::Semaphore remover_done{1, 0};
+    std::atomic<bool> resumed{false};
+    struct Release {
+        std::function<void()> fn;
+        ~Release() { fn(); }
+    } release{[&] {
+        if (!resumed.exchange(true)) resume.give();
+        if (remover.joinable()) remover.join();
+        f.svc.remove_listener(id);
+    }};
     ASSERT_TRUE(f.svc.start());
 
     f.btn->down = true;
     ASSERT_TRUE(entered.take(2000));  // the worker is inside the listener, for Down
-    wisp::os::Semaphore remover_started{1, 0};
-    wisp::os::Semaphore remover_done{1, 0};
-    std::thread remover([&] {
+    remover = std::thread([&] {
         remover_started.give();
         f.svc.remove_listener(id);
         removed.store(true);
@@ -1225,6 +1263,7 @@ TEST(ButtonService, RemovedListenerIsNeverCalledAgain) {
     // The removal waits for the call in progress: this wait is expected
     // to time out.
     EXPECT_FALSE(remover_done.take(50));
+    resumed.store(true);
     resume.give();
     ASSERT_TRUE(remover_done.take(2000));
     remover.join();
@@ -1232,7 +1271,7 @@ TEST(ButtonService, RemovedListenerIsNeverCalledAgain) {
     // A listener added while the worker runs gets the rest of the press;
     // the removed one gets none of it.
     wisp::os::Semaphore short_seen{1, 0};
-    f.svc.add_listener([&](const ButtonEdge& e) {
+    ScopedListener late(f.svc, [&](const ButtonEdge& e) {
         if (e.kind == Kind::Short) short_seen.give();
     });
     f.btn->down = false;
@@ -1251,7 +1290,7 @@ TEST(ButtonService, BusEventsAreUnchanged) {
     ButtonService service(registry, bus);
     std::vector<bool> bus_empty_at_call;
     std::vector<SeenEdge> seen;
-    service.add_listener([&](const ButtonEdge& e) {
+    ScopedListener listener(service, [&](const ButtonEdge& e) {
         // Listeners run before the bus copy of the same edge is published.
         bus_empty_at_call.push_back(seen.empty() && bus.wait_idle(0));
         seen.push_back({std::string(e.id.view()), e.kind, e.at_us});
@@ -1290,7 +1329,7 @@ TEST(ButtonService, EmitForTestReachesListenersAndTheBus) {
     ButtonService service(registry, bus);
     std::vector<SeenEdge> seen;
     std::vector<bool> bus_empty_at_call;
-    service.add_listener([&](const ButtonEdge& e) {
+    ScopedListener listener(service, [&](const ButtonEdge& e) {
         bus_empty_at_call.push_back(bus.wait_idle(0));
         seen.push_back({std::string(e.id.view()), e.kind, e.at_us});
     });
@@ -1321,7 +1360,7 @@ TEST(ButtonService, ListenersRunInRegistrationOrder) {
     std::vector<int> order;
     const uint32_t first = service.add_listener([&](const ButtonEdge&) { order.push_back(1); });
     const uint32_t second = service.add_listener([&](const ButtonEdge&) { order.push_back(2); });
-    service.add_listener([&](const ButtonEdge&) { order.push_back(3); });
+    const uint32_t third = service.add_listener([&](const ButtonEdge&) { order.push_back(3); });
     EXPECT_EQ(first, 1u);
     EXPECT_EQ(second, 2u);
     service.emit_for_test("button.side", Kind::Down, 0);
@@ -1329,4 +1368,58 @@ TEST(ButtonService, ListenersRunInRegistrationOrder) {
     service.remove_listener(second);  // a second removal is harmless
     service.emit_for_test("button.side", Kind::Up, 0);
     EXPECT_EQ(order, (std::vector<int>{1, 2, 3, 1, 3}));
+    service.remove_listener(first);
+    service.remove_listener(third);
+}
+
+// A removed listener's function, and what it captured, is destroyed
+// outside the listener lock: here its last capture's destructor calls
+// back into ButtonService, which would deadlock under that lock.
+TEST(ButtonService, RemovedListenerIsDestroyedOutsideTheLock) {
+    DeviceRegistry registry;
+    EventBus bus;
+    ButtonService service(registry, bus);
+    struct Reenter {
+        ButtonService& service;
+        std::atomic<bool>& destroyed;
+        ~Reenter() {
+            service.remove_listener(service.add_listener([](const ButtonEdge&) {}));
+            destroyed.store(true);
+        }
+    };
+    std::atomic<bool> destroyed{false};
+    auto probe = std::make_shared<Reenter>(service, destroyed);
+    const uint32_t id = service.add_listener([probe](const ButtonEdge&) {});
+    probe.reset();
+    ASSERT_FALSE(destroyed.load());
+
+    std::atomic<bool> done{false};
+    std::thread remover([&] {
+        service.remove_listener(id);
+        done.store(true);
+    });
+    if (!wisp::test::wait_until([&] { return done.load(); }, 2000)) {
+        // Deadlocked: no way to unwind the remover; fail without hanging.
+        remover.detach();
+        FAIL() << "remove_listener() destroyed the function under its lock";
+    }
+    remover.join();
+    EXPECT_TRUE(destroyed.load());
+}
+
+TEST(ButtonService, DestroyedWithAListenerLeftIsReportedAsMisuse) {
+    {
+        std::lock_guard<std::mutex> lock(g_misuse_mu);
+        g_misuses.clear();
+    }
+    wisp::core::set_misuse_handler(&record_misuse);
+    {
+        DeviceRegistry registry;
+        EventBus bus;
+        ButtonService service(registry, bus);
+        service.add_listener([](const ButtonEdge&) {});
+    }
+    wisp::core::set_misuse_handler(nullptr);
+    std::lock_guard<std::mutex> lock(g_misuse_mu);
+    EXPECT_EQ(g_misuses, std::vector<std::string>{"ButtonService destroyed with 1 listener"});
 }
