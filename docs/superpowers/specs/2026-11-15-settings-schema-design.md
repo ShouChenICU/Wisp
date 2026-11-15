@@ -1,7 +1,7 @@
 # Settings Schema: Single Source of Truth — Design
 
 - Date: 2026-11-15
-- Status: draft — awaiting the owner's approval
+- Status: approved by the owner on 2026-11-15 (see "Approval" at the end)
 - Scope: phase E of `docs/superpowers/plans/2026-11-14-architecture-optimization-roadmap.md`. Every system setting is declared once, in a constexpr table; validation, defaults, the snapshot in the settings cell, the REST and WebSocket shapes, the agent's settings tools, the scenes' `wisp.device.info()` fields, the web System page's ranges and the Shell settings page's rows derive from it. A CI guard keeps default and range literals out of the rest of the tree.
 - Builds on: the foundation spec (Settings, the 15-character key rule), the connectivity spec (`GET`/`PUT /settings`, the `system.settings` event, sections 5.4 and 8.3), the flash-thread design (`2026-11-06-flash-thread-design.md`, the settings cache), the agent-core spec 4.4 (`settings.get`/`settings.set`), the scene-runtime-core spec 5.2 (`wisp.device.info()`), the MVP spec 6.4 (the settings page), and the state-cells design (`2026-11-14-state-cells-design.md`: the settings cell exists and every private settings cache is already gone).
 - Serves: phase F (its new `power/hibernate_s` key is one table row; PowerManager reads every power key from the snapshot) and phase L (the schema is infrastructure that stays in the core part when `wisp_core` splits; nothing in it names a domain type).
@@ -415,3 +415,16 @@ Each step leaves `bash tools/ci.sh` green; steps 1-3 change no behaviour.
 6. **Agent reach.** *Proposal: keep today's six agent keys in this phase, and add `tts_mute`, `deep_after_s` and `utc_offset_min` as a separate one-line change if the owner agrees* (the agent should have as much control as possible; mute and time zone are things a user asks for by voice). `ntp_servers` and the agent's own turn limits stay off the agent's list. If wrong: one flag per key, either way; the agent's writes need no confirmation in any case.
 7. **One device label per key.** *Proposal: the settings page's text (`Settings*`) for both the page and the agent's note; the `AgentSet*` ids are deleted.* zh then reads "提醒音量", "自动熄屏", "系统语言" in the agent's note too. If wrong: a wording change in three zh strings.
 8. **Stored values outside a range.** *Proposal: keep "read as the default" and add one log line per key at boot.* Alternative: clamp into range (a narrowed range then keeps the nearest value instead of the default). Clamping would make X1's stored 5 read as 10 instead of 200; for `kZeroNever` keys and Enum keys clamping has no meaning, so the rule would differ by type. If wrong: one function in `SystemSettings`.
+
+## Approval
+
+The owner approved this spec on 2026-11-15, answering each question of section 11 with its proposal:
+
+1. Snapshot generation: one X-macro list `WISP_SETTINGS(X)` expanded into the table, the struct and the id enum.
+2. Store-only keys: `low_batt_pct` and `perf_overlay` join the table without surface flags; `low_batt_pct` has the range 5-50.
+3. Brightness percentage: `(value - min) / (max - min)` on the Shell and the web.
+4. Choices: screen off `0, 15, 30, 60, 120, 300, 600`; deep standby `0, 60, 120, 300, 600, 1800, 3600`, on both surfaces.
+5. Brightness follows the cell; the loopback test scales samples and no longer sets the output volume; the ports' 80 and 100 are output gains.
+6. Agent reach: the agent also gets `tts_mute`, `deep_after_s` and `utc_offset_min` (nine keys), in a change of its own after the table reproduces today's six. No confirmation for any of them.
+7. One device label per key: the settings page's text; the `AgentSet*` ids are deleted.
+8. Stored values outside a range read as the default, with one log line per key at boot.
