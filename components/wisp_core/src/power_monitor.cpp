@@ -134,6 +134,11 @@ void PowerMonitor::sample() {
     if (power_ == nullptr) {
         return;
     }
+    // Whole calls in turn, from the read through the cell's set(): two
+    // concurrent calls (the timer and a direct one) would otherwise let
+    // the one that read the older status set the cell last. Not
+    // sample_mutex_, so last_status() never waits for the chip's read.
+    std::lock_guard<os::Mutex> call(call_mutex_);
     auto result = power_->status();
     if (!result) {
         // Logged only on the ok->failed transition, not once per failed

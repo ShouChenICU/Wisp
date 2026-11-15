@@ -469,7 +469,14 @@ TEST(AppNotifications, BatteryLowKeepsOneNoticeAndChargingClearsIt) {
     // follower call and hide the dip above the hysteresis.
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     sample_at(h.app, *power, battery_at(9));
-    ASSERT_TRUE(wait_until([&] { return notes->unread()[0].arg == "9"; }, 2000));
+    // The notice is replaced (removed, then posted again), so the list is
+    // briefly empty while this polls.
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const auto unread = notes->unread();
+            return !unread.empty() && unread[0].arg == "9";
+        },
+        2000));
     ASSERT_TRUE(h.app.bus().wait_idle(2000));
     ASSERT_EQ(notes->unread_count(), 1u);
     EXPECT_EQ(notes->unread()[0].arg, "9");

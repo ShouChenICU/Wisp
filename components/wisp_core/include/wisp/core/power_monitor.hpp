@@ -50,18 +50,21 @@
 //
 // Thread-safety: every public method may be called from any thread,
 // concurrently, including from this class's own Timer callback (sample()
-// itself never calls start()/stop()/set_standby()). sample_mutex_ guards
-// the previous-sample bookkeeping (have_sample_ and the supply cell's
-// writes) against concurrent sample() calls (in
-// practice only the Timer callback calls it, but sample() is also exposed
-// directly for tests, same as ButtonService::poll()). timer_mutex_ guards
+// itself never calls start()/stop()/set_standby()). call_mutex_ makes
+// concurrent sample() calls (the Timer callback, and direct calls from
+// tests, same as ButtonService::poll()) run one after the other, from the
+// status() read through the cell's set(), so the cell always ends at the
+// status read last. sample_mutex_ guards the previous-sample bookkeeping
+// (have_sample_, last_status_ and the supply cell's writes) and is not
+// held across the status() read, so last_status() never waits for the
+// chip. timer_mutex_ guards
 // only the Timer pointer and the active/standby period choice, and is
 // never held across anything sample_mutex_ also guards or across
 // EventBus::publish() (which, per event_bus.hpp, never blocks on a
 // handler, so holding a lock across it is fine in general -- this note is
 // about *not* holding timer_mutex_ there, which would serve no purpose).
-// Lock order: sample_mutex_ -> the supply cell's lock -> the bus's publish
-// lock; nothing takes them the other way.
+// Lock order: call_mutex_ -> sample_mutex_ -> the supply cell's lock ->
+// the bus's publish lock; nothing takes them the other way.
 
 #include <atomic>
 #include <cstdint>
@@ -137,7 +140,8 @@ public:
     // Reads `power`'s status() once and publishes power.charging.changed/
     // power.battery.low as described in the file header. A no-op if
     // `power` is null. Safe to call directly (e.g. from a test), without
-    // ever calling start().
+    // ever calling start(), also while the Timer samples: concurrent calls
+    // run in turn, so the supply ends at the status read last.
     void sample();
 
     // What the last sample() read: nullopt before the first one, after a
@@ -161,7 +165,9 @@ private:
     std::shared_ptr<hal::Power> power_;
     Settings settings_;
 
-    // Set (not held) while status() is being called, outside
+    // Held by sample() for the whole call (file header, Thread-safety).
+    os::Mutex call_mutex_;
+    // Set while status() is being called, under call_mutex_ but outside
     // sample_mutex_ -- see sample()'s own definition for why. Only used
     // to dedupe the WLOG_W below to state transitions instead of once per
     // failed sample: a real failure (I2C bus fault, device unplugged)
