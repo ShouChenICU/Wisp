@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,6 +16,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::admin::detail {
@@ -41,6 +43,8 @@ struct RequestContext {
     // AdminServer's one-shot timer that calls AdminDeps::reboot, so the
     // reboot route can answer before the device goes down.
     os::Timer* reboot_timer = nullptr;
+    // AdminServer's GET /settings/schema body (settings_schema_body()).
+    const std::shared_ptr<const os::LargeString>* settings_schema = nullptr;
 };
 
 using RouteFn = net::HttpResponse (*)(AdminDeps& deps, const RequestContext& ctx);
@@ -68,6 +72,10 @@ void add_power_routes(std::vector<Route>& routes);       // /system/power, /syst
 void add_scene_file_routes(std::vector<Route>& routes);  // /scenes/{id}/files
 void add_agent_routes(std::vector<Route>& routes);       // /agent/*
 void add_memory_routes(std::vector<Route>& routes);      // /memory, /todos
+
+// GET /settings/schema's body (routes_device.cpp): every settings table row
+// flagged kSettingWeb, in table order. Built once by AdminServer.
+std::shared_ptr<const os::LargeString> settings_schema_body();
 
 // The firmware upload, the one streamed request (routes_firmware.cpp).
 constexpr std::string_view kFirmwarePath = "/api/v1/system/firmware";

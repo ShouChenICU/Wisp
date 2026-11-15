@@ -198,6 +198,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_scene_file_routes(routes_);
     detail::add_agent_routes(routes_);
     detail::add_memory_routes(routes_);
+    settings_schema_ = detail::settings_schema_body();
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->start();
     // Logout, DELETE /clients/{id} and the factory reset's revoke_all()
@@ -328,7 +329,8 @@ net::HttpResponse AdminServer::handle_api(const net::HttpRequest& req) {
                                std::move(m.param),
                                std::move(m.param2),
                                std::move(body),
-                               reboot_timer_.get()};
+                               reboot_timer_.get(),
+                               &settings_schema_};
     return m.route->fn(deps_, ctx);
 }
 

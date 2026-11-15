@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <map>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -508,6 +509,90 @@ TEST(Routes, SettingsPutRefusesStoreOnlyKeys) {
     EXPECT_EQ(after.as_map().count("perf_overlay"), 0u);
     EXPECT_EQ(f.settings->get().low_batt_pct,
               wisp::core::setting_default_int(wisp::core::SettingId::LowBattPct));
+}
+
+// The keys GET /settings lists, described from the settings table.
+TEST(Routes, SettingsSchemaListsTheWebKeys) {
+    AdminFixture f;
+    const std::string token = f.token();
+    HttpResponse res = f.srv->handle(authed(token, Get, "/api/v1/settings/schema"));
+    ASSERT_EQ(res.status, 200);
+    const Value v = body_json(res);
+    const Value& keys = field(v, "keys");
+    ASSERT_EQ(keys.type(), Value::Type::List);
+
+    std::vector<std::string> names;
+    std::map<std::string, Value> by_name;
+    for (const Value& k : keys.as_list()) {
+        const Value& name = field(k, "name");
+        ASSERT_EQ(name.type(), Value::Type::String);
+        names.push_back(name.as_string());
+        by_name[name.as_string()] = k;
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"brightness", "volume", "screen_off_s", "language",
+                                               "utc_offset_min", "ntp_servers", "deep_after_s",
+                                               "notify_vol", "tts_mute", "time_24h",
+                                               "agent_max_steps", "agent_turn_min"}));
+
+    EXPECT_EQ(by_name["brightness"], Value(Map{{"name", Value("brightness")},
+                                               {"type", Value("int")},
+                                               {"label", Value("brightness")},
+                                               {"min", Value(10)},
+                                               {"max", Value(255)},
+                                               {"default", Value(200)},
+                                               {"unit", Value("level")}}));
+    EXPECT_EQ(by_name["screen_off_s"],
+              Value(Map{{"name", Value("screen_off_s")},
+                        {"type", Value("int")},
+                        {"label", Value("screen_off")},
+                        {"min", Value(15)},
+                        {"max", Value(3600)},
+                        {"default", Value(60)},
+                        {"unit", Value("seconds")},
+                        {"zero_never", Value(true)},
+                        {"choices", Value(List{Value(0), Value(15), Value(30), Value(60),
+                                               Value(120), Value(300), Value(600)})}}));
+    EXPECT_EQ(by_name["language"],
+              Value(Map{{"name", Value("language")},
+                        {"type", Value("enum")},
+                        {"label", Value("lang_label")},
+                        {"values", Value(List{Value("zh"), Value("ja"), Value("en")})},
+                        {"default", Value("zh")}}));
+    EXPECT_EQ(by_name["ntp_servers"],
+              Value(Map{{"name", Value("ntp_servers")},
+                        {"type", Value("hosts")},
+                        {"label", Value("time_servers")},
+                        {"max_entries", Value(2)},
+                        {"max_length", Value(63)},
+                        {"default", Value("pool.ntp.org,ntp.aliyun.com")}}));
+    EXPECT_EQ(by_name["tts_mute"], Value(Map{{"name", Value("tts_mute")},
+                                             {"type", Value("bool")},
+                                             {"label", Value("tts_mute")},
+                                             {"default", Value(false)}}));
+
+    // Members in the documented order (Map compares unordered).
+    const std::string text = wisp::test::body_text(res);
+    EXPECT_TRUE(contains(text, R"({"name":"brightness","type":"int","label":"brightness",)"
+                               R"("min":10,"max":255,"default":200,"unit":"level"})"))
+        << text;
+}
+
+TEST(Routes, SettingsSchemaNeedsAToken) {
+    AdminFixture f;
+    HttpResponse res = f.srv->handle(make_req(Get, "/api/v1/settings/schema"));
+    EXPECT_EQ(res.status, 401);
+    EXPECT_EQ(error_code(res), "unauthorized");
+}
+
+TEST(Routes, SettingsSchemaIsTheSameBytesEachTime) {
+    AdminFixture f;
+    const std::string token = f.token();
+    HttpResponse a = f.srv->handle(authed(token, Get, "/api/v1/settings/schema"));
+    HttpResponse b = f.srv->handle(authed(token, Get, "/api/v1/settings/schema"));
+    ASSERT_EQ(a.status, 200);
+    ASSERT_EQ(b.status, 200);
+    EXPECT_FALSE(wisp::test::body_text(a).empty());
+    EXPECT_EQ(wisp::test::body_text(a), wisp::test::body_text(b));
 }
 
 TEST(Routes, ClientsListMarksCurrent) {

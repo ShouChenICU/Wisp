@@ -77,6 +77,7 @@
 #include "wisp/net/random.hpp"
 #include "wisp/net/time_sync.hpp"
 #include "wisp/net/wifi_service.hpp"
+#include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::admin {
@@ -229,6 +230,9 @@ private:
 
     AdminDeps deps_;
     std::vector<detail::Route> routes_;
+    // GET /settings/schema's body: it depends only on the settings table,
+    // so it is written once, in PSRAM, and every response shares it.
+    std::shared_ptr<const os::LargeString> settings_schema_;
     // Declared after deps_ so it is destroyed (stopped) first.
     std::unique_ptr<os::Timer> reboot_timer_;
     std::unique_ptr<WsHub> hub_;
