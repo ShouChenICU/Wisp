@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "wisp/base/value.hpp"
@@ -69,7 +70,7 @@ const char* to_string(VoiceError e) {
 }
 
 VoiceService::VoiceService(VoiceDeps deps, VoiceConfig config)
-    : deps_(std::move(deps)), config_(config), cmds_(config.queue_depth) {}
+    : deps_(std::move(deps)), config_(config), cmds_(config.queue_depth), status_(deps_.bus, {}) {}
 
 VoiceService::~VoiceService() { stop(); }
 
@@ -425,10 +426,35 @@ void VoiceService::check_backstop() {
 void VoiceService::publish(VoiceState s, uint8_t level, const char* reason, const char* result) {
     const VoiceState before = state_.exchange(s);
     Map payload{{"state", Value(to_string(s))}};
-    if (s == VoiceState::Listening || s == VoiceState::Speaking) {
+    const bool metered = s == VoiceState::Listening || s == VoiceState::Speaking;
+    level_.store(metered ? level : 0, std::memory_order_relaxed);
+    if (metered) {
         payload.emplace("level", Value(static_cast<int>(level)));
         last_level_ = level;
         last_level_ms_ = deps_.now_ms();
+    }
+    // Not for a level alone (publish_level(), up to 20 Hz): the cell's lock
+    // stays off that path. The status is set before voice.state goes out,
+    // as a mirror would, so a listener that sees the event finds it there.
+    if (before != s || reason != nullptr || result != nullptr) {
+        decltype(VoiceStatus::reason) why;
+        // Every to_string(VoiceError) fits (the longest is 15 bytes).
+        if (reason != nullptr && !why.assign(reason)) WLOG_W(kTag, "reason cut: %s", reason);
+        const bool not_heard = result != nullptr && std::string_view(result) == "not_heard";
+        // Never an equal value: a new state differs in `state`, and an
+        // outcome moves `outcomes`.
+        status_.update([&](VoiceStatus& v) {
+            v.state = s;
+            if (reason != nullptr) {
+                v.outcome = VoiceStatus::Outcome::Error;
+                v.reason = why;
+                ++v.outcomes;
+            } else if (not_heard) {
+                v.outcome = VoiceStatus::Outcome::NotHeard;
+                v.reason = {};
+                ++v.outcomes;
+            }
+        });
     }
     if (reason != nullptr) payload.emplace("reason", Value(reason));
     if (result != nullptr) payload.emplace("result", Value(result));

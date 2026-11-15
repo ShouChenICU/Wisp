@@ -52,6 +52,7 @@ using wisp::voice::CaptureMode;
 using wisp::voice::VoiceConfig;
 using wisp::voice::VoiceService;
 using wisp::voice::VoiceState;
+using wisp::voice::VoiceStatus;
 
 static_assert(wisp::voice::kMaxRecordMs == 30000);
 
@@ -595,6 +596,98 @@ TEST_F(VoiceServiceTest, TransportErrorDuringAsrIsReported) {
     EXPECT_EQ(reasons(), std::vector<std::string>{"offline"});
     EXPECT_EQ(voice_locks(), 0u);
     EXPECT_TRUE(got_transcripts().empty());
+}
+
+// The outcome a round ends with stays in the status once it is idle
+// again; every error and every not heard moves the count, a cancel does
+// not.
+TEST_F(VoiceServiceTest, StatusCellCountsErrorAndNotHeard) {
+    add_asr();
+    make();
+    EXPECT_EQ(voice->status_cell().get(), VoiceStatus{});
+
+    server.push_asr(
+        FakeReply{.status = 0, .chunks = {}, .fail = wisp::net::TransportError::Connect});
+    mic->set_script({silence(300), sine(600), silence(900)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Vad));
+    ASSERT_TRUE(wait_until([&] { return !reasons().empty(); }, 3000));
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(reasons(), std::vector<std::string>{"asr_failed"});
+    EXPECT_EQ(states(), (std::vector<std::string>{"listening", "transcribing", "error", "idle"}));
+    VoiceStatus want;
+    want.outcome = VoiceStatus::Outcome::Error;
+    ASSERT_TRUE(want.reason.assign("asr_failed"));
+    want.outcomes = 1;
+    EXPECT_EQ(voice->status_cell().get(), want);
+
+    // A hold too short to send: not heard, and the reason goes.
+    clear_events();
+    mic->set_script({silence(100), sine(100)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_TRUE(saw("idle", "result", "not_heard"));
+    want = VoiceStatus{};
+    want.outcome = VoiceStatus::Outcome::NotHeard;
+    want.outcomes = 2;
+    EXPECT_EQ(voice->status_cell().get(), want);
+
+    // A cancelled hold ends with a plain idle and leaves the outcome.
+    clear_events();
+    mic->set_script({silence(300), sine(1000)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 2000));
+    voice->cancel_capture();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_FALSE(saw("idle", "result", "not_heard"));
+    EXPECT_EQ(voice->status_cell().get(), want);
+}
+
+TEST_F(VoiceServiceTest, LevelFollowsTheMicrophone) {
+    // Stops reading once the script is used up, so the capture stays in
+    // listening with the sine's level as the last one published.
+    struct StallingMic : FakeAudioIn {
+        using FakeAudioIn::FakeAudioIn;
+        wisp::Result<size_t> read(int16_t* frames, size_t count) override {
+            auto r = FakeAudioIn::read(frames, count);
+            if (script_done()) close_reads();
+            return r;
+        }
+    };
+    auto stalling = std::make_shared<StallingMic>(std::vector<wisp::test::audio::Segment>{}, order,
+                                                  &virtual_ms);
+    mic = stalling;
+    add_asr();
+    make();
+    EXPECT_EQ(voice->level(), 0);
+    const uint32_t rev = voice->status_cell().revision();
+    server.push_asr(asr_text("你好"));
+    stalling->set_script({silence(300), sine(1000)});
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return stalling->read_waiting(); }, 3000));
+    EXPECT_EQ(voice->state(), VoiceState::Listening);
+    EXPECT_GT(voice->level(), 50);
+
+    // The levels went out as before, and only the change to listening
+    // moved the status.
+    ASSERT_TRUE(bus.wait_idle(1000));
+    size_t levels = 0;
+    for (const Map& m : events()) {
+        ASSERT_EQ(str(m, "state"), "listening");
+        ASSERT_NE(m.find("level"), m.end());
+        ++levels;
+    }
+    EXPECT_GE(levels, 2u);
+    EXPECT_EQ(voice->status_cell().revision(), rev + 1);
+    EXPECT_EQ(voice->status_cell().get().state, VoiceState::Listening);
+
+    stalling->open_reads();
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    EXPECT_EQ(voice->level(), 0);
+    EXPECT_TRUE(wait_idle());
+    EXPECT_EQ(voice->level(), 0);
 }
 
 TEST_F(VoiceServiceTest, SpeaksSentencesInOrderAndPipelines) {

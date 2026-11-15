@@ -34,6 +34,7 @@ using wisp::agent::AgentConfig;
 using wisp::agent::AgentEvent;
 using wisp::agent::AgentService;
 using wisp::agent::AgentState;
+using wisp::agent::AgentStatus;
 using wisp::agent::ConversationStore;
 using wisp::agent::History;
 using wisp::agent::Message;
@@ -155,6 +156,22 @@ protected:
         return {};
     }
 
+    // Records every agent.state payload in order; call before start().
+    void record_bus_states() {
+        harness().bus.subscribe("agent.state", [this](const wisp::core::Event& e) {
+            EXPECT_EQ(e.source, "agent");
+            std::lock_guard<std::mutex> lock(mu);
+            bus_states.push_back(e.payload);
+        });
+    }
+
+    // The agent.state payloads so far, once the bus has delivered them.
+    std::vector<Map> bus_snapshot() {
+        EXPECT_TRUE(h->bus.wait_idle(1000));
+        std::lock_guard<std::mutex> lock(mu);
+        return bus_states;
+    }
+
     History history() { return *h->store->history(); }
 
     std::vector<std::string> notes() {
@@ -202,6 +219,7 @@ protected:
     std::mutex mu;
     std::vector<AgentEvent> events;
     std::vector<std::string> calls;
+    std::vector<Map> bus_states;
 };
 
 TEST_F(AgentLoop, PlainReplyEndsTurn) {
@@ -916,6 +934,154 @@ TEST_F(AgentLoop, PublishesAgentStateEvents) {
     EXPECT_TRUE(tool);
     ASSERT_FALSE(seen.empty());
     EXPECT_EQ(seen.back().payload.at("state").as_string(), "idle");
+}
+
+// The error a turn passes through stays counted once it is idle again.
+TEST_F(AgentLoop, StatusCellCountsErrorsThatEndInIdle) {
+    record_bus_states();
+    start();
+    EXPECT_EQ(svc->status_cell().get(), AgentStatus{});
+    h->server.push({.status = 401, .chunks = {"{\"error\":\"bad key\"}"}});
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_reason(), "unauthorized");
+    AgentStatus want;
+    want.errors = 1;
+    EXPECT_EQ(svc->status_cell().get(), want);
+    EXPECT_EQ(states(),
+              (std::vector<AgentState>{AgentState::Thinking, AgentState::Error, AgentState::Idle}));
+    EXPECT_EQ(bus_snapshot(), (std::vector<Map>{{{"state", Value("thinking")}},
+                                                {{"state", Value("error")}},
+                                                {{"state", Value("idle")}}}));
+
+    // A good turn leaves the count alone; the next error moves it on.
+    run_turn("ok?", "ok");
+    EXPECT_EQ(svc->status_cell().get(), want);
+    h->server.push({.status = 401, .chunks = {"{\"error\":\"bad key\"}"}});
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(3));
+    want.errors = 2;
+    EXPECT_EQ(svc->status_cell().get(), want);
+}
+
+// A tool name the model made up, longer than the status holds: the status
+// (and so agent.state) carries its first 72 bytes, cut at a code-point
+// boundary; the listener and the model see the whole name.
+TEST_F(AgentLoop, UnknownLongToolNameIsCutInTheStatus) {
+    const std::string name(100, 'n');
+    // Byte 72 falls inside the two-byte "é": the cut moves back to 71.
+    const std::string utf8 = std::string(71, 'u') + "\xC3\xA9" + std::string(27, 'v');
+    // Shared with the listener, which a failed assertion leaves behind.
+    struct Seen {
+        std::mutex mu;
+        std::vector<AgentStatus> during;
+    };
+    auto seen = std::make_shared<Seen>();
+    record_bus_states();
+    start();
+    AgentService* agent = svc.get();
+    const uint32_t watcher = svc->add_listener([seen, agent](const AgentEvent& e) {
+        if (e.kind != Kind::State || e.state != AgentState::Tool) return;
+        std::lock_guard<std::mutex> lock(seen->mu);
+        seen->during.push_back(agent->status_cell().get());
+    });
+    h->server.push(tool_reply("c1", name, "{}"));
+    h->server.push(text_reply("sorry"));
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    h->server.push(tool_reply("c2", utf8, "{}"));
+    h->server.push(text_reply("sorry"));
+    ASSERT_TRUE(svc->submit("again", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    svc->remove_listener(watcher);
+
+    {
+        std::lock_guard<std::mutex> lock(seen->mu);
+        ASSERT_EQ(seen->during.size(), 2u);
+        EXPECT_EQ(seen->during[0].state, AgentState::Tool);
+        EXPECT_EQ(seen->during[0].tool.view(), name.substr(0, 72));
+        EXPECT_EQ(seen->during[1].tool.view(), utf8.substr(0, 71));
+    }
+    std::vector<std::string> bus_tools;
+    for (const Map& m : bus_snapshot())
+        if (m.at("state").as_string() == "tool") bus_tools.push_back(m.at("tool").as_string());
+    EXPECT_EQ(bus_tools, (std::vector<std::string>{name.substr(0, 72), utf8.substr(0, 71)}));
+
+    // Unchanged: the listener's ToolStart and the tool error the model gets.
+    std::vector<std::string> started;
+    for (const auto& e : snapshot())
+        if (e.kind == Kind::ToolStart) started.push_back(e.tool);
+    EXPECT_EQ(started, (std::vector<std::string>{name, utf8}));
+    std::vector<Message> results;
+    for (const auto& m : history())
+        if (m.role == Role::Tool) results.push_back(m);
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(str(results[0].tool), name);
+    EXPECT_FALSE(results[0].ok);
+    auto r = wisp::from_json(str(results[0].text));
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r.value().find("error")->as_string(), "unknown_tool");
+    EXPECT_NE(str(results[0].text).find("no tool named " + name), std::string::npos);
+    EXPECT_EQ(svc->status_cell().get().state, AgentState::Idle);
+    EXPECT_TRUE(svc->status_cell().get().tool.empty());
+}
+
+// Two unknown names that agree in their first 72 bytes, the first one
+// called twice in a row: the listener sees a State for each change of
+// name and none for the repeat. agent.state is built from the status,
+// which cannot tell the two names apart, so it goes out once, with the
+// cut name (plan deviation 8).
+TEST_F(AgentLoop, AlikeLongToolNamesInARow) {
+    const std::string a = std::string(72, 'a') + std::string(28, '1');
+    const std::string b = std::string(72, 'a') + std::string(28, '2');
+    record_bus_states();
+    start();
+    h->server.push(
+        {.status = 200,
+         .chunks = {FakeLlmServer::sse_tool(0, "c1", a, "{}"),
+                    FakeLlmServer::sse_tool(1, "c2", a, "{}"),
+                    FakeLlmServer::sse_tool(2, "c3", b, "{}"),
+                    FakeLlmServer::sse_finish("tool_calls"), FakeLlmServer::sse_done()}});
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    std::vector<std::string> tools;
+    for (const auto& e : snapshot())
+        if (e.kind == Kind::State && e.state == AgentState::Tool) tools.push_back(e.tool);
+    EXPECT_EQ(tools, (std::vector<std::string>{a, b}));
+    EXPECT_EQ(bus_snapshot(),
+              (std::vector<Map>{{{"state", Value("thinking")}},
+                                {{"state", Value("tool")}, {"tool", Value(a.substr(0, 72))}},
+                                {{"state", Value("thinking")}},
+                                {{"state", Value("output")}},
+                                {{"state", Value("idle")}}}));
+}
+
+// The exact agent.state payloads of a tool turn and of a failed turn: the
+// status cell's mirror must publish these and nothing else.
+TEST_F(AgentLoop, AgentStatePayloadsArePinned) {
+    add_tool("scene.list");
+    record_bus_states();
+    start();
+    h->server.push(tool_reply("c1", "scene_list", "{}"));
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    const std::vector<Map> tool_turn{{{"state", Value("thinking")}},
+                                     {{"state", Value("tool")}, {"tool", Value("scene.list")}},
+                                     {{"state", Value("thinking")}},
+                                     {{"state", Value("output")}},
+                                     {{"state", Value("idle")}}};
+    EXPECT_EQ(bus_snapshot(), tool_turn);
+
+    h->server.push({.status = 401, .chunks = {"{\"error\":\"bad key\"}"}});
+    ASSERT_TRUE(svc->submit("again", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    std::vector<Map> both = tool_turn;
+    both.push_back({{"state", Value("thinking")}});
+    both.push_back({{"state", Value("error")}});
+    both.push_back({{"state", Value("idle")}});
+    EXPECT_EQ(bus_snapshot(), both);
 }
 
 TEST_F(AgentLoop, InterruptedTurnReportedAfterRestart) {

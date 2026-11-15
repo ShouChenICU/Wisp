@@ -93,10 +93,12 @@
 #include "wisp/agent/conversation.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
+#include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/llm_client.hpp"
 #include "wisp/net/request_watch.hpp"
@@ -108,6 +110,21 @@ namespace wisp::agent {
 enum class AgentState : uint8_t { Idle, Thinking, Tool, Output, WaitingConfirm, Error };
 // "idle" "thinking" "tool" "output" "waiting_confirm" "error"
 const char* to_string(AgentState s);
+
+// The agent's state as others follow it (AgentService::status_cell()).
+struct AgentStatus {
+    AgentState state = AgentState::Idle;
+    // Tool only. Every registered name fits; a longer one the model made
+    // up is cut here (at most 72 bytes, at a code-point boundary) and so
+    // in agent.state, which is built from this, but not in AgentEvent.
+    FixedString<72> tool;
+    // Moves each time the state becomes Error, so an error that is idle
+    // again by the time a follower looks is still seen.
+    uint32_t errors = 0;
+    bool operator==(const AgentStatus&) const = default;
+};
+// Event::source of agent.state.
+inline constexpr char kAgentSource[] = "agent";
 
 struct AgentEvent {
     enum class Kind : uint8_t {
@@ -267,6 +284,11 @@ public:
 
     AgentState state() const;
     ConversationView view() const;
+    // The state, as agent.state announces it: it moves exactly when that
+    // event is published. Followers must release their subscription
+    // before the service is destroyed (App::stop() resets it before the
+    // bus stops; wisp/core/state_cell.hpp).
+    const core::StateCell<AgentStatus>& status_cell() const;
 
     uint32_t add_listener(std::function<void(const AgentEvent&)> cb);
     // Once it returns, `id`'s callback is not running and never runs

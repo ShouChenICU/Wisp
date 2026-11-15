@@ -124,9 +124,11 @@
 #include <string>
 #include <string_view>
 
+#include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
+#include "wisp/core/state_cell.hpp"
 #include "wisp/core/tone_player.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/audio.hpp"
@@ -158,6 +160,21 @@ const char* to_string(VoiceState s);
 // "no_asr_profile" "no_tts_profile" "offline" "asr_failed" "tts_failed"
 // "mic_unavailable"
 const char* to_string(VoiceError e);
+
+// The voice state as others follow it (VoiceService::status_cell()). The
+// level is not in it: it changes up to 20 times a second
+// (VoiceService::level()).
+struct VoiceStatus {
+    enum class Outcome : uint8_t { None, Error, NotHeard };
+    VoiceState state = VoiceState::Idle;
+    Outcome outcome = Outcome::None;  // the last outcome; see outcomes
+    FixedString<16> reason;           // Error only: to_string(VoiceError)
+    // Moves with every error and every not heard, so an outcome that is
+    // idle again by the time a follower looks is still seen. A cancelled
+    // capture is no outcome.
+    uint32_t outcomes = 0;
+    bool operator==(const VoiceStatus&) const = default;
+};
 
 // Vad is dormant: nothing in the shell starts a Vad capture any more
 // (see wisp/shell/conversation.hpp), but the mode and its Vad class stay
@@ -252,6 +269,16 @@ public:
     // not heard, failed or transcribed (false before on_transcript runs).
     bool capturing() const { return capture_busy_.load(); }
     bool speaking() const { return state_.load() == VoiceState::Speaking; }
+    // The state, the last outcome and their count. It moves when the state
+    // changes or an outcome is published, not for a level; voice.state is
+    // still published as before, level included. Followers must release
+    // their subscription before the service is destroyed (App::stop()
+    // resets it before the bus stops; wisp/core/state_cell.hpp).
+    const core::StateCell<VoiceStatus>& status_cell() const { return status_; }
+    // 0..100: the level the latest voice.state carried while listening or
+    // speaking, 0 in any other state. Any thread; an atomic, so it is
+    // cheap enough for every frame.
+    uint8_t level() const { return level_.load(std::memory_order_relaxed); }
 
     // For TonePlayer::set_output_guard() (see the file header): an Alarm
     // stops the speech and waits up to kAlarmWaitMs for the output to
@@ -335,6 +362,10 @@ private:
     os::LargeUnique<net::RequestWatch> watch_;
 
     std::atomic<VoiceState> state_{VoiceState::Idle};
+    std::atomic<uint8_t> level_{0};
+    // Set in publish(). Declared after deps_ (the bus its constructor
+    // uses); App::stop() destroys the service before the bus stops.
+    core::StateCell<VoiceStatus> status_;
     std::atomic<bool> quit_{false};
     std::atomic<bool> wake_pending_{false};
 

@@ -71,6 +71,14 @@ struct Outcome {
     os::LargeString last_text;
 };
 
+// Reproduces the agent.state event set_state() published for every
+// change: the state, and the tool's name while it is Tool.
+void status_mirror(core::EventBus& bus, const AgentStatus&, const AgentStatus& after) {
+    Properties payload{{"state", to_string(after.state)}};
+    if (after.state == AgentState::Tool) payload["tool"] = after.tool.str();
+    bus.publish(core::Event{core::topics::kAgentState, kAgentSource, 0, std::move(payload)});
+}
+
 }  // namespace
 
 const char* to_string(AgentState s) {
@@ -123,7 +131,11 @@ struct AgentService::Impl {
     };
 
     Impl(AgentDeps d, AgentConfig c)
-        : deps(std::move(d)), cfg(c), next_steps(c.max_steps), next_turn_ms(c.turn_ms) {}
+        : deps(std::move(d)),
+          cfg(c),
+          status(deps.bus, AgentStatus{}, &status_mirror),
+          next_steps(c.max_steps),
+          next_turn_ms(c.turn_ms) {}
 
     // A start() that failed leaves nothing running, so it may be retried.
     void reset_start() {
@@ -244,16 +256,28 @@ struct AgentService::Impl {
     }
 
     void set_state(AgentState s, std::string_view tool_name = {}) {
+        // Cut before any lock is taken, so that the cell's covers memory
+        // work only.
+        decltype(AgentStatus::tool) shown;
+        if (s == AgentState::Tool) shown.assign_utf8(tool_name);
         {
             std::lock_guard<os::Mutex> lock(mu);
             if (state == s && tool == tool_name) return;
             state = s;
             tool.assign(tool_name);
+            // Under mu, so agent.state goes out in the order of the
+            // changes. Past the check above the state or the whole name
+            // changed, so the status changes too -- except for two names
+            // alike in their first 72 bytes in a row, both made up by the
+            // model (plan deviation 8): that agent.state is not published,
+            // the listeners' State below still is.
+            status.update([&](AgentStatus& v) {
+                if (s == AgentState::Error && v.state != AgentState::Error) ++v.errors;
+                v.state = s;
+                v.tool = shown;
+            });
         }
         WLOG_I(kTag, "state %s", to_string(s));
-        Properties payload{{"state", to_string(s)}};
-        if (s == AgentState::Tool) payload["tool"] = std::string(tool_name);
-        deps.bus.publish(core::Event{core::topics::kAgentState, "agent", 0, std::move(payload)});
         AgentEvent e;
         e.kind = AgentEvent::Kind::State;
         e.state = s;
@@ -922,6 +946,10 @@ struct AgentService::Impl {
     std::optional<std::string> confirm_text;
     AgentState state = AgentState::Idle;
     std::string tool;
+    // Set with state and tool, under mu (set_state()). Declared after deps
+    // (the bus its constructor uses); App::stop() destroys the service
+    // before the bus stops.
+    core::StateCell<AgentStatus> status;
     std::optional<uint32_t> running_turn;
     std::optional<Source> running_source;
     // ToolCtx::turn of the running turn. Conversation turn numbers start
@@ -1149,6 +1177,8 @@ ConversationView AgentService::view() const {
     });
     return v;
 }
+
+const core::StateCell<AgentStatus>& AgentService::status_cell() const { return impl_->status; }
 
 uint32_t AgentService::add_listener(std::function<void(const AgentEvent&)> cb) {
     Impl& s = *impl_;
