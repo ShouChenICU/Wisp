@@ -208,7 +208,7 @@ protected:
         });
         ASSERT_TRUE(voice->start());
         conv = std::make_unique<wisp::shell::ConversationController>(
-            wisp::shell::ConversationDeps{.bus = agent_h->bus, .agent = *agent, .voice = *voice});
+            wisp::shell::ConversationDeps{.agent = *agent, .voice = *voice});
         conv->start();
         h->on_ui([&] { h->shell().set_conversation(conv.get()); });
     }

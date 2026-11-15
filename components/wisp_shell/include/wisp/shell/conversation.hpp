@@ -168,7 +168,6 @@ struct TurnView {
 };
 
 struct ConversationDeps {
-    core::EventBus& bus;
     agent::AgentService& agent;
     voice::VoiceService& voice;
     std::function<bool()> tts_mute;        // read from the settings cell at each use; empty: false

@@ -65,7 +65,6 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
     std::function<bool()> network_up = deps_.network_up;
     std::function<bool()> network_expected = deps_.network_expected;
     conv_ = std::make_unique<shell::ConversationController>(shell::ConversationDeps{
-        .bus = deps_.bus,
         .agent = deps_.agent,
         .voice = *voice_,
         .tts_mute = [settings = &deps_.settings] { return tts_muted(*settings); },

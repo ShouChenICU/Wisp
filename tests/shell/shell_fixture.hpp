@@ -161,7 +161,6 @@ protected:
         tones.set_output_guard([v = voice.get()](core::ToneKind k) { return v->may_play_tone(k); });
 
         conv = std::make_unique<shell::ConversationController>(shell::ConversationDeps{
-            .bus = h->bus,
             .agent = *agent,
             .voice = *voice,
             .tts_mute = [this] { return mute.load(); },
