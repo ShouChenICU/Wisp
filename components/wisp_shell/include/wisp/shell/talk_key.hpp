@@ -25,7 +25,8 @@
 // is busy they wait in the inbox, in order. An overflow (more than 8 edges
 // waiting) drops the oldest, is counted (overflows()) and logged; a down
 // that finds the key still down (its up was dropped) first ends the
-// previous press as that up would have.
+// previous press as that up would have, dropping a hold whose press it
+// can show was short.
 //
 // Timing. The hold is timed from the down edge's own time, not from when
 // it was handled, with now_ms() on a kPollMs timer that runs only while
@@ -94,6 +95,10 @@ private:
     void on_edge(const core::ButtonEdge& e);
     void on_down(uint64_t at_us);
     void on_up(uint64_t at_us);
+    // Whether the press that went down at `prev_down_us`, whose up was
+    // dropped, was released sooner than a hold takes; `next_down_us` is the
+    // down that found the key still down.
+    bool previous_press_was_short(uint64_t prev_down_us, uint64_t next_down_us) const;
     void tick();
 
     core::EventBus& bus_;

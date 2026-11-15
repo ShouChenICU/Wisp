@@ -92,10 +92,12 @@ void TalkKey::on_down(uint64_t at_us) {
     if (timer_) timer_->stop();
     bool was_pressed = false;
     bool was_holding = false;
+    uint64_t prev_down_us = 0;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         was_pressed = pressed_;
         was_holding = holding_;
+        prev_down_us = down_us_;
         pressed_ = true;
         holding_ = false;
         down_us_ = at_us;
@@ -105,8 +107,14 @@ void TalkKey::on_down(uint64_t at_us) {
     }
     // Still down: the previous press's up was dropped (the inbox drops its
     // oldest edge when full). End that press as its up would have, or its
-    // capture runs on to kMaxRecordMs.
-    if (was_holding) {
+    // capture runs on to kMaxRecordMs: a hold whose press was short (as
+    // on_up() decides) is dropped. The lost up lies between the two downs,
+    // so a down less than kHoldStartMs after the previous one proves it
+    // short; so does the up the listener stored, while it is still that
+    // press's (a later up overwrites it).
+    if (was_holding && previous_press_was_short(prev_down_us, at_us)) {
+        conv_.hold_cancel();
+    } else if (was_holding) {
         conv_.hold_end();
     } else if (was_pressed) {
         conv_.press_end();
@@ -114,6 +122,13 @@ void TalkKey::on_down(uint64_t at_us) {
     if (lit) conv_.press_begin();
     // Not under mu_: start() may wait for a tick that takes it.
     if (timer_) timer_->start();
+}
+
+bool TalkKey::previous_press_was_short(uint64_t prev_down_us, uint64_t next_down_us) const {
+    const uint64_t hold_us = uint64_t{voice::kHoldStartMs} * 1000;
+    if (next_down_us >= prev_down_us && next_down_us - prev_down_us < hold_us) return true;
+    const uint64_t up_us = last_up_us_.load(std::memory_order_acquire);
+    return up_us >= prev_down_us && up_us <= next_down_us && up_us - prev_down_us < hold_us;
 }
 
 void TalkKey::on_up(uint64_t at_us) {

@@ -396,6 +396,39 @@ TEST_F(TalkKeyTest, InboxOverflowIsCountedAndLogged) {
     EXPECT_EQ(requests(wisp::test::kAsrPath), 0u);
 }
 
+// The up of a short press whose hold the timer began anyway (the up was
+// stored after the tick, as in LateUpOfAShortPressDropsTheHold) is the
+// oldest edge when the inbox overflows, so it is dropped. The next down,
+// less than kHoldStartMs after that press's down, shows the press was
+// short: the hold is dropped, not sent.
+TEST_F(TalkKeyTest, LostUpOfAShortPressDropsTheHold) {
+    make_key();
+    mic->hold_at(0);
+    const uint64_t down = key_ms.load();
+    press(Edge::Down);
+    key_ms += 600;
+    ASSERT_TRUE(wait_until([&] { return conv->holding(); }, 1000));
+    mic->release();
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    {
+        wisp::test::BusFlood flood(h->bus);
+        flood.hold();
+        emit(Edge::Up, down + 100);  // dropped below
+        // Four short presses: nine edges in a ring of eight.
+        for (uint64_t i = 0; i < 4; ++i) {
+            emit(Edge::Down, down + 150 + i * 20);
+            emit(Edge::Up, down + 160 + i * 20);
+        }
+        flood.release();
+    }
+    ASSERT_TRUE(h->bus.wait_idle(2000));
+    EXPECT_EQ(key->overflows(), 1u);
+    EXPECT_FALSE(conv->holding());
+    ASSERT_TRUE(settled());
+    EXPECT_EQ(requests(wisp::test::kAsrPath), 0u);
+}
+
 // The up of a hold already under way is the oldest edge when the inbox
 // overflows, so it is dropped: the next down ends that hold first (its
 // recording is sent) and then begins its own press, instead of leaving
