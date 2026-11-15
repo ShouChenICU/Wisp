@@ -970,16 +970,44 @@ TEST(FactoryReset, PowerKeyDuringResetDialogIsIgnored) {
 }
 
 // A request made before the screen exists (its event published before
-// anyone listens) is shown once the screen is built, exactly once.
+// anyone listens) is shown once the screen is built, exactly once: by the
+// reset status cell's first delivery to the duties, one UI iteration
+// after start().
 TEST(FactoryReset, RequestBeforeTheScreenExistsIsShown) {
     UiNetHarness h;
     wisp::app::request_factory_reset(*h.app);
     ASSERT_TRUE(h.start("system."));
-    // Already up when start() returns (the screen's build took it).
-    EXPECT_TRUE(dialog_says(h, "恢复出厂设置"));
+    EXPECT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
     // Past the event and the cell's first delivery: still one dialog.
     h.app->bus().wait_idle(2000);
-    wisp::os::sleep_ms(1200);
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h.app), h.app->ui()));
+    run_on_ui_blocking(h.app->ui(), [] {});
+    EXPECT_EQ(msgboxes(h), 1);
+}
+
+// A request left unanswered when the App stops is not asked at its next
+// start (the stop moves the reset status to Idle); a new request is.
+TEST(FactoryReset, RequestLeftAtStopIsNotAskedAtTheNextStart) {
+    using wisp::app::ResetStatus;
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::request_factory_reset(*h.app);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    const uint32_t seq = wisp::app::reset_status(*h.app).get().seq;
+    h.app->stop();
+    const ResetStatus idle = wisp::app::reset_status(*h.app).get();
+    EXPECT_EQ(idle.phase, ResetStatus::Phase::Idle);
+    EXPECT_GT(idle.seq, seq);
+
+    ASSERT_TRUE(h.app->start());
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h.app), h.app->ui()));
+    run_on_ui_blocking(h.app->ui(), [] {});
+    EXPECT_EQ(msgboxes(h), 0);
+
+    wisp::app::request_factory_reset(*h.app);
+    EXPECT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h.app), h.app->ui()));
+    run_on_ui_blocking(h.app->ui(), [] {});
     EXPECT_EQ(msgboxes(h), 1);
 }
 
@@ -1011,8 +1039,8 @@ TEST(FactoryReset, RequestWithALostEventIsShown) {
 }
 
 // The reset status cell shows the dialog while the event is held back; when
-// the event arrives late -- after the user already said "no" -- it finds
-// the request taken: the dialog does not come back.
+// the event arrives late -- after the user already said "no" -- nothing
+// follows the event: the dialog does not come back.
 TEST(FactoryReset, LateEventDoesNotReopenTheDialog) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));
@@ -1036,8 +1064,8 @@ TEST(FactoryReset, LateEventDoesNotReopenTheDialog) {
     ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
     EXPECT_EQ(reset_states(h), (std::vector<std::string>{"requested", "cancelled"}));
     h.app->bus().wait_idle(2000);
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h.app), h.app->ui()));
     run_on_ui_blocking(h.app->ui(), [] {});
-    wisp::os::sleep_ms(1200);
     EXPECT_EQ(msgboxes(h), 0);
 }
 

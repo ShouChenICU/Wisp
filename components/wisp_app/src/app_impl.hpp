@@ -277,11 +277,6 @@ struct App::Impl {
     // one that fails (set_reset_spawner()).
     std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>
         reset_spawner;
-    // A factory reset was requested and no screen has taken it up yet (see
-    // take_factory_reset_request()). Kept beside the event so a request
-    // made before the screen subscribes, or whose event the bus dropped,
-    // still reaches the screen.
-    std::atomic<bool> reset_pending{false};
     // The last reset_task gave up without erasing (factory_reset()) and has
     // returned, so start_factory_reset() may replace it.
     std::atomic<bool> reset_failed{false};

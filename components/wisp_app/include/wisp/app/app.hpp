@@ -472,7 +472,6 @@ private:
     friend bool start_factory_reset(App&);
     friend void join_factory_reset(App&);
     friend bool factory_reset_running(App&);
-    friend bool take_factory_reset_request(App&);
     friend void set_reset_erase_budget(App&, uint32_t);
     friend const core::StateCell<ResetStatus>& reset_status(App&);
     // The firmware update's confirmation (src/firmware_confirm.hpp) keeps

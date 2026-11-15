@@ -144,11 +144,9 @@ private:
     // Turns a sleeping screen on for something the user is waiting to see
     // (a pairing code, the factory-reset question). UI thread.
     void wake_screen();
-    // UI thread: the reset status cell's callback.
+    // UI thread: the reset status cell's callback. Opens the dialog for a
+    // request not yet handled, closes it on any other phase.
     void on_reset_status(const ResetStatus& status);
-    // UI thread: takes a pending factory-reset request (see
-    // take_factory_reset_request()) and shows the dialog for it.
-    void sync_reset();
     void show_reset_dialog();
     void close_reset_dialog();
     // UI thread: takes a pending firmware request and shows the dialog for
@@ -210,6 +208,12 @@ private:
     // above so neither one's answer (or the power key) can be taken for
     // the other. The system layer opens one dialog at a time.
     lv_obj_t* reset_box_ = nullptr;
+    // The seq of the last Requested status shown (or refused), so a call
+    // for the same request -- the cell moved for something else, or its
+    // first delivery after a restart -- does not ask again. stop() forgets
+    // it while that request is still unanswered (its dialog open), so the
+    // next start() asks again. Seq 0 is the status before any request.
+    uint32_t handled_reset_seq_ = 0;
     // The firmware-update confirmation; the third kind of dialog, likewise
     // never stacked on the other two.
     lv_obj_t* fw_box_ = nullptr;

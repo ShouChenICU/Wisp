@@ -128,7 +128,6 @@ void SystemDuties::start() {
     fw_sub_ = firmware_progress(app_).subscribe(
         [this](const core::FirmwareProgress& p) { on_firmware_progress(p); }, &ui_);
 
-    sync_reset();
     sync_firmware();
     refresh_timer_ = lv_timer_create(&SystemDuties::refresh_timer_cb, kUiRefreshMs, this);
 
@@ -172,6 +171,9 @@ void SystemDuties::stop() {
     *alive_ = false;
     alive_.reset();
     close_confirm_dialog();
+    // A request still waiting for its answer stays pending in the reset
+    // status: the next start() asks it again.
+    if (reset_box_ != nullptr) handled_reset_seq_ = 0;
     close_reset_dialog();
     close_firmware_dialog();
     // The cards live on the top layer.
@@ -368,18 +370,25 @@ void SystemDuties::wake_screen() {
     }
 }
 
-void SystemDuties::on_reset_status(const ResetStatus&) {
-    sync_reset();
+void SystemDuties::on_reset_status(const ResetStatus& status) {
+    // The status is the request: a Requested this object has not handled
+    // opens the dialog (show_reset_dialog() leaves an open one as it is
+    // and refuses the request when another dialog is open); every other
+    // phase -- the answer, "done", "failed", "idle" -- closes it. A call
+    // may stand for several moves (a cancel and a new request): only the
+    // last one's seq counts.
+    if (status.phase == ResetStatus::Phase::Requested) {
+        if (status.seq != handled_reset_seq_) {
+            handled_reset_seq_ = status.seq;
+            show_reset_dialog();
+        }
+    } else {
+        close_reset_dialog();
+    }
     // A confirmed reset that failed lets the language follow again: what
     // was stored meanwhile is shown now. Only the language is read.
     apply_system_language(app_.system_settings().cell().read(
         [](const core::SystemSettingsValues& v) { return ui::parse_lang(v.language); }));
-}
-
-void SystemDuties::sync_reset() {
-    if (take_factory_reset_request(app_)) {
-        show_reset_dialog();
-    }
 }
 
 void SystemDuties::show_reset_dialog() {

@@ -1011,6 +1011,14 @@ void App::stop() {
         impl_->net->stop();
         impl_->net.reset();
     }
+    // The reset status outlives this run (it lives on Impl), and the next
+    // start's duties would show a request still in it: with the duties
+    // gone, the reset task joined and no route left to ask, it goes back
+    // to Idle (a new seq; the mirror publishes nothing for Idle).
+    impl_->reset_status.update([](ResetStatus& s) {
+        s.phase = ResetStatus::Phase::Idle;
+        ++s.seq;
+    });
     // Scene lifecycle edges: the gate closes (a push in progress finishes
     // first), then the inbox goes (a drain in progress finishes first), so
     // the handler never reaches the agent reset next. Before the

@@ -14,7 +14,7 @@
 //
 // Every state goes into the App's reset status cell (reset_status()),
 // whose mirror publishes the system.factory_reset event; nothing else
-// does.
+// does. The cell is the request too: no flag is kept beside it.
 
 #include <cstdint>
 #include <functional>
@@ -55,20 +55,16 @@ const core::StateCell<ResetStatus>& reset_status(App& app);
 using TaskSpawner =
     std::function<std::unique_ptr<os::Task>(const os::TaskConfig&, std::function<void()>)>;
 
-// Asks the device to confirm a factory reset on its screen: marks the
-// request pending, then publishes system.factory_reset
-// {state:"requested"}. Any thread.
+// Asks the device to confirm a factory reset on its screen: moves the
+// reset status to Requested (a new seq), whose mirror publishes
+// system.factory_reset {state:"requested"}. The screen follows the cell:
+// a Requested status with a seq it has not handled opens the dialog, so a
+// request is shown once even if the screen did not exist yet or the bus
+// dropped the event. Any thread.
 void request_factory_reset(App& app);
 
-// Clears a pending request and returns whether there was one. The screen
-// calls it on every move of the reset status cell and when it starts, and
-// shows the dialog when it returns true -- so a request is shown once even
-// if the screen did not exist yet or the bus dropped the event. Any
-// thread.
-bool take_factory_reset_request(App& app);
-
-// Clears any pending request and publishes system.factory_reset
-// {state:"cancelled"}. Any thread.
+// Publishes system.factory_reset {state:"cancelled"}, which closes the
+// screen's dialog if it is open. Any thread.
 void cancel_factory_reset(App& app);
 
 // The reset itself. Everything from step 1 to 3 is one job on the flash
@@ -105,7 +101,9 @@ bool start_factory_reset(App& app);
 bool factory_reset_running(App& app);
 
 // Waits for a "wisp.reset" task to finish. App::stop() calls it before
-// tearing down the services the reset uses.
+// tearing down the services the reset uses, and then moves the reset
+// status to Idle (no event), so the next start() does not show the last
+// run's request.
 void join_factory_reset(App& app);
 
 // How long factory_reset() keeps trying to start its erase job (30 s by

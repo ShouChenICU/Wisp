@@ -295,7 +295,6 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulat
 - Parked: LeakSanitizer reports the glyph slot table in `a8_font.cpp` (kept for the whole process) in every UI test binary, so ASan runs of `ui_runtime_test` and `ui_cells_test` need `detect_leaks=0` or a suppression file.
 - Parked: `tools/check_topics.py` would report a dotted code identifier or file name (`` `wisp.fs` ``) in the first column of another table inside the "Event topics" section as a topic row; no such table exists there today.
 - Parked: no test fails if `UiRuntime`'s final drain after `stop()` were to run dispatch slots.
-- For the plan that moves subscribers onto the cells: the factory-reset status cell (`reset_status()`) keeps its phase and `seq` across `App::stop()`/`start()`, as `reset_pending` does; its first subscriber needs it reset to idle in `stop()` (an `update()` keeping `seq`; the mirror publishes nothing for idle), or a dialog would reopen for the last run's request.
 - For the plan that moves subscribers onto the cells: the power supply cell changes on every battery-percent step (up to once a second), so a subscriber that only follows charging or low filters in its callback, or the cell gets a coarser twin; after a failed read the cell keeps the last good supply while `PowerMonitor::last_status()` is empty, so the cell alone does not show that the reading is stale; on a boot that is already low a subscriber may briefly see the first percent with `low` still false before the next delivery.
 
 ## State cells beside the events: device checks not run
@@ -330,10 +329,8 @@ Notes for the next state-cell plan (removing the periodic compensations).
 
 - `PowerSupply` has no `known` flag: after a failed read the supply cell keeps the last good sample, so NetWiring's powered-Wi-Fi check reads `PowerMonitor::last_status()` instead of the cell. A `known` flag (false after a failed read) would let followers read only the cell and be woken by a failed read.
 - The UI-thread `sync_wifi()`/`sync_pairing()` of the system duties take the Wi-Fi and pairing services' mutexes, which are held across driver calls and persistence; read the snapshot cells instead.
-- When the system duties' start-time sync goes, a test must show that the reset status cell's initial delivery alone opens the factory-reset dialog.
-- `reset_status` survives `App::stop()`/`start()`; once the dialog opens on `seq` alone, the last run's request would reopen it (reset it to idle in `stop()`).
 - Untested abort paths: the agent failing to start followed by `App::stop()`, and a failed `VoiceWiring::start()`. Both release every subscription by reading the code; a leak would abort in `~StateCell`, but no test drives either path.
-- At start the system duties call `sync_wifi()` twice (the Wi-Fi and hotspot cells' first deliveries), and `sync_reset()` and `sync_firmware()` twice each (the start-time call and the cell's first delivery), until those start-time syncs go.
+- At start the system duties call `sync_wifi()` twice (the Wi-Fi and hotspot cells' first deliveries), and `sync_firmware()` twice (the start-time call and the cell's first delivery), until that start-time sync goes.
 - Home can show the idle hint for one frame before a voice error's hint: its mood follows the voice cell's `outcomes` on the UI thread, while `ConversationController` sets the error on `wisp.bus`.
 - A standby and a wake handled inside one UI loop iteration coalesce to `Active` for the status shell, which then leaves the pull-down panel open across the blink. Power key presses are seconds apart, so this needs two posted jobs drained together.
 

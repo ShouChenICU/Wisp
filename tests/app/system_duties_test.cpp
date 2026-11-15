@@ -335,7 +335,9 @@ TEST_F(SystemDutiesTest, ResetAndFirmwareDialogs) {
     on_home();
     ASSERT_TRUE(click("否"));
     ASSERT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
-    EXPECT_FALSE(wisp::app::take_factory_reset_request(*h->app));
+    // The reset request was answered: nothing is left for a later start.
+    EXPECT_EQ(wisp::app::reset_status(*h->app).get().phase,
+              wisp::app::ResetStatus::Phase::Cancelled);
 }
 
 // Connectivity spec 8.1's cards over the home screen.
@@ -582,6 +584,94 @@ TEST_F(SystemDutiesTest, PairingCodeIssuedBeforeStartShowsTheCard) {
 
     flood.release();
     h->app->ui()->set_paused(false);
+}
+
+// A factory reset requested while the duties were stopped opens the
+// dialog at their start: the reset status cell's first delivery, with the
+// bus held and no LVGL timer running.
+TEST_F(SystemDutiesTest, ResetRequestedBeforeStartOpensTheDialog) {
+    boot();
+    stop_duties();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+
+    wisp::app::request_factory_reset(*h->app);
+    flood.flood(256);
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_FALSE(top_says("恢复出厂设置"));
+
+    start_duties();
+    EXPECT_TRUE(wait_until([&] { return top_says("恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// Ten moves of the reset status while the UI task is held: one call
+// follows, for the last. Ending on a request, the dialog opens once;
+// ending on "cancelled" with the dialog open, it closes.
+TEST_F(SystemDutiesTest, ResetDialogEndsAtTheLastOfTenChangesWithTheUiHeld) {
+    boot();
+    stop_lvgl_timers();
+    wisp::test::BusFlood flood(h->app->bus());
+    flood.hold();
+    {
+        UiHold hold(h->app->ui());
+        for (int i = 0; i < 5; ++i) {
+            wisp::app::cancel_factory_reset(*h->app);
+            wisp::app::request_factory_reset(*h->app);
+        }
+        flood.flood(256);
+        hold.release();
+    }
+    EXPECT_TRUE(wait_until([&] { return top_says("恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+
+    {
+        UiHold hold(h->app->ui());
+        for (int i = 0; i < 5; ++i) {
+            wisp::app::request_factory_reset(*h->app);
+            wisp::app::cancel_factory_reset(*h->app);
+        }
+        flood.flood(256);
+        hold.release();
+    }
+    EXPECT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
+
+    flood.release();
+    h->app->ui()->set_paused(false);
+}
+
+// The duties stopped and started again (the same object) with a request
+// still unanswered: its dialog went with the stop, and the request is
+// still pending, so the start asks again, once. An answered request is
+// not asked again.
+TEST_F(SystemDutiesTest, UnansweredResetRequestIsAskedAgainAfterARestart) {
+    boot();
+    wisp::app::request_factory_reset(*h->app);
+    ASSERT_TRUE(wait_until([&] { return top_says("恢复出厂设置"); }, 3000));
+    stop_duties();
+    EXPECT_EQ(msgboxes(), 0);
+
+    start_duties();
+    EXPECT_TRUE(wait_until([&] { return top_says("恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 1);
+
+    ASSERT_TRUE(click("否"));
+    ASSERT_TRUE(wait_until([&] { return msgboxes() == 0; }, 3000));
+    stop_duties();
+    start_duties();
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(*h->app), h->app->ui()));
+    run_on_ui_blocking(h->app->ui(), [] {});
+    EXPECT_EQ(msgboxes(), 0);
 }
 
 // A language stored while the duties were stopped is applied at their
