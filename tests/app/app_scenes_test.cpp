@@ -1058,7 +1058,13 @@ TEST(AppNotifications, DeletedSceneLosesItsNotices) {
     ASSERT_TRUE(notes->post(n, false));
     ASSERT_TRUE(b.h.app->scenes()->open("pomodoro"));
     ASSERT_TRUE(b.h.app->scenes()->close("pomodoro"));
-    // Both edges were pushed into an idle inbox before close() returned.
+    // Both edges were pushed before close() returned, but `stopped` may
+    // have found the inbox's run for `running` still going: that run's end
+    // schedules the next one, possibly behind a first barrier
+    // (slot_barrier()). A second barrier is queued after the first has
+    // run, so after that run ended and scheduled the next: both edges have
+    // been handled when it returns.
+    ASSERT_TRUE(wisp::test::slot_barrier(b.h.app->bus(), &b.h.app->bus()));
     ASSERT_TRUE(wisp::test::slot_barrier(b.h.app->bus(), &b.h.app->bus()));
     EXPECT_EQ(notes->unread_count(), 2u);
     ASSERT_NO_FATAL_FAILURE(confirm_delete(b.h, token, "pomodoro"));
