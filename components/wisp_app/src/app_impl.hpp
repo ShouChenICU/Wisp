@@ -84,18 +84,11 @@ struct App::Impl {
     // Profile ids come from Platform::random (a weak fallback without it).
     // Saved on the storage worker (submit_io()).
     core::ModelProfileService models{storage, bus, platform.random, io_submitter()};
-    // Brightness goes through PowerManager so a change made in standby
-    // waits for the wake-up (spec 5.4). power_manager is only reset after
-    // the HTTP server and the net task have stopped (App::stop()), so no
-    // caller races with it going away. Every stored batch is published as
-    // system.settings (spec 8.3), by its cell; SystemDuties moves the system
-    // language (ui::lang()) and an open confirm dialog to a new language
-    // from it. Declared after `bus`, which its cell takes.
-    core::SystemSettings system_settings{*platform.settings, bus, [this](uint8_t level) {
-                                             if (power_manager) {
-                                                 power_manager->set_brightness(level);
-                                             }
-                                         }};
+    // Every stored batch is published as system.settings (spec 8.3), by
+    // its cell; PowerManager moves the panel brightness and SystemDuties the
+    // system language (ui::lang()) and an open confirm dialog from it.
+    // Declared after `bus`, which its cell takes.
+    core::SystemSettings system_settings{*platform.settings, bus};
     // The factory reset's state (factory_reset.hpp); its mirror publishes
     // system.factory_reset. Declared after `bus`, which its constructor
     // takes. A plain member, it outlives App::stop() (and bus.stop()) and

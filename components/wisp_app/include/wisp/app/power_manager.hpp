@@ -5,8 +5,9 @@
 //
 //   Active       normal.
 //   Dim          kDimLeadMs before the idle screen-off: the panel drops to
-//                kDimPercent of the set brightness (at least 10). No device
-//                is told; any activity returns to Active.
+//                kDimPercent of the set brightness (at least the
+//                brightness setting's minimum). No device is told; any
+//                activity returns to Active.
 //   Standby      after Settings "power"/"screen_off_s" (default 60, 0 never)
 //                of idleness, or enter_standby() (a short press of the
 //                power key). The UI pauses and every device that declares
@@ -58,9 +59,14 @@
 // Settings: the timeouts come only from PowerManagerDeps::system_settings,
 // applied by the constructor from the cell's get() and then by a
 // subscription on wisp.bus; PowerManager reads no settings store itself.
-// Without the cell (tests) they stay at their defaults. A value in the
-// cell that core::SystemSettings::set() would refuse (the cell carries
-// what is stored, hand-edited values included) counts as its default, as
+// The panel brightness starts at the cell's value (App set the panel to it
+// before the UI started) and, with a UI, follows the cell through a second
+// subscription on the UI task, which coalesces a burst to its last value
+// and needs neither a post-queue slot nor the bus. Without a UI it does not
+// follow (a wisp.bus callback must not call a device, and no one looks at
+// that panel). Without the cell (tests) the timeouts and the brightness
+// stay at their defaults. A timeout in the cell that
+// core::SystemSettings::set() would refuse counts as its default, as
 // SystemSettings::get() reports it.
 //
 // Any button edge resets the idle clock and, while the screen is off,
@@ -132,9 +138,9 @@ struct PowerManagerDeps {
     // without one), besides resetting the idle clock: the user is there
     // (an alarm stops, spec 5.1). Keep it short and non-blocking.
     std::function<void()> on_activity;
-    // SystemSettings::cell(): the power keys follow it. Null in tests that
-    // need no settings: then the timeouts are the defaults
-    // (core::kDefaultScreenOffS, core::kDefaultDeepAfterS).
+    // SystemSettings::cell(): the power keys and, with a UI, the panel
+    // brightness follow it. Null in tests that need no settings: then the
+    // timeouts and the brightness are the schema's defaults.
     // Must outlive the PowerManager.
     const core::StateCell<core::SystemSettingsValues>* system_settings = nullptr;
 };
@@ -147,9 +153,10 @@ public:
     explicit PowerManager(PowerManagerDeps deps);
 
     // Removes the button listener, then releases the button follower and
-    // the settings subscription, drops the wake-lock change callback and
-    // clears the touch-activity hook (on the UI task, after every job this
-    // posted). Does not leave standby: App::stop() does that first.
+    // the settings and brightness subscriptions, drops the wake-lock change
+    // callback and clears the touch-activity hook (on the UI task, after
+    // every job this posted). Does not leave standby: App::stop() does that
+    // first.
     // Precondition: not called on the UI task. Jobs this posted (tick and
     // lock-change evaluations) capture `this` and could not be drained from
     // there; App::stop() destroys it from its own thread.
@@ -190,14 +197,13 @@ public:
     // there against the state at that moment.
     void tick(uint64_t now_ms);
 
-    // Sets the panel brightness (core::SystemSettings' apply hook): applied
-    // right away while the panel is on (the dimmed share of it at Dim),
-    // remembered while it is off and applied on wake -- changing brightness
-    // never wakes the screen. Callable from any thread and never blocks:
-    // off the UI task one "apply the latest level" job is posted (later
-    // calls only replace the level); if the post queue is full the change
-    // is dropped with a warning. Callers must stop calling this before the
-    // PowerManager is destroyed.
+    // Sets the panel brightness: applied right away while the panel is on
+    // (the dimmed share of it at Dim), remembered while it is off and
+    // applied on wake -- changing brightness never wakes the screen. With a
+    // UI the cell follower calls it there; any caller must be on the UI task
+    // (a call from elsewhere is ignored, logged once). Without a UI
+    // (headless, tests) it runs on the caller's thread. Callers must stop
+    // calling this before the PowerManager is destroyed.
     void set_brightness(uint8_t level);
 
     // Excludes the power key from the "any button wakes it" listener
@@ -263,13 +269,18 @@ private:
     void light_sleep_off();
 
     // Brightness: the panel shows `user_brightness_` at Active and its dim
-    // share at Dim. Caller holds transition_mutex_.
-    void apply_brightness(uint8_t level);
+    // share at Dim. apply_brightness() takes transition_mutex_;
+    // show_brightness() and dim_brightness() need it held. On the UI task
+    // (or headless).
+    void apply_brightness(int level);
+    // The cell follower's body: apply_brightness() for a level it has not
+    // applied yet.
+    void follow_brightness(int level);
     void show_brightness(int level);
     int dim_brightness() const;
 
-    std::atomic<uint8_t> requested_brightness_{0};
-    std::atomic<bool> brightness_job_queued_{false};
+    // set_brightness() was called off the UI task (logged once).
+    std::atomic<bool> off_thread_brightness_logged_{false};
 
     core::EventBus& bus_;
     core::DeviceRegistry& registry_;
@@ -333,8 +344,12 @@ private:
     // True from just before the panel is put to sleep until just after it
     // wakes; brightness changes in between are only remembered.
     bool panel_asleep_ = false;
-    int user_brightness_ = 200;   // what the setting asks for
-    int shown_brightness_ = 200;  // what the panel was last told
+    // What the setting asks for, and what the panel was last told.
+    int user_brightness_ = core::setting_default_int(core::SettingId::Brightness);
+    int shown_brightness_ = core::setting_default_int(core::SettingId::Brightness);
+    // The cell's level the follower last applied (the constructor's before
+    // its first call); touched only by the constructor and the follower.
+    int followed_brightness_ = core::setting_default_int(core::SettingId::Brightness);
 
     std::atomic<bool> tick_eval_queued_{false};
     std::atomic<bool> lock_eval_queued_{false};
@@ -350,6 +365,9 @@ private:
     core::CellSubscription button_follower_;
     // Follows PowerManagerDeps::system_settings; empty without one.
     core::CellSubscription settings_sub_;
+    // The brightness follower, on the UI task; empty without the cell, a
+    // display or a UI.
+    core::CellSubscription brightness_sub_;
 };
 
 }  // namespace wisp::app

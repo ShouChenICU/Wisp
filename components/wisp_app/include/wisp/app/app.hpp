@@ -20,8 +20,9 @@
 //      the storage workers (wisp.fs, and wisp.sd.io with a card slot),
 //      and a periodic 2000ms timer that queues StorageManager::refresh()
 //      on the card's worker (wisp.sd.io, else wisp.fs).
-//   4. If a display with role main is registered: applies the `display`
-//      settings namespace's `brightness` key (default 200) to it, starts a
+//   4. If a display with role main is registered: applies the brightness
+//      setting (the settings cell's, so its default when the stored value
+//      is missing or invalid) to it, starts a
 //      UiRuntime over it (plus the touch panel with role main, if any).
 //      Otherwise records the "mode": "headless" boot-report note.
 //      Either way, constructs the PowerMonitor (spec 6.3/6.7)
@@ -364,8 +365,8 @@ public:
     net::TimeSyncService* time_sync();
     // Always available; loaded from storage by start() (step 3).
     core::ModelProfileService& models();
-    // Applies brightness through PowerManager::set_brightness() while
-    // started (otherwise the stored value takes effect at the next boot).
+    // PowerManager follows its cell's brightness while started (otherwise
+    // the stored value takes effect at the next boot).
     core::SystemSettings& system_settings();
 
     // Non-null for the whole lifetime of a started App (see

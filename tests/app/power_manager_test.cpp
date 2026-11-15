@@ -16,6 +16,7 @@
 #include "support/fake_devices.hpp"
 #include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
+#include "support/ui_hold.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_key_controller.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -840,10 +841,8 @@ TEST(PowerManager, ConfirmDialogOpenThenAutoStandbyThenPowerKeyLongWakes) {
 
 TEST(PowerManager, SetBrightnessWhileActiveAppliesImmediately) {
     Fixture f;
-    // Called from a non-UI thread (as the admin HTTP handler would): the
-    // write is handed to the UI task, so the owner-thread assert holds.
-    f.pm->set_brightness(80);
-    f.drain_ui();
+    // With a UI, set_brightness() is a UI-thread call (the cell follower's).
+    f.run_on_ui([&] { f.pm->set_brightness(80); });
     EXPECT_EQ(f.display->brightness(), 80);
     EXPECT_EQ(f.display->set_brightness_calls(), 1);
 
@@ -857,16 +856,14 @@ TEST(PowerManager, BrightnessChangedInStandbyAppliesOnWake) {
     ASSERT_TRUE(f.pm->standby());
     int power_calls = f.display->set_power_calls();
 
-    f.pm->set_brightness(50);
-    f.drain_ui();
+    f.run_on_ui([&] { f.pm->set_brightness(50); });
     EXPECT_EQ(f.display->set_brightness_calls(), 0);
     EXPECT_FALSE(f.display->powered());
     EXPECT_EQ(f.display->set_power_calls(), power_calls);
     EXPECT_TRUE(f.pm->standby());
 
     // Only the last value set during standby is applied, once.
-    f.pm->set_brightness(60);
-    f.drain_ui();
+    f.run_on_ui([&] { f.pm->set_brightness(60); });
     f.run_on_ui([&] { f.pm->exit_standby(); });
     EXPECT_TRUE(f.display->powered());
     EXPECT_EQ(f.display->brightness(), 60);
@@ -902,63 +899,67 @@ TEST(PowerManager, HeadlessSetBrightnessHonoursStandby) {
     no_display.set_brightness(10);
 }
 
-TEST(PowerManager, SetBrightnessCoalescesWhileUiIsBusy) {
+// A burst of brightness changes while both the bus and the UI are stuck
+// reaches the panel as its last value, in at most one step per follower
+// call: the follower runs on the UI dispatcher, needs no post-queue slot
+// and no bus, and never applies an older value after a newer one.
+TEST(PowerManager, BrightnessFollowsTheCellFlooded) {
     Fixture f;
-    // Park the UI task inside a job so nothing posted afterwards can run.
-    auto started = std::make_shared<wisp::os::Semaphore>(1, 0);
-    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
-    ASSERT_TRUE(f.ui->post([started, gate] {
-        started->give();
-        gate->take(wisp::os::kForever);
-    }));
-    started->take(wisp::os::kForever);
-
-    // Far more calls than the post queue holds; none may block.
-    std::atomic<bool> done{false};
-    std::thread setter([&] {
-        for (int level = 1; level <= 100; ++level) {
-            f.pm->set_brightness(static_cast<uint8_t>(level));
+    f.settle_ui();
+    const int calls_before = f.display->set_brightness_calls();
+    {
+        wisp::test::BusFlood flood(f.bus);
+        flood.hold();
+        wisp::test::UiHold hold(f.ui.get());
+        for (int level = 100; level <= 109; ++level) {
+            f.settings_cell.update([level](SystemSettingsValues& v) { v.brightness = level; });
         }
-        done = true;
-    });
-    bool finished = wait_until([&] { return done.load(); }, 2000);
-
-    // Everything still free in the queue: at most one slot may be taken by
-    // the brightness calls above.
-    int free_slots = 0;
-    while (f.ui->post([] {})) {
-        ++free_slots;
+        flood.flood(512);
+        hold.release();
+        flood.release();
     }
-    gate->give();
-    setter.join();
-    ASSERT_TRUE(finished) << "set_brightness blocked while the UI task was busy";
-    EXPECT_GE(free_slots, 31);
-
-    f.drain_ui();
-    EXPECT_EQ(f.display->brightness(), 100);
-    EXPECT_EQ(f.display->set_brightness_calls(), 1);
+    f.settle_ui();
+    EXPECT_EQ(f.display->brightness(), 109);
+    EXPECT_LE(f.display->set_brightness_calls() - calls_before, 2);
 }
 
-TEST(PowerManager, UiThreadBrightnessIsNotOverwrittenByAnOlderQueuedJob) {
+// What SystemSettings::set() does after a batch whose rollback failed: the
+// cell is reseeded from storage without an event. A brightness stored that
+// way still reaches the panel.
+TEST(PowerManager, ReseededBrightnessReachesThePanel) {
     Fixture f;
-    // Park the UI task; once released it sets 50 directly on the UI thread.
-    auto started = std::make_shared<wisp::os::Semaphore>(1, 0);
-    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
-    PowerManager* pm = f.pm.get();
-    ASSERT_TRUE(f.ui->post([started, gate, pm] {
-        started->give();
-        gate->take(wisp::os::kForever);
-        pm->set_brightness(50);
-    }));
-    started->take(wisp::os::kForever);
+    f.settle_ui();
+    SystemSettingsValues v = f.settings_cell.get();
+    v.brightness = 70;
+    ASSERT_TRUE(f.settings_cell.seed(v));
+    f.settle_ui();
+    EXPECT_EQ(f.display->brightness(), 70);
+}
 
-    // Queued behind the parked job, so it runs after the UI-thread call
-    // above even though it was requested earlier.
-    f.pm->set_brightness(100);
-    gate->give();
+// Dim shows a share of the cell's brightness, never below the brightness
+// row's minimum; a change while dimmed moves the dimmed level, and the
+// undim restores the new full level.
+TEST(PowerManager, DimIsRelativeToTheCellsBrightness) {
+    Fixture f(/*screen_off_s=*/60);
+    f.settings_cell.update([](SystemSettingsValues& v) { v.brightness = 200; });
+    f.settle_ui();
+    uint64_t t0 = wisp::os::now_ms();
+    f.pm->note_activity();
+    f.pm->tick(t0 + 50050);
     f.drain_ui();
+    ASSERT_EQ(f.pm->level(), PowerLevel::Dim);
+    EXPECT_EQ(f.display->brightness(), 60);
 
-    EXPECT_EQ(f.display->brightness(), 50);
+    f.settings_cell.update([](SystemSettingsValues& v) { v.brightness = 20; });
+    f.settle_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Dim);
+    EXPECT_EQ(f.display->brightness(),
+              wisp::core::setting_spec(wisp::core::SettingId::Brightness).min);
+
+    f.pm->note_activity();
+    f.drain_ui();
+    EXPECT_EQ(f.pm->level(), PowerLevel::Active);
+    EXPECT_EQ(f.display->brightness(), 20);
 }
 
 namespace {
@@ -1195,7 +1196,7 @@ using Strings = std::vector<std::string>;
 // brightness; any activity brings the screen back to full brightness.
 TEST(PowerManager, DimTenSecondsBeforeScreenOff) {
     Fixture f(/*screen_off_s=*/60);
-    f.pm->set_brightness(200);
+    f.run_on_ui([&] { f.pm->set_brightness(200); });
     f.drain_ui();
     uint64_t t0 = wisp::os::now_ms();
     f.pm->note_activity();
@@ -1673,7 +1674,7 @@ TEST(PowerManager, OutOfRangeStoredSettingsReadAsDefaults) {
 // only queued; the transition runs later as a job on the UI task.
 TEST(PowerManager, LockChangesWithUiRunAsAUiJob) {
     Fixture f(/*screen_off_s=*/60);
-    f.pm->set_brightness(200);
+    f.run_on_ui([&] { f.pm->set_brightness(200); });
     f.drain_ui();
     uint64_t t0 = wisp::os::now_ms();
     f.pm->note_activity();

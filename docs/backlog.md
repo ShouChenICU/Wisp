@@ -349,7 +349,7 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-4-edges-cleanup.md`. Simu
 
 - `SelfCheckScreen.SamplerPausesInStandbyFlooded` proves the sampler's pause with real sleeps (1.1 s and 1.5 s) rather than a gate on the sampler's own clock reads.
 - `AdminFirmware.AcceptedVersionSurvivesAnImmediateAnswer` does not decide whether the decline lands before or after the route answers 202: making it deterministic needs a hook between the upload's end and the route's response.
-- After a settings batch whose rollback failed, the reseeded settings cell follows storage, but a brightness that reached storage that way is not applied to the panel and no `system.settings` event goes out, until the next stored batch or the reboot.
+- After a settings batch whose rollback failed, the reseeded settings cell follows storage (the panel brightness included), but no `system.settings` event goes out, so the admin console stays behind until the next stored batch or the reboot.
 
 ## Storage worker lanes: device checks not run
 

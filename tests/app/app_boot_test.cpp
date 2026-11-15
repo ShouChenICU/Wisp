@@ -493,6 +493,38 @@ TEST(AppBoot, StoredLanguageReachesTheScreenScenesAndAgent) {
     h.app.stop();
 }
 
+// The panel's first brightness is the stored one, set once before the UI
+// starts; PowerManager's follower then finds the panel already there.
+TEST(AppBoot, PanelStartsAtTheStoredBrightness) {
+    auto h = make_app({.with_display = true});
+    ASSERT_TRUE(wisp::core::Settings(*h.app.platform().settings, "display").set("brightness", 90));
+    ASSERT_TRUE(h.app.start());
+    ASSERT_NE(h.app.ui(), nullptr);
+    EXPECT_EQ(h.display->brightness(), 90);
+    // Past the first frame and every follower call queued at start.
+    ASSERT_TRUE(wisp::test::slot_barrier(h.app.bus(), h.app.ui()));
+    h.app.ui()->run_blocking([] {});
+    EXPECT_EQ(h.display->brightness(), 90);
+    EXPECT_EQ(h.display->set_brightness_calls(), 1);
+    h.app.stop();
+}
+
+// A stored brightness SystemSettings would refuse reads as the default, on
+// the panel too (not the raw value clamped to the panel's range).
+TEST(AppBoot, InvalidStoredBrightnessStartsAtTheDefault) {
+    auto h = make_app({.with_display = true});
+    ASSERT_TRUE(wisp::core::Settings(*h.app.platform().settings, "display").set("brightness", 5));
+    ASSERT_TRUE(h.app.start());
+    ASSERT_NE(h.app.ui(), nullptr);
+    ASSERT_TRUE(wisp::test::slot_barrier(h.app.bus(), h.app.ui()));
+    h.app.ui()->run_blocking([] {});
+    EXPECT_EQ(h.display->brightness(),
+              wisp::core::setting_default_int(wisp::core::SettingId::Brightness));
+    EXPECT_EQ(h.app.system_settings().cell().get().brightness,
+              wisp::core::setting_default_int(wisp::core::SettingId::Brightness));
+    h.app.stop();
+}
+
 // The App's bus has the default capacity (64 events), so 200 events
 // published while the dispatcher is parked overflow it for certain.
 TEST(AppBoot, DispatchReportShowsBusDropsAndCellSubscriptions) {

@@ -375,11 +375,12 @@ Result<void> App::start() {
     auto display = impl_->registry.by_role<hal::Display>(hal::role::kMain);
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;
-    int64_t boot_brightness = 200;
     if (display) {
-        core::Settings display_settings(*impl_->platform.settings, "display");
-        boot_brightness = std::clamp<int64_t>(display_settings.get_int("brightness", 200), 0, 255);
-        display->set_brightness(static_cast<uint8_t>(boot_brightness));
+        // From the cell seeded above, so a stored value the setting would
+        // refuse starts at the default, as everyone else reads it; the
+        // PowerManager built below follows the cell from this level on.
+        display->set_brightness(
+            static_cast<uint8_t>(impl_->system_settings.cell().get().brightness));
 
         touch = impl_->registry.by_role<hal::Touch>(hal::role::kMain);
         ui::UiConfig ui_config;
@@ -490,11 +491,6 @@ Result<void> App::start() {
             },
         .system_settings = &impl_->system_settings.cell(),
     });
-    if (display) {
-        // The panel already shows this level (applied above, before the UI
-        // started); PowerManager dims relative to it.
-        impl_->power_manager->set_brightness(static_cast<uint8_t>(boot_brightness));
-    }
     // Standby and deep standby pause every IMU subscription (spec 6.1).
     impl_->sensors_power_sub = impl_->sensors->follow_power(impl_->power_manager->level_cell());
     // At Standby and below "standby: off" devices are unreachable through
@@ -1004,7 +1000,7 @@ void App::stop() {
     join_firmware_install(*this);
 
     // Networking next: the HTTP server's handlers and the "wisp.net" task
-    // call into PowerManager (brightness), the net services and storage,
+    // call into PowerManager (the level, a wake), the net services and storage,
     // so both stop before any of those go away.
     if (impl_->net) {
         impl_->net->stop();

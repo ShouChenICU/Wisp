@@ -373,11 +373,6 @@ TEST(Routes, ConnectSavedRoute) {
 
 TEST(Routes, SettingsPutValidatesAndApplies) {
     AdminFixture f;
-    std::vector<uint8_t> applied;
-    f.srv.reset();
-    f.settings = std::make_unique<wisp::core::SystemSettings>(
-        *f.backend, f.bus, [&applied](uint8_t level) { applied.push_back(level); });
-    f.srv = std::make_unique<wisp::admin::AdminServer>(f.make_deps());
     const std::string token = f.token();
 
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))),
@@ -412,7 +407,7 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
                   {"agent_max_steps", Value(120)},
                   {"agent_turn_min", Value(30)}});
     EXPECT_EQ(body_json(put), now);
-    EXPECT_EQ(applied, (std::vector<uint8_t>{100}));
+    EXPECT_EQ(f.settings->cell().get().brightness, 100);
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), now);
 
     // Each rejected batch leaves every value as it was.
@@ -448,7 +443,7 @@ TEST(Routes, SettingsPutValidatesAndApplies) {
     }
     EXPECT_EQ(f.srv->handle(authed(token, Put, "/api/v1/settings")).status, 400);
     EXPECT_EQ(body_json(f.srv->handle(authed(token, Get, "/api/v1/settings"))), now);
-    EXPECT_EQ(applied.size(), 1u);
+    EXPECT_EQ(f.settings->cell().get().brightness, 100);
 }
 
 TEST(Routes, SettingsLanguageRoundTrips) {

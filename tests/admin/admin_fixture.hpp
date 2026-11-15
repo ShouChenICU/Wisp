@@ -71,7 +71,7 @@ struct AdminFixture {
         models = std::make_unique<core::ModelProfileService>(*storage, bus, random);
         EXPECT_TRUE(models->init());
         models->set_prober(net::make_model_prober(http, [this] { return now.load(); }));
-        settings = std::make_unique<core::SystemSettings>(*backend, bus, nullptr);
+        settings = std::make_unique<core::SystemSettings>(*backend, bus);
         scenes = std::make_unique<core::SceneRepository>(
             *storage,
             core::SceneRepoConfig{.code_root = dir + "/scenes", .data_root = dir + "/scenes"});

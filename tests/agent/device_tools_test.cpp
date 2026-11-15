@@ -37,7 +37,7 @@ protected:
         SceneRuntimeFixture::SetUp();
         ctx.cancelled = [] { return false; };
         ctx.lang = "zh";
-        settings = std::make_unique<wisp::core::SystemSettings>(backend, bus, [](uint8_t) {});
+        settings = std::make_unique<wisp::core::SystemSettings>(backend, bus);
         notes = std::make_unique<wisp::core::NotificationService>(
             wisp::core::NotificationDeps{.bus = bus, .storage = *storage});
         tools = std::make_unique<wisp::agent::ToolRegistry>(wisp::agent::ToolExecutors{});

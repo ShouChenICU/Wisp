@@ -64,12 +64,8 @@ Map to_map(const SettingsSnapshot& values) {
     return out;
 }
 
-SystemSettings::SystemSettings(SettingsBackend& backend, EventBus& bus,
-                               std::function<void(uint8_t)> apply_brightness)
-    : backend_(backend),
-      bus_(bus),
-      apply_brightness_(std::move(apply_brightness)),
-      cell_(bus, SettingsSnapshot{}, &mirror_settings) {}
+SystemSettings::SystemSettings(SettingsBackend& backend, EventBus& bus)
+    : backend_(backend), bus_(bus), cell_(bus, SettingsSnapshot{}, &mirror_settings) {}
 
 void SystemSettings::seed_cell() {
     std::lock_guard<os::Mutex> lock(mutex_);
@@ -147,10 +143,6 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes, Se
         written.push_back(Undo{spec, std::move(previous)});
     }
 
-    auto brightness = changes.find("brightness");
-    if (brightness != changes.end() && apply_brightness_) {
-        apply_brightness_(static_cast<uint8_t>(brightness->second.as_int()));
-    }
     // Exactly one system.settings per stored batch, as before the cell: the
     // mirror publishes it when a value changed, and a batch that stored
     // what was already there (the cell skips equal values) publishes it

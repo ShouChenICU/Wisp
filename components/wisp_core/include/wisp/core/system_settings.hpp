@@ -22,8 +22,8 @@
 // calls and minutes (agent-core spec 3.6); App hands them to AgentService,
 // which applies them from the next turn on.
 // App reads them at boot; afterwards the consumers (the audio path,
-// PowerManager's timeouts and the rest) read or follow cell(), so only
-// brightness needs an explicit "apply now" hook.
+// PowerManager's timeouts and the panel brightness, the rest) read or
+// follow cell().
 // The whole snapshot lives in a state cell (cell()) that follows every
 // stored batch; consumers follow cell(). Its mirror publishes the
 // system.settings event (spec 8.3) for the admin console.
@@ -32,7 +32,6 @@
 // interleave their writes or rollbacks.
 
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -107,13 +106,8 @@ Map to_map(const SettingsSnapshot& values);
 
 class SystemSettings {
 public:
-    // `apply_brightness` is called after a batch containing "brightness"
-    // has been stored (App passes PowerManager::set_brightness), with
-    // set()'s lock held, in the order batches were stored, so it must not
-    // call set(). It may be empty. `bus` carries system.settings and must
-    // outlive this object.
-    SystemSettings(SettingsBackend& backend, EventBus& bus,
-                   std::function<void(uint8_t)> apply_brightness);
+    // `bus` carries system.settings and must outlive this object.
+    SystemSettings(SettingsBackend& backend, EventBus& bus);
 
     SystemSettings(const SystemSettings&) = delete;
     SystemSettings& operator=(const SystemSettings&) = delete;
@@ -138,10 +132,9 @@ public:
     // surface_flag(from); reported as unknown), a value of the wrong type or an out-of-range value
     // fails the whole batch with InvalidArgument before anything is written. If the backend fails
     // partway, the keys already written are restored (best effort) and the backend's error
-    // returned; apply_brightness and the event only happen once the whole batch is stored. When a
+    // returned; the cell moves and the event goes out only once the whole batch is stored. When a
     // restore fails too, the cell is reseeded from what storage then holds (no event), so it never
-    // stays behind storage. Every stored batch publishes exactly one system.settings event, after
-    // apply_brightness.
+    // stays behind storage. Every stored batch publishes exactly one system.settings event.
     Result<void> set(const std::map<std::string, Value>& changes,
                      SettingSurface from = SettingSurface::Internal);
 
@@ -151,7 +144,6 @@ private:
 
     SettingsBackend& backend_;
     EventBus& bus_;
-    std::function<void(uint8_t)> apply_brightness_;
     os::Mutex mutex_;
     // Declared after bus_ because its constructor takes it. Its owner
     // declares this object after the bus, so the cell is destroyed before

@@ -61,8 +61,7 @@ struct Recorder {
 
 struct Fixture {
     Fixture()
-        : backend((wisp::test::temp_dir() / "settings.json").string()),
-          settings(backend, bus, [this](uint8_t level) { applied.push_back(level); }) {
+        : backend((wisp::test::temp_dir() / "settings.json").string()), settings(backend, bus) {
         recorder.attach(bus);
     }
 
@@ -74,7 +73,6 @@ struct Fixture {
     }
 
     JsonFileSettingsBackend backend;
-    std::vector<uint8_t> applied;
     Recorder recorder;
     EventBus bus;
     SystemSettings settings;
@@ -181,13 +179,11 @@ TEST(SystemSettings, ValidatesWholeBatchAtomically) {
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
     EXPECT_EQ(fx.settings.get().brightness, 200);
-    EXPECT_TRUE(fx.applied.empty());
 
     auto unknown = fx.settings.set({{"brightness", 100}, {"contrast", 5}});
     ASSERT_FALSE(unknown);
     EXPECT_EQ(unknown.error().code, ErrorCode::InvalidArgument);
     EXPECT_EQ(fx.settings.get().brightness, 200);
-    EXPECT_TRUE(fx.applied.empty());
 }
 
 TEST(SystemSettings, RangeBoundaries) {
@@ -280,17 +276,6 @@ TEST(SystemSettings, CellMovesOnEachStoredBatch) {
     EXPECT_EQ(fx.changed().size(), 2u);
 }
 
-TEST(SystemSettings, AppliesBrightnessImmediately) {
-    Fixture fx;
-    ASSERT_TRUE(fx.settings.set({{"brightness", 100}}));
-    ASSERT_EQ(fx.applied.size(), 1u);
-    EXPECT_EQ(fx.applied[0], 100);
-
-    // A batch without brightness does not touch the panel.
-    ASSERT_TRUE(fx.settings.set({{"volume", 10}}));
-    EXPECT_EQ(fx.applied.size(), 1u);
-}
-
 TEST(SystemSettings, ScreenOffZeroMeansNever) {
     Fixture fx;
     EXPECT_TRUE(fx.settings.set({{"screen_off_s", 0}}));
@@ -351,11 +336,10 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     JsonFileSettingsBackend inner((wisp::test::temp_dir() / "settings.json").string());
     ASSERT_TRUE(Settings(inner, "audio").set("volume", 40));
     FlakyBackend flaky(inner, /*fail_on_set=*/3);
-    std::vector<uint8_t> applied;
     Recorder recorder;
     EventBus bus;
     recorder.attach(bus);
-    SystemSettings settings(flaky, bus, [&](uint8_t level) { applied.push_back(level); });
+    SystemSettings settings(flaky, bus);
 
     // Written in key order: brightness, language, then screen_off_s fails.
     auto r = settings.set(
@@ -367,7 +351,6 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     EXPECT_EQ(v.volume, 40);
     EXPECT_EQ(v.screen_off_s, 60);
     EXPECT_EQ(v.language, wisp::core::LangCode::Zh);
-    EXPECT_TRUE(applied.empty());
     // Not a stored batch: nothing published.
     EXPECT_TRUE(recorder.all(bus).empty());
     // Keys that never existed are removed again, not left at a default.
@@ -415,20 +398,6 @@ TEST(SystemSettings, UnchangedBatchPublishesButLeavesTheCell) {
     EXPECT_EQ(changed[1].at("volume"), Value(30));
 }
 
-// Brightness reaches the panel before the cell moves (and so before the
-// event goes out), as it did before the event's publish.
-TEST(SystemSettings, BrightnessIsAppliedBeforeTheCellMoves) {
-    JsonFileSettingsBackend backend((wisp::test::temp_dir() / "settings.json").string());
-    EventBus bus;
-    std::vector<int> cell_at_apply;
-    std::unique_ptr<SystemSettings> settings;
-    settings = std::make_unique<SystemSettings>(
-        backend, bus, [&](uint8_t) { cell_at_apply.push_back(settings->cell().get().brightness); });
-    ASSERT_TRUE(settings->set({{"brightness", 100}}));
-    EXPECT_EQ(cell_at_apply, (std::vector<int>{200}));
-    EXPECT_EQ(settings->cell().get().brightness, 100);
-}
-
 TEST(SystemSettings, RejectedOrFailedBatchLeavesTheCell) {
     {
         Fixture fx;
@@ -444,7 +413,7 @@ TEST(SystemSettings, RejectedOrFailedBatchLeavesTheCell) {
     FlakyBackend flaky(inner, /*fail_on_set=*/2);
     Recorder recorder;
     EventBus bus;
-    SystemSettings settings(flaky, bus, nullptr);
+    SystemSettings settings(flaky, bus);
     recorder.attach(bus);
     const uint32_t cell_revision = settings.cell().revision();
     // brightness is written, volume fails, brightness is rolled back.
@@ -465,8 +434,7 @@ TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
     FlakyBackend flaky(inner, /*fail_on_set=*/2, /*fail_after=*/true);
     Recorder recorder;
     EventBus bus;
-    std::vector<uint8_t> applied;
-    SystemSettings settings(flaky, bus, [&](uint8_t level) { applied.push_back(level); });
+    SystemSettings settings(flaky, bus);
     recorder.attach(bus);
     // A follower on wisp.bus, held while the batch fails: it is handed the
     // reseed once released. Released before the settings (its cell) go.
@@ -493,7 +461,6 @@ TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
     EXPECT_EQ(settings.get().brightness, 100);
     EXPECT_EQ(settings.get().volume, SystemSettingsValues{}.volume);
     EXPECT_TRUE(settings.cell().get() == settings.get());
-    EXPECT_TRUE(applied.empty());
     EXPECT_TRUE(recorder.all(bus).empty());
     {
         std::lock_guard<std::mutex> lock(follower_mutex);
@@ -867,7 +834,6 @@ TEST(SystemSettings, SurfaceRefusesKeysOutsideItsFlags) {
     // A refused batch writes nothing and publishes nothing.
     EXPECT_EQ(fx.settings.get(), before);
     EXPECT_TRUE(fx.changed().empty());
-    EXPECT_TRUE(fx.applied.empty());
 
     ASSERT_TRUE(fx.settings.set({{"brightness", 100},
                                  {"volume", 30},

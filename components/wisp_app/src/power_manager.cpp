@@ -19,7 +19,8 @@ static_assert(std::is_trivially_copyable_v<hal::PowerLevel>,
 namespace {
 
 constexpr const char* kTag = "power_manager";
-constexpr int kMinDimBrightness = 10;
+// Dim never goes below the lowest brightness the setting allows.
+constexpr int kMinDimBrightness = core::setting_spec(core::SettingId::Brightness).min;
 
 bool screen_lit(hal::PowerLevel level) { return level < hal::PowerLevel::Standby; }
 
@@ -58,17 +59,30 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       on_activity_(std::move(deps.on_activity)),
       level_cell_(bus_, hal::PowerLevel::Active, &power_state_mirror),
       last_activity_ms_(os::now_ms()) {
-    // Without the cell (tests) the timeouts keep their defaults.
+    // Without the cell (tests) the timeouts and brightness keep their
+    // defaults.
     if (deps.system_settings != nullptr) {
         // The cell's value now, so the first tick() (possibly before the
         // subscription's first call) already uses it; that first call then
         // delivers the same value again.
         const core::SystemSettingsValues now = deps.system_settings->get();
         apply_settings(now.screen_off_s, now.deep_after_s);
+        // App set the panel to this level before the UI started.
+        user_brightness_ = now.brightness;
+        shown_brightness_ = now.brightness;
+        followed_brightness_ = now.brightness;
         settings_sub_ =
             deps.system_settings->subscribe([this](const core::SystemSettingsValues& v) {
                 apply_settings(v.screen_off_s, v.deep_after_s);
             });
+        // The display is the UI thread's, so brightness follows the cell
+        // there only. Without a UI nobody looks at the panel and a wisp.bus
+        // callback must not call a device: brightness stays put.
+        if (display_ && ui_ != nullptr) {
+            brightness_sub_ = deps.system_settings->subscribe(
+                [this](const core::SystemSettingsValues& v) { follow_brightness(v.brightness); },
+                ui_);
+        }
     }
 
     if (ui_ != nullptr) {
@@ -124,9 +138,11 @@ void PowerManager::on_button_activity() {
 
 PowerManager::~PowerManager() {
     // After these return neither the button listener and follower, the
-    // settings follower nor the lock callback runs again, so nothing new is
-    // posted. The listener goes first, so no edge moves the counter after
-    // its follower is gone; ButtonService outlives this object
+    // settings and brightness followers nor the lock callback runs again
+    // (releasing a UI-dispatched follower from this thread waits for its
+    // call in progress), so nothing new is posted. The listener goes
+    // first, so no edge moves the counter after its follower is gone;
+    // ButtonService outlives this object
     // (App::stop()). Jobs already posted are drained below -- except when
     // called on the UI task itself, which cannot wait for its own queue;
     // the header makes that a caller's precondition.
@@ -135,6 +151,7 @@ PowerManager::~PowerManager() {
     }
     button_follower_.reset();
     settings_sub_.reset();
+    brightness_sub_.reset();
     locks_.set_on_change(nullptr);
 
     if (ui_ == nullptr) {
@@ -579,34 +596,27 @@ void PowerManager::set_brightness(uint8_t level) {
         return;
     }
     if (ui_ != nullptr && !ui_->on_ui_thread()) {
-        // Never retry or block here: the caller may hold its own lock (e.g.
-        // core::SystemSettings::set()) that the UI task could be waiting on.
-        requested_brightness_.store(level, std::memory_order_release);
-        if (brightness_job_queued_.exchange(true, std::memory_order_acq_rel)) {
-            return;  // the queued job will pick up the new level
-        }
-        bool posted = ui_->post([this] {
-            // Clear the flag before reading the level: a call landing after
-            // the read then queues a fresh job instead of being lost. An
-            // acq_rel exchange (not a release store) keeps the level load
-            // below from being reordered ahead of the flag clear.
-            brightness_job_queued_.exchange(false, std::memory_order_acq_rel);
-            apply_brightness(requested_brightness_.load(std::memory_order_acquire));
-        });
-        if (!posted) {
-            brightness_job_queued_.store(false, std::memory_order_release);
-            WLOG_W(kTag, "UI queue full; brightness change to %u dropped",
+        if (!off_thread_brightness_logged_.exchange(true)) {
+            WLOG_E(kTag, "set_brightness(%u) off the UI thread ignored",
                    static_cast<unsigned>(level));
         }
         return;
     }
-    // Record the level on this path too: a job queued earlier from another
-    // thread may still be pending and must not re-apply an older level.
-    requested_brightness_.store(level, std::memory_order_release);
     apply_brightness(level);
 }
 
-void PowerManager::apply_brightness(uint8_t level) {
+void PowerManager::follow_brightness(int level) {
+    // The first call delivers the level the constructor took (the panel's
+    // since boot), and a coalesced A -> B -> A delivers A again: only a
+    // level the follower has not applied yet is shown.
+    if (level == followed_brightness_) {
+        return;
+    }
+    followed_brightness_ = level;
+    apply_brightness(level);
+}
+
+void PowerManager::apply_brightness(int level) {
     std::lock_guard<os::Mutex> lock(transition_mutex_);
     user_brightness_ = level;
     if (panel_asleep_) {

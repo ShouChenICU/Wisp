@@ -117,7 +117,7 @@ struct Rig {
         };
         models = std::make_unique<wisp::core::ModelProfileService>(*storage, bus, random);
         EXPECT_TRUE(models->init());
-        system_settings = std::make_unique<wisp::core::SystemSettings>(*backend, bus, nullptr);
+        system_settings = std::make_unique<wisp::core::SystemSettings>(*backend, bus);
 
         // Records whether the attempt runs under its lock.
         auto sntp = std::make_unique<FakeSntp>([] { return int64_t{1767225600}; });
