@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/agent/tools.hpp"
@@ -70,6 +71,9 @@ struct Outcome {
     // The turn's last reply or note: the done notice's text.
     os::LargeString last_text;
 };
+
+static_assert(std::is_trivially_copyable_v<AgentStatus>,
+              "an update() of the status must not allocate");
 
 // Reproduces the agent.state event set_state() published for every
 // change: the state, and the tool's name while it is Tool.
@@ -256,8 +260,8 @@ struct AgentService::Impl {
     }
 
     void set_state(AgentState s, std::string_view tool_name = {}) {
-        // Cut before any lock is taken, so that the cell's covers memory
-        // work only.
+        // Cut before any lock is taken, so that the work under the cell's
+        // lock is memory work only.
         decltype(AgentStatus::tool) shown;
         if (s == AgentState::Tool) shown.assign_utf8(tool_name);
         {

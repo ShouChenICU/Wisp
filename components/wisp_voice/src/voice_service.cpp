@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "wisp/base/value.hpp"
@@ -18,6 +19,9 @@ namespace wisp::voice {
 namespace {
 
 constexpr const char* kTag = "voice";
+
+static_assert(std::is_trivially_copyable_v<VoiceStatus>,
+              "an update() of the status must not allocate");
 // How long one push() into the player may wait before the synthesis looks
 // at its stop flag again (and publishes a level).
 constexpr uint32_t kPushSliceMs = 50;
