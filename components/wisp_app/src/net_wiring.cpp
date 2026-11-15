@@ -101,7 +101,9 @@ void NetWiring::start() {
     }
 
     if (platform.sntp && wifi_) {
-        core::SystemSettings& settings = deps_.system_settings;
+        // The cell (memory), not the store: wisp.ntp has no flash access.
+        // SystemSettings outlives NetWiring, whose stop() joins wisp.ntp.
+        const auto& settings = deps_.system_settings.cell();
         time_sync_ = std::make_unique<net::TimeSyncService>(net::TimeSyncDeps{
             .sntp = *platform.sntp,
             .bus = deps_.bus,

@@ -369,7 +369,7 @@ Result<void> App::start() {
     // first frame is already in it; the system duties follow the settings
     // cell for later changes (their first delivery finds this language and
     // changes nothing).
-    ui::set_lang(ui::to_lang(impl_->system_settings.get().language));
+    ui::set_lang(lang_of(impl_->system_settings));
     auto display = impl_->registry.by_role<hal::Display>(hal::role::kMain);
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;

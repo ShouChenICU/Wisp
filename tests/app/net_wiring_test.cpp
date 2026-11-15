@@ -18,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,6 +37,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
@@ -121,8 +123,12 @@ struct Rig {
 
         // Records whether the attempt runs under its lock.
         auto sntp = std::make_unique<FakeSntp>([] { return int64_t{1767225600}; });
-        sntp->on_query = [this](const std::string&) {
+        sntp->on_query = [this](const std::string& host) {
             if (holds(locks, "system.ntp")) ntp_locked = true;
+            {
+                std::lock_guard<std::mutex> lock(ntp_hosts_mutex);
+                ntp_hosts.push_back(host);
+            }
             ++ntp_queries;
         };
         platform.sntp = std::move(sntp);
@@ -234,6 +240,8 @@ struct Rig {
     std::atomic<uint32_t> scan_ms{0};
     std::atomic<bool> ntp_locked{false};
     std::atomic<int> ntp_queries{0};
+    std::mutex ntp_hosts_mutex;
+    std::vector<std::string> ntp_hosts;
     std::unique_ptr<wisp::app::PowerManager> pm;
     FakeHttpClient inner;
     std::unique_ptr<LinkCheckingClient> client;
@@ -281,6 +289,21 @@ TEST(NetWiring, DeepStandbyDefersSceneRequestsUntilWifiIsBack) {
     }
     EXPECT_EQ(r.client->link_up(), (std::vector<bool>{true, true}));
     EXPECT_EQ(r.http->deferred_count(), 0u);
+}
+
+// The time sync asks the servers of the settings cell (memory), not of the
+// store: a value stored behind the cell (no SystemSettings::set(), no
+// seed) is not seen.
+TEST(NetWiring, TimeSyncAsksTheServersOfTheSettingsCell) {
+    Rig r;
+    ASSERT_TRUE(wisp::core::Settings(*r.backend, "sys").set("ntp", "behind.example"));
+    r.net->start();
+    ASSERT_TRUE(wait_until([&] { return r.ntp_queries.load() > 0; }, 5000));
+    const std::string_view servers =
+        wisp::core::setting_default_text(wisp::core::SettingId::NtpServers);
+    std::lock_guard<std::mutex> lock(r.ntp_hosts_mutex);
+    ASSERT_FALSE(r.ntp_hosts.empty());
+    EXPECT_EQ(r.ntp_hosts.front(), servers.substr(0, servers.find(',')));
 }
 
 // Spec 4.4 across the pieces: in deep standby a scene request waits; the

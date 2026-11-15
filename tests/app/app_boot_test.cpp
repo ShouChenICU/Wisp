@@ -87,6 +87,8 @@ struct MakeAppOptions {
     bool renamed_ids = false;
     // The display's caps "role"; empty is no role.
     std::string display_role = wisp::hal::role::kMain;
+    // The settings backend is CountedLangReads below.
+    bool count_lang_reads = false;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -116,6 +118,41 @@ public:
 private:
     wisp::port::sim::JsonFileSettingsBackend inner_;
     uint32_t delay_ms_;
+};
+
+// The simulator's JSON file backend that cannot be loaded into memory, so
+// every settings read reaches it, and that counts the reads of sys/lang
+// (stored as "ja").
+class CountedLangReads : public wisp::core::SettingsBackend {
+public:
+    CountedLangReads(const std::string& path, std::atomic<int>& reads)
+        : inner_(path), reads_(reads) {}
+    wisp::Result<wisp::Value> get(const std::string& ns, const std::string& key) override {
+        if (ns == "sys" && key == "lang") {
+            ++reads_;
+            return wisp::Result<wisp::Value>::ok(wisp::Value("ja"));
+        }
+        return inner_.get(ns, key);
+    }
+    wisp::Result<void> set(const std::string& ns, const std::string& key,
+                           const wisp::Value& value) override {
+        return inner_.set(ns, key, value);
+    }
+    wisp::Result<void> erase(const std::string& ns, const std::string& key) override {
+        return inner_.erase(ns, key);
+    }
+    wisp::Result<void> erase_all() override { return inner_.erase_all(); }
+    wisp::Result<std::vector<wisp::core::SettingsEntry>> load_all() override {
+        return wisp::Result<std::vector<wisp::core::SettingsEntry>>::err(
+            wisp::ErrorCode::Unsupported, "reads stay on the backend");
+    }
+    wisp::Result<void> write_batch(std::span<const wisp::core::SettingsChange> changes) override {
+        return inner_.write_batch(changes);
+    }
+
+private:
+    wisp::port::sim::JsonFileSettingsBackend inner_;
+    std::atomic<int>& reads_;
 };
 
 // A wisp::app::Board that registers a fixed, test-controlled set of fake
@@ -181,6 +218,8 @@ struct Harness {
     std::vector<std::string> lines;
     std::shared_ptr<FakeDisplay> display;
     std::string settings_dir;
+    // Reads of sys/lang, with MakeAppOptions::count_lang_reads.
+    std::atomic<int> lang_reads{0};
     // Platform::reboot calls it.
     std::function<void()> on_reboot;
     wisp::app::App app;
@@ -198,7 +237,10 @@ private:
 
         wisp::app::Platform platform;
         platform.board = std::make_unique<FakeBoard>(opts, display);
-        if (opts.settings_write_delay_ms != 0) {
+        if (opts.count_lang_reads) {
+            platform.settings =
+                std::make_unique<CountedLangReads>(settings_dir + "/settings.json", lang_reads);
+        } else if (opts.settings_write_delay_ms != 0) {
             platform.settings = std::make_unique<SlowSettings>(settings_dir + "/settings.json",
                                                                opts.settings_write_delay_ms);
         } else {
@@ -494,6 +536,20 @@ TEST(AppBoot, StoredLanguageReachesTheScreenScenesAndAgent) {
     ASSERT_TRUE(h.app.start());
     EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Ja);
     EXPECT_EQ(h.app.system_settings().cell().get().language, wisp::core::LangCode::Ja);
+    h.app.stop();
+}
+
+// The first frame's language is the settings cell's, the one every
+// follower reads: the store's language is read once at boot, by the seed.
+TEST(AppBoot, BootLanguageIsTheCells) {
+    struct ResetLang {
+        ~ResetLang() { wisp::ui::set_lang(wisp::ui::Lang::Zh); }
+    } reset_lang;
+    auto h = make_app({.with_display = true, .count_lang_reads = true});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(h.app.system_settings().cell().get().language, wisp::core::LangCode::Ja);
+    EXPECT_EQ(wisp::ui::lang(), wisp::ui::Lang::Ja);
+    EXPECT_EQ(h.lang_reads.load(), 1);
     h.app.stop();
 }
 
