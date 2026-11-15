@@ -77,7 +77,6 @@ SelfCheck::SelfCheck(App& app, ui::SystemLayer& system, SceneWiring* scenes)
       power_(app.registry().by_role<hal::Power>(hal::role::kMain)),
       clock_(app.registry().by_role<hal::Clock>(hal::role::kMain)),
       sd_id_(card_id(app.registry())),
-      ui_settings_(*app.platform().settings, "ui"),
       net_section_(app.wifi()),
       scenes_(scenes),
       sampler_(app.sensors(), power_, clock_) {}
@@ -160,7 +159,7 @@ void SelfCheck::build() {
 
     // SystemDuties applied the stored overlay at boot; the toggle starts
     // from it.
-    overlay_enabled_ = ui_settings_.get_bool("perf_overlay", false);
+    overlay_enabled_ = app_.system_settings().cell().get().perf_overlay;
 
     lv_screen_load(screen_);
 }
@@ -432,7 +431,9 @@ void SelfCheck::pass_test(InteractiveTest test) {
 void SelfCheck::toggle_perf_overlay() {
     overlay_enabled_ = !overlay_enabled_;
     ui_->set_perf_overlay(overlay_enabled_);
-    ui_settings_.set("perf_overlay", overlay_enabled_);
+    if (auto r = app_.system_settings().set({{"perf_overlay", Value(overlay_enabled_)}}); !r) {
+        WLOG_W("self_check", "perf_overlay not stored: %s", r.error().message.c_str());
+    }
 }
 
 void SelfCheck::refresh_timer_cb(lv_timer_t* timer) {

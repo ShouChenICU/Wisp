@@ -5,8 +5,8 @@
 // the wisp::hal::Power device with role main on its own periodic
 // os::Timer. Lives in wisp_core (not
 // wisp_app) for the same reason wisp::core::StorageManager does: it only
-// needs a hal:: device, an EventBus and Settings, nothing from wisp_app/
-// wisp_ui.
+// needs a hal:: device, an EventBus and the settings cell, nothing from
+// wisp_app/wisp_ui.
 //
 // Owns its independent sample timer ("wisp.pwrmon"): active 1s and
 // standby 30s (spec 6.7). Button input mode never changes this cadence.
@@ -40,8 +40,8 @@
 //     detection). Payload: {"charging": bool, "usb_present": bool,
 //     "battery_percent": int}.
 //   - "power.battery.low": once, the first time `battery_percent` is
-//     known (!= -1) and drops to <= Settings "power"/"low_batt_pct"
-//     (default 15). Re-arms (may fire again) only after a later sample
+//     known (!= -1) and drops to <= the settings cell's low_batt_pct
+//     (the schema default without a cell). Re-arms (may fire again) only after a later sample
 //     observes battery_percent > threshold + 5 (hysteresis -- avoids
 //     repeated firing while hovering right at the threshold). A
 //     battery_percent of -1 (unknown) never triggers this, and never
@@ -64,7 +64,8 @@
 // handler, so holding a lock across it is fine in general -- this note is
 // about *not* holding timer_mutex_ there, which would serve no purpose).
 // Lock order: call_mutex_ -> sample_mutex_ -> the supply cell's lock ->
-// the bus's publish lock; nothing takes them the other way.
+// the bus's publish lock; nothing takes them the other way. The settings
+// cell's lock is taken for one read under call_mutex_ only.
 
 #include <atomic>
 #include <cstdint>
@@ -73,7 +74,7 @@
 #include <string>
 
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/settings.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/power.hpp"
 #include "wisp/os/os.hpp"
@@ -96,20 +97,14 @@ inline constexpr char kPowerMonitorSource[] = "power_monitor";
 class PowerMonitor {
 public:
     // `power` may be null (no Power device with role main -- see file
-    // header's "device-optional" note). `settings` should already be
-    // bound to the "power" namespace (the namespace whose "screen_off_s"
-    // wisp::app::PowerManager follows through the settings cell); this
-    // class reads "low_batt_pct" (default 15) lazily, on the first
-    // successful sample() (not here in the constructor), caches it, and
-    // re-reads it at most once every kThresholdRefreshSamples samples
-    // thereafter (also forced on the next sample() after a start() call)
-    // -- not fresh on every sample() -- so a later Settings change still
-    // takes effect without reconstructing this object, just not
-    // necessarily on the very next sample(). See sample()'s own doc
-    // comment for why: re-reading Settings (NVS + JSON parsing on the
-    // real backend) on every sample, on the shared esp_timer task, was
-    // more I/O than this value's staleness tolerance actually needs.
-    PowerMonitor(EventBus& bus, std::shared_ptr<hal::Power> power, Settings settings);
+    // header's "device-optional" note). `settings` is the settings cell
+    // (SystemSettings::cell()), which must outlive this object; null
+    // uses the schema's default threshold. Every successful sample()
+    // reads low_batt_pct from it: a memory read, so the sampling path on
+    // the shared timer task never touches the settings store, and a
+    // change applies from the next sample on.
+    PowerMonitor(EventBus& bus, std::shared_ptr<hal::Power> power,
+                 const StateCell<SettingsSnapshot>* settings);
 
     // Calls stop() if the Timer is still active.
     ~PowerMonitor();
@@ -119,10 +114,7 @@ public:
 
     // Starts the periodic sample Timer at the active-mode period (~1s), or
     // the standby period if set_standby(true) was already called before
-    // this. A no-op if `power` is null, or if already started. Also
-    // forces the next sample() to re-read "low_batt_pct" from Settings
-    // (see the constructor's doc comment on threshold caching), even if
-    // this isn't the first start() this object has seen.
+    // this. A no-op if `power` is null, or if already started.
     void start();
 
     // Stops the Timer. Idempotent, and safe even if start() was never
@@ -163,7 +155,7 @@ public:
 private:
     EventBus& bus_;
     std::shared_ptr<hal::Power> power_;
-    Settings settings_;
+    const StateCell<SettingsSnapshot>* settings_;
 
     // Held by sample() for the whole call (file header, Thread-safety).
     os::Mutex call_mutex_;
@@ -185,16 +177,6 @@ private:
     // stops (App::stop()).
     StateCell<PowerSupply> supply_;
     std::optional<hal::PowerStatus> last_status_;  // guarded by sample_mutex_
-
-    // Threshold cache (constructor's doc comment on why this isn't a
-    // fresh Settings read every sample): cached_low_batt_pct_ is read in
-    // sample() once every kThresholdRefreshSamples samples (power_
-    // monitor.cpp), or on the very next sample() after any start() call.
-    // samples_until_threshold_refresh_ == 0 means "read it on the next
-    // sample() call" -- true from construction, so the very first
-    // sample() this object ever makes always reads a fresh value.
-    int64_t cached_low_batt_pct_ = 0;
-    uint32_t samples_until_threshold_refresh_ = 0;
 
     mutable os::Mutex timer_mutex_;
     std::unique_ptr<os::Timer> timer_;

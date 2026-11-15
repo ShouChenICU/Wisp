@@ -1009,51 +1009,46 @@ TEST(SelfCheckScreen, SystemLanguageFollowsSettingsWhenTheEventIsLost) {
     h.app.stop();
 }
 
-// The perf-overlay toggle persists to Settings
-// (ns="ui", key="perf_overlay") and is restored on the next boot. This
-// drives that restore path directly (writing the setting the same way a
-// prior session's long-press would have left it) rather than simulating
-// the long-press gesture itself, which would need a touch indev this
-// test harness doesn't have.
+// The perf-overlay toggle (a long press on the diagnostics' performance
+// line) stores ui/perf_overlay through SystemSettings, and the next boot on
+// the same store starts with the overlay on.
 //
 // Asserts via UiRuntime::perf_overlay_enabled(), not a pixel diff of
 // snapshot_rgb888(): the sysmon overlay lives in LVGL's sys layer, a
-// sibling of the active screen that lv_snapshot_take() structurally
-// never renders (it only walks the one object -- here, the screen --
-// it's given), so no snapshot comparison could ever actually detect it.
-// An earlier version of this test diffed snapshots and was flaky (it
-// "passed" only when something unrelated, like boot_ms jitter in the
-// header, happened to differ between the two App instances).
+// sibling of the active screen that lv_snapshot_take() never renders.
 TEST(SystemDutiesTest, PerfOverlaySettingPersistsAcrossRestarts) {
     std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
 
     {
         Harness h(settings_path);
-        ASSERT_TRUE(h.app.start());
-        ASSERT_NE(h.app.ui(), nullptr);
+        ASSERT_TRUE(h.start());
         EXPECT_FALSE(h.app.ui()->perf_overlay_enabled());
+        EXPECT_FALSE(h.app.system_settings().cell().get().perf_overlay);
+        bool pressed = false;
+        run_on_ui_blocking(h.app.ui(), [&] {
+            lv_obj_t* label = find_label_containing(root_column(), "FPS");
+            if (label == nullptr) return;
+            lv_obj_send_event(label, LV_EVENT_LONG_PRESSED, nullptr);
+            pressed = true;
+        });
+        ASSERT_TRUE(pressed);
+        EXPECT_TRUE(h.app.system_settings().cell().get().perf_overlay);
+        EXPECT_TRUE(
+            wisp::test::wait_until([&] { return h.app.ui()->perf_overlay_enabled(); }, 1000));
         h.app.stop();
     }
 
-    // Simulate a previous session having toggled the overlay on, by
-    // writing the setting directly through the same backend/file a real
-    // long-press would have used (core::Settings(ns="ui")).
     {
         wisp::port::sim::JsonFileSettingsBackend backend(settings_path);
-        wisp::core::Settings ui_settings(backend, "ui");
-        ASSERT_TRUE(ui_settings.set("perf_overlay", true));
+        EXPECT_TRUE(wisp::core::Settings(backend, "ui").get_bool("perf_overlay", false));
     }
 
     {
         Harness h(settings_path);
         ASSERT_TRUE(h.app.start());
         ASSERT_NE(h.app.ui(), nullptr);
-        // start() blocks until SystemDuties::start() -- which reads
-        // "perf_overlay" and, if true, calls ui_->set_perf_overlay(true),
-        // diagnostics or not -- has run, but set_perf_overlay()
-        // itself only *posts* the actual lv_sysmon_show_performance()
-        // call rather than waiting for it (see its doc comment); give
-        // the UI task a moment to drain that second, chained post().
+        // SystemDuties::start() read the cell and asked for the overlay;
+        // set_perf_overlay() posts the LVGL call, so wait for the UI task.
         EXPECT_TRUE(
             wisp::test::wait_until([&] { return h.app.ui()->perf_overlay_enabled(); }, 1000));
         h.app.stop();

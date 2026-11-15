@@ -165,7 +165,7 @@ struct Fixture {
         // Timer actually firing, so there's no reason to add a real
         // background Timer's scheduling noise to every other test in this
         // file that doesn't care about it either way.
-        power_monitor = std::make_unique<PowerMonitor>(bus, power, Settings(*backend, "power"));
+        power_monitor = std::make_unique<PowerMonitor>(bus, power, &settings_cell);
 
         pm = std::make_unique<PowerManager>(PowerManagerDeps{
             .bus = bus,

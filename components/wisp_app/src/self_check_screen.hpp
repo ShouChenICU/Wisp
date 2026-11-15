@@ -39,7 +39,6 @@
 #include "self_check_tests.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/clock.hpp"
 #include "wisp/hal/display.hpp"
@@ -160,7 +159,6 @@ private:
     // role internal (StorageManager then treats it as internal only).
     // Empty: no card, the boot report's rows stand as they are.
     const std::string sd_id_;
-    core::Settings ui_settings_;
 
     bool overlay_enabled_ = false;
 

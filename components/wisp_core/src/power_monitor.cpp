@@ -18,15 +18,7 @@ namespace {
 constexpr const char* kTag = "power_monitor";
 constexpr uint32_t kActiveSampleMs = 1000;
 constexpr uint32_t kStandbySampleMs = 30000;
-constexpr int64_t kDefaultLowBattPct = 15;
-constexpr int64_t kLowBattHysteresis = 5;
-// How many sample() calls the cached "low_batt_pct" threshold is reused
-// for before it's read from Settings again -- the real backend hits NVS
-// (or the sim's JSON file) plus a parse on every get_int() call, which
-// doing that on every 1 Hz sample on the shared esp_timer task was more
-// I/O than this value's staleness tolerance needs -- see the header's
-// constructor doc comment.
-constexpr uint32_t kThresholdRefreshSamples = 20;
+constexpr int64_t kLowBattHysteresis = 5;  // settings-literal-ok: hysteresis, not the threshold
 
 uint32_t interval_for(bool standby) { return standby ? kStandbySampleMs : kActiveSampleMs; }
 
@@ -58,10 +50,11 @@ void supply_mirror(EventBus& bus, const PowerSupply& before, const PowerSupply& 
 
 }  // namespace
 
-PowerMonitor::PowerMonitor(EventBus& bus, std::shared_ptr<hal::Power> power, Settings settings)
+PowerMonitor::PowerMonitor(EventBus& bus, std::shared_ptr<hal::Power> power,
+                           const StateCell<SettingsSnapshot>* settings)
     : bus_(bus),
       power_(std::move(power)),
-      settings_(std::move(settings)),
+      settings_(settings),
       supply_(bus_, PowerSupply{}, &supply_mirror) {}
 
 PowerMonitor::~PowerMonitor() { stop(); }
@@ -70,15 +63,6 @@ void PowerMonitor::start() {
     std::lock_guard<os::Mutex> lock(timer_mutex_);
     if (power_ == nullptr || timer_ != nullptr) {
         return;
-    }
-    {
-        // Force the next sample() to re-read "low_batt_pct" -- see the
-        // header's constructor doc comment on threshold caching.
-        // sample_mutex_ is never held by anything that also needs
-        // timer_mutex_ (the header's thread-safety note), so taking it
-        // here, nested under timer_mutex_, is safe.
-        std::lock_guard<os::Mutex> sample_lock(sample_mutex_);
-        samples_until_threshold_refresh_ = 0;
     }
     timer_ = std::make_unique<os::Timer>("wisp.pwrmon", interval_for(standby_), /*periodic=*/true,
                                          [this] { sample(); });
@@ -161,15 +145,15 @@ void PowerMonitor::sample() {
         WLOG_I(kTag, "status() recovered");
     }
     hal::PowerStatus status = result.value();
+    // A cell read is memory only, so this may run on the shared timer
+    // task (AGENTS.md section 5: no flash off wisp.fs).
+    const int64_t threshold =
+        settings_ != nullptr
+            ? settings_->read([](const SettingsSnapshot& v) { return v.low_batt_pct; })
+            : setting_default_int(SettingId::LowBattPct);
 
     std::lock_guard<os::Mutex> lock(sample_mutex_);
     last_status_ = status;
-
-    if (samples_until_threshold_refresh_ == 0) {
-        cached_low_batt_pct_ = settings_.get_int("low_batt_pct", kDefaultLowBattPct);
-        samples_until_threshold_refresh_ = kThresholdRefreshSamples;
-    }
-    --samples_until_threshold_refresh_;
 
     // Read under sample_mutex_, which every write of the cell holds too, so
     // nothing moves it between this read and the set() below.
@@ -183,7 +167,6 @@ void PowerMonitor::sample() {
     // An unknown percent (-1) neither triggers nor re-arms: `low` stays.
     bool low = prev.low;
     if (status.battery_percent != -1) {
-        int64_t threshold = cached_low_batt_pct_;
         if (!prev.low && status.battery_percent <= threshold) {
             low = true;
             WLOG_I(kTag, "power.battery.low: battery_percent=%d (threshold=%lld)",

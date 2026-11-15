@@ -143,8 +143,8 @@ struct Rig {
         if (with_power) {
             power = std::make_shared<wisp::test::FakePower>("power.main");
             registry.add(power);
-            monitor = std::make_unique<wisp::core::PowerMonitor>(
-                bus, power, wisp::core::Settings(*backend, "power"));
+            monitor =
+                std::make_unique<wisp::core::PowerMonitor>(bus, power, &system_settings->cell());
         }
         net = std::make_unique<wisp::app::NetWiring>(wisp::app::NetWiringDeps{
             .platform = platform,
@@ -171,6 +171,7 @@ struct Rig {
         net.reset();
         http.reset();
         pm.reset();
+        monitor.reset();  // reads system_settings' cell, declared after it
         bus.stop();
         wisp::log::reset_for_test();
     }

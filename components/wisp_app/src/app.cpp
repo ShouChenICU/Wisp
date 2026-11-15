@@ -419,8 +419,8 @@ Result<void> App::start() {
     // with whether there's a screen. It's completely inert if no Power
     // device has role main (see power_monitor.hpp).
     auto power_dev = impl_->registry.by_role<hal::Power>(hal::role::kMain);
-    impl_->power_monitor = std::make_unique<core::PowerMonitor>(
-        impl_->bus, power_dev, core::Settings(*impl_->platform.settings, "power"));
+    impl_->power_monitor =
+        std::make_unique<core::PowerMonitor>(impl_->bus, power_dev, &impl_->system_settings.cell());
     impl_->power_monitor->start();
     if (impl_->notifications) {
         // One low-battery notice, with the level it fell to; charging clears

@@ -15,7 +15,6 @@
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/settings.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/button.hpp"
 #include "wisp/hal/roles.hpp"
@@ -134,7 +133,7 @@ void SystemDuties::start() {
     perf_timer_->start();
     // The LVGL performance overlay, switched in the diagnostics' performance
     // card, stays on across restarts and over every screen.
-    if (core::Settings(*app_.platform().settings, "ui").get_bool("perf_overlay", false)) {
+    if (app_.system_settings().cell().get().perf_overlay) {
         ui_.set_perf_overlay(true);
     }
 }

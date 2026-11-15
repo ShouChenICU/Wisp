@@ -10,25 +10,22 @@
 #include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/manual_dispatcher.hpp"
-#include "support/temp_dir.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/settings.hpp"
+#include "wisp/core/settings_schema.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/os/os.hpp"
-#include "wisp/port/sim/settings_json_file.hpp"
 
 using wisp::ErrorCode;
 using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::PowerMonitor;
 using wisp::core::PowerSupply;
-using wisp::core::Settings;
+using wisp::core::SettingsSnapshot;
+using wisp::core::StateCell;
 using wisp::hal::PowerStatus;
-using wisp::port::sim::JsonFileSettingsBackend;
 using wisp::test::FakePower;
-using wisp::test::temp_dir;
 
 namespace {
 
@@ -36,21 +33,18 @@ namespace {
 // collecting events (in delivery order) into `events` -- same pattern as
 // tests/app/power_manager_test.cpp's Fixture. `power` defaults to a
 // FakePower("power.main"); pass nullptr to make() to exercise the
-// no-device case.
+// no-device case. `settings` stands in for SystemSettings::cell().
 struct Fixture {
     explicit Fixture(
         std::shared_ptr<FakePower> power_dev = std::make_shared<FakePower>("power.main"))
         : power(std::move(power_dev)) {
-        settings_path = (temp_dir() / "power_monitor_settings.json").string();
-        backend = std::make_unique<JsonFileSettingsBackend>(settings_path);
-
         bus.start();
         bus.subscribe("power.", [this](const Event& e) {
             std::lock_guard<std::mutex> lock(mutex);
             events.push_back(e);
         });
 
-        mon = std::make_unique<PowerMonitor>(bus, power, Settings(*backend, "power"));
+        mon = std::make_unique<PowerMonitor>(bus, power, &settings);
     }
 
     ~Fixture() {
@@ -68,6 +62,12 @@ struct Fixture {
     }
 
     void wait_idle() { bus.wait_idle(2000); }
+
+    void set_low_batt_pct(int pct) {
+        SettingsSnapshot v = settings.get();
+        v.low_batt_pct = pct;
+        settings.set(v);
+    }
 
     // Polls event_count() until it reaches at least `n` or `timeout_ms`
     // elapses -- unlike wait_idle() (which only waits for an *already
@@ -87,9 +87,8 @@ struct Fixture {
         return true;
     }
 
-    std::string settings_path;
-    std::unique_ptr<JsonFileSettingsBackend> backend;
     EventBus bus;
+    StateCell<SettingsSnapshot> settings{bus, SettingsSnapshot{}};
     std::shared_ptr<FakePower> power;
     std::unique_ptr<PowerMonitor> mon;
 
@@ -295,111 +294,53 @@ TEST(PowerMonitor, UnknownBatteryPercentNeverTriggersLow) {
     EXPECT_EQ(f.event_at(0).topic, "power.charging.changed");
 }
 
-TEST(PowerMonitor, SettingsOverrideLowBattThreshold) {
-    // Does not reconstruct `mon`: the header's constructor doc comment
-    // promises that a Settings change takes effect without
-    // reconstructing this object (the threshold cache's counter starts
-    // at 0, so this is `mon`'s very first sample() ever, which always
-    // reads a fresh value -- see sample_mutex_'s doc comment). 25 is
-    // above the default threshold (15) but at/below the overridden one
-    // (30), so a higher override taking effect is what this actually
-    // exercises.
+// The threshold is the settings cell's low_batt_pct, read on every sample:
+// a change applies to the next crossing without restarting the monitor.
+TEST(PowerMonitor, ThresholdFollowsTheSettingsCell) {
     Fixture f;
-    Settings power_settings(*f.backend, "power");
-    power_settings.set("low_batt_pct", int64_t{30});
-
+    f.set_low_batt_pct(30);
     f.power->set_status(PowerStatus{25, 0, false, false});
-    f.mon->sample();
+    f.mon->sample();  // 25 <= 30 (the default 15 would not fire)
     f.wait_idle();
-
     ASSERT_EQ(f.event_count(), 1u);
     EXPECT_EQ(f.event_at(0).topic, "power.battery.low");
-}
+    EXPECT_EQ(f.event_at(0).payload.find("battery_percent")->second.as_int(), 25);
 
-TEST(PowerMonitor, ThresholdCacheIsNotRereadOnTheVeryNextSample) {
-    // The threshold is cached, not re-read from Settings on every
-    // sample() -- proven by changing it to a value that would flip the
-    // outcome, then showing the very next sample() (guaranteed not to
-    // land on a cache-refresh point, since only one sample has happened
-    // since construction) still uses the old cached value, not the new
-    // one.
-    Fixture f;
-    f.power->set_status(PowerStatus{20, 0, false, false});
-    f.mon->sample();  // baseline + the one-time initial threshold read (default 15).
+    f.set_low_batt_pct(20);
+    f.power->set_status(PowerStatus{40, 0, false, false});
+    f.mon->sample();  // 40 > 20 + 5: re-armed
+    f.power->set_status(PowerStatus{25, 0, false, false});
+    f.mon->sample();  // 25 > 20: no event (30 would fire)
     f.wait_idle();
-    EXPECT_EQ(f.event_count(), 0u);  // 20 > 15 -- no low event yet.
+    EXPECT_EQ(f.event_count(), 1u);
 
-    Settings power_settings(*f.backend, "power");
-    power_settings.set("low_batt_pct", int64_t{50});  // would make 20 <= 50 trigger if re-read now.
+    f.power->set_status(PowerStatus{20, 0, false, false});
     f.mon->sample();
     f.wait_idle();
-    EXPECT_EQ(f.event_count(), 0u);  // still the cached 15 -- no event.
+    ASSERT_EQ(f.event_count(), 2u);
+    EXPECT_EQ(f.event_at(1).payload.find("battery_percent")->second.as_int(), 20);
 }
 
-TEST(PowerMonitor, ThresholdCacheIsRereadAfterRefreshWindow) {
-    // The flip side of ThresholdCacheIsNotRereadOnTheVeryNextSample
-    // above: the cache is re-read once every kThresholdRefreshSamples
-    // (20, power_monitor.cpp) samples, not just once at construction and
-    // then never again. Deleting the periodic-refresh half of that
-    // logic (while keeping the "not on the very next sample" half) would
-    // pass every other test in this file but fail this one.
-    Fixture f;
-    f.power->set_status(PowerStatus{20, 0, false, false});
-
-    // Call #1 is the construction-time forced refresh (reads the
-    // default 15); 20 > 15, so no event yet.
-    f.mon->sample();
-    f.wait_idle();
-    ASSERT_EQ(f.event_count(), 0u);
-
-    Settings power_settings(*f.backend, "power");
-    power_settings.set("low_batt_pct", int64_t{50});  // would fire if re-read now.
-
-    // 19 more calls (#2-#20) stay on the stale cached 15: still no
-    // event, even though Settings now says 50.
-    for (int i = 0; i < 19; ++i) {
+// Without a settings cell the threshold is the schema's default.
+TEST(PowerMonitor, NoCellUsesTheSchemaDefault) {
+    const int def = wisp::core::setting_default_int(wisp::core::SettingId::LowBattPct);
+    {
+        Fixture f;
+        f.mon = std::make_unique<PowerMonitor>(f.bus, f.power, nullptr);
+        f.power->set_status(PowerStatus{def, 0, false, false});
         f.mon->sample();
+        f.wait_idle();
+        ASSERT_EQ(f.event_count(), 1u);
+        EXPECT_EQ(f.event_at(0).topic, "power.battery.low");
     }
-    f.wait_idle();
-    EXPECT_EQ(f.event_count(), 0u);
-
-    // Call #21 crosses the refresh window and re-reads "low_batt_pct":
-    // now 50, so 20 <= 50 fires.
-    f.mon->sample();
-    f.wait_idle();
-
-    ASSERT_EQ(f.event_count(), 1u);
-    EXPECT_EQ(f.event_at(0).topic, "power.battery.low");
-}
-
-TEST(PowerMonitor, ThresholdCacheIsRereadAfterStart) {
-    // start() forces the very next sample() to re-read "low_batt_pct",
-    // same as the construction-time forced refresh -- proven the same
-    // way as the refresh-window test above: a Settings change that only
-    // takes effect if actually re-read, shown to take effect right after
-    // start() without waiting out the refresh window. This test runs
-    // fast enough (no waiting) that start()'s real ~1s os::Timer never
-    // gets a chance to fire sample() on its own before the assertions
-    // below run, so it can't interfere with the manual sample() calls.
-    Fixture f;
-    f.power->set_status(PowerStatus{20, 0, false, false});
-    f.mon->sample();  // construction-time forced refresh (default 15); 20 > 15, no event.
-    f.wait_idle();
-    ASSERT_EQ(f.event_count(), 0u);
-
-    Settings power_settings(*f.backend, "power");
-    power_settings.set("low_batt_pct", int64_t{50});
-
-    f.mon->sample();  // no start() yet -- still the stale cached 15: no event.
-    f.wait_idle();
-    ASSERT_EQ(f.event_count(), 0u);
-
-    f.mon->start();   // forces the next sample() to re-read.
-    f.mon->sample();  // picks up the new 50: 20 <= 50 fires.
-    f.wait_idle();
-
-    ASSERT_EQ(f.event_count(), 1u);
-    EXPECT_EQ(f.event_at(0).topic, "power.battery.low");
+    {
+        Fixture f;
+        f.mon = std::make_unique<PowerMonitor>(f.bus, f.power, nullptr);
+        f.power->set_status(PowerStatus{def + 1, 0, false, false});
+        f.mon->sample();
+        f.wait_idle();
+        EXPECT_EQ(f.event_count(), 0u);
+    }
 }
 
 TEST(PowerMonitor, SampleIntervalSwitchesBetweenActiveAndStandby) {
