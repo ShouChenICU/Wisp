@@ -265,3 +265,31 @@ TEST(SettingsSchema, DefaultAccessors) {
     EXPECT_EQ(wisp::core::setting_default_text(SettingId::Brightness), "");
     EXPECT_EQ(find_setting("nope"), nullptr);
 }
+
+// A row whose C++ field type disagrees with its SettingType must not
+// compile. Checked by hand: changing the Brightness row's field type from
+// `int` to `bool` (or to `long`) in WISP_SETTINGS fails the build in
+// settings_schema.hpp, at the per-row static_assert or at the deleted
+// setting_init primary, on the host as on the device; raising the ntp row's
+// max entry length to 64 fails the host_list_fits static_assert.
+template <class T>
+concept HasSettingField = requires { wisp::core::SettingField<T>::type; };
+template <class T>
+concept HasSettingInit = requires { wisp::core::setting_init<T>(SettingId::Brightness); };
+
+TEST(SettingsSchema, FieldTypesMatchSettingTypes) {
+    static_assert(HasSettingField<int> && HasSettingField<bool> && HasSettingField<LangCode> &&
+                  HasSettingField<wisp::FixedString<127>>);
+    static_assert(!HasSettingField<long> && !HasSettingField<std::string>);
+    static_assert(HasSettingInit<int> && !HasSettingInit<long> && !HasSettingInit<std::string>);
+    EXPECT_EQ(wisp::core::SettingField<LangCode>::type, wisp::core::SettingType::Enum);
+}
+
+TEST(SettingsSchema, HostListLargestValueFitsItsField) {
+    const SettingSpec& ntp = setting_spec(SettingId::NtpServers);
+    // 2 entries of 63 characters and one comma: exactly 127.
+    EXPECT_TRUE(wisp::core::schema_check::host_list_fits(ntp, 127));
+    EXPECT_FALSE(wisp::core::schema_check::host_list_fits(ntp, 126));
+    // Not a HostList: no size rule.
+    EXPECT_TRUE(wisp::core::schema_check::host_list_fits(setting_spec(SettingId::Brightness), 0));
+}

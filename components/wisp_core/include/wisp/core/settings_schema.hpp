@@ -199,9 +199,34 @@ constexpr bool host_list_syntax_ok(std::string_view list, int32_t max_entries,
     }
 }
 
-// The snapshot members' initializers: each row's default as its C++ type.
+// The C++ field types a row may declare, with the SettingType each one
+// carries. Undefined for any other type, so a row whose field type has no
+// SettingType (long, std::string) fails here, on the host, rather than at
+// link time on the device.
 template <class T>
-T setting_init(SettingId id);
+struct SettingField;
+template <>
+struct SettingField<int> {
+    static constexpr SettingType type = SettingType::Int;
+};
+template <>
+struct SettingField<bool> {
+    static constexpr SettingType type = SettingType::Bool;
+};
+template <>
+struct SettingField<LangCode> {
+    static constexpr SettingType type = SettingType::Enum;
+};
+template <size_t N>
+struct SettingField<FixedString<N>> {
+    static constexpr SettingType type = SettingType::HostList;
+    static constexpr size_t capacity = N;
+};
+
+// The snapshot members' initializers: each row's default as its C++ type.
+// Deleted for any type without a specialization below.
+template <class T>
+T setting_init(SettingId id) = delete;
 template <>
 constexpr int setting_init<int>(SettingId id) {
     return setting_default_int(id);
@@ -303,6 +328,24 @@ consteval bool scene_flag_matches_scene_name() {
     return true;
 }
 
+// A HostList's longest valid text (max_entries entries of max_entry_len
+// characters and the commas between them) fits a field of `capacity` bytes,
+// so assign_setting() never truncates a value valid_setting() accepted.
+constexpr bool host_list_fits(const SettingSpec& spec, size_t capacity) {
+    if (spec.type != SettingType::HostList) return true;
+    const int64_t longest = int64_t{spec.min} * spec.max + (spec.min - 1);
+    return longest <= static_cast<int64_t>(capacity);
+}
+
+template <class T>
+consteval size_t field_capacity() {
+    if constexpr (requires { SettingField<T>::capacity; }) {
+        return SettingField<T>::capacity;
+    } else {
+        return 0;
+    }
+}
+
 consteval bool shown_rows_have_labels() {
     constexpr uint8_t kShown = kSettingAgent | kSettingWeb | kSettingDevicePage;
     for (const SettingSpec& spec : kSettingsSchema) {
@@ -322,6 +365,14 @@ static_assert(schema_check::int_choices_valid(), "a setting's choice breaks its 
 static_assert(schema_check::scene_flag_matches_scene_name(),
               "kSettingScene must be set exactly when scene_name is non-empty");
 static_assert(schema_check::shown_rows_have_labels(), "a setting a surface shows has no label");
+#define WISP_SETTING_FIELD_CHECK(Id, name, ctype, stype, ...)                          \
+    static_assert(SettingField<ctype>::type == SettingType::stype,                     \
+                  "the field type of " #name " does not match its SettingType");       \
+    static_assert(schema_check::host_list_fits(setting_spec(SettingId::Id),            \
+                                               schema_check::field_capacity<ctype>()), \
+                  "the longest valid " #name " does not fit its field");
+WISP_SETTINGS(WISP_SETTING_FIELD_CHECK)
+#undef WISP_SETTING_FIELD_CHECK
 static_assert(std::is_trivially_copyable_v<SettingsSnapshot>, "the settings cell copies it");
 static_assert(sizeof(SettingsSnapshot) <= 256, "StateCell's size limit (state_cell.hpp)");
 
