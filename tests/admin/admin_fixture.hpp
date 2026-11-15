@@ -78,7 +78,7 @@ struct AdminFixture {
         time_sync = std::make_unique<net::TimeSyncService>(net::TimeSyncDeps{
             .sntp = sntp,
             .bus = bus,
-            .servers = [this] { return settings->get().ntp_servers; },
+            .servers = [this] { return settings->get().ntp_servers.str(); },
             .set_system_time = {},
             .rtc = nullptr,
             .now_ms = [this] { return now.load(); },

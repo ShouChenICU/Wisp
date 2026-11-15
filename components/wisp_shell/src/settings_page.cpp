@@ -29,9 +29,15 @@ int percent(int value, int max) { return (value * 100 + max / 2) / max; }
 
 std::string percent_text(int value, int max) { return std::to_string(percent(value, max)) + "%"; }
 
-ui::StrId lang_name(const std::string& code) {
-    if (code == "en") return ui::StrId::LangFullEn;
-    if (code == "ja") return ui::StrId::LangFullJa;
+ui::StrId lang_name(core::LangCode code) {
+    switch (code) {
+        case core::LangCode::En:
+            return ui::StrId::LangFullEn;
+        case core::LangCode::Ja:
+            return ui::StrId::LangFullJa;
+        case core::LangCode::Zh:
+            break;
+    }
     return ui::StrId::LangFullZh;
 }
 
@@ -105,7 +111,7 @@ SettingsPage::SettingsPage(SettingsDeps deps) : deps_(std::move(deps)) {
         now_.notify_vol = 60;
         now_.screen_off_s = static_cast<int>(core::kDefaultScreenOffS);
         now_.deep_after_s = static_cast<int>(core::kDefaultDeepAfterS);
-        now_.language = "zh";
+        now_.language = core::LangCode::Zh;
         now_.utc_offset_min = 480;
         now_.time_24h = true;
     }
@@ -316,11 +322,12 @@ void SettingsPage::open(Row r) {
         case Row::Language: {
             spec.title = ui::StrId::SettingsLanguage;
             for (size_t i = 0; i < kLanguages.size(); ++i) {
-                spec.labels.push_back(ui::tr(lang_name(kLanguages[i])));
-                if (now_.language == kLanguages[i]) spec.current = static_cast<int>(i);
+                const core::LangCode code = *core::parse_lang_code(kLanguages[i]);
+                spec.labels.push_back(ui::tr(lang_name(code)));
+                if (now_.language == code) spec.current = static_cast<int>(i);
             }
             spec.on_pick = [this](size_t i) {
-                now_.language = kLanguages[i];
+                now_.language = *core::parse_lang_code(kLanguages[i]);
                 show_values();
                 write({{"language", Value(std::string(kLanguages[i]))}});
             };

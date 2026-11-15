@@ -15,6 +15,7 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
@@ -87,7 +88,7 @@ TEST(SystemSettings, Defaults) {
     EXPECT_EQ(v.brightness, 200);
     EXPECT_EQ(v.volume, 60);
     EXPECT_EQ(v.screen_off_s, 60);
-    EXPECT_EQ(v.language, "zh");
+    EXPECT_EQ(v.language, wisp::core::LangCode::Zh);
     EXPECT_EQ(v.utc_offset_min, 480);
     EXPECT_EQ(v.ntp_servers, "pool.ntp.org,ntp.aliyun.com");
 }
@@ -205,13 +206,13 @@ TEST(SystemSettings, RangeBoundaries) {
 
 TEST(SystemSettings, LanguageDefaultsToZhAndValidates) {
     Fixture fx;
-    EXPECT_EQ(fx.settings.get().language, "zh");
+    EXPECT_EQ(fx.settings.get().language, wisp::core::LangCode::Zh);
 
     ASSERT_TRUE(fx.settings.set({{"language", "ja"}}));
-    EXPECT_EQ(fx.settings.get().language, "ja");
+    EXPECT_EQ(fx.settings.get().language, wisp::core::LangCode::Ja);
     EXPECT_EQ(Settings(fx.backend, "sys").get_string("lang", ""), "ja");
     ASSERT_TRUE(fx.settings.set({{"language", "en"}, {"volume", 20}}));
-    EXPECT_EQ(fx.settings.get().language, "en");
+    EXPECT_EQ(fx.settings.get().language, wisp::core::LangCode::En);
 
     for (const wisp::Value& bad : {wisp::Value("fr"), wisp::Value(""), wisp::Value("ZH"),
                                    wisp::Value("zh-CN"), wisp::Value(1), wisp::Value(true)}) {
@@ -219,13 +220,13 @@ TEST(SystemSettings, LanguageDefaultsToZhAndValidates) {
         ASSERT_FALSE(r);
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
     }
-    EXPECT_EQ(fx.settings.get().language, "en");
+    EXPECT_EQ(fx.settings.get().language, wisp::core::LangCode::En);
     EXPECT_EQ(fx.settings.get().volume, 20);
 
     // A stored value nobody could have written through set() (a hand-edited
     // or corrupted settings store) reads back as the default.
     ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "fr"));
-    EXPECT_EQ(fx.settings.get().language, "zh");
+    EXPECT_EQ(fx.settings.get().language, wisp::core::LangCode::Zh);
 }
 
 TEST(SystemSettings, IntegerKeysRejectOtherTypes) {
@@ -365,7 +366,7 @@ TEST(SystemSettings, StorageFailureMidBatchRollsBack) {
     EXPECT_EQ(v.brightness, 200);
     EXPECT_EQ(v.volume, 40);
     EXPECT_EQ(v.screen_off_s, 60);
-    EXPECT_EQ(v.language, "zh");
+    EXPECT_EQ(v.language, wisp::core::LangCode::Zh);
     EXPECT_TRUE(applied.empty());
     // Not a stored batch: nothing published.
     EXPECT_TRUE(recorder.all(bus).empty());
@@ -388,7 +389,7 @@ TEST(SystemSettings, CellFollowsEveryStoredBatch) {
 
     ASSERT_TRUE(fx.settings.set({{"language", "en"}, {"time_24h", false}}));
     const SystemSettingsValues now = fx.settings.cell().get();
-    EXPECT_EQ(now.language, "en");
+    EXPECT_EQ(now.language, wisp::core::LangCode::En);
     EXPECT_FALSE(now.time_24h);
     EXPECT_EQ(now.volume, 30);
     EXPECT_TRUE(now == fx.settings.get());
@@ -508,9 +509,9 @@ TEST(SystemSettings, FailedRollbackReseedsTheCellFromStorage) {
 TEST(SystemSettings, SeedPublishesNothing) {
     Fixture fx;
     ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "ja"));
-    EXPECT_EQ(fx.settings.cell().get().language, "zh");
+    EXPECT_EQ(fx.settings.cell().get().language, wisp::core::LangCode::Zh);
     fx.settings.seed_cell();
-    EXPECT_EQ(fx.settings.cell().get().language, "ja");
+    EXPECT_EQ(fx.settings.cell().get().language, wisp::core::LangCode::Ja);
     EXPECT_TRUE(fx.settings.cell().get() == fx.settings.get());
     EXPECT_TRUE(fx.changed().empty());
 }
@@ -690,9 +691,9 @@ TEST(SettingsGolden, NonDefaultMapTypes) {
     v.brightness = 10;
     v.volume = 0;
     v.screen_off_s = 0;
-    v.language = "ja";
+    v.language = wisp::core::LangCode::Ja;
     v.utc_offset_min = -210;
-    v.ntp_servers = "10.0.0.1";
+    v.ntp_servers.assign("10.0.0.1");
     v.deep_after_s = 3600;
     v.notify_vol = 100;
     v.tts_mute = true;
@@ -746,7 +747,7 @@ TEST(SystemSettings, StoreWrittenByTheOldCodeReadsTheSame) {
         EXPECT_EQ(v.brightness, 90);
         EXPECT_EQ(v.volume, 35);
         EXPECT_EQ(v.screen_off_s, 120);
-        EXPECT_EQ(v.language, "en");
+        EXPECT_EQ(v.language, wisp::core::LangCode::En);
         EXPECT_EQ(v.utc_offset_min, 330);
         EXPECT_EQ(v.ntp_servers, "a.example,b.example");
         EXPECT_EQ(v.deep_after_s, 1800);
@@ -774,8 +775,53 @@ TEST(SystemSettings, StoreWrittenByTheOldCodeReadsTheSame) {
         ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "fr"));
         const auto v = fx.settings.get();
         EXPECT_EQ(v.brightness, 200);
-        EXPECT_EQ(v.language, "zh");
+        EXPECT_EQ(v.language, wisp::core::LangCode::Zh);
     }
+}
+
+namespace {
+struct CaptureSink : wisp::LogSink {
+    std::mutex mutex;
+    std::vector<std::string> lines;
+    void write(const wisp::LogRecord& rec) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        lines.push_back(rec.msg);
+    }
+    // The captured lines containing "not valid".
+    std::vector<std::string> invalid() {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<std::string> out;
+        for (const std::string& l : lines) {
+            if (l.find("not valid") != std::string::npos) out.push_back(l);
+        }
+        return out;
+    }
+};
+}  // namespace
+
+// A stored value set() would refuse is logged once per seed_cell(), naming
+// its store key, and reads as the default; get() alone logs nothing.
+TEST(SystemSettings, InvalidStoredValueLogsOnceAtSeed) {
+    Fixture fx;
+    ASSERT_TRUE(Settings(fx.backend, "display").set("brightness", int64_t{5}));
+    ASSERT_TRUE(Settings(fx.backend, "sys").set("lang", "fr"));
+    CaptureSink sink;
+    wisp::log::add_sink(&sink);
+
+    (void)fx.settings.get();
+    EXPECT_TRUE(sink.invalid().empty());
+
+    fx.settings.seed_cell();
+    std::vector<std::string> lines = sink.invalid();
+    ASSERT_EQ(lines.size(), 2u);
+    EXPECT_NE(lines[0].find("display/brightness"), std::string::npos) << lines[0];
+    EXPECT_NE(lines[1].find("sys/lang"), std::string::npos) << lines[1];
+    EXPECT_EQ(fx.settings.cell().get().brightness, 200);
+    EXPECT_EQ(fx.settings.cell().get().language, wisp::core::LangCode::Zh);
+
+    fx.settings.seed_cell();
+    EXPECT_EQ(sink.invalid().size(), 4u);
+    wisp::log::remove_sink(&sink);
 }
 
 // system.settings carries the same map GET /settings returns.

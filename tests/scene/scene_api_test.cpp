@@ -435,7 +435,8 @@ wisp.device.on("lang", function(i) print("lang", i.lang, wisp.device.info().lang
     supply_cell.set(wisp::core::PowerSupply{false, false, 79, false});
     // A settings change that is not the language does not fire.
     change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 50; });
-    change_settings([](wisp::core::SystemSettingsValues& v) { v.language = "en"; });
+    change_settings(
+        [](wisp::core::SystemSettingsValues& v) { v.language = wisp::core::LangCode::En; });
     ASSERT_TRUE(wait_log("dev", 2));
     change_settings([](wisp::core::SystemSettingsValues& v) { v.brightness = 60; });
     wisp::os::sleep_ms(150);
@@ -610,7 +611,7 @@ wisp.device.on("minute", function(i) print("minute", tostring(i.time_24h)) end)
 // cell's value at start is what info() reports.
 TEST_F(SceneApiTest, SettingsCellAtStartShowsInInfo) {
     change_settings([](wisp::core::SystemSettingsValues& v) {
-        v.language = "en";
+        v.language = wisp::core::LangCode::En;
         v.utc_offset_min = 330;
         v.time_24h = false;
     });

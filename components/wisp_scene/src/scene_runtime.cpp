@@ -217,19 +217,19 @@ Result<void> SceneRuntime::start() {
     }
     if (deps_.settings != nullptr) {
         struct Seen {
-            int utc_offset_min;
-            bool time_24h;
-            std::optional<ui::Lang> lang;
+            int utc_offset_min = 0;
+            bool time_24h = true;
+            ui::Lang lang = ui::Lang::Zh;
         };
         const Seen first = deps_.settings->read([](const core::SystemSettingsValues& v) {
-            return Seen{v.utc_offset_min, v.time_24h, ui::parse_lang(v.language)};
+            return Seen{v.utc_offset_min, v.time_24h, ui::to_lang(v.language)};
         });
         settings_sub_ = deps_.settings->subscribe(
             [this, last = first](const core::SystemSettingsValues& now) mutable {
                 uint8_t bits = 0;
                 if (now.utc_offset_min != last.utc_offset_min || now.time_24h != last.time_24h)
                     bits |= kMinute;
-                const std::optional<ui::Lang> lang = ui::parse_lang(now.language);
+                const ui::Lang lang = ui::to_lang(now.language);
                 if (lang != last.lang) bits |= kLang;
                 last = Seen{now.utc_offset_min, now.time_24h, lang};
                 if (bits != 0) note_device(bits);
@@ -2255,7 +2255,7 @@ DeviceInfo SceneRuntime::device_info() const {
     i.time_24h = true;
     if (deps_.settings != nullptr) {
         deps_.settings->read([&](const core::SystemSettingsValues& v) {
-            lang = ui::parse_lang(v.language);
+            lang = ui::to_lang(v.language);
             i.utc_offset_min = v.utc_offset_min;
             i.time_24h = v.time_24h;
         });

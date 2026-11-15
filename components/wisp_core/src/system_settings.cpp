@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -16,133 +17,51 @@ namespace {
 
 constexpr const char* kTag = "system_settings";
 
-struct KeySpec {
-    const char* name;
-    const char* ns;
-    const char* key;
-    Value def;
-    bool (*valid)(const Value&);
-};
-
-bool int_in(const Value& v, int64_t lo, int64_t hi) {
-    return v.type() == Value::Type::Int && v.as_int() >= lo && v.as_int() <= hi;
-}
-
-// The device UI languages (spec 8.3). wisp_ui's parse_lang() accepts the
-// same codes; it cannot be called from here (wisp_core sits below wisp_ui).
-bool valid_language(const Value& v) {
-    if (v.type() != Value::Type::String) return false;
-    const std::string& code = v.as_string();
-    return code == "zh" || code == "ja" || code == "en";
-}
-
-const KeySpec kBrightness{"brightness", "display", "brightness", Value(kDefaultBrightness),
-                          [](const Value& v) { return int_in(v, 10, 255); }};
-const KeySpec kVolume{"volume", "audio", "volume", Value(kDefaultVolume),
-                      [](const Value& v) { return int_in(v, 0, 100); }};
-const KeySpec kScreenOff{
-    "screen_off_s", "power", "screen_off_s", Value(kDefaultScreenOffS),
-    [](const Value& v) { return v.type() == Value::Type::Int && valid_screen_off_s(v.as_int()); }};
-const KeySpec kDeepAfter{
-    "deep_after_s", "power", "deep_after_s", Value(kDefaultDeepAfterS),
-    [](const Value& v) { return v.type() == Value::Type::Int && valid_deep_after_s(v.as_int()); }};
-const KeySpec kNotifyVol{"notify_vol", "audio", "notify_vol", Value(kDefaultNotifyVol),
-                         [](const Value& v) { return int_in(v, 0, 100); }};
-const KeySpec kTtsMute{"tts_mute", "voice", "tts_mute", Value(kDefaultTtsMute),
-                       [](const Value& v) { return v.type() == Value::Type::Bool; }};
-const KeySpec kTime24h{"time_24h", "sys", "time_24h", Value(kDefaultTime24h),
-                       [](const Value& v) { return v.type() == Value::Type::Bool; }};
-const KeySpec kAgentMaxSteps{
-    "agent_max_steps", "agent", "max_steps", Value(kDefaultAgentMaxSteps),
-    [](const Value& v) { return int_in(v, kMinAgentMaxSteps, kMaxAgentMaxSteps); }};
-const KeySpec kAgentTurnMin{
-    "agent_turn_min", "agent", "turn_min", Value(kDefaultAgentTurnMin),
-    [](const Value& v) { return int_in(v, kMinAgentTurnMin, kMaxAgentTurnMin); }};
-const KeySpec kLanguage{"language", "sys", "lang", Value(kDefaultLanguage), valid_language};
-
-const KeySpec kUtcOffset{"utc_offset_min", "sys", "tz_min", Value(kDefaultUtcOffsetMin),
-                         [](const Value& v) { return int_in(v, -720, 840); }};
-
-// One or two comma-separated time servers (connectivity spec 5.4), each a
-// host name or an IPv4 address: 1-63 characters of [A-Za-z0-9.-]. No
-// spaces, ports or IPv6 literals.
-bool valid_ntp_servers(const Value& v) {
-    if (v.type() != Value::Type::String) return false;
-    std::string_view list = v.as_string();
-    int entries = 0;
-    while (true) {
-        const size_t comma = list.find(',');
-        std::string_view entry = list.substr(0, comma);
-        if (entry.empty() || entry.size() > 63) return false;
-        for (char c : entry) {
-            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                            (c >= '0' && c <= '9') || c == '.' || c == '-';
-            if (!ok) return false;
-        }
-        if (++entries > 2) return false;
-        if (comma == std::string_view::npos) return true;
-        list.remove_prefix(comma + 1);
+// The stored value of `spec`'s row, or nullopt when it is missing or one
+// set() would refuse (a hand-edited or corrupted store): every value get()
+// reports is one its consumers can take, and an int64 past int's range never
+// reaches the narrowing in assign_setting(). `invalid` tells the two apart.
+std::optional<Value> read_valid(SettingsBackend& backend, const SettingSpec& spec, bool& invalid) {
+    invalid = false;
+    auto stored = backend.get(std::string(spec.ns), std::string(spec.key));
+    if (!stored) return std::nullopt;
+    if (!valid_setting(spec, stored.value())) {
+        invalid = true;
+        return std::nullopt;
     }
-}
-
-const KeySpec kNtpServers{"ntp_servers", "sys", "ntp", Value(kDefaultNtpServers),
-                          valid_ntp_servers};
-
-const KeySpec* const kKeys[] = {&kBrightness, &kVolume,     &kScreenOff,     &kLanguage,
-                                &kUtcOffset,  &kNtpServers, &kDeepAfter,     &kNotifyVol,
-                                &kTtsMute,    &kTime24h,    &kAgentMaxSteps, &kAgentTurnMin};
-
-const KeySpec* find_spec(std::string_view name) {
-    for (const KeySpec* spec : kKeys) {
-        if (name == spec->name) return spec;
-    }
-    return nullptr;
-}
-
-// The stored value, or the default when it is missing or one set() would
-// refuse (a hand-edited or corrupted store): every value get() reports is
-// one its consumers can take, and an int64 past int's range never reaches
-// the narrowing in get().
-Value read(SettingsBackend& backend, const KeySpec& spec) {
-    auto stored = backend.get(spec.ns, spec.key);
-    if (!stored || !spec.valid(stored.value())) return spec.def;
-    return stored.value();
+    return std::move(stored.value());
 }
 
 // The one system.settings event: the mirror's and set()'s own publish for a
 // batch that changed nothing both build it here, so the two cannot differ.
-Event settings_event(const SystemSettingsValues& values) {
+Event settings_event(const SettingsSnapshot& values) {
     return {topics::kSystemSettings, kSystemSettingsSource, 0, to_map(values)};
 }
 
 // Reproduces the system.settings event App published after every stored
 // batch.
-void mirror_settings(EventBus& bus, const SystemSettingsValues&,
-                     const SystemSettingsValues& after) {
+void mirror_settings(EventBus& bus, const SettingsSnapshot&, const SettingsSnapshot& after) {
     bus.publish(settings_event(after));
 }
 
 }  // namespace
 
-bool valid_screen_off_s(int64_t s) { return s == 0 || (s >= 15 && s <= 3600); }
+bool valid_screen_off_s(int64_t s) {
+    return valid_setting(setting_spec(SettingId::ScreenOffS), Value(s));
+}
 
-bool valid_deep_after_s(int64_t s) { return s == 0 || (s >= 60 && s <= 3600); }
+bool valid_deep_after_s(int64_t s) {
+    return valid_setting(setting_spec(SettingId::DeepAfterS), Value(s));
+}
 
-Map to_map(const SystemSettingsValues& values) {
-    return Map{
-        {"brightness", Value(values.brightness)},
-        {"volume", Value(values.volume)},
-        {"screen_off_s", Value(values.screen_off_s)},
-        {"language", Value(values.language)},
-        {"utc_offset_min", Value(values.utc_offset_min)},
-        {"ntp_servers", Value(values.ntp_servers)},
-        {"deep_after_s", Value(values.deep_after_s)},
-        {"notify_vol", Value(values.notify_vol)},
-        {"tts_mute", Value(values.tts_mute)},
-        {"time_24h", Value(values.time_24h)},
-        {"agent_max_steps", Value(values.agent_max_steps)},
-        {"agent_turn_min", Value(values.agent_turn_min)},
-    };
+Map to_map(const SettingsSnapshot& values) {
+    Map out;
+    for (const SettingSpec& spec : kSettingsSchema) {
+        if ((spec.flags & kSettingWeb) != 0) {
+            out.emplace(std::string(spec.name), setting_value(values, setting_id_of(spec)));
+        }
+    }
+    return out;
 }
 
 SystemSettings::SystemSettings(SettingsBackend& backend, EventBus& bus,
@@ -150,37 +69,37 @@ SystemSettings::SystemSettings(SettingsBackend& backend, EventBus& bus,
     : backend_(backend),
       bus_(bus),
       apply_brightness_(std::move(apply_brightness)),
-      cell_(bus, SystemSettingsValues{}, &mirror_settings) {}
+      cell_(bus, SettingsSnapshot{}, &mirror_settings) {}
 
 void SystemSettings::seed_cell() {
     std::lock_guard<os::Mutex> lock(mutex_);
-    cell_.seed(get());
+    cell_.seed(read_store(true));
 }
 
-SystemSettingsValues SystemSettings::get() const {
-    SystemSettingsValues values;
-    values.brightness = static_cast<int>(read(backend_, kBrightness).as_int());
-    values.volume = static_cast<int>(read(backend_, kVolume).as_int());
-    values.screen_off_s = static_cast<int>(read(backend_, kScreenOff).as_int());
-    values.language = read(backend_, kLanguage).as_string();
-    values.utc_offset_min = static_cast<int>(read(backend_, kUtcOffset).as_int());
-    values.ntp_servers = read(backend_, kNtpServers).as_string();
-    values.deep_after_s = static_cast<int>(read(backend_, kDeepAfter).as_int());
-    values.notify_vol = static_cast<int>(read(backend_, kNotifyVol).as_int());
-    values.tts_mute = read(backend_, kTtsMute).as_bool();
-    values.time_24h = read(backend_, kTime24h).as_bool();
-    values.agent_max_steps = static_cast<int>(read(backend_, kAgentMaxSteps).as_int());
-    values.agent_turn_min = static_cast<int>(read(backend_, kAgentTurnMin).as_int());
+SettingsSnapshot SystemSettings::get() const { return read_store(false); }
+
+SettingsSnapshot SystemSettings::read_store(bool log_invalid) const {
+    SettingsSnapshot values;
+    for (const SettingSpec& spec : kSettingsSchema) {
+        bool invalid = false;
+        if (auto v = read_valid(backend_, spec, invalid)) {
+            assign_setting(values, setting_id_of(spec), *v);
+        } else if (invalid && log_invalid) {
+            WLOG_W(kTag, "stored %.*s/%.*s is not valid; using the default",
+                   static_cast<int>(spec.ns.size()), spec.ns.data(),
+                   static_cast<int>(spec.key.size()), spec.key.data());
+        }
+    }
     return values;
 }
 
 Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
     for (const auto& [name, value] : changes) {
-        const KeySpec* spec = find_spec(name);
+        const SettingSpec* spec = find_setting(name);
         if (spec == nullptr) {
             return Result<void>::err(ErrorCode::InvalidArgument, "unknown setting: " + name);
         }
-        if (!spec->valid(value)) {
+        if (!valid_setting(*spec, value)) {
             return Result<void>::err(ErrorCode::InvalidArgument, "invalid value: " + name);
         }
     }
@@ -190,23 +109,27 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
 
     std::lock_guard<os::Mutex> lock(mutex_);
     struct Undo {
-        const KeySpec* spec;
+        const SettingSpec* spec;
         std::optional<Value> previous;  // nullopt: the key did not exist
     };
     std::vector<Undo> written;
     for (const auto& [name, value] : changes) {
-        const KeySpec* spec = find_spec(name);
-        auto old = backend_.get(spec->ns, spec->key);
+        const SettingSpec* spec = find_setting(name);
+        auto old = backend_.get(std::string(spec->ns), std::string(spec->key));
         std::optional<Value> previous;
         if (old) previous = std::move(old.value());
 
-        auto r = backend_.set(spec->ns, spec->key, value);
+        auto r = backend_.set(std::string(spec->ns), std::string(spec->key), value);
         if (!r) {
             for (auto it = written.rbegin(); it != written.rend(); ++it) {
-                auto undo = it->previous ? backend_.set(it->spec->ns, it->spec->key, *it->previous)
-                                         : backend_.erase(it->spec->ns, it->spec->key);
+                auto undo = it->previous ? backend_.set(std::string(it->spec->ns),
+                                                        std::string(it->spec->key), *it->previous)
+                                         : backend_.erase(std::string(it->spec->ns),
+                                                          std::string(it->spec->key));
                 if (!undo) {
-                    WLOG_W(kTag, "restoring %s/%s failed: %s", it->spec->ns, it->spec->key,
+                    WLOG_W(kTag, "restoring %.*s/%.*s failed: %s",
+                           static_cast<int>(it->spec->ns.size()), it->spec->ns.data(),
+                           static_cast<int>(it->spec->key.size()), it->spec->key.data(),
                            undo.error().message.c_str());
                 }
             }
@@ -228,7 +151,7 @@ Result<void> SystemSettings::set(const std::map<std::string, Value>& changes) {
     // mirror publishes it when a value changed, and a batch that stored
     // what was already there (the cell skips equal values) publishes it
     // here. Under mutex_, so events go out in the order batches were stored.
-    const SystemSettingsValues now = get();
+    const SettingsSnapshot now = get();
     if (!cell_.set(now)) {
         bus_.publish(settings_event(now));
     }

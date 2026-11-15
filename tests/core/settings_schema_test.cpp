@@ -93,20 +93,18 @@ TEST(SettingsSchema, StoreNamesAreValidAndUnique) {
 
 TEST(SettingsSchema, DefaultsMatchTodaysValues) {
     const SettingsSnapshot d{};
-    const wisp::core::SystemSettingsValues old{};
-    EXPECT_EQ(d.brightness, old.brightness);
-    EXPECT_EQ(d.volume, old.volume);
-    EXPECT_EQ(d.screen_off_s, old.screen_off_s);
+    EXPECT_EQ(d.brightness, 200);
+    EXPECT_EQ(d.volume, 60);
+    EXPECT_EQ(d.screen_off_s, 60);
     EXPECT_EQ(d.language, LangCode::Zh);
-    EXPECT_EQ(old.language, "zh");
-    EXPECT_EQ(d.utc_offset_min, old.utc_offset_min);
-    EXPECT_EQ(d.ntp_servers, std::string_view(old.ntp_servers));
-    EXPECT_EQ(d.deep_after_s, old.deep_after_s);
-    EXPECT_EQ(d.notify_vol, old.notify_vol);
-    EXPECT_EQ(d.tts_mute, old.tts_mute);
-    EXPECT_EQ(d.time_24h, old.time_24h);
-    EXPECT_EQ(d.agent_max_steps, old.agent_max_steps);
-    EXPECT_EQ(d.agent_turn_min, old.agent_turn_min);
+    EXPECT_EQ(d.utc_offset_min, 480);
+    EXPECT_EQ(d.ntp_servers, std::string_view("pool.ntp.org,ntp.aliyun.com"));
+    EXPECT_EQ(d.deep_after_s, 300);
+    EXPECT_EQ(d.notify_vol, 60);
+    EXPECT_EQ(d.tts_mute, false);
+    EXPECT_EQ(d.time_24h, true);
+    EXPECT_EQ(d.agent_max_steps, 60);
+    EXPECT_EQ(d.agent_turn_min, 15);
     EXPECT_EQ(d.low_batt_pct, 15);
     EXPECT_EQ(d.perf_overlay, false);
     // Snapshot integers are int, not int32_t (long on the ESP-IDF toolchains).

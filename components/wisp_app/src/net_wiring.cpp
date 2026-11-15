@@ -105,7 +105,7 @@ void NetWiring::start() {
         time_sync_ = std::make_unique<net::TimeSyncService>(net::TimeSyncDeps{
             .sntp = *platform.sntp,
             .bus = deps_.bus,
-            .servers = [&settings] { return settings.get().ntp_servers; },
+            .servers = [&settings] { return settings.get().ntp_servers.str(); },
             .set_system_time = platform.set_wall_clock,
             .rtc = clock,
         });

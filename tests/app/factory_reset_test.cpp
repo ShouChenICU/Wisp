@@ -511,7 +511,7 @@ TEST(FactoryReset, SettingsCellHoldsTheDefaultsAfterReset) {
     wisp::app::App& app = *h.app;
     const wisp::core::SystemSettingsValues defaults = app.system_settings().get();
     ASSERT_TRUE(app.system_settings().set({{"language", "en"}, {"brightness", 120}}));
-    ASSERT_EQ(app.system_settings().cell().get().language, "en");
+    ASSERT_EQ(app.system_settings().cell().get().language, wisp::core::LangCode::En);
     ASSERT_TRUE(app.bus().wait_idle(2000));
     const size_t settings_events = h.topic("system.settings").size();
     ASSERT_EQ(settings_events, 1u);
@@ -537,8 +537,8 @@ TEST(FactoryReset, ReseedKeepsTheScreenLanguageUntilTheRestart) {
     UiNetHarness h;
     ASSERT_TRUE(h.start("system."));
     wisp::app::App& app = *h.app;
-    const std::string default_language = app.system_settings().get().language;
-    ASSERT_NE(default_language, "en");
+    const wisp::core::LangCode default_language = app.system_settings().get().language;
+    ASSERT_NE(default_language, wisp::core::LangCode::En);
     ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
     ASSERT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
     const size_t stored = h.topic("system.settings").size();
@@ -606,7 +606,7 @@ TEST(FactoryReset, ConfirmedResetKeepsTheScreenLanguageUntilTheRestart) {
         UiHold hold(app.ui());
         gate->give();
         EXPECT_TRUE(wait_until([&] { return h.reboots.load() == 1; }, 5000));
-        EXPECT_NE(app.system_settings().cell().get().language, "en");
+        EXPECT_NE(app.system_settings().cell().get().language, wisp::core::LangCode::En);
     }
     ASSERT_TRUE(wisp::test::cell_barrier(app.system_settings().cell(), app.ui()));
     ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(app), app.ui()));
@@ -1258,7 +1258,7 @@ TEST(FactoryReset, SettingsCellReseededAfterEveryWipeStep) {
     // And then it was seeded, from the erased store.
     EXPECT_NE(app.system_settings().cell().revision(), before);
     EXPECT_EQ(app.system_settings().cell().get().language, app.system_settings().get().language);
-    EXPECT_NE(app.system_settings().cell().get().language, "en");
+    EXPECT_NE(app.system_settings().cell().get().language, wisp::core::LangCode::En);
 }
 
 // Settings read straight from flash (the cache could not be loaded): every

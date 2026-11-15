@@ -762,7 +762,7 @@ TEST(SelfCheckScreen, PageOpensInEnglishWhateverTheSystemLanguage) {
                                    return out;
                                }),
               "100");
-    EXPECT_EQ(h.app.system_settings().get().language, "zh");
+    EXPECT_EQ(h.app.system_settings().get().language, wisp::core::LangCode::Zh);
 
     h.app.stop();
 }
@@ -773,7 +773,7 @@ TEST(SelfCheckScreen, SwitchingThePageLanguageRetextsItInPlace) {
     Harness h(wisp::test::temp_dir().string() + "/settings.json");
     ASSERT_TRUE(h.start());
     ASSERT_TRUE(h.wait_for_flushes(5));
-    const std::string system_lang = h.app.system_settings().get().language;
+    const wisp::core::LangCode system_lang = h.app.system_settings().get().language;
     const Lang ui_lang = wisp::ui::lang();
 
     // "<title>|<board heading>|<devices heading>|<devices chip>|<a test

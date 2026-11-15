@@ -1226,8 +1226,8 @@ TEST_F(SceneRuntimeTest, LanguageChangeReachesScenes) {
         settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.brightness = 50; }));
     settle();
     ASSERT_EQ(scene_log("lang"), (std::vector<std::string>{"open\tzh\t480\ttrue"}));
-    ASSERT_TRUE(
-        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.language = "en"; }));
+    ASSERT_TRUE(settings_cell.update(
+        [](wisp::core::SystemSettingsValues& v) { v.language = wisp::core::LangCode::En; }));
     ASSERT_TRUE(wait_log("lang", 2));
     settle();
     EXPECT_EQ(scene_log("lang"), (std::vector<std::string>{"open\tzh\t480\ttrue", "lang\ten\ten"}));
@@ -1263,7 +1263,7 @@ TEST_F(SceneRuntimeTest, ChargingChangeReachesScenes) {
 TEST_F(SceneRuntimeTest, NoDeviceEventAtStart) {
     follow_device_cells();
     wisp::core::SystemSettingsValues v;
-    v.language = "en";
+    v.language = wisp::core::LangCode::En;
     v.utc_offset_min = 60;
     v.time_24h = false;
     settings_cell.set(v);

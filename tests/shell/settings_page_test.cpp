@@ -77,7 +77,7 @@ protected:
         v.notify_vol = 40;
         v.screen_off_s = 60;
         v.deep_after_s = 300;
-        v.language = "zh";
+        v.language = wisp::core::LangCode::Zh;
         v.utc_offset_min = 480;
         v.time_24h = true;
         v.tts_mute = false;
@@ -468,7 +468,7 @@ TEST_F(SettingsPageTest, LanguageChangeRetextsThePages) {
     int32_t y = 0;
     harness->on_ui([&] { y = lv_obj_get_scroll_y(page()->list()); });
     // What the system duties do with the system.settings event.
-    stored.language = "en";
+    stored.language = wisp::core::LangCode::En;
     harness->on_ui([&] { wisp::ui::set_lang(wisp::ui::Lang::En); });
     ASSERT_TRUE(harness->ui_until(
         [&] { return page() != nullptr && text_of(page()->heading(0)) == "Display & sound"; }));

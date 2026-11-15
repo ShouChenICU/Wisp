@@ -97,9 +97,8 @@ int utc_offset_of(const core::SystemSettings& settings) {
 }
 
 ui::Lang lang_of(const core::SystemSettings& settings) {
-    return settings.cell().read([](const core::SystemSettingsValues& v) {
-        return ui::parse_lang(v.language).value_or(ui::Lang::Zh);
-    });
+    return settings.cell().read(
+        [](const core::SystemSettingsValues& v) { return ui::to_lang(v.language); });
 }
 
 uint8_t notify_vol_of(const core::SystemSettings& settings) {
@@ -372,9 +371,7 @@ Result<void> App::start() {
     // first frame is already in it; the system duties follow the settings
     // cell for later changes (their first delivery finds this language and
     // changes nothing).
-    if (auto lang = ui::parse_lang(impl_->system_settings.get().language)) {
-        ui::set_lang(*lang);
-    }
+    ui::set_lang(ui::to_lang(impl_->system_settings.get().language));
     auto display = impl_->registry.by_role<hal::Display>(hal::role::kMain);
     std::shared_ptr<hal::Touch> touch;
     hal::ScreenShape shape;

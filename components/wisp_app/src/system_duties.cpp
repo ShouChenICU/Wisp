@@ -327,7 +327,7 @@ bool SystemDuties::reset_holds_language() const {
 }
 
 void SystemDuties::sync_system_language(const core::SystemSettingsValues& values) {
-    apply_system_language(ui::parse_lang(values.language));
+    apply_system_language(ui::to_lang(values.language));
 }
 
 void SystemDuties::apply_system_language(std::optional<ui::Lang> lang) {
@@ -394,8 +394,10 @@ void SystemDuties::on_reset_status(const ResetStatus& status) {
     }
     // A confirmed reset that failed lets the language follow again: what
     // was stored meanwhile is shown now. Only the language is read.
-    apply_system_language(app_.system_settings().cell().read(
-        [](const core::SystemSettingsValues& v) { return ui::parse_lang(v.language); }));
+    apply_system_language(
+        app_.system_settings().cell().read([](const core::SystemSettingsValues& v) {
+            return std::optional<ui::Lang>(ui::to_lang(v.language));
+        }));
 }
 
 void SystemDuties::show_reset_dialog() {
