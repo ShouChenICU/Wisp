@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -11,6 +13,7 @@
 #include <vector>
 
 #include "app/ui_net_harness.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_audio.hpp"
 #include "support/fake_devices.hpp"
 #include "support/fake_models.hpp"
@@ -131,6 +134,49 @@ FakeTtsReply pcm(uint32_t ms) {
     const auto* bytes = reinterpret_cast<const uint8_t*>(samples.data());
     r.chunks.emplace_back(bytes, bytes + samples.size() * sizeof(int16_t));
     return r;
+}
+
+// Stores `changes` while wisp.bus is held and floods it, so the
+// system.settings event they publish is dropped before the bus runs again:
+// what follows sees the change only through the settings cell.
+void set_flooded(UiNetHarness& h, const wisp::Map& changes) {
+    const uint64_t dropped = h.app->bus().dropped();
+    {
+        wisp::test::BusFlood flood(h.app->bus());
+        flood.hold();
+        EXPECT_TRUE(h.app->system_settings().set(changes));
+        flood.flood(200);
+        flood.release();
+    }
+    EXPECT_TRUE(h.app->bus().wait_idle(2000));
+    EXPECT_GT(h.app->bus().dropped(), dropped);
+}
+
+// Runs one voice turn from recognised text, its reply "<say>好的。</say>"
+// with `tts` queued as its speech; true once the turn has ended.
+bool voice_reply(VoiceApp& v, const FakeTtsReply& tts) {
+    wisp::shell::ConversationController* conv = v.h->app->conversation();
+    if (conv == nullptr) return false;
+    v.server->llm().push({.status = 200,
+                          .chunks = {wisp::test::FakeLlmServer::sse_text("<say>好的。</say>"),
+                                     wisp::test::FakeLlmServer::sse_finish("stop"),
+                                     wisp::test::FakeLlmServer::sse_done()}});
+    v.server->push_tts(tts);
+    if (!conv->voice_text("你好")) return false;
+    return wait_until(
+        [&] {
+            auto t = conv->current();
+            return t.turn != 0 && !t.running;
+        },
+        10000);
+}
+
+size_t tts_requests(VoiceApp& v) {
+    size_t n = 0;
+    for (const auto& r : v.server->requests()) {
+        if (r.url.find("/audio/speech") != std::string::npos) ++n;
+    }
+    return n;
 }
 
 }  // namespace
@@ -258,4 +304,40 @@ TEST(AppVoice, OfflineIsDownWhileNoConnectionIsBeingMade) {
             [&] { return conv->readiness() == Readiness{.net = Readiness::Net::Down}; }, 10000));
         EXPECT_FALSE(conv->readiness().can_talk());
     }
+}
+
+// Mute is read from the settings cell when a reply would be spoken: muted
+// while its system.settings event is lost, the next reply is not spoken.
+TEST(AppVoice, MuteFollowsStoredSettingsFlooded) {
+    VoiceApp v(/*with_mic=*/true);
+    ASSERT_TRUE(v.start());
+    wisp::shell::ConversationController* conv = v.h->app->conversation();
+    ASSERT_NE(conv, nullptr);
+    ASSERT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 10000));
+
+    set_flooded(*v.h, {{"tts_mute", wisp::Value(true)}});
+    ASSERT_TRUE(voice_reply(v, pcm(200)));
+    EXPECT_EQ(conv->current().say, "好的。");
+    EXPECT_FALSE(conv->current().spoken);
+    EXPECT_EQ(tts_requests(v), 0u);
+    EXPECT_EQ(v.out->frames(), 0u);
+}
+
+// The reply's volume is read from the settings cell when its speech
+// starts: samples of 1000 at volume 30 are written as 300, though the
+// change's system.settings event was lost.
+TEST(AppVoice, VolumeFollowsStoredSettings) {
+    VoiceApp v(/*with_mic=*/true);
+    ASSERT_TRUE(v.start());
+    wisp::shell::ConversationController* conv = v.h->app->conversation();
+    ASSERT_NE(conv, nullptr);
+    ASSERT_TRUE(wait_until([&] { return conv->readiness().complete(); }, 10000));
+
+    set_flooded(*v.h, {{"volume", wisp::Value(30)}});
+    ASSERT_TRUE(voice_reply(v, pcm(200)));
+    ASSERT_TRUE(wait_until([&] { return conv->current().spoken; }, 5000));
+    ASSERT_TRUE(wait_until([&] { return v.out->frames() >= 24u * 200; }, 5000));
+    int peak = 0;
+    for (int16_t s : v.out->samples()) peak = std::max(peak, std::abs(int{s}));
+    EXPECT_EQ(peak, 300);
 }

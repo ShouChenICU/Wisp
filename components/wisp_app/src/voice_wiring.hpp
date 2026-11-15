@@ -11,12 +11,12 @@
 // stops and the object goes right after. A missing mic or speaker is no
 // failure: the voice reports mic_unavailable, the speech plays nothing.
 //
-// Cached for the voice's tasks, which never read Settings: voice/tts_mute
-// and audio/volume, seeded at construction and kept from system.settings.
+// voice/tts_mute and audio/volume are read from SystemSettings::cell()
+// where they are used (a memory read, from any thread), never from
+// Settings, so the voice's tasks never touch flash.
 // The TonePlayer's output guard is the voice's may_play_tone() from
 // start() to stop() (wisp/voice/voice_service.hpp, "Sharing the output").
 
-#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -45,7 +45,7 @@ struct VoiceWiringDeps {
     core::EventBus& bus;
     core::DeviceRegistry& registry;
     core::ModelProfileService& models;
-    core::SystemSettings& settings;  // read once, at construction
+    core::SystemSettings& settings;  // its cell(); outlives the wiring
     agent::AgentService& agent;
     core::WakeLockRegistry* locks = nullptr;
     core::TonePlayer* tones = nullptr;
@@ -80,9 +80,6 @@ public:
 
 private:
     VoiceWiringDeps deps_;
-    std::atomic<bool> tts_mute_{false};
-    std::atomic<uint8_t> volume_{60};
-    core::SubscriptionId settings_sub_ = 0;
     std::unique_ptr<net::HttpClient> no_http_;
     std::unique_ptr<voice::AsrClient> asr_;
     std::unique_ptr<voice::TtsClient> tts_;

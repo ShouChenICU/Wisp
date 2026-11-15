@@ -3,9 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-#include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/core/topics.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/os/os.hpp"
 
@@ -27,26 +25,14 @@ public:
 
 uint8_t clamp_volume(int64_t v) { return static_cast<uint8_t>(std::clamp<int64_t>(v, 0, 100)); }
 
+// A memory read of the settings cell, safe from any thread.
+bool tts_muted(const core::SystemSettings& settings) {
+    return settings.cell().read([](const core::SystemSettingsValues& v) { return v.tts_mute; });
+}
+
 }  // namespace
 
 VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
-    // Subscribed before the seed is read, so a change stored in between
-    // is not lost.
-    settings_sub_ =
-        deps_.bus.subscribe(core::topics::kSystemSettings, [this](const core::Event& e) {
-            auto it = e.payload.find("tts_mute");
-            if (it != e.payload.end() && it->second.type() == Value::Type::Bool) {
-                tts_mute_.store(it->second.as_bool());
-            }
-            it = e.payload.find("volume");
-            if (it != e.payload.end() && it->second.type() == Value::Type::Int) {
-                volume_.store(clamp_volume(it->second.as_int()));
-            }
-        });
-    const core::SystemSettingsValues now = deps_.settings.get();
-    tts_mute_.store(now.tts_mute);
-    volume_.store(clamp_volume(now.volume));
-
     net::HttpClient* http = deps_.http;
     if (http == nullptr) {
         no_http_ = std::make_unique<NoHttpClient>();
@@ -67,7 +53,13 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .locks = deps_.locks,
         .network_up = deps_.network_up,
         .network_expected = deps_.network_expected,
-        .volume = [this] { return volume_.load(); },
+        // Read from the settings cell when a sound starts (on wisp.voice):
+        // the stored value, whatever the bus has delivered.
+        .volume =
+            [settings = &deps_.settings] {
+                return settings->cell().read(
+                    [](const core::SystemSettingsValues& v) { return clamp_volume(v.volume); });
+            },
     });
     core::ModelProfileService* models = &deps_.models;
     std::function<bool()> network_up = deps_.network_up;
@@ -76,10 +68,10 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .bus = deps_.bus,
         .agent = deps_.agent,
         .voice = *voice_,
-        .tts_mute = [this] { return tts_mute_.load(); },
+        .tts_mute = [settings = &deps_.settings] { return tts_muted(*settings); },
         // In-memory reads only: the triggers come from any thread.
         .readiness =
-            [this, models, network_up, network_expected] {
+            [settings = &deps_.settings, models, network_up, network_expected] {
                 using Net = shell::Readiness::Net;
                 shell::Readiness r;
                 if (network_up && !network_up())
@@ -88,7 +80,7 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
                 r.llm = !p.active_for(core::ModelKind::Llm).empty();
                 r.asr = !p.active_for(core::ModelKind::Asr).empty();
                 // Muted, no reply is spoken: speech is not missing.
-                r.tts = tts_mute_.load() || !p.active_for(core::ModelKind::Tts).empty();
+                r.tts = tts_muted(*settings) || !p.active_for(core::ModelKind::Tts).empty();
                 return r;
             },
         .now_ms = os::now_ms,
@@ -100,10 +92,7 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
     }
 }
 
-VoiceWiring::~VoiceWiring() {
-    stop();
-    deps_.bus.unsubscribe(settings_sub_);
-}
+VoiceWiring::~VoiceWiring() { stop(); }
 
 Result<void> VoiceWiring::start() {
     if (started_) return Result<void>::err(ErrorCode::Busy, "already started");
