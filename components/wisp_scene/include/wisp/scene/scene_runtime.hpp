@@ -193,9 +193,11 @@
 // gets a "minute" at once, then on_show. Device events come from state
 // cells (SceneRuntimeDeps::supply and ::settings, attach_time_sync()):
 // their callbacks, on wisp.bus, only set a bit in pending_device_ and
-// push a wake-up, and the scene task takes the bits at the top of every
-// loop step, so a change made while the queue is full waits there instead
-// of being lost, and several changes between two steps are one check.
+// push a wake-up, and the scene task takes the bits on every loop step,
+// right after its housekeeping (so a screen-off asked for meanwhile is
+// already applied), so a change made while the queue is full waits there
+// instead of being lost, and several changes between two steps are one
+// check.
 // "battery" fires when the percentage or charging differ from what the
 // scene last saw, checked on each change of the supply's charging or USB
 // state and each minute (a percent step alone waits for the minute);

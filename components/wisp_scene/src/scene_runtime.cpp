@@ -217,12 +217,18 @@ Result<void> SceneRuntime::start() {
     if (time_sync_ != nullptr) {
         // A sync may have moved the wall clock: a clock should redraw now,
         // not at the next minute boundary of the new time (clock_set()).
-        // Every attempt moves `attempts`, so two syncs in a row are two.
+        // Every attempt moves `attempts`, so two syncs in a row are two. A
+        // jump of more than one may hide a sync behind a later failure
+        // (one delivery for both): treated as a sync, since a needless
+        // clock_set() costs at most one more "minute" with the current
+        // time (MinuteTicker::sync()).
         time_sub_ = time_sync_->subscribe(
             [this, last = time_sync_->get().attempts](const core::TimeSyncResult& now) mutable {
                 if (now.attempts == last) return;
+                const uint32_t moved = now.attempts - last;
                 last = now.attempts;
-                if (now.outcome == core::TimeSyncResult::Outcome::Synced) note_device(kClockSet);
+                if (now.outcome == core::TimeSyncResult::Outcome::Synced || moved > 1)
+                    note_device(kClockSet);
             });
     }
     return Result<void>::ok();
@@ -685,7 +691,7 @@ void SceneRuntime::schedule(uint32_t ms, std::function<void()> fn) {
 void SceneRuntime::note_device(uint8_t bits) {
     pending_device_.fetch_or(bits);
     // A wake-up the full queue refuses needs no word: the task is busy and
-    // takes the bits at the top of its next step.
+    // takes the bits on its next step.
     push(make_message("", 0, msg::Wake{}), 0);
 }
 
@@ -724,9 +730,13 @@ void SceneRuntime::run() {
     // before every wait, so a wake-up the full queue refused is never
     // needed: the task only sleeps when no box holds anything.
     while (!quit_) {
-        // Every step, however it woke (a message, a timer, a timeout).
-        take_device_changes();
         housekeeping();
+        // Every step, however it woke (a message, a timer, a timeout), and
+        // after housekeeping(): its follow_visibility() has applied a
+        // screen-off asked for meanwhile, so no "minute" reaches a scene
+        // whose minute no longer ticks, and its minute poll has run, which
+        // clock_set() counts on.
+        take_device_changes();
         const uint64_t now = os::now_ms();
         const bool front = front_has_work(now);
         const bool back = back_has_work(now);

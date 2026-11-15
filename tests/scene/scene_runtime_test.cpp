@@ -124,8 +124,8 @@ protected:
         return wait_until([&] { return scene_log(id).size() >= n; }, ms);
     }
 
-    // Every cell callback has run and the scene task has passed the top
-    // of its loop after them: whatever they set has been delivered.
+    // Every cell callback has run and the scene task has run a loop step
+    // after them: whatever they set has been delivered.
     void settle() {
         ASSERT_TRUE(bus.wait_idle(1000));
         ASSERT_TRUE(rt->check_sources({}));
@@ -1250,6 +1250,82 @@ TEST_F(SceneRuntimeTest, SyncedTimeRedrawsOnceFailedDoesNot) {
     ASSERT_TRUE(wait_log("ts", 2));
     settle();
     EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"open\tzh\t480\ttrue", "minute\t480"}));
+}
+
+// A screen-off asked for while the task was busy is applied before the
+// time-zone change that came meanwhile: a scene that does not declare
+// "background" gets no "minute" once the screen was asked off.
+TEST_F(SceneRuntimeTest, ScreenOffWhileBusyComesBeforeAPendingTimeZoneChange) {
+    follow_device_cells();
+    start();
+    install("tz", kDeviceScene);
+    ASSERT_TRUE(rt->open("tz"));
+    ASSERT_TRUE(wait_label("stall"));
+    settle();
+    gate.arm();
+    ASSERT_TRUE(rt->click_ref("stall"));
+    ASSERT_TRUE(gate.wait_entered());
+    rt->set_visible(false);
+    ASSERT_TRUE(
+        settings_cell.update([](wisp::core::SystemSettingsValues& v) { v.utc_offset_min = 60; }));
+    ASSERT_TRUE(bus.wait_idle(1000));
+    gate.release();
+    settle();
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"open\tzh\t480\ttrue"}));
+    // The screen coming on sends the "minute", with the new offset.
+    rt->set_visible(true);
+    ASSERT_TRUE(wait_log("tz", 2));
+    settle();
+    EXPECT_EQ(scene_log("tz"), (std::vector<std::string>{"open\tzh\t480\ttrue", "minute\t60"}));
+}
+
+// A sync followed by a failed attempt, both before the callback runs, is
+// one delivery whose outcome is the failure: the clocks still redraw.
+TEST_F(SceneRuntimeTest, SyncHiddenBehindALaterFailureStillRedraws) {
+    follow_device_cells();
+    start();
+    install("ts", kDeviceScene);
+    ASSERT_TRUE(rt->open("ts"));
+    settle();
+    {
+        wisp::test::BusFlood flood(bus);
+        flood.hold();
+        ASSERT_TRUE(time_cell.update([](wisp::core::TimeSyncResult& r) {
+            r.outcome = wisp::core::TimeSyncResult::Outcome::Synced;
+            r.time = kDeviceNoon;
+            ++r.attempts;
+        }));
+        ASSERT_TRUE(time_cell.update([](wisp::core::TimeSyncResult& r) {
+            r.outcome = wisp::core::TimeSyncResult::Outcome::Failed;
+            r.time = 0;
+            ++r.attempts;
+        }));
+        flood.release();
+    }
+    ASSERT_TRUE(wait_log("ts", 2));
+    settle();
+    EXPECT_EQ(scene_log("ts"), (std::vector<std::string>{"open\tzh\t480\ttrue", "minute\t480"}));
+}
+
+// A runtime given the time-sync cell but never started holds no
+// subscription: the cell's owner may go first, and stop() is a no-op.
+TEST_F(SceneRuntimeTest, StopBeforeStartHoldsNoCell) {
+    follow_device_cells();
+    start();
+    const uint32_t before = bus.cell_subscriptions();
+    wisp::scene::SceneRuntimeDeps deps{bus, *storage, worker, *repo, *ui, *layer, shape};
+    deps.supply = &supply_cell;
+    deps.settings = &settings_cell;
+    auto other = std::make_unique<SceneRuntime>(std::move(deps));
+    {
+        // Destroyed before `other`, as net.reset() comes before the scenes.
+        wisp::core::StateCell<wisp::core::TimeSyncResult> owner{bus, wisp::core::TimeSyncResult{}};
+        other->attach_time_sync(&owner);
+        other->stop();
+        EXPECT_EQ(bus.cell_subscriptions(), before);
+    }
+    other.reset();
+    EXPECT_EQ(bus.cell_subscriptions(), before);
 }
 
 // The time-sync cell's owner may go before the runtime (App::stop()
