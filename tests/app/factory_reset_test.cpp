@@ -805,6 +805,71 @@ TEST(FactoryReset, FailureAndANewRequestTogetherAskAgain) {
     EXPECT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
 }
 
+// A reset task that fails before its spawn has even returned (here the
+// spawner runs the reset to its end first, into a stuck flash thread with
+// a full queue and no erase budget): the reset is over, not stuck
+// "running", so a new request opens the dialog again.
+TEST(FactoryReset, ResetFailingBeforeItsSpawnReturnsLetsANewRequestAskAgain) {
+    ZhAfterTest zh;
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    wisp::core::StorageWorker* worker = app.storage_worker();
+    ASSERT_NE(worker, nullptr);
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto release = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(worker->submit([entered, release] {
+        entered->give();
+        release->take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered->take(2000));
+    while (worker->submit([] {})) {
+    }
+    wisp::app::set_reset_erase_budget(app, 0);
+    wisp::app::set_reset_spawner(
+        app, [](const wisp::os::TaskConfig& config, std::function<void()> body) {
+            body();
+            return wisp::os::Task::spawn(config, [] {});
+        });
+
+    wisp::app::request_factory_reset(app);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    EXPECT_TRUE(wisp::app::start_factory_reset(app));
+    release->give();
+    ASSERT_TRUE(worker->drain(5000));
+    EXPECT_EQ(reset_states(h).back(), "failed");
+    EXPECT_FALSE(wisp::app::factory_reset_running(app));
+    EXPECT_EQ(h.reboots.load(), 0);
+    EXPECT_TRUE(wait_until([&] { return msgboxes(h) == 0; }, 3000));
+
+    wisp::app::request_factory_reset(app);
+    EXPECT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+}
+
+// A reset that failed in the last run does not mark the next run's reset
+// as failed: a second confirm while that one runs starts nothing more.
+TEST(FactoryReset, FailureDoesNotOutliveTheStop) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    std::shared_ptr<wisp::os::Semaphore> gate = gate_reset_task(*h.app);
+    wisp::app::request_factory_reset(*h.app);
+    ASSERT_TRUE(wisp::app::start_factory_reset(*h.app));
+    ASSERT_NO_FATAL_FAILURE(let_the_reset_fail(h, *gate));
+    h.app->stop();
+    ASSERT_TRUE(h.app->start());
+
+    std::atomic<int> spawns{0};
+    wisp::app::set_reset_spawner(*h.app,
+                                 [&](const wisp::os::TaskConfig& config, std::function<void()>) {
+                                     spawns.fetch_add(1);
+                                     return wisp::os::Task::spawn(config, [] {});
+                                 });
+    ASSERT_TRUE(wisp::app::start_factory_reset(*h.app));
+    ASSERT_TRUE(wisp::app::start_factory_reset(*h.app));
+    EXPECT_EQ(spawns.load(), 1);
+    EXPECT_TRUE(wisp::app::factory_reset_running(*h.app));
+}
+
 TEST(FactoryReset, CancelPublishesCancelled) {
     UiNetOptions opts;
     opts.saved = {{"Home", "password1"}};

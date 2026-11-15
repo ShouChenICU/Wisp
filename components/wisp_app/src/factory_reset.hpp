@@ -100,10 +100,12 @@ bool start_factory_reset(App& app);
 // ("failed"). Stays true once "done" is announced. Any thread.
 bool factory_reset_running(App& app);
 
-// Waits for a "wisp.reset" task to finish. App::stop() calls it before
-// tearing down the services the reset uses, and then moves the reset
-// status to Idle (no event), so the next start() does not show the last
-// run's request.
+// Waits for a "wisp.reset" task to finish and forgets it, so the next
+// start() begins with no reset running or failed. Leaves the reset status
+// as it is: App::stop() calls this before tearing down the services the
+// reset uses, and itself moves the status to Idle (no event) later, once
+// the network is gone, so the next start() does not show the last run's
+// request.
 void join_factory_reset(App& app);
 
 // How long factory_reset() keeps trying to start its erase job (30 s by

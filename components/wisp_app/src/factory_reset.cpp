@@ -245,14 +245,19 @@ bool start_factory_reset(App& app) {
     }
     const os::TaskConfig config{.name = "wisp.reset", .stack_bytes = kResetStackBytes};
     auto body = [&app] { factory_reset(app); };
+    // Before the spawn: the task may give up (and clear it) before the
+    // spawn returns, and a request seen after "done" must find it set.
+    impl.reset_running.store(true);
     impl.reset_task =
         impl.reset_spawner ? impl.reset_spawner(config, body) : os::Task::spawn(config, body);
     if (!impl.reset_task) {
         WLOG_E(kTag, "factory reset task could not start; nothing was erased");
+        // Before "cancelled", so the screen it reaches lets a new request
+        // ask again.
+        impl.reset_running.store(false);
         publish_state(app.impl_->reset_status, ResetStatus::Phase::Cancelled);
         return false;
     }
-    impl.reset_running.store(true);
     return true;
 }
 
@@ -273,6 +278,8 @@ void join_factory_reset(App& app) {
     }
     if (task) task->join();
     app.impl_->reset_running.store(false);
+    // A reset that failed in this run says nothing about the next one.
+    app.impl_->reset_failed.store(false);
 }
 
 }  // namespace wisp::app
