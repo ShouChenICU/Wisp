@@ -18,17 +18,17 @@
 // esp_codec_dev's own output volume/mic gain both start at 0 (muted) on a
 // freshly opened device (esp_codec_dev_new() calloc's its internal state,
 // and codec_dev_apply_vol_mute() in esp_codec_dev_open() applies that
-// zero) -- open() below immediately re-applies kDefaultVolumePercent/
+// zero) -- open() below immediately re-applies kOutputGainPercent/
 // kDefaultMicGainDb so the device is audible even before anything calls
 // set_volume()/set_gain(). These are a starting point for real-hardware
-// tuning, not calibrated values, and for output volume specifically they
-// are not the last word: components/wisp_app/src/loopback.cpp's "录音
-// 回放" self-check reads Settings("audio").get_int("volume", 60) and
-// calls set_volume() right after every open(), so whenever a Settings
-// backend is available, that value (60 by default, same clamp range)
-// overrides kDefaultVolumePercent on the very next open() -- the driver
-// default here only has the last word if no Settings-backed caller ever
-// opens the device.
+// tuning, not calibrated values. kOutputGainPercent is the output's port
+// gain, not the volume setting: the players (PcmPlayer, TonePlayer and
+// the "录音回放" loopback self-check in components/wisp_app/src/
+// loopback.cpp) apply the setting by scaling their samples, and nothing
+// in the system calls set_volume(), so what users hear is this gain times
+// the setting. If that is too quiet on a board, the gain is a board fact
+// to raise, not a setting. set_volume() still keeps its value for every
+// later open().
 //
 // EspAudioIn always opens the ES7210 codec with 2 physical channels
 // (channel_mask 0x3 -- the board wires two analog mics, migrated from

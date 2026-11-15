@@ -160,7 +160,11 @@ private:
     // that buffer may still hold after the queue itself has drained
     // to zero.
     uint16_t buffer_frames_ = 0;
-    std::atomic<uint8_t> volume_{100};
+    // The simulated output's own gain: full scale, so the host plays what
+    // the players hand it (they apply the volume setting to the samples).
+    // A port gain, not a setting; nothing in the system calls set_volume().
+    static constexpr uint8_t kOutputGainPercent = 100;
+    std::atomic<uint8_t> volume_{kOutputGainPercent};
     std::atomic<bool> powered_{true};
 };
 

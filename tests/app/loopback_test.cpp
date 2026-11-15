@@ -1,10 +1,9 @@
-// spec 6.6: volume is one of sub-project 1's three Settings-backed items
-// (brightness, volume, screen_off_s). Exercises loopback.cpp's
-// record_and_play() directly via the public run_loopback()/join_loopback()
-// entry points -- loopback.hpp is an internal (not under include/) header,
-// reached the same way tests/sim/sim_audio_test.cpp reaches into
-// wisp_port_sim's internals: an extra target_include_directories() in
-// tests/CMakeLists.txt, not a public API.
+// Exercises loopback.cpp's record_and_play() directly via the public
+// run_loopback()/join_loopback() entry points -- loopback.hpp is an
+// internal (not under include/) header, reached the same way
+// tests/sim/sim_audio_test.cpp reaches into wisp_port_sim's internals: an
+// extra target_include_directories() in tests/CMakeLists.txt, not a public
+// API.
 
 #include "loopback.hpp"
 
@@ -62,8 +61,13 @@ private:
 // JsonFileSettingsBackend's own doc comment), so writing through a
 // second, separate backend instance after App already exists would be
 // invisible to it.
+constexpr int16_t kRecordedLevel = 1000;
+
 struct Harness {
-    std::shared_ptr<FakeAudioIn> audio_in = std::make_shared<FakeAudioIn>("audio_in.main");
+    // A constant, non-silent recording, so the played peak shows the
+    // volume the loopback scaled it by.
+    std::shared_ptr<FakeAudioIn> audio_in =
+        std::make_shared<FakeAudioIn>("audio_in.main", "main", kRecordedLevel);
     std::shared_ptr<FakeAudioOut> audio_out = std::make_shared<FakeAudioOut>("audio_out.main");
     std::string settings_path = wisp::test::temp_dir().string() + "/settings.json";
     std::unique_ptr<wisp::app::App> app;
@@ -113,38 +117,51 @@ struct Harness {
 
 }  // namespace
 
-TEST(Loopback, AppliesDefaultVolumeWhenSettingsHasNone) {
+// The loopback plays at the volume setting by scaling its samples, as
+// PcmPlayer does: setting the output's own volume would stay for every
+// later sound, until reboot (spec 1.3 X2).
+TEST(Loopback, LeavesTheOutputVolumeAlone) {
     Harness h;
     h.start_app();
 
     h.run_loopback_and_wait();
 
-    EXPECT_EQ(h.audio_out->set_volume_calls(), 1);
-    EXPECT_EQ(h.audio_out->last_volume(), 60);
+    EXPECT_EQ(h.audio_out->set_volume_calls(), 0);
 
     h.app->stop();
 }
 
-TEST(Loopback, AppliesVolumeFromSettings) {
+TEST(Loopback, PlaysAtTheDefaultVolume) {
+    Harness h;
+    h.start_app();
+
+    h.run_loopback_and_wait();
+
+    EXPECT_EQ(h.audio_out->peak(), 600);
+
+    h.app->stop();
+}
+
+TEST(Loopback, PlaysAtTheStoredVolume) {
     Harness h;
     h.set_volume_setting(35);
     h.start_app();
 
     h.run_loopback_and_wait();
 
-    EXPECT_EQ(h.audio_out->last_volume(), 35);
+    EXPECT_EQ(h.audio_out->peak(), 350);
 
     h.app->stop();
 }
 
-TEST(Loopback, ClampsOutOfRangeVolumeFromSettings) {
+TEST(Loopback, InvalidStoredVolumeIsTheDefault) {
     Harness h;
     h.set_volume_setting(250);
     h.start_app();
 
     h.run_loopback_and_wait();
 
-    EXPECT_EQ(h.audio_out->last_volume(), 100);
+    EXPECT_EQ(h.audio_out->peak(), 600);
 
     h.app->stop();
 }
@@ -173,7 +190,7 @@ TEST(Loopback, ReportsEachStepAsAStringId) {
 // Spec 2.3: the mic and the speaker are found by role, whatever their ids.
 TEST(Loopback, UsesTheRoleMicAndSpeaker) {
     Harness h;
-    h.audio_in = std::make_shared<FakeAudioIn>("audio_in.mic");
+    h.audio_in = std::make_shared<FakeAudioIn>("audio_in.mic", "main", kRecordedLevel);
     h.audio_out = std::make_shared<FakeAudioOut>("audio_out.spk");
     h.start_app();
 
@@ -184,7 +201,7 @@ TEST(Loopback, UsesTheRoleMicAndSpeaker) {
     EXPECT_EQ(s[1].id, StrId::LoopPlaying);
     EXPECT_EQ(s[2].id, StrId::LoopDone);
     EXPECT_EQ(s[2].error, wisp::ErrorCode::Ok);
-    EXPECT_EQ(h.audio_out->set_volume_calls(), 1);
+    EXPECT_EQ(h.audio_out->set_volume_calls(), 0);
 
     h.app->stop();
 }

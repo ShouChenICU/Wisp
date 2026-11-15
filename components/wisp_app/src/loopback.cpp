@@ -1,6 +1,5 @@
 #include "loopback.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -9,7 +8,7 @@
 #include "app_impl.hpp"
 #include "wisp/app/app.hpp"
 #include "wisp/base/error.hpp"
-#include "wisp/core/settings.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
@@ -24,12 +23,7 @@ constexpr uint32_t kDurationS = 3;
 constexpr size_t kFrameCount = kSampleRateHz * kDurationS;      // 48000 frames
 constexpr size_t kBufferBytes = kFrameCount * sizeof(int16_t);  // 96000 bytes
 
-// Default volume (percent) applied when Settings has no "audio"/"volume"
-// entry yet (e.g. first boot, or a settings backend that failed to open).
-constexpr int64_t kDefaultVolumePercent = 60;
-
-void record_and_play(App& app, core::SettingsBackend* settings_backend,
-                     const std::function<void(const LoopbackStatus&)>& on_status) {
+void record_and_play(App& app, const std::function<void(const LoopbackStatus&)>& on_status) {
     auto fail = [&on_status](ErrorCode code) {
         on_status(LoopbackStatus{ui::StrId::LoopFailed, code});
     };
@@ -51,6 +45,7 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
     format.sample_rate = kSampleRateHz;
     format.channels = 1;
 
+    size_t recorded = 0;
     bool ok = [&] {
         auto opened = audio_in->open(format);
         if (!opened) {
@@ -58,9 +53,8 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
             return false;
         }
         on_status(LoopbackStatus{ui::StrId::LoopRecording});
-        size_t total = 0;
-        while (total < kFrameCount) {
-            auto read = audio_in->read(samples + total, kFrameCount - total);
+        while (recorded < kFrameCount) {
+            auto read = audio_in->read(samples + recorded, kFrameCount - recorded);
             if (!read) {
                 audio_in->close();
                 fail(read.error().code);
@@ -69,7 +63,7 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
             if (read.value() == 0) {
                 break;  // nothing more to read; play back what we have.
             }
-            total += read.value();
+            recorded += read.value();
         }
         audio_in->close();
         return true;
@@ -79,27 +73,28 @@ void record_and_play(App& app, core::SettingsBackend* settings_backend,
         return;
     }
 
+    // Played at the volume setting by scaling the samples, as PcmPlayer
+    // and TonePlayer do. The output's own volume is its port gain and is
+    // left alone: setting it here would stay for every later sound until
+    // reboot (spec 1.3 X2).
+    const int volume =
+        app.system_settings().cell().read([](const core::SettingsSnapshot& v) { return v.volume; });
+    if (volume < 100) {
+        for (size_t i = 0; i < recorded; ++i) {
+            samples[i] = static_cast<int16_t>(samples[i] * volume / 100);
+        }
+    }
+
     ok = [&] {
         auto opened = audio_out->open(format);
         if (!opened) {
             fail(opened.error().code);
             return false;
         }
-        // spec 6.6: volume is one of sub-project 1's three Settings-backed
-        // items (brightness, volume, screen_off_s). Applied here, once per
-        // open(), rather than once at startup, so a change takes effect on
-        // the very next playback -- there is no separate "apply settings"
-        // hook for audio the way there is for display at App::start().
-        if (settings_backend != nullptr) {
-            core::Settings audio_settings(*settings_backend, "audio");
-            int64_t volume = std::clamp<int64_t>(
-                audio_settings.get_int("volume", kDefaultVolumePercent), 0, 100);
-            audio_out->set_volume(static_cast<uint8_t>(volume));
-        }
         on_status(LoopbackStatus{ui::StrId::LoopPlaying});
         size_t total = 0;
-        while (total < kFrameCount) {
-            auto written = audio_out->write(samples + total, kFrameCount - total);
+        while (total < recorded) {
+            auto written = audio_out->write(samples + total, recorded - total);
             if (!written) {
                 audio_out->close();
                 fail(written.error().code);
@@ -160,13 +155,11 @@ void run_loopback(App& app, std::function<void(const LoopbackStatus&)> on_status
         // Copied (not moved) so the original `on_status` is still usable
         // below if os::Task::spawn() itself fails.
         auto on_status_copy = on_status;
-        core::SettingsBackend* settings_backend = impl->platform.settings.get();
-        impl->loop_task =
-            os::Task::spawn(config, [&app, impl, settings_backend, on_status_copy]() mutable {
-                record_and_play(app, settings_backend, on_status_copy);
-                std::lock_guard<os::Mutex> lock(impl->loop_mutex);
-                impl->loop_running = false;
-            });
+        impl->loop_task = os::Task::spawn(config, [&app, impl, on_status_copy]() mutable {
+            record_and_play(app, on_status_copy);
+            std::lock_guard<os::Mutex> lock(impl->loop_mutex);
+            impl->loop_running = false;
+        });
         if (impl->loop_task == nullptr) {
             impl->loop_running = false;
             spawn_failed = true;

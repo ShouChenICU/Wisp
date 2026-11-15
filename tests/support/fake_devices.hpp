@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -486,13 +487,15 @@ private:
     std::atomic<int64_t> unix_seconds_{0};
 };
 
-// Fills every read() with silence and reports every frame as delivered
-// immediately -- no simulated capture delay, so a caller looping until
-// it has read a fixed frame count (e.g. loopback.cpp's record_and_play())
-// completes in one call instead of real-time.
+// Fills every read() with `fill` (silence by default) and reports every
+// frame as delivered immediately -- no simulated capture delay, so a
+// caller looping until it has read a fixed frame count (e.g.
+// loopback.cpp's record_and_play()) completes in one call instead of
+// real-time.
 class FakeAudioIn : public wisp::hal::AudioIn {
 public:
-    explicit FakeAudioIn(std::string id, std::string role = "main") {
+    explicit FakeAudioIn(std::string id, std::string role = "main", int16_t fill = 0)
+        : fill_(fill) {
         info_.id = std::move(id);
         info_.cls = kClass;
         info_.model = "FAKE";
@@ -506,7 +509,7 @@ public:
     }
 
     wisp::Result<size_t> read(int16_t* frames, size_t count) override {
-        std::fill(frames, frames + count, 0);
+        std::fill(frames, frames + count, fill_);
         return wisp::Result<size_t>::ok(count);
     }
 
@@ -516,11 +519,13 @@ public:
 
 private:
     wisp::hal::DeviceInfo info_;
+    int16_t fill_ = 0;
 };
 
 // Reports every write() as consumed immediately (no simulated playback
-// delay) and records every set_volume() call, so a test can assert what
-// volume loopback.cpp's record_and_play() applied.
+// delay), records every set_volume() call and the largest |sample|
+// written, so a test can assert both that a player left the device's
+// volume alone and how loud it played.
 class FakeAudioOut : public wisp::hal::AudioOut {
 public:
     explicit FakeAudioOut(std::string id, std::string role = "main") {
@@ -536,22 +541,28 @@ public:
         return wisp::Result<void>::ok();
     }
 
-    wisp::Result<size_t> write(const int16_t*, size_t count) override {
+    wisp::Result<size_t> write(const int16_t* frames, size_t count) override {
+        int peak = 0;
+        for (size_t i = 0; i < count; ++i) {
+            peak = std::max(peak, std::abs(static_cast<int>(frames[i])));
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        peak_ = std::max(peak_, peak);
         return wisp::Result<size_t>::ok(count);
     }
 
     void close() override {}
 
-    wisp::Result<void> set_volume(uint8_t percent) override {
+    // Largest |sample| written since construction.
+    int peak() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        last_volume_ = percent;
-        ++set_volume_calls_;
-        return wisp::Result<void>::ok();
+        return peak_;
     }
 
-    uint8_t last_volume() const {
+    wisp::Result<void> set_volume(uint8_t) override {
         std::lock_guard<std::mutex> lock(mutex_);
-        return last_volume_;
+        ++set_volume_calls_;
+        return wisp::Result<void>::ok();
     }
 
     int set_volume_calls() const {
@@ -563,8 +574,8 @@ private:
     wisp::hal::DeviceInfo info_;
 
     mutable std::mutex mutex_;
-    uint8_t last_volume_ = 0;
     int set_volume_calls_ = 0;
+    int peak_ = 0;
 };
 
 // A haptic-like schema for tests of the generic path: prop level (Int

@@ -21,8 +21,9 @@ constexpr const char* kTag = "esp_audio";
 
 // Starting points for real-hardware tuning (see esp_audio.hpp's file
 // comment) -- not calibrated against the actual ES8311/ES7210/speaker/mic
-// on this board yet.
-constexpr uint8_t kDefaultVolumePercent = 80;
+// on this board yet. kOutputGainPercent is the codec's output gain, a
+// board fact to tune, not the volume setting.
+constexpr uint8_t kOutputGainPercent = 80;
 constexpr float kDefaultMicGainDb = 30.0f;
 
 constexpr uint8_t kBitsPerSample = 16;
@@ -132,7 +133,7 @@ Result<std::shared_ptr<EspAudioOut>> EspAudioOut::create(esp_codec_dev_handle_t 
 
 EspAudioOut::EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
                          std::string model)
-    : codec_dev_(codec_dev), i2s_channel_(i2s_channel), volume_percent_(kDefaultVolumePercent) {
+    : codec_dev_(codec_dev), i2s_channel_(i2s_channel), volume_percent_(kOutputGainPercent) {
     info_.id = "audio_out.main";
     info_.cls = kClass;
     info_.model = std::move(model);
