@@ -36,9 +36,9 @@ void status_mirror(core::EventBus& bus, const VoiceStatus& before, const VoiceSt
 }
 
 static_assert(std::is_trivially_copyable_v<VoiceStatus>,
-              "an update() of the status must not allocate");
+              "the cell copies the status under its lock without allocating");
 // How long one push() into the player may wait before the synthesis looks
-// at its stop flag again (and publishes a level).
+// at its stop flag again (and stores a level).
 constexpr uint32_t kPushSliceMs = 50;
 // How long the idle task sleeps between looks at its flags (quit, a lost
 // wake-up, the round backstop).

@@ -14,7 +14,7 @@
 namespace wisp::app {
 
 static_assert(std::is_trivially_copyable_v<hal::PowerLevel>,
-              "a set() of the level must not allocate");
+              "the cell copies the level under its lock without allocating");
 
 namespace {
 

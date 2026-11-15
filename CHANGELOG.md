@@ -32,11 +32,14 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 ### Fixes
 
 - Recover from an over-long context: summarize harder, then cut the current turn's results, and retry once when the model refuses the request as too long; the token estimate calibrates itself from the model's reported usage.
-- Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key. These retries cover connection and TLS failures only: a Wi-Fi disconnect still ends the running turn ("lost connection" during a request, "no network" between steps).
+- Retry model requests that failed before any reply arrived on the same budget as 429/5xx, honour `Retry-After`, and read providers' error codes without ever logging the error body or keeping any part of the API key. These retries cover connection and TLS failures only: a Wi-Fi disconnect still ends the running turn ("lost connection" during a request, "no network" between steps), unless the link has already recovered by the time the agent sees it.
 - A scene no longer loses an HTTP or files result when its message queue is full: results wait in a box of the scene's own, sized for its 16 calls, and the queue only carries a wake-up.
+- A brief Wi-Fi drop that recovers before the agent sees it no longer ends a running request; a link that stays dead still ends it through the stall check.
+- A low-battery notice left over from the last run is dismissed when the device boots while charging, and plugging in USB power while already charging no longer dismisses it (only charging starting does).
+- Screens and services no longer stay out of date after a busy moment drops an event: the status panel, the hotspot and pairing cards, hardware diagnostics, scenes' visibility in standby, the time zone, time format and language that scenes see, and reminders after the clock is set all follow the current state.
 - Replacing a list's items no longer shows an empty list for a frame: the old rows stay on screen until the new ones arrive, and a tap on an old row in that moment does nothing.
 
-Device checks are pending for the turn reliability, the voice and wake, and the scene scheduling and install safety changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run" and "Scene scheduling: device checks not run"); these changes are verified in the simulator and unit tests only.
+Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, and the state subscriber changes (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run" and "State cell subscribers: device checks not run"); these changes are verified in the simulator and unit tests only.
 
 ## 0.5.2 — 2026-11-14
 

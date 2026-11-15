@@ -61,7 +61,7 @@ FirmwareOutcome outcome(FirmwareFailure failure, std::string message) {
 }
 
 static_assert(std::is_trivially_copyable_v<FirmwareProgress>,
-              "a set() of the progress must not allocate");
+              "the cell copies the progress under its lock without allocating");
 
 const char* phase_name(FirmwareProgress::Phase phase) {
     switch (phase) {

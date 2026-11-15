@@ -10,7 +10,8 @@
 
 namespace wisp::core {
 
-static_assert(std::is_trivially_copyable_v<PowerSupply>, "a set() of the supply must not allocate");
+static_assert(std::is_trivially_copyable_v<PowerSupply>,
+              "the cell copies the supply under its lock without allocating");
 
 namespace {
 

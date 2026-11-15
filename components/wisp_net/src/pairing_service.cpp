@@ -23,7 +23,7 @@
 namespace wisp::net {
 
 static_assert(std::is_trivially_copyable_v<PairingSnapshot>,
-              "a set() of the pairing state must not allocate");
+              "the cell copies the pairing state under its lock without allocating");
 
 namespace {
 

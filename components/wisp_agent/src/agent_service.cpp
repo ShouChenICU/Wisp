@@ -73,7 +73,7 @@ struct Outcome {
 };
 
 static_assert(std::is_trivially_copyable_v<AgentStatus>,
-              "an update() of the status must not allocate");
+              "the cell copies the status under its lock without allocating");
 
 // Reproduces the agent.state event set_state() published for every
 // change: the state, and the tool's name while it is Tool.

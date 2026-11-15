@@ -226,7 +226,8 @@ Result<void> mkdir_p(const std::string& dir) {
     }
 }
 
-static_assert(std::is_trivially_copyable_v<SdStatus>, "a set() of the status must not allocate");
+static_assert(std::is_trivially_copyable_v<SdStatus>,
+              "the cell copies the status under its lock without allocating");
 
 // Reproduces the storage.sd.inserted / storage.sd.removed event refresh()
 // published. The topic comes from `after`, not from a flip of `before`.

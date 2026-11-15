@@ -18,8 +18,9 @@
 namespace wisp::net {
 
 static_assert(std::is_trivially_copyable_v<WifiSnapshot>,
-              "a set() of the station must not allocate");
-static_assert(std::is_trivially_copyable_v<ApSnapshot>, "a set() of the hotspot must not allocate");
+              "the cell copies the station under its lock without allocating");
+static_assert(std::is_trivially_copyable_v<ApSnapshot>,
+              "the cell copies the hotspot under its lock without allocating");
 
 namespace {
 

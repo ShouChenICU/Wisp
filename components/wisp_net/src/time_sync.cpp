@@ -15,7 +15,7 @@ namespace {
 constexpr const char* kTag = "time";
 
 static_assert(std::is_trivially_copyable_v<core::TimeSyncResult>,
-              "a set() of the result must not allocate");
+              "the cell copies the result under its lock without allocating");
 
 // Reproduces the system.time event the service published at the end of
 // every attempt. Built from the cell's value: a server that comes from
