@@ -25,7 +25,8 @@
 //     files only inside a storage mount). Its scan() follows recover() on
 //     the worker; each change of StorageManager::sd_cell() recounts the
 //     card's scenes on wisp.sd.io (marked on wisp.fs first, orphans logged
-//     there). Deleting a scene with its data also clears its files;
+//     there) and, once marked, moves the scenes overview's catalog.
+//     Deleting a scene with its data also clears its files;
 //   - with a screen (build_runtime(), after the system layer): the
 //     scenes' HTTP proxy (given Platform::http_client) and the
 //     SceneRuntime, built before networking so the admin routes can be
@@ -41,7 +42,8 @@
 //     <System>/scenes/background.json, restored by restore_background()
 //     once boot completes (spec 3.6).
 //   - in dev mode, once the runtime runs: a DirWatcher over the working
-//     directory, polled on the worker every 500 ms (it reads files); when
+//     directory, polled on the worker every 500 ms (it reads files); a
+//     poll that finds a change moves the scenes overview's catalog, and when
 //     the scene in front (running or showing its error panel) changes on
 //     disk, it is reloaded (spec 6.4). Errors reach the error panel and
 //     the console (tag "scene.<id>") the way every scene error does. A
@@ -285,11 +287,15 @@ private:
     void publish(const std::string& id, scene::SceneTransition::State state);
     // On wisp.fs, after the card came or went: marks the card's scenes,
     // queues their recounts on the card's worker and the orphan log here.
+    // Then moves the catalog.
     void recount_card(core::SceneFiles& files);
+    // SceneRuntime::note_catalog_changed() once the runtime has started;
+    // nothing before or without one. Any thread.
+    void note_catalog_changed();
     // Dev mode: starts the watch timer (start_runtime()).
     void start_watching();
     // On the worker: one DirWatcher poll, reloading the scene in front if
-    // its files changed.
+    // its files changed and moving the catalog if any scene's did.
     void poll_scenes();
 
     // shell_scenes()'s copy of one scene; in Mem::Large with this object.

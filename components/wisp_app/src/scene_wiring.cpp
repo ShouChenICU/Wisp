@@ -122,8 +122,11 @@ void SceneWiring::start_storage() {
                 if (sd.changes == changes) return;
                 changes = sd.changes;
                 sd_changes_.fetch_add(1);
-                if (!worker_.submit([this, files] { recount_card(*files); }))
+                if (!worker_.submit([this, files] { recount_card(*files); })) {
                     WLOG_W(kTag, "storage worker busy: scene files on the card not recounted");
+                    // The card still changed which scenes can run.
+                    note_catalog_changed();
+                }
             });
     }
 
@@ -165,6 +168,17 @@ void SceneWiring::recount_card(core::SceneFiles& files) {
     }
     if (!worker_.submit([f] { f->sd_changed_end(); }))
         WLOG_W(kTag, "storage worker busy: the card's files without a scene not logged");
+    // The card's scenes are marked: a listing queued from here on sees the
+    // card as it is now (their recounts need not have run for that).
+    note_catalog_changed();
+}
+
+void SceneWiring::note_catalog_changed() {
+    // Started only after runtime_ is set, so this never reads it while
+    // build_runtime() writes it (a card change during boot); before the
+    // start nothing follows the overview, and with no screen there is no
+    // runtime.
+    if (runtime_started_.load()) runtime_->note_catalog_changed();
 }
 
 void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
@@ -282,6 +296,9 @@ void SceneWiring::poll_scenes() {
     std::vector<std::string> changed = watcher_->poll();
     poll_queued_ = false;
     if (changed.empty() || !runtime_started_) return;
+    // Once per poll that reports a change: a scene added, removed or
+    // edited in the working directory lists differently.
+    runtime_->note_catalog_changed();
     const std::optional<std::string> front = runtime_->foreground();
     for (const std::string& id : changed) {
         if (!front || *front != id) {

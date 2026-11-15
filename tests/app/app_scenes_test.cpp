@@ -25,6 +25,7 @@
 
 #include "scene_wiring.hpp"
 #include "self_check_layout.hpp"
+#include "storage_io.hpp"
 #include "support/bus_flood.hpp"
 #include "support/cell_barrier.hpp"
 #include "support/fake_devices.hpp"
@@ -1813,6 +1814,44 @@ TEST(AppScenes, TwoQuickCardChangesRecountAtLeastOnce) {
     EXPECT_TRUE(r.list().cached);
 }
 
+// The card coming or going moves the scenes overview's catalog once per
+// change, after the card's scenes are marked on the worker, so a follower
+// that lists again (the diagnostics' scene list, the shell's) sees the card
+// as it is now.
+TEST(AppScenes, CardChangeMovesTheCatalogOnce) {
+    UiNetOptions opts;
+    opts.with_sd = true;
+    Booted b(opts);
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    wisp::core::StorageWorker* worker = b.h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+    auto settle = [&] {
+        ASSERT_TRUE(b.h.app->bus().wait_idle(3000));
+        ASSERT_TRUE(worker->drain(3000));
+    };
+    settle();
+    const uint32_t before = rt->overview().get().catalog;
+    const uint64_t changes = b.h.app->storage().sd_cell().get().changes;
+
+    b.h.sd->online_flag = false;
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*b.h.app); }, 3000));
+    ASSERT_TRUE(wait_until(
+        [&] { return b.h.app->storage().sd_cell().get().changes == changes + 1; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return rt->overview().get().catalog == before + 1; }, 3000));
+    settle();
+    EXPECT_EQ(rt->overview().get().catalog, before + 1);
+
+    b.h.sd->online_flag = true;
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*b.h.app); }, 3000));
+    ASSERT_TRUE(wait_until(
+        [&] { return b.h.app->storage().sd_cell().get().changes == changes + 2; }, 3000));
+    EXPECT_TRUE(wait_until([&] { return rt->overview().get().catalog == before + 2; }, 3000));
+    settle();
+    EXPECT_EQ(rt->overview().get().catalog, before + 2);
+}
+
 // Whether a scene has data is read when asked, so data written after a
 // listing is found.
 TEST(AppScenes, HasDataReadWhenAsked) {
@@ -2085,6 +2124,41 @@ TEST(AppScenes, DevModeReloadsTheSceneInFront) {
     wisp::os::sleep_ms(1500);
     EXPECT_EQ(rt->foreground(), std::optional<std::string>("counter"));
     EXPECT_EQ(rt->status("other").state, wisp::core::SceneState::Stopped);
+}
+
+// Dev mode: a change the watcher reports moves the catalog once per poll
+// that reports it, whichever scene changed (here one not in front, which is
+// not reloaded), so a follower lists the working directory again.
+TEST(AppScenes, DevModeChangeMovesTheCatalog) {
+    const fs::path work = fs::path(wisp::test::temp_dir()) / "work";
+    const fs::path data = fs::path(wisp::test::temp_dir()) / "data";
+    auto put = [&](const std::string& id, const std::string& name) {
+        fs::create_directories(work / id);
+        std::ofstream(work / id / "scene.json", std::ios::trunc)
+            << R"({"id":")" << id << R"(","name":")" << name
+            << R"(","version":"1.0.0","schema_version":1})";
+        std::ofstream(work / id / "main.lua", std::ios::trunc)
+            << "return ui.screen { ui.label { text = 'x' } }";
+    };
+    put("clock", "clock");
+    UiNetOptions opts;
+    opts.scenes_dir = work.string();
+    opts.scenes_data_dir = data.string();
+    Booted b(opts);
+    ASSERT_TRUE(b.start());
+    wisp::scene::SceneRuntime* rt = b.h.app->scenes();
+    ASSERT_NE(rt, nullptr);
+    const uint32_t before = rt->overview().get().catalog;
+
+    put("clock", "alarm");
+    ASSERT_TRUE(wait_until([&] { return rt->overview().get().catalog != before; }, 5000));
+    EXPECT_EQ(rt->overview().get().catalog, before + 1);
+
+    // A second change is a second move, not more: the first was counted once.
+    put("timer", "timer");
+    ASSERT_TRUE(wait_until([&] { return rt->overview().get().catalog != before + 1; }, 5000));
+    EXPECT_EQ(rt->overview().get().catalog, before + 2);
+    EXPECT_EQ(rt->status("clock").state, wisp::core::SceneState::Stopped);
 }
 
 // Spec 3.6: once boot completes, the scenes the list names come up in the

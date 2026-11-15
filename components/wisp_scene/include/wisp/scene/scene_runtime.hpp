@@ -427,9 +427,10 @@ struct SceneOverview {
     // the background moves both fields, and the cell with them.
     uint8_t headless = 0;
     // Moves on every install, replace and delete of a package (also one
-    // that failed after it changed what is stored); wraps. Dev-mode file
-    // edits and a card coming or going do not move it: a follower that
-    // lists scenes from the card or in dev mode needs its own trigger.
+    // that failed after it changed what is stored), on a card coming or
+    // going (once the card's scenes are marked) and on a dev-mode change
+    // the working directory's watcher reports; wraps. A follower that
+    // lists the scenes again on a move sees what a listing shows now.
     uint32_t catalog = 0;
     bool operator==(const SceneOverview&) const = default;
 };
@@ -633,8 +634,9 @@ public:
     // wisp/core/state_cell.hpp).
     const core::StateCell<SceneOverview>& overview() const { return overview_; }
     // Moves the overview's catalog counter: install_scene() calls it for an
-    // install or a replace, SceneWiring for a delete. Any thread, without
-    // the runtime's locks; never waits.
+    // install or a replace, SceneWiring for a delete, a card change and a
+    // dev-mode change. Any thread, without the runtime's locks; never
+    // waits.
     void note_catalog_changed() override;
     // The manifest name of scene `id` while it is in the foreground or the
     // background; "" otherwise. Any thread.
