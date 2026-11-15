@@ -54,10 +54,11 @@
 // included, so there a device's set_power() must not take or release a
 // wake lock (no board ships headless).
 //
-// Settings: the power keys are read by the constructor and then again by
-// the next tick() (on the shared timer task, which may touch flash) after
-// each system.settings event, and every kSettingsRefreshTicks ticks in
-// case such an event was dropped; never on the UI task. A stored value
+// Settings: with PowerManagerDeps::system_settings the power keys follow
+// that cell (applied by the constructor from get(), then by a subscription
+// on wisp.bus); with or without it the "power" namespace is also re-read
+// every kSettingsRefreshTicks ticks (on the shared timer task, which may
+// touch flash), never on the UI task. A stored value
 // core::SystemSettings::set() would refuse reads as its default, as
 // SystemSettings::get() reports it.
 //
@@ -83,6 +84,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
 #include "wisp/hal/display.hpp"
@@ -120,24 +122,28 @@ struct PowerManagerDeps {
     // the user is there (an alarm stops, spec 5.1). Keep it short and
     // non-blocking.
     std::function<void()> on_activity;
+    // SystemSettings::cell(): the power keys follow it. Null in tests that
+    // need no settings changes; then only the periodic re-read sees them.
+    // Must outlive the PowerManager.
+    const core::StateCell<core::SystemSettingsValues>* system_settings = nullptr;
 };
 
 class PowerManager {
 public:
     static constexpr uint32_t kDimLeadMs = 10000;
     static constexpr int kDimPercent = 30;
-    // tick() re-reads the power settings at least this often, in case the
-    // system.settings event that announced a change was dropped.
+    // tick() re-reads the power settings from Settings this often.
     static constexpr uint32_t kSettingsRefreshTicks = 60;
 
     explicit PowerManager(PowerManagerDeps deps);
 
-    // Unsubscribes from the bus, drops the wake-lock change callback and
-    // clears the touch-activity hook (on the UI task, after every job this
-    // posted). Does not leave standby: App::stop() does that first.
-    // Precondition: not called on the UI task. Jobs this posted (tick and
-    // lock-change evaluations) capture `this` and could not be drained
-    // from there; App::stop() destroys it from its own thread.
+    // Releases the settings subscription, unsubscribes from the bus, drops
+    // the wake-lock change callback and clears the touch-activity hook (on
+    // the UI task, after every job this posted). Does not leave standby:
+    // App::stop() does that first. Precondition: not called on the UI
+    // task. Jobs this posted (tick and lock-change evaluations) capture
+    // `this` and could not be drained from there; App::stop() destroys it
+    // from its own thread.
     ~PowerManager();
 
     PowerManager(const PowerManager&) = delete;
@@ -166,13 +172,13 @@ public:
     void note_activity();
 
     // Called about once a second (App's "wisp.power" timer): re-reads the
-    // settings if they changed, then moves Active -> Dim -> Standby -> DeepStandby by the
-    // idle clock and the deep timer, and back on locks, retries Busy
-    // devices and updates light sleep. `now_ms` is os::now_ms() in
-    // production; the work itself is posted to the UI task when there is
-    // one (a transition can block for the panel's sleep delay and must not
-    // hold up the shared timer task), and rechecked there against the
-    // state at that moment.
+    // settings every kSettingsRefreshTicks ticks, then moves Active -> Dim
+    // -> Standby -> DeepStandby by the idle clock and the deep timer, and
+    // back on locks, retries Busy devices and updates light sleep. `now_ms`
+    // is os::now_ms() in production; the work itself is posted to the UI
+    // task when there is one (a transition can block for the panel's sleep
+    // delay and must not hold up the shared timer task), and rechecked
+    // there against the state at that moment.
     void tick(uint64_t now_ms);
 
     // Sets the panel brightness (core::SystemSettings' apply hook): applied
@@ -288,8 +294,9 @@ private:
 
     // Reads the power keys into the cached values below.
     void read_settings();
-    // A system.settings event arrived; the next tick() calls read_settings().
-    std::atomic<bool> settings_dirty_{false};
+    // Stores the cached values from seconds, treating values
+    // SystemSettings::set() would refuse as their defaults.
+    void apply_settings(int64_t screen_off_s, int64_t deep_after_s);
     // Ticks since the last read_settings().
     std::atomic<uint32_t> ticks_since_read_{0};
     // Cached so UI-task work never reads Settings.
@@ -323,7 +330,8 @@ private:
     std::atomic<uint64_t> tick_eval_now_{0};
 
     core::SubscriptionId button_sub_ = 0;
-    core::SubscriptionId settings_sub_ = 0;
+    // Follows PowerManagerDeps::system_settings; empty without one.
+    core::CellSubscription settings_sub_;
 };
 
 }  // namespace wisp::app

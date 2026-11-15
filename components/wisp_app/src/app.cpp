@@ -484,6 +484,7 @@ Result<void> App::start() {
                 // The user is there: an alarm stops (spec 5.1).
                 tones->silence();
             },
+        .system_settings = &impl_->system_settings.cell(),
     });
     if (display) {
         // The panel already shows this level (applied above, before the UI

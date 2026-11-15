@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "dev/sim_devices.hpp"
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/manual_dispatcher.hpp"
 #include "support/temp_dir.hpp"
@@ -23,6 +24,7 @@
 #include "wisp/core/settings.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/device.hpp"
 #include "wisp/os/os.hpp"
@@ -38,7 +40,9 @@ using wisp::core::Event;
 using wisp::core::EventBus;
 using wisp::core::PowerMonitor;
 using wisp::core::Settings;
+using wisp::core::StateCell;
 using wisp::core::StorageManager;
+using wisp::core::SystemSettingsValues;
 using wisp::core::WakeLockKind;
 using wisp::core::WakeLockRegistry;
 using wisp::hal::DeviceClass;
@@ -911,6 +915,7 @@ struct Headless {
         Settings power(*backend, "power");
         power.set("screen_off_s", screen_off_s);
         power.set("deep_after_s", deep_after_s);
+        copy_store_to_cell();
 
         bus.start();
         bus.subscribe("power.state", [this](const Event& e) {
@@ -922,6 +927,7 @@ struct Headless {
                               .registry = registry,
                               .locks = locks,
                               .settings = Settings(*backend, "power")};
+        deps.system_settings = &settings_cell;
         deps.before_deep_standby = [this] {
             if (before_deep) before_deep();
         };
@@ -965,11 +971,23 @@ struct Headless {
         return t0 + 60050 + 300000;
     }
 
-    // What App does after SystemSettings stored a change: PowerManager
-    // re-reads its settings at the next tick.
+    // What SystemSettings does after it stored a change: its cell takes
+    // the stored power keys, and PowerManager's subscription (on wisp.bus)
+    // has applied them once this returns.
     void settings_changed() {
-        bus.publish(Event{"system.settings", "test", 0, {}});
+        copy_store_to_cell();
         bus.wait_idle(2000);
+    }
+    // Copies the stored power keys into the cell as they are, out-of-range
+    // values included: PowerManager reads them as read_settings() does.
+    void copy_store_to_cell() {
+        Settings power(*backend, "power");
+        SystemSettingsValues v = settings_cell.get();
+        v.screen_off_s =
+            static_cast<int>(power.get_int("screen_off_s", wisp::core::kDefaultScreenOffS));
+        v.deep_after_s =
+            static_cast<int>(power.get_int("deep_after_s", wisp::core::kDefaultDeepAfterS));
+        settings_cell.set(v);
     }
 
     std::vector<std::string> states() {
@@ -984,6 +1002,9 @@ struct Headless {
 
     std::unique_ptr<JsonFileSettingsBackend> backend;
     EventBus bus;
+    // SystemSettings::cell() as App hands it over; declared before pm,
+    // which subscribes to it and must release that first.
+    StateCell<SystemSettingsValues> settings_cell{bus, SystemSettingsValues{}};
     DeviceRegistry registry;
     WakeLockRegistry locks{bus};
     std::shared_ptr<CallLog> log = std::make_shared<CallLog>();
@@ -1367,8 +1388,8 @@ TEST(PowerManager, NoStateEventAtConstruction) {
     EXPECT_TRUE(h.states().empty());
 }
 
-// The power keys are read once and again only after a system.settings
-// event, not from flash on every tick.
+// The power keys are read once and again only when the settings cell
+// changes, not from flash on every tick.
 TEST(PowerManager, SettingsAreCachedUntilSystemSettingsChanges) {
     Headless h(/*screen_off_s=*/60);
     ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));
@@ -1381,11 +1402,11 @@ TEST(PowerManager, SettingsAreCachedUntilSystemSettingsChanges) {
     EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
 }
 
-// A system.settings event the bus dropped delays a change only until the
+// A change stored without reaching the settings cell takes effect at the
 // periodic re-read.
 TEST(PowerManager, DroppedSettingsEventIsCaughtUpByThePeriodicReread) {
     Headless h(/*screen_off_s=*/60);
-    ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));  // no event
+    ASSERT_TRUE(Settings(*h.backend, "power").set("screen_off_s", 15));  // cell not told
     uint64_t t0 = h.start_idle();
     for (uint32_t i = 1; i < PowerManager::kSettingsRefreshTicks; ++i) {
         h.pm->tick(t0 + 5050);
@@ -1393,6 +1414,63 @@ TEST(PowerManager, DroppedSettingsEventIsCaughtUpByThePeriodicReread) {
     }
     h.pm->tick(t0 + 5050);
     EXPECT_EQ(h.pm->level(), PowerLevel::Dim);  // 15 s now
+}
+
+// Ten batches land while wisp.bus is held and events are dropped; once
+// it runs again the subscription applies the last of them. Storage keeps
+// 60 s and the single tick is far from the periodic re-read, so only the
+// cell can have brought 15 s.
+TEST(PowerManager, ScreenOffFollowsTheSettingsCellFlooded) {
+    Headless h(/*screen_off_s=*/60);
+    uint64_t t0 = h.start_idle();
+    {
+        wisp::test::BusFlood flood(h.bus);
+        flood.hold();
+        SystemSettingsValues v = h.settings_cell.get();
+        for (int i = 0; i < 10; ++i) {
+            v.screen_off_s = 24 - i;  // ends at 15
+            h.settings_cell.set(v);
+            flood.flood(20);
+        }
+        flood.release();
+    }
+    ASSERT_TRUE(h.bus.wait_idle(2000));
+    EXPECT_GT(h.bus.dropped(), 0u);
+    h.pm->tick(t0 + 15050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+}
+
+// What the cell held before PowerManager was built applies from its first
+// tick: wisp.bus is held from before construction until after that tick,
+// so no delivery can have run, only the constructor's get(). Storage keeps
+// the 60 s default, so the periodic re-read cannot have done it either.
+TEST(PowerManager, UsesTheSettingsStoredBeforeItWasBuilt) {
+    JsonFileSettingsBackend backend((temp_dir() / "power.json").string());
+    EventBus bus;
+    SystemSettingsValues stored;
+    stored.screen_off_s = 20;
+    StateCell<SystemSettingsValues> settings{bus, stored};
+    DeviceRegistry registry;
+    WakeLockRegistry locks{bus};
+    bus.start();
+    {
+        wisp::test::BusFlood flood(bus);
+        flood.hold();
+        PowerManagerDeps deps{.bus = bus,
+                              .registry = registry,
+                              .locks = locks,
+                              .settings = Settings(backend, "power")};
+        deps.system_settings = &settings;
+        auto pm = std::make_unique<PowerManager>(std::move(deps));
+        uint64_t t0 = wisp::os::now_ms();
+        pm->note_activity();
+        pm->tick(t0 + 20050);
+        EXPECT_EQ(pm->level(), PowerLevel::Standby);
+        flood.release();
+        ASSERT_TRUE(bus.wait_idle(2000));
+        pm.reset();
+    }
+    bus.stop();
 }
 
 // A stored value SystemSettings would refuse (a hand-edited or corrupt

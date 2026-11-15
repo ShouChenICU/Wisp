@@ -59,11 +59,17 @@ PowerManager::PowerManager(PowerManagerDeps deps)
       level_cell_(bus_, hal::PowerLevel::Active, &power_state_mirror),
       last_activity_ms_(os::now_ms()) {
     read_settings();
-
-    // Settings are cached; a stored change (published as system.settings,
-    // spec 8.3) makes the next tick() read them again.
-    settings_sub_ = bus_.subscribe(core::topics::kSystemSettings,
-                                   [this](const core::Event&) { settings_dirty_.store(true); });
+    if (deps.system_settings != nullptr) {
+        // The cell's value now, so the first tick() (possibly before the
+        // subscription's first call) already uses it; that first call then
+        // delivers the same value again.
+        const core::SystemSettingsValues now = deps.system_settings->get();
+        apply_settings(now.screen_off_s, now.deep_after_s);
+        settings_sub_ =
+            deps.system_settings->subscribe([this](const core::SystemSettingsValues& v) {
+                apply_settings(v.screen_off_s, v.deep_after_s);
+            });
+    }
 
     if (ui_ != nullptr) {
         ui_->set_touch_activity_cb([this] {
@@ -99,8 +105,8 @@ PowerManager::~PowerManager() {
     // drained below -- except when called on the UI task itself, which
     // cannot wait for its own queue; the header makes that a caller's
     // precondition.
+    settings_sub_.reset();
     bus_.unsubscribe(button_sub_);
-    bus_.unsubscribe(settings_sub_);
     locks_.set_on_change(nullptr);
 
     if (ui_ == nullptr) {
@@ -178,10 +184,15 @@ void PowerManager::note_activity() {
 }
 
 void PowerManager::read_settings() {
-    const int64_t off_s = valid_or(settings_.get_int("screen_off_s", core::kDefaultScreenOffS),
-                                   core::valid_screen_off_s, core::kDefaultScreenOffS);
-    const int64_t deep_s = valid_or(settings_.get_int("deep_after_s", core::kDefaultDeepAfterS),
-                                    core::valid_deep_after_s, core::kDefaultDeepAfterS);
+    apply_settings(settings_.get_int("screen_off_s", core::kDefaultScreenOffS),
+                   settings_.get_int("deep_after_s", core::kDefaultDeepAfterS));
+}
+
+void PowerManager::apply_settings(int64_t screen_off_s, int64_t deep_after_s) {
+    const int64_t off_s =
+        valid_or(screen_off_s, core::valid_screen_off_s, core::kDefaultScreenOffS);
+    const int64_t deep_s =
+        valid_or(deep_after_s, core::valid_deep_after_s, core::kDefaultDeepAfterS);
     screen_off_ms_.store(seconds_to_ms(off_s));
     deep_after_ms_.store(seconds_to_ms(deep_s));
 }
@@ -190,11 +201,11 @@ void PowerManager::tick(uint64_t now_ms) {
     last_tick_ms_.store(now_ms);
     // Read here, on the timer task; Settings::get_int/get_bool only read
     // the in-memory cache (CachedSettingsBackend, AGENTS.md 5), so this
-    // never touches flash. The event only makes a change take effect
-    // promptly: the bus may drop it, so the keys are also re-read every
-    // kSettingsRefreshTicks ticks.
-    const bool dirty = settings_dirty_.exchange(false);
-    if (dirty || ticks_since_read_.fetch_add(1) + 1 >= kSettingsRefreshTicks) {
+    // never touches flash. The settings cell already brings every stored
+    // change; this re-read is the older fallback and agrees with it,
+    // except after a batch whose rollback failed left storage ahead of the
+    // cell (docs/backlog.md), where it applies what storage holds.
+    if (ticks_since_read_.fetch_add(1) + 1 >= kSettingsRefreshTicks) {
         ticks_since_read_.store(0);
         read_settings();
     }
