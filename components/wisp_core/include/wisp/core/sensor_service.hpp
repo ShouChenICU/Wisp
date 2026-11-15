@@ -25,8 +25,8 @@
 // releases it. Paused subscriptions still hold it.
 //
 // Standby: set_standby(true) (PowerManager's standby or deep_standby, via
-// its level) pauses everything and powers the IMU down; false resumes
-// what is not paused on its own.
+// its level, which follow_power() follows) pauses everything and powers
+// the IMU down; false resumes what is not paused on its own.
 //
 // Threads: every method may be called from any thread except the
 // callbacks themselves, which run on "wisp.imu" with the service's lock
@@ -50,6 +50,8 @@
 #include "wisp/base/result.hpp"
 #include "wisp/core/gesture.hpp"
 #include "wisp/core/occupancy.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/hal/imu.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -124,7 +126,20 @@ public:
     // samples it had not been given yet are dropped.
     void set_paused(uint32_t handle, bool paused);
     // PowerManager's level: standby and deep_standby pause everything.
+    // An unchanged flag does nothing (no driver call).
     void set_standby(bool standby);
+    // PowerManager woke every IMU (its caps say "standby": "off") for a
+    // standby this service never saw: powers the IMU back down if nothing
+    // reads it. A no-op in standby or while a subscription reads it.
+    void note_woken();
+    // Follows PowerManager's level cell on wisp.bus with set_standby(). A
+    // standby that began and ended between two deliveries arrives as one
+    // Active or Dim call; the cell's revision then moved by more than one
+    // since the last value handled, and only then is note_woken() called,
+    // so Active <-> Dim one at a time and the first delivery make no driver
+    // call. The subscription must be released before `level` goes and
+    // before this service does.
+    [[nodiscard]] CellSubscription follow_power(const StateCell<hal::PowerLevel>& level);
     // 0 while the IMU is off.
     uint32_t imu_rate() const;
 
@@ -150,6 +165,9 @@ private:
     // Drops what `s` had collected and starts its sampling afresh.
     void restart_locked(Sub& s);
     void deliver_locked();
+    // With mutex_ held: powers the IMU down if it is awake by the
+    // service's count but nothing reads it.
+    void power_down_if_idle_locked();
 
     std::shared_ptr<hal::Imu> imu_;
     OccupancyRegistry& occupancy_;

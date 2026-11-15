@@ -187,23 +187,46 @@ void SensorService::set_paused(uint32_t handle, bool paused) {
 
 void SensorService::set_standby(bool standby) {
     std::lock_guard<os::Mutex> lock(mutex_);
-    // PowerManager powers every IMU up as the device wakes (its caps say
-    // "standby": "off"); with nothing to read it goes back down. This also
-    // runs when the flag does not change: a standby that began and ended
-    // between two deliveries arrives as "false" while the flag is already
-    // false, and the IMU was woken all the same.
-    const auto power_down_if_idle = [&] {
-        if (!standby_ && rate_.load() == 0 && imu_) imu_->set_power(hal::PowerLevel::Standby);
-    };
-    if (standby_ == standby) {
-        power_down_if_idle();
-        return;
-    }
+    if (standby_ == standby) return;
     standby_ = standby;
     for (auto& s : subs_) restart_locked(*s);
     if (!standby) read_ok_.store(true);
     apply_locked();
-    power_down_if_idle();
+    // PowerManager powers every IMU up as the device wakes (its caps say
+    // "standby": "off"); with nothing to read it goes back down.
+    if (!standby) power_down_if_idle_locked();
+}
+
+void SensorService::note_woken() {
+    std::lock_guard<os::Mutex> lock(mutex_);
+    power_down_if_idle_locked();
+}
+
+void SensorService::power_down_if_idle_locked() {
+    if (!standby_ && rate_.load() == 0 && imu_) imu_->set_power(hal::PowerLevel::Standby);
+}
+
+CellSubscription SensorService::follow_power(const StateCell<hal::PowerLevel>& level) {
+    return level.subscribe(
+        [this, cell = &level, last = uint32_t{0}](const hal::PowerLevel&) mutable {
+            // The value and its revision read together: the delivered value
+            // may already be older than the revision, and a revision read
+            // apart from its value could hide a skipped standby. Runs of one
+            // subscription never overlap, so `last` needs no lock.
+            uint32_t revision = 0;
+            const hal::PowerLevel now = cell->read([&](const hal::PowerLevel& v) {
+                revision = cell->revision();
+                return v;
+            });
+            if (revision == last) return;  // already handled by an earlier run
+            const bool skipped = last != 0 && revision != cell_detail::next_revision(last);
+            last = revision;
+            const bool standby = now >= hal::PowerLevel::Standby;
+            set_standby(standby);
+            // PowerManager wakes the IMU before it moves the level to Active,
+            // so by this delivery a skipped wake has happened.
+            if (skipped && !standby) note_woken();
+        });
 }
 
 uint32_t SensorService::imu_rate() const { return rate_.load(); }

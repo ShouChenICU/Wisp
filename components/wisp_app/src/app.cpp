@@ -446,10 +446,7 @@ Result<void> App::start() {
         impl_->power_manager->set_brightness(static_cast<uint8_t>(boot_brightness));
     }
     // Standby and deep standby pause every IMU subscription (spec 6.1).
-    impl_->sensors_power_sub = impl_->power_manager->level_cell().subscribe(
-        [sensors = impl_->sensors.get()](const hal::PowerLevel& level) {
-            sensors->set_standby(level >= hal::PowerLevel::Standby);
-        });
+    impl_->sensors_power_sub = impl_->sensors->follow_power(impl_->power_manager->level_cell());
     impl_->power_timer =
         std::make_unique<os::Timer>("wisp.power", kPowerTickMs, /*periodic=*/true, [this] {
             const uint64_t now = os::now_ms();

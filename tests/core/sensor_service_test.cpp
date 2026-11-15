@@ -8,11 +8,17 @@
 #include <mutex>
 #include <vector>
 
+#include "support/bus_flood.hpp"
 #include "support/fake_devices.hpp"
 #include "support/wait.hpp"
+#include "wisp/core/event_bus.hpp"
+#include "wisp/core/state_cell.hpp"
+#include "wisp/hal/device.hpp"
 #include "wisp/os/os.hpp"
 
 using wisp::ErrorCode;
+using wisp::core::CellSubscription;
+using wisp::core::EventBus;
 using wisp::core::Gesture;
 using wisp::core::OccupancyMode;
 using wisp::core::OccupancyRegistry;
@@ -20,6 +26,9 @@ using wisp::core::SensorBatch;
 using wisp::core::SensorKind;
 using wisp::core::SensorSample;
 using wisp::core::SensorService;
+using wisp::core::StateCell;
+using wisp::hal::PowerLevel;
+using wisp::test::BusFlood;
 using wisp::test::FakeImu;
 
 namespace {
@@ -177,16 +186,124 @@ TEST(SensorService, StandbyPausesAll) {
     EXPECT_FALSE(imu->powered());
 }
 
-TEST(SensorService, StandbyEndWhileAwakePowersIdleImuDown) {
-    // A standby that began and ended between two deliveries arrives as
-    // "false" while the service is already awake.
+TEST(SensorService, StandbyEndWhileAwakeTouchesNoDriver) {
+    // Dim -> Active, and the first delivery at boot, arrive as "false"
+    // while the service is already awake: nothing changes, no I2C write.
+    OccupancyRegistry occ;
+    auto imu = std::make_shared<FakeImu>("imu.main");
+    SensorService idle(imu, occ);
+    const int calls = imu->set_power_calls();
+    idle.set_standby(false);
+    idle.set_standby(false);
+    EXPECT_EQ(imu->set_power_calls(), calls);
+}
+
+TEST(SensorService, NoteWokenPowersIdleImuDown) {
+    // PowerManager woke the IMU through its caps for a standby the service
+    // never saw; with nobody to read it, it goes back down.
     OccupancyRegistry occ;
     auto imu = std::make_shared<FakeImu>("imu.main");
     SensorService idle(imu, occ);
     imu->set_power(wisp::hal::PowerLevel::Active);
     ASSERT_TRUE(imu->powered());
-    idle.set_standby(false);
+    idle.note_woken();
     EXPECT_FALSE(imu->powered());
+    // With a subscription reading it, it stays on at its rate.
+    Fixture f;
+    Seen s;
+    ASSERT_TRUE(f.svc.subscribe(SensorKind::Accel, 50, "scene.a", s.cb()));
+    const int calls = f.imu->set_power_calls();
+    f.svc.note_woken();
+    EXPECT_TRUE(f.imu->powered());
+    EXPECT_EQ(f.imu->set_power_calls(), calls);
+    EXPECT_EQ(f.svc.imu_rate(), 50u);
+}
+
+namespace {
+
+// The service following a level cell on a running bus, as App wires it to
+// PowerManager's level.
+struct FollowFixture {
+    FollowFixture() {
+        EXPECT_TRUE(bus.start());
+        sub = svc.follow_power(level);
+        settle();
+    }
+    ~FollowFixture() {
+        sub.reset();
+        bus.stop();
+    }
+    void settle() { ASSERT_TRUE(bus.wait_idle(2000)); }
+
+    EventBus bus;
+    StateCell<PowerLevel> level{bus, PowerLevel::Active};
+    std::shared_ptr<FakeImu> imu = std::make_shared<FakeImu>("imu.main");
+    OccupancyRegistry occupancy;
+    SensorService svc{imu, occupancy};
+    CellSubscription sub;
+};
+
+}  // namespace
+
+TEST(SensorService, FollowingDimAndActiveTouchesNoDriver) {
+    FollowFixture f;
+    // The first delivery (Active at boot) made no call.
+    EXPECT_EQ(f.imu->set_power_calls(), 0);
+    f.level.set(PowerLevel::Dim);
+    f.settle();
+    f.level.set(PowerLevel::Active);
+    f.settle();
+    f.level.set(PowerLevel::Dim);
+    f.settle();
+    EXPECT_EQ(f.imu->set_power_calls(), 0);
+}
+
+TEST(SensorService, FollowingAStandbyOneByOnePowersIdleImuDown) {
+    FollowFixture f;
+    f.level.set(PowerLevel::Standby);
+    f.settle();
+    // PowerManager wakes every IMU before it moves the level to Active.
+    f.imu->set_power(PowerLevel::Active);
+    f.level.set(PowerLevel::Active);
+    f.settle();
+    EXPECT_FALSE(f.imu->powered());
+}
+
+TEST(SensorService, FollowingASkippedStandbyPowersIdleImuDown) {
+    FollowFixture f;
+    {
+        // Standby and the wake land while wisp.bus is busy: the follower
+        // is called once, with Active, and never sees the standby.
+        BusFlood flood(f.bus);
+        flood.hold();
+        f.level.set(PowerLevel::Standby);
+        f.imu->set_power(PowerLevel::Active);
+        f.level.set(PowerLevel::Active);
+        const int calls = f.imu->set_power_calls();
+        flood.release();
+        f.settle();
+        EXPECT_GT(f.imu->set_power_calls(), calls);
+    }
+    EXPECT_FALSE(f.imu->powered());
+}
+
+TEST(SensorService, FollowingASkippedDimTouchesNoDriverWhileReading) {
+    // A skip is only a re-check: with a subscription reading the IMU it
+    // stays on and nothing is written.
+    FollowFixture f;
+    Seen s;
+    ASSERT_TRUE(f.svc.subscribe(SensorKind::Accel, 50, "scene.a", s.cb()));
+    const int calls = f.imu->set_power_calls();
+    {
+        BusFlood flood(f.bus);
+        flood.hold();
+        f.level.set(PowerLevel::Dim);
+        f.level.set(PowerLevel::Active);
+        flood.release();
+        f.settle();
+    }
+    EXPECT_EQ(f.imu->set_power_calls(), calls);
+    EXPECT_TRUE(f.imu->powered());
 }
 
 TEST(SensorService, PausedHandleGetsNothing) {
