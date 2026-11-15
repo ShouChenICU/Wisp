@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <ctime>
 #include <filesystem>
@@ -23,6 +24,7 @@
 #include "support/fake_http.hpp"
 #include "support/fake_settings_backend.hpp"
 #include "support/lvgl_probe.hpp"
+#include "support/ui_hold.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
@@ -57,6 +59,7 @@ using wisp::test::find_obj_of_class;
 using wisp::test::make_req;
 using wisp::test::run_on_ui_blocking;
 using wisp::test::run_on_ui_thread;
+using wisp::test::UiHold;
 using wisp::test::UiNetHarness;
 using wisp::test::UiNetOptions;
 using wisp::test::wait_until;
@@ -573,38 +576,6 @@ struct ZhAfterTest {
     ~ZhAfterTest() { wisp::ui::set_lang(Lang::Zh); }
 };
 
-// Holds the UI task inside a posted job until release() (or destruction).
-// The job shares the semaphores, so it may still be inside take() when
-// this object goes.
-class UiHold {
-public:
-    explicit UiHold(wisp::ui::UiRuntime* ui) {
-        held_ = ui->post([gates = gates_] {
-            gates->entered.give();
-            gates->gate.take(wisp::os::kForever);
-        });
-        EXPECT_TRUE(held_);
-        if (held_) EXPECT_TRUE(gates_->entered.take(3000));
-    }
-    ~UiHold() { release(); }
-    UiHold(const UiHold&) = delete;
-    UiHold& operator=(const UiHold&) = delete;
-    void release() {
-        if (held_) {
-            held_ = false;
-            gates_->gate.give();
-        }
-    }
-
-private:
-    struct Gates {
-        wisp::os::Semaphore entered{1, 0};
-        wisp::os::Semaphore gate{1, 0};
-    };
-    std::shared_ptr<Gates> gates_ = std::make_shared<Gates>();
-    bool held_ = false;
-};
-
 }  // namespace
 
 // Confirmed on the screen: the reset's "done" and its reseed of the
@@ -729,6 +700,107 @@ TEST(FactoryReset, CancelledResetLetsTheLanguageFollow) {
     ASSERT_TRUE(wait_until([&] { return reset_states(h).size() == 2; }, 3000));
     EXPECT_EQ(reset_states(h).back(), "cancelled");
 
+    ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
+    EXPECT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
+}
+
+namespace {
+
+// The reset task waits for the returned gate before it starts.
+std::shared_ptr<wisp::os::Semaphore> gate_reset_task(wisp::app::App& app) {
+    auto gate = std::make_shared<wisp::os::Semaphore>(1, 0);
+    wisp::app::set_reset_spawner(
+        app, [gate](const wisp::os::TaskConfig& config, std::function<void()> body) {
+            return wisp::os::Task::spawn(config, [gate, body = std::move(body)] {
+                gate->take(wisp::os::kForever);
+                body();
+            });
+        });
+    return gate;
+}
+
+// Lets the gated reset task run into a stuck flash thread with a full
+// queue: its erase never starts, and it announces "failed" (the
+// `failures`th one) within 300 ms.
+void let_the_reset_fail(UiNetHarness& h, wisp::os::Semaphore& gate, size_t failures = 1) {
+    wisp::core::StorageWorker* worker = h.app->storage_worker();
+    ASSERT_NE(worker, nullptr);
+    auto entered = std::make_shared<wisp::os::Semaphore>(1, 0);
+    auto release = std::make_shared<wisp::os::Semaphore>(1, 0);
+    ASSERT_TRUE(worker->submit([entered, release] {
+        entered->give();
+        release->take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered->take(2000));
+    while (worker->submit([] {})) {
+    }
+    wisp::app::set_reset_erase_budget(*h.app, 300);
+    gate.give();
+    const bool failed = wait_until(
+        [&] {
+            const std::vector<std::string> states = reset_states(h);
+            return static_cast<size_t>(std::count(states.begin(), states.end(), "failed")) ==
+                   failures;
+        },
+        5000);
+    release->give();
+    ASSERT_TRUE(worker->drain(5000));
+    ASSERT_TRUE(failed);
+    EXPECT_EQ(h.reboots.load(), 0);
+}
+
+}  // namespace
+
+// A reset confirmed on the screen that failed (nothing erased, no restart)
+// is over: a new request opens the dialog again, and the language follows
+// the settings while that new question waits.
+TEST(FactoryReset, FailedResetLetsANewRequestAskAgain) {
+    ZhAfterTest zh;
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    std::shared_ptr<wisp::os::Semaphore> gate = gate_reset_task(app);
+
+    wisp::app::request_factory_reset(app);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(click(h, "是"));
+    ASSERT_NO_FATAL_FAILURE(let_the_reset_fail(h, *gate));
+    EXPECT_TRUE(wait_until([&] { return msgboxes(h) == 0; }, 3000));
+
+    wisp::app::request_factory_reset(app);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    EXPECT_EQ(msgboxes(h), 1);
+    ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
+    EXPECT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
+    // The open question follows the language, and can be answered.
+    EXPECT_TRUE(wait_until([&] { return dialog_says(h, "Factory reset"); }, 3000));
+    ASSERT_TRUE(click(h, "No"));
+    ASSERT_TRUE(wait_until([&] { return reset_states(h).back() == "cancelled"; }, 3000));
+    EXPECT_EQ(reset_states(h),
+              (std::vector<std::string>{"requested", "failed", "requested", "cancelled"}));
+}
+
+// The failure and the new request reach the screen in one call (the UI
+// task held across both): the new request still opens the dialog.
+TEST(FactoryReset, FailureAndANewRequestTogetherAskAgain) {
+    ZhAfterTest zh;
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    std::shared_ptr<wisp::os::Semaphore> gate = gate_reset_task(app);
+
+    wisp::app::request_factory_reset(app);
+    ASSERT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(click(h, "是"));
+    {
+        UiHold hold(app.ui());
+        ASSERT_NO_FATAL_FAILURE(let_the_reset_fail(h, *gate));
+        wisp::app::request_factory_reset(app);
+    }
+    EXPECT_TRUE(wait_until([&] { return dialog_says(h, "恢复出厂设置"); }, 3000));
+    ASSERT_TRUE(wisp::test::cell_barrier(wisp::app::reset_status(app), app.ui()));
+    run_on_ui_blocking(app.ui(), [] {});
+    EXPECT_EQ(msgboxes(h), 1);
     ASSERT_TRUE(app.system_settings().set({{"language", "en"}}));
     EXPECT_TRUE(wait_until([] { return wisp::ui::lang() == Lang::En; }, 3000));
 }

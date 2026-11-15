@@ -99,6 +99,11 @@ void factory_reset(App& app);
 // caller can let a later request ask again. Any thread.
 bool start_factory_reset(App& app);
 
+// Whether a reset confirmed through start_factory_reset() is on its way to
+// the restart: its task started and has not given up before erasing
+// ("failed"). Stays true once "done" is announced. Any thread.
+bool factory_reset_running(App& app);
+
 // Waits for a "wisp.reset" task to finish. App::stop() calls it before
 // tearing down the services the reset uses.
 void join_factory_reset(App& app);

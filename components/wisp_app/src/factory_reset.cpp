@@ -193,6 +193,7 @@ void factory_reset(App& app) {
         WLOG_E(kTag, "factory reset could not start (%s); nothing erased, not restarting",
                erased.error().message.c_str());
         app.impl_->reset_failed.store(true);
+        app.impl_->reset_running.store(false);
         publish_state(app.impl_->reset_status, ResetStatus::Phase::Failed);
         return;
     }
@@ -257,8 +258,11 @@ bool start_factory_reset(App& app) {
         publish_state(app.impl_->reset_status, ResetStatus::Phase::Cancelled);
         return false;
     }
+    impl.reset_running.store(true);
     return true;
 }
+
+bool factory_reset_running(App& app) { return app.impl_->reset_running.load(); }
 
 void set_reset_erase_budget(App& app, uint32_t ms) { app.impl_->reset_erase_ms = ms; }
 
@@ -274,6 +278,7 @@ void join_factory_reset(App& app) {
         task = std::move(app.impl_->reset_task);
     }
     if (task) task->join();
+    app.impl_->reset_running.store(false);
 }
 
 }  // namespace wisp::app

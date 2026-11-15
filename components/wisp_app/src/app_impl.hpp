@@ -285,6 +285,10 @@ struct App::Impl {
     // The last reset_task gave up without erasing (factory_reset()) and has
     // returned, so start_factory_reset() may replace it.
     std::atomic<bool> reset_failed{false};
+    // A started reset_task has not given up (factory_reset_running()): set
+    // by start_factory_reset(), cleared before "failed" is announced and
+    // once join_factory_reset() returns.
+    std::atomic<bool> reset_running{false};
     // How long factory_reset() tries to start its erase (set_reset_erase_budget()).
     uint32_t reset_erase_ms = 30000;
 

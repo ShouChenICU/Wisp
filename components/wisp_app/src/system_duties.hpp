@@ -11,10 +11,10 @@
 //     layer; with the power-off dialog, one at a time.
 //   - The WISP_PERF line every 5 s (docs/architecture.md).
 //   - The system language (ui::lang()) following the settings cell, so the
-//     cards and the dialogs reopen in a new language. Once a factory reset
-//     is confirmed here or announced done, the reset reseeds the cell to
-//     the defaults: the screen keeps its language until the restart. A
-//     reset that failed or was cancelled lets it follow again.
+//     cards and the dialogs reopen in a new language. While a confirmed
+//     factory reset runs, or once it is announced done, the reset reseeds
+//     the cell to the defaults: the screen keeps its language until the
+//     restart. A reset that failed or was cancelled lets it follow again.
 //
 // The language, the cards and the dialogs follow their owners' state cells
 // (the system settings, the Wi-Fi and hotspot, the pairing code, the reset
@@ -52,8 +52,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "factory_reset.hpp"
 #include "lvgl.h"
 #include "net_cards.hpp"
 #include "wisp/app/power_key_controller.hpp"
@@ -68,6 +70,7 @@
 #include "wisp/hal/power.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/ui/strings.hpp"
 
 namespace wisp::ui {
 class SystemLayer;
@@ -141,6 +144,8 @@ private:
     // Turns a sleeping screen on for something the user is waiting to see
     // (a pairing code, the factory-reset question). UI thread.
     void wake_screen();
+    // UI thread: the reset status cell's callback.
+    void on_reset_status(const ResetStatus& status);
     // UI thread: takes a pending factory-reset request (see
     // take_factory_reset_request()) and shows the dialog for it.
     void sync_reset();
@@ -157,9 +162,11 @@ private:
     // open network cards and confirm dialog in it if it changed -- unless
     // reset_holds_language().
     void sync_system_language(const core::SystemSettingsValues& values);
-    // Whether a factory reset confirmed here (still running) or announced
-    // done owns the settings cell's next values: its reseed to the
-    // defaults must not switch the screen before the restart.
+    void apply_system_language(std::optional<ui::Lang> lang);
+    // Whether a confirmed factory reset still running (factory_reset_
+    // running()) or announced done owns the settings cell's next values:
+    // its reseed to the defaults must not switch the screen before the
+    // restart.
     bool reset_holds_language() const;
     void handle_power_key_action(PowerKeyController::Action action);
     void show_confirm_dialog();
@@ -203,9 +210,6 @@ private:
     // above so neither one's answer (or the power key) can be taken for
     // the other. The system layer opens one dialog at a time.
     lv_obj_t* reset_box_ = nullptr;
-    // Set once the user confirmed and the reset task started: later
-    // requests are ignored while the reset runs towards its restart.
-    bool reset_confirmed_ = false;
     // The firmware-update confirmation; the third kind of dialog, likewise
     // never stacked on the other two.
     lv_obj_t* fw_box_ = nullptr;

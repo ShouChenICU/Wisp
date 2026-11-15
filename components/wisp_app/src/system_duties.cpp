@@ -123,14 +123,8 @@ void SystemDuties::start() {
         pairing_sub_ = pairing->pairing_cell().subscribe(
             [this](const net::PairingSnapshot&) { sync_pairing(); }, &ui_);
     }
-    // A reset that failed or was cancelled after its confirmation lets the
-    // language follow again: what was stored meanwhile is shown now.
     reset_sub_ = reset_status(app_).subscribe(
-        [this](const ResetStatus&) {
-            sync_reset();
-            sync_system_language(app_.system_settings().cell().get());
-        },
-        &ui_);
+        [this](const ResetStatus& status) { on_reset_status(status); }, &ui_);
     fw_sub_ = firmware_progress(app_).subscribe(
         [this](const core::FirmwareProgress& p) { on_firmware_progress(p); }, &ui_);
 
@@ -313,20 +307,25 @@ void SystemDuties::sync_pairing() {
 }
 
 bool SystemDuties::reset_holds_language() const {
-    // The current phase, not the last one this object was called with: the
-    // reseed's delivery may run before or after the reset status's, and
-    // "done" is set before the reseed, so it always finds "done" here.
-    const ResetStatus::Phase phase = reset_status(app_).get().phase;
-    return phase == ResetStatus::Phase::Done ||
-           (reset_confirmed_ && phase == ResetStatus::Phase::Requested);
+    // Asked of the reset itself, at the time of the call, not of the last
+    // status this object was called with: the reseed's delivery may run
+    // before or after the reset status's ("done" is set before the
+    // reseed), and a failure may reach this object folded into a newer
+    // request. A reset still running holds it, "done" included; one that
+    // failed does not.
+    return factory_reset_running(app_) ||
+           reset_status(app_).get().phase == ResetStatus::Phase::Done;
 }
 
 void SystemDuties::sync_system_language(const core::SystemSettingsValues& values) {
+    apply_system_language(ui::parse_lang(values.language));
+}
+
+void SystemDuties::apply_system_language(std::optional<ui::Lang> lang) {
     // The first delivery usually finds the language App::start() applied
     // before the first frame, and changes nothing. A reseed of the cell
     // (after a batch's failed rollback) is followed like any change: the
     // screen shows what is stored.
-    std::optional<ui::Lang> lang = ui::parse_lang(values.language);
     if (!lang || *lang == ui::lang() || reset_holds_language()) {
         return;
     }
@@ -369,6 +368,14 @@ void SystemDuties::wake_screen() {
     }
 }
 
+void SystemDuties::on_reset_status(const ResetStatus&) {
+    sync_reset();
+    // A confirmed reset that failed lets the language follow again: what
+    // was stored meanwhile is shown now. Only the language is read.
+    apply_system_language(app_.system_settings().cell().read(
+        [](const core::SystemSettingsValues& v) { return ui::parse_lang(v.language); }));
+}
+
 void SystemDuties::sync_reset() {
     if (take_factory_reset_request(app_)) {
         show_reset_dialog();
@@ -376,7 +383,7 @@ void SystemDuties::sync_reset() {
 }
 
 void SystemDuties::show_reset_dialog() {
-    if (reset_box_ != nullptr || reset_confirmed_) {
+    if (reset_box_ != nullptr || factory_reset_running(app_)) {
         return;  // one dialog per request at a time; nothing once confirmed
     }
     reset_box_ = system_.open_confirm(
@@ -562,7 +569,7 @@ void SystemDuties::on_reset_answer(bool yes) {
         // flash before it restarts the device. If the task could not
         // start, the reset was answered "cancelled" and a later request
         // may ask again.
-        reset_confirmed_ = start_factory_reset(app_);
+        (void)start_factory_reset(app_);
     } else {
         cancel_factory_reset(app_);
     }

@@ -25,6 +25,7 @@
 #include "support/fake_http.hpp"
 #include "support/fake_settings_backend.hpp"
 #include "support/lvgl_probe.hpp"
+#include "support/ui_hold.hpp"
 #include "support/wait.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
@@ -45,6 +46,7 @@ using wisp::test::find_button_with_label;
 using wisp::test::find_label_text_containing;
 using wisp::test::run_on_ui_blocking;
 using wisp::test::run_on_ui_thread;
+using wisp::test::UiHold;
 using wisp::test::UiNetHarness;
 using wisp::test::UiNetOptions;
 using wisp::test::wait_until;
@@ -208,47 +210,6 @@ TEST_F(SystemDutiesTest, PowerKeyWithAnotherIdTurnsTheScreenOff) {
 }
 
 namespace {
-
-// Holds the UI task inside a posted job until release(): posts queue up
-// behind it and no slot runs meanwhile. With fill(), every further post
-// fails. The job shares the semaphores: after release() the UI task may
-// still be inside take() when this object goes.
-class UiHold {
-public:
-    explicit UiHold(wisp::ui::UiRuntime* ui) : ui_(ui) {
-        held_ = ui_->post([gates = gates_] {
-            gates->entered.give();
-            gates->gate.take(wisp::os::kForever);
-        });
-        EXPECT_TRUE(held_);
-        if (held_) EXPECT_TRUE(gates_->entered.take(3000));
-    }
-    ~UiHold() { release(); }
-    UiHold(const UiHold&) = delete;
-    UiHold& operator=(const UiHold&) = delete;
-
-    // Fills the post queue; how many posts it took.
-    size_t fill() {
-        size_t n = 0;
-        while (ui_->post([] {})) ++n;
-        return n;
-    }
-    void release() {
-        if (held_) {
-            held_ = false;
-            gates_->gate.give();
-        }
-    }
-
-private:
-    struct Gates {
-        wisp::os::Semaphore entered{1, 0};
-        wisp::os::Semaphore gate{1, 0};
-    };
-    wisp::ui::UiRuntime* ui_;
-    std::shared_ptr<Gates> gates_ = std::make_shared<Gates>();
-    bool held_ = false;
-};
 
 // Collects the inbox overflow warnings.
 struct OverflowWarnings : wisp::LogSink {
