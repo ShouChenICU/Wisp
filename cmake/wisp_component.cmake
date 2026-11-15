@@ -137,5 +137,15 @@ macro(wisp_component)
             ${WISP_COMPONENT_NAME} ${_wisp_component_scope}
             "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>"
         )
+        # The ESP-IDF toolchain builds components with -Wextra -Werror, so
+        # an aggregate that leaves out a member without a default member
+        # initializer fails there. Fail the same way on the host, where
+        # it is seen before a firmware build.
+        if(WISP_COMPONENT_SRCS)
+            target_compile_options(
+                ${WISP_COMPONENT_NAME} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=missing-field-initializers>"
+            )
+        endif()
     endif()
 endmacro()

@@ -24,10 +24,10 @@ inline constexpr char kWifiServiceSource[] = "wifi_service";
 struct WifiSnapshot {
     bool enabled = false;  // the user's setting, not whether the radio is on
     WifiState state = WifiState::Off;
-    FixedString<32> ssid;    // raw bytes, as WifiStatus::ssid
-    FixedString<15> ip;      // dotted IPv4; empty unless Connected
-    int rssi = 0;            // rssi at the last cell change, not live
-    FixedString<11> reason;  // "", "not_found", "auth_failed", "other"
+    FixedString<32> ssid{};    // raw bytes, as WifiStatus::ssid
+    FixedString<15> ip{};      // dotted IPv4; empty unless Connected
+    int rssi = 0;              // rssi at the last cell change, not live
+    FixedString<11> reason{};  // "", "not_found", "auth_failed", "other"
     bool operator==(const WifiSnapshot&) const = default;
 };
 

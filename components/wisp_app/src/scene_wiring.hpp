@@ -121,7 +121,7 @@ struct SceneWiringDeps {
     // and also called with Deleted right after remove() publishes
     // "deleted", on wisp.fs (headless too: deletes need no runtime).
     // Same contract: it may only hand the edge on. Empty: none.
-    os::LargeFunction<void(const scene::SceneTransition&)> on_lifecycle;
+    os::LargeFunction<void(const scene::SceneTransition&)> on_lifecycle = nullptr;
 };
 
 // One installed scene as the self-check card lists it.

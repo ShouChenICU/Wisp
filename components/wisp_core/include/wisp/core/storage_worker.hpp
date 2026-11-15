@@ -117,7 +117,7 @@ struct StorageWorkerConfig {
     int priority = 3;
     // The clock behind the lane statistics; empty means os::now_us. Tests
     // inject one so the figures are exact.
-    std::function<uint64_t()> now_us;
+    std::function<uint64_t()> now_us = nullptr;
 };
 
 class StorageWorker {

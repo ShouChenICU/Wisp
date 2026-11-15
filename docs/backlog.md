@@ -286,7 +286,7 @@ Source: `docs/superpowers/plans/2026-11-14-scene-scheduling-install-safety.md`. 
 
 Source: `docs/superpowers/plans/2026-11-14-state-cells-1-primitives.md`. Simulator and unit tests only so far.
 
-- Build the firmware first: the ESP-only branch of `dispatch_misuse()`, the bounded wait in the cell's teardown and the `mem` change in `firmware/main/main.cpp` have never been compiled.
+- The firmware builds for both boards (2026-11-15); the ESP-only branch of `dispatch_misuse()`, the bounded wait in the cell's teardown and the `mem` change in `firmware/main/main.cpp` are compiled but have never run.
 - `mem` at idle on both boards: the line `bus dropped=0 cell_subs=0`; internal free and largest block unchanged within noise against the last values in `docs/hardware/<board>.md` (the plan adds two `os::Mutex` objects, about 200 bytes of internal RAM); the `wisp.bus` and `wisp_ui` stack high-water marks.
 - `WISP_PERF` on Home and in a scene: frame rate not below the baseline (the UI loop now checks an empty ready list once per iteration).
 - Deep standby for 10 minutes or more on both boards: light-sleep residency and wake counts against `docs/hardware/<board>.md` (the bus loop and the paused UI branch changed).
@@ -336,7 +336,7 @@ Notes for the next state-cell plan (removing the periodic compensations).
 
 Source: `docs/superpowers/plans/2026-11-14-state-cells-4-edges-cleanup.md`. Simulator and unit tests only so far.
 
-**Release prerequisite, before any tag:** build the firmware for both boards (`cd firmware && idf.py set-target esp32s3 && idf.py bmgr -c ../boards -b <board> && idf.py build`, for `waveshare_esp32_s3_touch_amoled_1_75c` and `waveshare_esp32_s3_touch_amoled_2_16`). This needs the toolchain only, no device. ESP-only code of this phase, of the device model part 1 and of the storage worker lanes has never been compiled: the device side of `dispatch_misuse()` (a log line instead of an abort) and the bounded wait in a cell's teardown after a reported misuse; the `mem` command and the other edits in `firmware/main/main.cpp`; the ESP port and board edits of the device model part 1 (caps `role`, `EspPmuPowerKey`'s role) and of the storage worker lanes (everything under `components/wisp_port_esp/` and `boards/` they touched). The checks below need a device and come after that build.
+**Firmware build (2026-11-15):** both boards (`waveshare_esp32_s3_touch_amoled_1_75c`, `waveshare_esp32_s3_touch_amoled_2_16`) build with ESP-IDF v6.0.3 and no warnings, after five aggregates that left out a member were fixed; the host build now fails on the same mistake (`-Werror=missing-field-initializers` in `cmake/wisp_component.cmake`). Build both again before a tag if anything under `components/`, `boards/`, `drivers/` or `firmware/` changed since. None of the ESP-only code of this phase, of the device model part 1 or of the storage worker lanes has run on a device: the checks below are still open.
 
 - NOT RUN: the firmware build above, on both boards.
 - NOT RUN: `mem` at idle and in the worst case of AGENTS.md section 5 (STA+AP, two httpd, the WebSocket log stream, a TLS handshake, an OTA upload) on both boards: internal free and largest block against `ram_budget.hpp`; the `wisp.bus`, `wisp_ui` and `wisp.button` stack high-water marks. Record them in `docs/hardware/<board>.md`. This plan adds six `os::Mutex` objects in internal RAM, about 600 bytes: the `power_key`, `talk_key` and `scene_lifecycle` inboxes' locks, `ButtonService`'s listener lock, the lock of `PowerManager`'s button activity counter cell and App's scene lifecycle gate (the inboxes themselves are in PSRAM).
@@ -354,7 +354,7 @@ Source: `docs/superpowers/plans/2026-11-14-state-cells-4-edges-cleanup.md`. Simu
 
 ## Storage worker lanes: device checks not run
 
-Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator and unit tests only so far; the ESP-only branches of `WISP_ASSERT_SD_IO_THREAD`/`WISP_ASSERT_MEDIUM_THREAD` and of `storage_manager.cpp` were not compiled in that environment, so the firmware build itself is the first check: build the firmware for both boards first.
+Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator and unit tests only so far; the ESP-only branches of `WISP_ASSERT_SD_IO_THREAD`/`WISP_ASSERT_MEDIUM_THREAD` and of `storage_manager.cpp` build for both boards (2026-11-15) but have not run on a device.
 
 1. `mem` at idle and in the AGENTS.md section 5 worst case: `wisp.sd.io` and `wisp.shell.list` stacks in PSRAM, `wisp.fs` in internal RAM; the high-water marks of the three (`wisp.shell.list` while it decodes a 256×256 icon); internal free and largest block against `wisp/app/ram_budget.hpp`, compared with the numbers before this branch. Record them in `docs/hardware/<board>.md`.
 2. Card file I/O from `wisp.sd.io`'s PSRAM stack: a scene with `"files": "sd"` writes, appends, reads and downloads several MB; the bytes match; FATFS/sdmmc reads and writes and the unmount in `StorageManager::refresh()` after a card pull run there without an abort and without a `sd access off the sd i/o thread` or `flash access off the flash thread` line. If it aborts, set `kSdOwnWorker` (`components/wisp_app/src/scene_wiring.hpp`) to false and record it in `docs/hardware/<board>.md`.
@@ -391,9 +391,8 @@ Source: `docs/superpowers/plans/2026-11-14-storage-worker-lanes.md`. Simulator a
 
 ## Device model: device checks not run
 
-Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-path.md`. Simulator and unit tests only so far; the ESP port and board edits (caps `role`, `EspPmuPowerKey`'s role) are not compiled in that environment.
+Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-path.md`. Simulator and unit tests only so far; the ESP port and board edits (caps `role`, `EspPmuPowerKey`'s role) build for both boards (2026-11-15) but have not run on a device.
 
-- Both boards build (`idf.py bmgr -c ../boards -b <board> && idf.py build`).
 - `WISP_MANIFEST` on both boards: the same devices, ids, models and caps as before, plus `role` (`main`, `internal`/`removable`, `power`, `talk`) on every device except keys without one; no new boot-report failure and no entry "role ... already taken"; no boot warning about a missing `main` role. Then record the manifest lines with `role` in `docs/hardware/*.md`.
 - Self-check: every device green; the SD row on the 2.16 follows card insert and remove; the display, battery and clock readouts present.
 - Voice: hold the talk key (2.16 Vol-, 1.75C BOOT), speak, hear the answer.

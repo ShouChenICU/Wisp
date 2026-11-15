@@ -225,7 +225,7 @@ struct ShellDeps {
     // Decodes an icon file on the listing task. Empty: decode_scene_icon
     // (a test seam).
     std::function<std::shared_ptr<const SceneIcon>(const os::LargeBuffer&, int32_t side)>
-        decode_icon;
+        decode_icon = nullptr;
     // Whether list_scenes would find nothing new since its last call (no
     // install, update or remove, no card change). UI thread, no file work.
     // Empty: the scene list is read each time it opens.
