@@ -9,10 +9,17 @@
 // second place to agree on its lifetime would buy nothing. AgentService
 // drops it at the end of every turn and from new_conversation()
 // (http_tools_drop_cache()).
+//
+// With as:"image" (spec 3.5) the response is recognised as JPEG or PNG by
+// its bytes, not its content-type, and handed to a vision model as a
+// ToolImage copied out of the cache; without vision it is refused before
+// any request, so the cache and its ref survive.
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +29,7 @@
 #include "wisp/agent/html_text.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tools.hpp"
+#include "wisp/base/image.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -224,6 +232,53 @@ size_t utf8_char_len(std::string_view data, size_t pos) {
     return at - pos;
 }
 
+// The fields every successful result starts with, up to "total_bytes":N.
+void append_head(os::LargeString& out, const CacheEntry& e, const std::string& source,
+                 size_t total) {
+    out = R"({"ok":true,"status":)";
+    detail::append_number(out, static_cast<uint64_t>(e.status));
+    out.append(",\"final_url\":");
+    append_json_string(out, e.final_url);
+    out.append(",\"content_type\":");
+    append_json_string(out, e.content_type);
+    out.append(",\"headers\":");
+    const auto headers = headers_text(e.headers);
+    detail::append_external(out, source, std::string_view(headers.data(), headers.size()));
+    out.append(",\"ref\":\"r");
+    detail::append_number(out, e.id);
+    out.append("\",\"total_bytes\":");
+    detail::append_number(out, total);
+}
+
+// The as:"image" result for `e` (spec 3.5), without touching the network.
+// A truncated body is never a whole image, so it is too_large like one
+// over kImageMaxBytes. The bytes are copied: the cache keeps its own for
+// later refs, and the image outlives the cache (dropped at turn end).
+ToolOutput image_of(const CacheEntry& e) {
+    if (e.body_truncated) {
+        return tool_error("too_large", "the response was cut at the size limit");
+    }
+    const auto info = sniff_image(std::span<const uint8_t>(e.raw.data(), e.raw.size()));
+    if (!info) return tool_error("not_image", "the response is not a JPEG or PNG image");
+    if (e.raw.size() > kImageMaxBytes) {
+        return tool_error("too_large",
+                          "the image is over " + std::to_string(kImageMaxBytes) + " bytes");
+    }
+    auto img = make_tool_image(info->mime, e.raw.size());
+    if (!img) return tool_error("no_memory", "no memory for the image");
+    if (e.raw.size() != 0) std::memcpy(img->bytes.data(), e.raw.data(), e.raw.size());
+    img->width = info->width;
+    img->height = info->height;
+
+    ToolOutput result;
+    append_head(result.result_json, e, "http:" + e.host, e.raw.size());
+    result.result_json.append(",\"image\":");
+    append_image_json(result.result_json, *img);
+    result.result_json.push_back('}');
+    result.image = std::move(img);
+    return result;
+}
+
 // Builds the result for one slice of `e`'s response, without touching
 // the network: used for a fresh fetch and for a `ref` call alike.
 ToolOutput slice_of(CacheEntry& e, std::string_view as, int64_t offset_arg, int64_t max_bytes_arg) {
@@ -264,19 +319,7 @@ ToolOutput slice_of(CacheEntry& e, std::string_view as, int64_t offset_arg, int6
     const std::string source = "http:" + e.host;
     ToolOutput result;
     auto& out = result.result_json;
-    out = R"({"ok":true,"status":)";
-    detail::append_number(out, static_cast<uint64_t>(e.status));
-    out.append(",\"final_url\":");
-    append_json_string(out, e.final_url);
-    out.append(",\"content_type\":");
-    append_json_string(out, e.content_type);
-    out.append(",\"headers\":");
-    const auto headers = headers_text(e.headers);
-    detail::append_external(out, source, std::string_view(headers.data(), headers.size()));
-    out.append(",\"ref\":\"r");
-    detail::append_number(out, e.id);
-    out.append("\",\"total_bytes\":");
-    detail::append_number(out, total);
+    append_head(out, e, source, total);
     out.append(",\"offset\":");
     detail::append_number(out, offset);
     out.append(",\"returned_bytes\":");
@@ -307,7 +350,7 @@ std::string build_schema() {
            std::to_string(kHttpMinTimeoutMs) + ",\"maximum\":" + std::to_string(kHttpMaxTimeoutMs) +
            "},"
            "\"follow\":{\"type\":\"boolean\"},"
-           "\"as\":{\"type\":\"string\",\"enum\":[\"raw\",\"text\"]},"
+           "\"as\":{\"type\":\"string\",\"enum\":[\"raw\",\"text\",\"image\"]},"
            "\"offset\":{\"type\":\"integer\",\"minimum\":0},"
            "\"max_bytes\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":" +
            std::to_string(kHttpMaxMaxBytes) +
@@ -319,7 +362,20 @@ std::string build_schema() {
 struct Fetch {
     net::SceneHttp& http;
 
+    // The cached entry as the call's `as` asks for it.
+    static ToolOutput answer(CacheEntry& e, const Value& args) {
+        const std::string_view as = str_arg(args, "as", "raw");
+        if (as == "image") return image_of(e);
+        return slice_of(e, as, int_arg(args, "offset", 0),
+                        int_arg(args, "max_bytes", static_cast<int64_t>(kHttpDefaultMaxBytes)));
+    }
+
     ToolOutput run(const Value& args, ToolCtx& ctx) {
+        // Before the ref lookup and the cache drop below: a refused call
+        // costs no request and leaves the previous ref valid (spec 3.5).
+        if (str_arg(args, "as", "raw") == "image" && !ctx.vision) {
+            return tool_error("unsupported", "the active model does not take images");
+        }
         const std::string_view ref = str_arg(args, "ref", {});
         if (!ref.empty()) return from_ref(ref, args);
 
@@ -425,9 +481,7 @@ struct Fetch {
         c.entry = std::move(e);
         c.has = true;
 
-        return with_note(
-            slice_of(c.entry, str_arg(args, "as", "raw"), int_arg(args, "offset", 0),
-                     int_arg(args, "max_bytes", static_cast<int64_t>(kHttpDefaultMaxBytes))));
+        return with_note(answer(c.entry, args));
     }
 
     ToolOutput from_ref(std::string_view ref, const Value& args) {
@@ -436,8 +490,7 @@ struct Fetch {
         Cache& c = cache_state();
         std::lock_guard<os::Mutex> lock(c.mu);
         if (!c.has || c.entry.id != id) return tool_error("no_ref", "unknown or expired ref");
-        return slice_of(c.entry, str_arg(args, "as", "raw"), int_arg(args, "offset", 0),
-                        int_arg(args, "max_bytes", static_cast<int64_t>(kHttpDefaultMaxBytes)));
+        return answer(c.entry, args);
     }
 };
 
@@ -452,7 +505,8 @@ Result<void> add_http_tools(ToolRegistry& reg, HttpToolDeps deps) {
         "Fetches a URL over http:// or https:// (GET by default). Reads the response as raw "
         "bytes or, with as:\"text\", HTML stripped to plain text; a large response pages "
         "with offset/max_bytes, or re-read with ref without a new request. Binary responses "
-        "report their size and content type but not their body.";
+        "report their size and content type but not their body. With as:\"image\" (models that "
+        "take images only), a JPEG or PNG response up to 128 KiB is shown to you as an image.";
     def.schema_json.assign(schema.data(), schema.size());
     def.risk = ToolRisk::Note;
     def.thread = ToolThread::Agent;

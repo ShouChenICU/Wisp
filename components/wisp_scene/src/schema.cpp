@@ -1264,7 +1264,12 @@ write-only and are never exposed by these tools.
 read further chunks by ref without another request. A new request, turn end or
 new conversation invalidates the ref. Chunks end on UTF-8 boundaries. Non-text
 responses omit body; use `wisp.http.download` to save binary data. An oversized
-response retains the first 1 MiB with `body_truncated: true`. Response headers
+response retains the first 1 MiB with `body_truncated: true`. With `as: "image"`
+(vision models only, otherwise `unsupported` before any request) a JPEG or PNG,
+recognised by its bytes, of at most 128 KiB is shown to the model as an image;
+the result has `image` (`mime`, `bytes`, `width`, `height`) in place of `offset`,
+`returned_bytes`, `more` and `body`; other bytes are `not_image`, a larger or
+truncated response `too_large`. Response headers
 are one string of lowercase `name: value` lines and, like body, are wrapped in
 `<data source="http:<host>">...</data>`. Embedded closing data tags are escaped
 case insensitively for every external source, including `scene:<id>`.

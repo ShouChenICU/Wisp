@@ -13,6 +13,7 @@
 
 #include "support/fake_http.hpp"
 #include "support/wait.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
@@ -30,6 +31,7 @@ using wisp::agent::ToolCtx;
 using wisp::agent::ToolExecutors;
 using wisp::agent::ToolOutput;
 using wisp::agent::ToolRegistry;
+using wisp::net::AgentHttpLimits;
 using wisp::net::Method;
 using wisp::net::SceneHttp;
 using wisp::net::SceneHttpLimits;
@@ -53,6 +55,16 @@ int64_t integer(const Value& v, std::string_view key, int64_t fallback = -1) {
 }
 
 bool ok_of(const ToolOutput& out) { return boolean(out.result, "ok"); }
+
+// A 3x2 PNG as far as sniff_image() reads it: the signature, IHDR, IEND.
+std::string tiny_png() {
+    std::string s("\x89PNG\r\n\x1a\n", 8);
+    s.append(std::string("\0\0\0\x0dIHDR", 8));
+    s.append(std::string("\0\0\0\x03\0\0\0\x02\x08\x02\0\0\0", 13));
+    s.append(std::string("\0\0\0\0", 4));  // CRC, not checked
+    s.append(std::string("\0\0\0\0IEND\xae\x42\x60\x82", 12));
+    return s;
+}
 
 std::string lower(std::string_view s) {
     std::string out(s);
@@ -348,4 +360,120 @@ TEST_F(HttpFetch, Note) {
         ASSERT_TRUE(ok_of(out)) << wisp::to_json(out.result);
         EXPECT_EQ(out.note, expect) << lang;
     }
+}
+
+TEST_F(HttpFetch, SchemaOffersImage) {
+    const auto* def = tools->find("http.fetch");
+    ASSERT_NE(def, nullptr);
+    auto schema =
+        wisp::from_json(std::string_view(def->schema_json.data(), def->schema_json.size()));
+    ASSERT_TRUE(schema);
+    const Value* as = schema.value().find("properties")->find("as");
+    ASSERT_NE(as, nullptr);
+    EXPECT_EQ(wisp::to_json(*as->find("enum")), R"(["raw","text","image"])");
+}
+
+TEST_F(HttpFetch, ImageWithVisionComesBack) {
+    ctx.vision = true;
+    const std::string png = tiny_png();
+    client.next = {
+        .status = 200, .body = png, .headers = {{"content-type", "application/octet-stream"}}};
+    auto out = call(R"({"url":"https://e.example.com/a.png","as":"image"})");
+    ASSERT_TRUE(ok_of(out)) << wisp::to_json(out.result);
+    const Value* image = out.result.find("image");
+    ASSERT_NE(image, nullptr);
+    EXPECT_EQ(str(*image, "mime"), "image/png");
+    EXPECT_EQ(integer(*image, "bytes"), static_cast<int64_t>(png.size()));
+    EXPECT_EQ(integer(*image, "width"), 3);
+    EXPECT_EQ(integer(*image, "height"), 2);
+    EXPECT_EQ(integer(out.result, "total_bytes"), static_cast<int64_t>(png.size()));
+    EXPECT_FALSE(str(out.result, "ref").empty());
+    EXPECT_EQ(str(out.result, "content_type"), "application/octet-stream");
+    for (const char* gone : {"body", "offset", "returned_bytes", "more"})
+        EXPECT_EQ(out.result.find(gone), nullptr) << gone;
+    ASSERT_TRUE(out.image);
+    EXPECT_STREQ(out.image->mime, "image/png");
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(out.image->bytes.data()),
+                          out.image->bytes.size()),
+              png);
+    EXPECT_EQ(out.image->width, 3u);
+    EXPECT_EQ(out.image->height, 2u);
+    EXPECT_EQ(out.note, "访问 e.example.com");
+}
+
+TEST_F(HttpFetch, ImageWithoutVisionIsUnsupported) {
+    client.next = {.status = 200, .body = "hello"};
+    auto first = call(R"({"url":"https://e.example.com/a"})");
+    const std::string ref = str(first.result, "ref");
+    ASSERT_FALSE(ref.empty());
+
+    client.next = {.status = 200, .body = tiny_png()};
+    auto out = call(R"({"url":"https://e.example.com/a.png","as":"image"})");
+    EXPECT_EQ(str(out.result, "error"), "unsupported");
+    EXPECT_FALSE(out.image);
+    EXPECT_EQ(client.calls(), 1u);
+    auto via_ref = call(R"({"ref":")" + ref + R"(","as":"image"})");
+    EXPECT_EQ(str(via_ref.result, "error"), "unsupported");
+
+    // The refused call did not drop the cache.
+    EXPECT_TRUE(ok_of(call(R"({"ref":")" + ref + R"("})")));
+}
+
+TEST_F(HttpFetch, NotAnImage) {
+    ctx.vision = true;
+    client.next = {.status = 200,
+                   .body = "<html><body>no</body></html>",
+                   .headers = {{"content-type", "image/png"}}};
+    auto out = call(R"({"url":"https://e.example.com/","as":"image"})");
+    EXPECT_EQ(str(out.result, "error"), "not_image");
+    EXPECT_FALSE(out.image);
+    EXPECT_EQ(out.note, "访问 e.example.com");
+}
+
+TEST_F(HttpFetch, ImageTooLarge) {
+    ctx.vision = true;
+    std::string jpeg(wisp::agent::kImageMaxBytes + 1, '\0');
+    jpeg[0] = '\xff';
+    jpeg[1] = '\xd8';
+    jpeg[2] = '\xff';
+    client.next = {.status = 200, .body = jpeg, .headers = {{"content-type", "image/jpeg"}}};
+    auto out = call(R"({"url":"https://e.example.com/big.jpg","as":"image"})");
+    EXPECT_EQ(str(out.result, "error"), "too_large");
+    EXPECT_FALSE(out.image);
+
+    // One byte under the cap passes.
+    jpeg.resize(wisp::agent::kImageMaxBytes);
+    client.next = {.status = 200, .body = jpeg, .headers = {{"content-type", "image/jpeg"}}};
+    auto fits = call(R"({"url":"https://e.example.com/ok.jpg","as":"image"})");
+    ASSERT_TRUE(ok_of(fits)) << wisp::to_json(fits.result);
+    ASSERT_TRUE(fits.image);
+    EXPECT_EQ(fits.image->bytes.size(), wisp::agent::kImageMaxBytes);
+
+    // Over the response cap the body is truncated: never a partial image.
+    std::string huge = tiny_png();
+    huge.resize(AgentHttpLimits::kMaxResponse + 1, '\0');
+    client.next = {.status = 200, .body = huge, .headers = {{"content-type", "image/png"}}};
+    auto truncated = call(R"({"url":"https://e.example.com/huge.png","as":"image"})");
+    EXPECT_EQ(str(truncated.result, "error"), "too_large");
+    // SceneHttp truncates (not fails) the Agent principal at its cap.
+    EXPECT_NE(str(truncated.result, "message").find("cut"), std::string::npos)
+        << wisp::to_json(truncated.result);
+    EXPECT_FALSE(truncated.image);
+}
+
+TEST_F(HttpFetch, ImageFromRef) {
+    ctx.vision = true;
+    const std::string png = tiny_png();
+    client.next = {.status = 200, .body = png, .headers = {{"content-type", "image/png"}}};
+    auto raw = call(R"({"url":"https://e.example.com/a.png"})");
+    ASSERT_TRUE(ok_of(raw)) << wisp::to_json(raw.result);
+    EXPECT_FALSE(raw.image);
+    const std::string ref = str(raw.result, "ref");
+
+    auto out = call(R"({"ref":")" + ref + R"(","as":"image"})");
+    ASSERT_TRUE(ok_of(out)) << wisp::to_json(out.result);
+    ASSERT_TRUE(out.image);
+    EXPECT_EQ(out.image->bytes.size(), png.size());
+    EXPECT_EQ(str(out.result, "ref"), ref);
+    EXPECT_EQ(client.calls(), 1u);
 }
