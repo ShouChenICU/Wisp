@@ -174,6 +174,8 @@ BuiltRequest TurnRunner::build(std::span<const Message> h, BuildOptions opts) co
         req = build_request(h, d, opts);
     }
     if (!images_.empty()) {
+        // `list` may die with this frame: the request views only the mime
+        // strings and the bytes, which images_ owns for the whole turn.
         os::LargeVector<RequestImage> list;
         list.reserve(images_.size());
         for (const TurnImage& t : images_) {

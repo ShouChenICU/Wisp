@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "wisp/agent/io_runner.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/os/os.hpp"
 
@@ -651,6 +652,59 @@ TEST(ToolRegistry, ImageSurvivesTheThreadHop) {
     EXPECT_EQ(out.image->bytes.data()[0], 1);
     EXPECT_EQ(out.image->bytes.data()[3], 4);
     EXPECT_EQ(out.image.use_count(), 1);
+}
+
+// The image slot frees an older image by dropping its pointer (spec 3.5); that
+// only frees the bytes if the registry's call state keeps no copy of it.
+TEST(ToolRegistry, IoCallKeepsNoImageAfterDelivery) {
+    wisp::agent::IoRunner io;
+    ToolExecutors ex;
+    ex.io = [&io](std::function<void()> fn) { return io.post(std::move(fn)); };
+    ToolRegistry reg(std::move(ex));
+    ToolDef d = tool("ui.shot", "", ToolThread::Io);
+    d.run = [](const Value&, ToolCtx&) {
+        ToolOutput out;
+        out.result = Value(Map{{"ok", true}});
+        out.image = wisp::agent::make_tool_image("image/jpeg", 4);
+        return out;
+    };
+    ASSERT_TRUE(reg.add(d));
+    ToolCtx c = ctx();
+    ToolOutput out = reg.call("ui_shot", "", c);
+    ASSERT_TRUE(out.ok);
+    ASSERT_NE(out.image, nullptr);
+    EXPECT_EQ(out.image.use_count(), 1);
+    std::weak_ptr<const wisp::agent::ToolImage> weak = out.image;
+    io.join_all();
+    out.image.reset();
+    EXPECT_TRUE(weak.expired());
+}
+
+// A late Io tool's image is never delivered; its bytes go when the tool returns.
+TEST(ToolRegistry, AbandonedIoCallFreesItsImage) {
+    wisp::agent::IoRunner io;
+    ToolExecutors ex;
+    ex.io = [&io](std::function<void()> fn) { return io.post(std::move(fn)); };
+    ToolRegistry reg(std::move(ex));
+    auto weak = std::make_shared<std::weak_ptr<const wisp::agent::ToolImage>>();
+    std::atomic<bool> made{false};
+    ToolDef d = tool("ui.shot", "", ToolThread::Io);
+    d.timeout_ms = 30;
+    d.run = [weak, &made](const Value&, ToolCtx&) {
+        wisp::os::sleep_ms(100);
+        ToolOutput out;
+        out.image = wisp::agent::make_tool_image("image/jpeg", 4);
+        *weak = out.image;
+        made = true;
+        return out;
+    };
+    ASSERT_TRUE(reg.add(d));
+    ToolCtx c = ctx();
+    const ToolOutput out = reg.call("ui_shot", "", c);
+    EXPECT_EQ(error_of(out), "timeout");
+    io.join_all();
+    EXPECT_TRUE(made.load());
+    EXPECT_TRUE(weak->expired());
 }
 
 TEST(ToolRegistry, ImageJsonShape) {

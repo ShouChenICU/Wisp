@@ -135,7 +135,10 @@ struct RequestImage {
 // "Image from <tool> (call <id>):" and then the image part (or the text part
 // kImageOmittedNewer). Calls whose tool message is not in the request are
 // skipped. est_tokens grows by the text parts' bytes / 3 plus
-// kImageEstTokens per image sent. `images` must outlive the request.
+// kImageEstTokens per image sent. Call it once per request: a second call
+// would insert the messages again. The request views only each image's
+// `mime` and `bytes`, which must outlive it; `images` itself (and the tool
+// and call id views, copied into part_text) need not.
 void attach_images(BuiltRequest& req, std::span<const RequestImage> images);
 
 // A kept reasoning text for the assistant message `seq` (spec 3.3); a view.
