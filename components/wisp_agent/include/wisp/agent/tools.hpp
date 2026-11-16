@@ -126,15 +126,6 @@ struct LuaToolDeps {
 // scene task (SceneRuntime::run_lua()), waiting on ToolThread::Agent.
 Result<void> add_lua_tools(ToolRegistry& reg, LuaToolDeps deps);
 
-struct SceneToolDeps {
-    ToolIndex& index;
-    scene::SceneRuntime& runtime;
-};
-
-// tools.find and tools.call (agent-tools spec 5.3): discover and invoke
-// installed scene tools without changing the model's fixed tool array.
-Result<void> add_scene_tool_tools(ToolRegistry& reg, SceneToolDeps deps);
-
 // tools.find and tools.call (agent-tools spec 5.3, llm-tool-providers spec
 // 4.1) over reg.providers(): ToolThread::Agent, ToolRisk::Note, tools.call's
 // registration timeout 125000 ms.

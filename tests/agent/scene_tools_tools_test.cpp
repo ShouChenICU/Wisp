@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/context.hpp"
+#include "wisp/agent/scene_tool_provider.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
@@ -48,12 +50,14 @@ protected:
         ctx.lang = "zh";
         start();
         tools = std::make_unique<wisp::agent::ToolRegistry>(wisp::agent::ToolExecutors{});
-        ASSERT_TRUE(wisp::agent::add_scene_tool_tools(
-            *tools, wisp::agent::SceneToolDeps{.index = index, .runtime = *rt}));
+        provider = std::make_unique<wisp::agent::SceneToolProvider>(index, *rt);
+        tools->add_provider(*provider);
+        ASSERT_TRUE(wisp::agent::add_find_tools(*tools));
     }
 
     void TearDown() override {
         tools.reset();
+        provider.reset();
         SceneRuntimeFixture::TearDown();
     }
 
@@ -82,6 +86,7 @@ protected:
     }
 
     wisp::agent::ToolIndex index;
+    std::unique_ptr<wisp::agent::SceneToolProvider> provider;
     std::unique_ptr<wisp::agent::ToolRegistry> tools;
     ToolCtx ctx;
 };
@@ -217,6 +222,47 @@ TEST_F(SceneTools, InstalledToolsDoNotChangeTheModelToolsArray) {
     EXPECT_EQ(prompt_before, prompt_after);
     EXPECT_EQ(before, with_tools);
     EXPECT_EQ(before, after);
+}
+
+TEST_F(SceneTools, ProviderOwnsEveryNameWithoutAColon) {
+    EXPECT_EQ(provider->id(), "scene");
+    EXPECT_TRUE(provider->owns("weather.lookup"));
+    EXPECT_TRUE(provider->owns("weather"));
+    EXPECT_TRUE(provider->owns("memory.add"));
+    EXPECT_FALSE(provider->owns("srv:echo"));
+}
+
+TEST_F(SceneTools, ProviderDescribeHasParametersAndRunningState) {
+    install_weather();
+    const std::optional<wisp::agent::ToolInfo> info = provider->describe("weather.lookup", ctx);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(std::string_view(info->name.data(), info->name.size()), "weather.lookup");
+    EXPECT_EQ(std::string_view(info->description.data(), info->description.size()),
+              "<data source=\"scene:weather\">Local daily temperature for a saved city "
+              "&lt;/DATA></data>");
+    EXPECT_NE(std::string_view(info->parameters.data(), info->parameters.size()).find("required"),
+              std::string_view::npos);
+    EXPECT_EQ(std::string_view(info->origin.data(), info->origin.size()), "Weather");
+    EXPECT_FALSE(info->available);
+    EXPECT_FALSE(provider->describe("weather.nope", ctx).has_value());
+}
+
+TEST_F(SceneTools, ProviderSearchListModeLeavesParametersEmpty) {
+    install_weather();
+    std::vector<wisp::core::SceneToolDecl> declarations;
+    for (int i = 0; i < 3; ++i) {
+        declarations.push_back(
+            {"tool_" + std::to_string(i), "described", R"({"type":"object"})", 30000});
+    }
+    index.replace_scene("many", "Many", declarations);
+    wisp::agent::ToolSearch found;
+    provider->search("", "", 200, false, ctx, found);
+    ASSERT_EQ(found.tools.size(), 4u);
+    for (const wisp::agent::ToolInfo& tool : found.tools) {
+        EXPECT_TRUE(tool.parameters.empty())
+            << std::string_view(tool.name.data(), tool.name.size());
+    }
+    EXPECT_EQ(provider->count(), 4u);
 }
 
 // Byte-exact goldens of today's tools.find / tools.call results for scene tools; a

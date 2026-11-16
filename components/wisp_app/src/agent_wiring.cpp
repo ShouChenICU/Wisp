@@ -487,6 +487,7 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             },
     });
 
+    scene_tools_ = std::make_unique<agent::SceneToolProvider>(tool_index_, deps_.runtime);
     auto check = [this](const char* what, Result<void> r) {
         if (r) return;
         tools_ok_ = false;
@@ -532,9 +533,8 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
               agent::add_http_tools(*registry_, agent::HttpToolDeps{.http = *deps_.scene_http}));
     }
     check("lua", agent::add_lua_tools(*registry_, agent::LuaToolDeps{.runtime = deps_.runtime}));
-    check("scene tools",
-          agent::add_scene_tool_tools(
-              *registry_, agent::SceneToolDeps{.index = tool_index_, .runtime = deps_.runtime}));
+    registry_->add_provider(*scene_tools_);
+    check("find tools", agent::add_find_tools(*registry_));
     check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
     if (deps_.reminders != nullptr) {
         check("todo", agent::add_todo_tools(*registry_,

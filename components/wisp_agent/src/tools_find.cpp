@@ -105,6 +105,8 @@ ToolOutput call(const ToolRegistry& reg, const Value& args, ToolCtx& ctx) {
     const std::string_view name = arg_string(args, "name");
     for (ToolProvider* provider : reg.providers()) {
         if (!provider->owns(name)) continue;
+        // ToolRegistry::call() has already required an object "args"; the
+        // null only guards a handler run directly.
         static const Value null;
         const Value* parameters = args.find("args");
         return provider->call(name, parameters != nullptr ? *parameters : null, ctx);

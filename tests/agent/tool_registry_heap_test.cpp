@@ -21,6 +21,7 @@
 
 #include "support/fake_http.hpp"
 #include "support/scene_runtime_fixture.hpp"
+#include "wisp/agent/scene_tool_provider.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
@@ -195,12 +196,14 @@ TEST_F(ToolRegistryHeapSceneTest, FindResponsesUseLargeMemory) {
     }
     index.replace_scene("many", "Many", declarations);
     wisp::agent::ToolIndex empty_index;
+    wisp::agent::SceneToolProvider empty_provider(empty_index, *rt);
     wisp::agent::ToolRegistry empty_registry(wisp::agent::ToolExecutors{});
-    ASSERT_TRUE(wisp::agent::add_scene_tool_tools(
-        empty_registry, wisp::agent::SceneToolDeps{.index = empty_index, .runtime = *rt}));
+    empty_registry.add_provider(empty_provider);
+    ASSERT_TRUE(wisp::agent::add_find_tools(empty_registry));
+    wisp::agent::SceneToolProvider provider(index, *rt);
     wisp::agent::ToolRegistry registry(wisp::agent::ToolExecutors{});
-    ASSERT_TRUE(wisp::agent::add_scene_tool_tools(
-        registry, wisp::agent::SceneToolDeps{.index = index, .runtime = *rt}));
+    registry.add_provider(provider);
+    ASSERT_TRUE(wisp::agent::add_find_tools(registry));
     wisp::agent::ToolCtx ctx;
     ctx.cancelled = [] { return false; };
 

@@ -66,10 +66,12 @@ public:
     // How many tools the provider knows, from memory only (no I/O).
     virtual size_t count() const = 0;
     virtual std::optional<ToolInfo> describe(std::string_view full_name, ToolCtx& ctx) = 0;
-    // `args` is tools.call's "args" as given, null when absent: the
-    // provider looks the name up first and checks args second, so an
-    // unknown name is not_found before its args are judged. Builds the
-    // whole output, note included.
+    // `args` is tools.call's "args" as given. ToolRegistry::call() checks
+    // tools.call's own schema before routing, so over the wire it is always
+    // a JSON object: a missing or non-object "args" is bad_args (field
+    // "args") whatever the name. The provider still looks the name up
+    // before judging args against the tool's schema, so an unknown name is
+    // not_found. Builds the whole output, note included.
     virtual ToolOutput call(std::string_view full_name, const Value& args, ToolCtx& ctx) = 0;
 };
 
