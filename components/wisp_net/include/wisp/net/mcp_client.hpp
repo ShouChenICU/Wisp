@@ -31,8 +31,9 @@
 // is not repaired later); schemas that are not valid UTF-8 are replaced.
 // A server message (McpFailure::message, and a tool result's text when
 // isError) that quotes any of that server's header values, whole or 8 or
-// more bytes of one (of the part after an auth scheme such as "Bearer ",
-// when that part is 8 bytes or more), is replaced by "(message withheld:
+// more bytes of one (for Authorization and Proxy-Authorization, of the
+// part after the auth scheme such as "Bearer ", when that part is 8 bytes
+// or more), is replaced by "(message withheld:
 // it quoted a credential)" (spec 4.4 "Scrubbing"). All server text in a
 // result is valid UTF-8.
 

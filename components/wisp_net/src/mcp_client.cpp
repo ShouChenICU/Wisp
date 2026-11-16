@@ -118,12 +118,23 @@ void log_request(std::string_view server_id, std::string_view method, const McpF
     }
 }
 
+bool same_ascii_nocase(std::string_view a, std::string_view b) {
+    auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(),
+                                              [&](char x, char y) { return lower(x) == lower(y); });
+}
+
 // Whether `text` quotes any of the server's header values, whole or in
-// part (spec 4.4 "Scrubbing"); an auth scheme alone is not a quote.
+// part (spec 4.4 "Scrubbing"). Only the authorization headers begin with
+// a public auth scheme (RFC 9110 11.6.2, 11.7.2), so only theirs is
+// skipped; any other value is secret from its first byte.
 bool quotes_a_credential(std::string_view text, const core::McpServerTarget& target) {
     return std::any_of(target.headers.begin(), target.headers.end(), [&](const auto& h) {
-        return detail::holds_secret_piece(text,
-                                          detail::credential_part(std::string_view(h.second)));
+        const std::string_view name(h.first);
+        const std::string_view value(h.second);
+        const bool auth = same_ascii_nocase(name, "Authorization") ||
+                          same_ascii_nocase(name, "Proxy-Authorization");
+        return detail::holds_secret_piece(text, auth ? detail::credential_part(value) : value);
     });
 }
 

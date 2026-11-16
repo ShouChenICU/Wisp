@@ -11,7 +11,8 @@ namespace wisp::net::detail {
 // Whether `text` holds `secret` whole, or any run of 8 or more bytes of it.
 bool holds_secret_piece(std::string_view text, std::string_view secret);
 
-// The part of a header value that is the credential: after an auth-scheme
+// The part of an Authorization or Proxy-Authorization value that is the
+// credential (other headers have no scheme): after an auth-scheme
 // prefix ("Bearer ", "Basic ", "Token ": an RFC 9110 token and spaces)
 // when that part is at least 8 bytes, else the whole value. Looking for
 // pieces of the scheme would withhold any message that merely names it

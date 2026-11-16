@@ -749,6 +749,28 @@ TEST_F(McpClientCallTest, QuotedCredentialIsWithheld) {
     EXPECT_EQ(str(l.failure.message), kWithheld);
 }
 
+// Only Authorization and Proxy-Authorization start with an auth scheme;
+// any other header's value is a secret from its first byte, spaces or not.
+TEST_F(McpClientCallTest, SchemeSkipIsOnlyForAuthorizationHeaders) {
+    McpServerUpdate u;
+    u.headers = std::vector<McpHeaderInput>{
+        McpHeaderInput{"X-Api-Key", std::string("k3yAbCdEf9xyz tail-12345678")}};
+    ASSERT_TRUE(servers->update("files", u));
+    fail(R"({"code":-32001,"message":"key k3yAbCdEf9xyz refused"})");
+    McpCallResult r = call();
+    EXPECT_EQ(r.failure.error, McpError::RpcError);
+    EXPECT_EQ(str(r.failure.message), wisp::net::detail::kWithheldMessage);
+
+    // Proxy-Authorization keeps the scheme skip, in any letter case.
+    u.headers = std::vector<McpHeaderInput>{
+        McpHeaderInput{"proxy-authorization", std::string("Bearer ") + kSecret}};
+    ASSERT_TRUE(servers->update("files", u));
+    fail(R"({"code":-32001,"message":"Bearer token expired"})");
+    EXPECT_EQ(str(call().failure.message), "Bearer token expired");
+    fail(std::string(R"({"code":-32001,"message":"no )") + kSecret + R"("})");
+    EXPECT_EQ(str(call().failure.message), wisp::net::detail::kWithheldMessage);
+}
+
 TEST_F(McpClientCallTest, UnknownToolRefreshesTheListAndIsNotRetried) {
     fail(R"({"code":-32602,"message":"Unknown tool: read"})");
     ASSERT_EQ(list().failure.error, McpError::None);
