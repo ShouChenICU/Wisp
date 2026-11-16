@@ -5,7 +5,10 @@
 // goes on the wire, with every live summary standing in once for the
 // messages it covers, at the place of the first of them. A summary is live
 // unless a later one covers all it covers (a summary folded into a newer
-// one); an empty summary covers turns dropped without one. Notes and
+// one); an empty summary covers turns dropped without one. A carry (the
+// summary a rollover kept, spec 3.8) is a summary unit of its own seq,
+// with its own lead; a later summary whose range takes in its seq hides it
+// like any covered message. Notes and
 // markers are for people only and send nothing. A call without a stored
 // result (a turn cut short by a restart) is left out, and so is a result
 // without its call: the API refuses either.
@@ -25,6 +28,7 @@ namespace wisp::agent {
 namespace {
 
 constexpr std::string_view kSummaryLead = "Summary of the earlier conversation:\n";
+constexpr std::string_view kCarryLead = "Summary of the previous conversation:\n";
 
 constexpr std::string_view kSummaryPrompt =
     "Summarize the conversation transcript in the next message for your own use later in the "
@@ -33,6 +37,14 @@ constexpr std::string_view kSummaryPrompt =
     "or changed (ids, files, versions), problems left open and anything promised. Leave out "
     "greetings and tool output that no longer matters. Write plain sentences in the language of "
     "the conversation, at most 300 words, without <say> tags or Markdown.";
+
+constexpr std::string_view kCarryPrompt =
+    "Summarize the conversation transcript in the next message for a new conversation that starts "
+    "from this summary: the transcript will be archived and only your summary carried over. Keep "
+    "what still matters: what the user asked for and decided, their preferences, the scenes "
+    "created or changed (ids, files, versions), problems left open and anything promised. Leave "
+    "out greetings and tool output that no longer matters. Write plain sentences in the language "
+    "of the conversation, at most 300 words, without <say> tags or Markdown.";
 
 std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
 
@@ -66,9 +78,13 @@ std::string elided_args_text(size_t bytes) {
 
 struct Unit {
     const Message* m = nullptr;
-    bool summary = false;
+    bool summary = false;          // a live summary or the carry
     uint64_t first = 0, last = 0;  // the seqs it stands for
 };
+
+std::string_view lead_of(const Message& m) {
+    return m.role == Role::Carry ? kCarryLead : kSummaryLead;
+}
 
 bool in_sorted(const os::LargeVector<std::string_view>& v, std::string_view id) {
     return std::binary_search(v.begin(), v.end(), id);
@@ -92,7 +108,7 @@ public:
                 }
                 continue;
             }
-            units_.push_back({&m, false, m.seq, m.seq});
+            units_.push_back({&m, m.role == Role::Carry, m.seq, m.seq});
         }
 
         for (const Unit& u : units_)
@@ -113,7 +129,7 @@ public:
     // Bytes the unit puts on the wire (text, call ids, names, arguments).
     size_t bytes(const Unit& u) const {
         const Message& m = *u.m;
-        if (u.summary) return m.text.empty() ? 0 : kSummaryLead.size() + m.text.size();
+        if (u.summary) return m.text.empty() ? 0 : lead_of(m).size() + m.text.size();
         switch (m.role) {
             case Role::User:
                 return m.text.size();
@@ -135,6 +151,7 @@ public:
             case Role::Note:
             case Role::Summary:
             case Role::Marker:
+            case Role::Carry:
                 break;
         }
         return 0;
@@ -157,8 +174,7 @@ public:
         };
         if (u.summary) {
             if (!m.text.empty())
-                r.messages[arena_text(net::LlmRole::System, kSummaryLead, sv(m.text))].movable =
-                    true;
+                r.messages[arena_text(net::LlmRole::System, lead_of(m), sv(m.text))].movable = true;
             return;
         }
         switch (m.role) {
@@ -206,6 +222,7 @@ public:
             case Role::Note:
             case Role::Summary:
             case Role::Marker:
+            case Role::Carry:
                 break;
         }
     }
@@ -393,6 +410,56 @@ std::optional<std::pair<uint64_t, uint64_t>> pick_compression(std::span<const Me
     return std::make_pair(groups[0].first, groups[n - 1].last);
 }
 
+namespace {
+
+// Appends the unit's transcript lines to `out`, each after a '\n' unless
+// `out` is empty: the summary and carry requests' shared format.
+void transcript_lines(const Unit& u, os::LargeString& out) {
+    const Message& m = *u.m;
+    auto line = [&](std::string_view lead, std::string_view text) {
+        if (!out.empty()) out += '\n';
+        out.append(lead.data(), lead.size());
+        out.append(text.data(), text.size());
+    };
+    if (u.summary) {
+        if (!m.text.empty()) line("Earlier summary: ", sv(m.text));
+        return;
+    }
+    switch (m.role) {
+        case Role::User:
+            line("User: ", sv(m.text));
+            break;
+        case Role::Assistant:
+            if (!m.text.empty()) line("Assistant: ", sv(m.text));
+            for (const ToolCallRec& c : m.calls) {
+                line("Assistant called ", wire_name(sv(c.name)));
+                out += '(';
+                if (c.args.size() > kCallArgsKeepBytes)
+                    out += elided_args_text(c.args.size());
+                else
+                    out += c.args;
+                out += ')';
+            }
+            break;
+        case Role::Tool: {
+            const std::string_view t = sv(m.text);
+            line("Result of " + wire_name(sv(m.tool)) + ": ",
+                 t.substr(0, prefix_bytes(t, kToolResultKeepBytes)));
+            if (t.size() > kToolResultKeepBytes) out += cut_note(t.size());
+            break;
+        }
+        case Role::Note:
+            line("System note: ", sv(m.text));
+            break;
+        case Role::Summary:
+        case Role::Marker:
+        case Role::Carry:
+            break;
+    }
+}
+
+}  // namespace
+
 BuiltRequest build_summary_request(std::span<const Message> history, uint64_t first_seq,
                                    uint64_t last_seq) {
     BuiltRequest r;
@@ -400,50 +467,56 @@ BuiltRequest build_summary_request(std::span<const Message> history, uint64_t fi
     r.arena.reserve(4096);
     for (const Unit& u : layout.units()) {
         if (u.first < first_seq || u.last > last_seq) continue;
-        const Message& m = *u.m;
-        auto line = [&](std::string_view lead, std::string_view text) {
-            if (!r.arena.empty()) r.arena += '\n';
-            r.arena.append(lead.data(), lead.size());
-            r.arena.append(text.data(), text.size());
-        };
-        if (u.summary) {
-            if (!m.text.empty()) line("Earlier summary: ", sv(m.text));
-            continue;
-        }
-        switch (m.role) {
-            case Role::User:
-                line("User: ", sv(m.text));
-                break;
-            case Role::Assistant:
-                if (!m.text.empty()) line("Assistant: ", sv(m.text));
-                for (const ToolCallRec& c : m.calls) {
-                    line("Assistant called ", wire_name(sv(c.name)));
-                    r.arena += '(';
-                    if (c.args.size() > kCallArgsKeepBytes)
-                        r.arena += elided_args_text(c.args.size());
-                    else
-                        r.arena += c.args;
-                    r.arena += ')';
-                }
-                break;
-            case Role::Tool: {
-                const std::string_view t = sv(m.text);
-                line("Result of " + wire_name(sv(m.tool)) + ": ",
-                     t.substr(0, prefix_bytes(t, kToolResultKeepBytes)));
-                if (t.size() > kToolResultKeepBytes) r.arena += cut_note(t.size());
-                break;
-            }
-            case Role::Note:
-                line("System note: ", sv(m.text));
-                break;
-            case Role::Summary:
-            case Role::Marker:
-                break;
-        }
+        transcript_lines(u, r.arena);
     }
     r.messages.push_back({.role = net::LlmRole::System, .text = kSummaryPrompt});
     r.messages.push_back({.role = net::LlmRole::User, .text = std::string_view(r.arena)});
     r.est_tokens = (kSummaryPrompt.size() + r.arena.size()) / 3;
+    return r;
+}
+
+BuiltRequest build_carry_request(std::span<const Message> history, size_t budget_tokens) {
+    BuiltRequest r;
+    const Layout layout(history);
+    const os::LargeVector<Unit>& units = layout.units();
+    for (const Unit& u : units)
+        if (u.summary) transcript_lines(u, r.arena);
+
+    // The newest whole turns, each rendered alone (newest first) until one
+    // does not fit, then appended oldest first.
+    const uint64_t budget_bytes = uint64_t{budget_tokens} * 3 + 2;
+    uint64_t used = r.arena.size();
+    os::LargeVector<os::LargeString> turns;
+    size_t end = units.size();
+    while (end > 0) {
+        if (units[end - 1].summary) {
+            --end;
+            continue;
+        }
+        const uint32_t turn = units[end - 1].m->turn;
+        size_t begin = end;
+        while (begin > 0 && !units[begin - 1].summary && units[begin - 1].m->turn == turn) --begin;
+        // Rendering stops as soon as the turn is past the budget, so a huge
+        // turn is never held whole.
+        os::LargeString piece;
+        const auto grown = [&] { return used + piece.size() + (used > 0 ? 1 : 0); };
+        for (size_t i = begin; i < end && grown() <= budget_bytes; ++i)
+            transcript_lines(units[i], piece);
+        end = begin;
+        if (piece.empty()) continue;
+        if (grown() > budget_bytes) break;
+        used = grown();
+        turns.push_back(std::move(piece));
+    }
+    r.arena.reserve(used);
+    for (auto it = turns.rbegin(); it != turns.rend(); ++it) {
+        if (!r.arena.empty()) r.arena += '\n';
+        r.arena += *it;
+    }
+    if (r.arena.empty()) return r;
+    r.messages.push_back({.role = net::LlmRole::System, .text = kCarryPrompt});
+    r.messages.push_back({.role = net::LlmRole::User, .text = std::string_view(r.arena)});
+    r.est_tokens = (kCarryPrompt.size() + r.arena.size()) / 3;
     return r;
 }
 

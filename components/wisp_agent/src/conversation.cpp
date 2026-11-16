@@ -136,14 +136,20 @@ os::LargeString serialize(const Message& m) {
                 append_json_string(out, m.status);
             }
             break;
+        case Role::Carry:
+            key(out, "text");
+            append_json_string(out, view(m.text));
+            key(out, "from");
+            put_uint(out, m.from);
+            break;
     }
     out.append("}\n");
     return out;
 }
 
 std::optional<Role> role_from(std::string_view s) {
-    static constexpr Role kRoles[] = {Role::User, Role::Assistant, Role::Tool,
-                                      Role::Note, Role::Summary,   Role::Marker};
+    static constexpr Role kRoles[] = {Role::User,    Role::Assistant, Role::Tool, Role::Note,
+                                      Role::Summary, Role::Marker,    Role::Carry};
     for (Role r : kRoles) {
         if (s == to_string(r)) return r;
     }
@@ -228,6 +234,12 @@ std::optional<Message> parse(std::string_view line) {
             m.marker = large_or(v, "kind");
             m.status = large_or(v, "status");
             break;
+        case Role::Carry: {
+            m.text = large_or(v, "text");
+            const int64_t from = int_or(v, "from");
+            if (from > 0 && from <= INT64_C(0xFFFFFFFF)) m.from = static_cast<uint32_t>(from);
+            break;
+        }
     }
     return m;
 }
@@ -274,6 +286,8 @@ const char* to_string(Role r) {
             return "summary";
         case Role::Marker:
             return "marker";
+        case Role::Carry:
+            return "carry";
     }
     return "note";
 }
@@ -474,11 +488,11 @@ Result<std::vector<uint32_t>> ConversationStore::archive_numbers() {
     return R::ok(std::move(out));
 }
 
-Result<void> ConversationStore::archive() {
+Result<uint32_t> ConversationStore::archive() {
     std::lock_guard<os::Mutex> write_lock(write_mutex_);
-    if (bytes() == 0) return Result<void>::ok();
+    if (bytes() == 0) return Result<uint32_t>::ok(0);
     auto numbers = archive_numbers();
-    if (!numbers) return Result<void>::err(numbers.error().code, numbers.error().message);
+    if (!numbers) return Result<uint32_t>::err(numbers.error().code, numbers.error().message);
     std::vector<uint32_t>& ns = numbers.value();
     const uint32_t n = ns.empty() ? 1 : ns.front() + 1;
     WISP_TRY(storage_.rename(current_path(), archive_path(n)));
@@ -497,7 +511,7 @@ Result<void> ConversationStore::archive() {
                    static_cast<unsigned>(ns[i]), r.error().message.c_str());
         }
     }
-    return Result<void>::ok();
+    return Result<uint32_t>::ok(n);
 }
 
 Result<std::vector<ArchiveInfo>> ConversationStore::archives() {
@@ -600,6 +614,10 @@ Value to_value(const Message& m, size_t max_result_chars) {
         case Role::Marker:
             out["kind"] = std::string(view(m.marker));
             if (!m.status.empty()) out["status"] = std::string(view(m.status));
+            break;
+        case Role::Carry:
+            out["text"] = std::string(view(m.text));
+            out["from"] = static_cast<int64_t>(m.from);
             break;
     }
     return Value(std::move(out));

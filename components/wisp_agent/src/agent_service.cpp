@@ -270,21 +270,24 @@ struct AgentService::Impl final : TurnEnv {
         emit(e);
     }
 
-    Result<void> archive() {
+    // `n`, when given, receives the archive's number (0: nothing was
+    // archived), which a rollover's carry names (spec 3.8).
+    Result<void> archive(uint32_t* n = nullptr) {
         // A new conversation drops http.fetch's response cache too (spec
         // 3.3), whether or not archiving the old one succeeds.
         http_tools_drop_cache();
-        Result<void> r = Result<void>::err(ErrorCode::Busy, "storage worker refused");
+        Result<uint32_t> r = Result<uint32_t>::err(ErrorCode::Busy, "storage worker refused");
         run_io([&] { r = deps.store.archive(); });
         if (!r) {
             WLOG_W(kTag, "archive failed: %s", r.error().message.c_str());
-            return r;
+            return Result<void>::err(r.error().code, r.error().message);
         }
+        if (n != nullptr) *n = r.value();
         WLOG_I(kTag, "new conversation");
         AgentEvent e;
         e.kind = AgentEvent::Kind::Cleared;
         emit(e);
-        return r;
+        return Result<void>::ok();
     }
 
     // Asks on the device for whatever runs on wisp.agent (a tool, the

@@ -7,7 +7,8 @@
 //   1. system_prompt(): the fixed part, byte for byte the same for the same
 //      language and screen shape (no time, battery, memory or source);
 //   2. the history: user and assistant messages, tool calls and results,
-//      with summaries in place of the turns they cover; tool results of
+//      with summaries in place of the turns they cover (a carry, the
+//      summary a rollover kept, is one too, at the start); tool results of
 //      earlier turns are cut to kToolResultKeepBytes, those of the turn in
 //      progress to kLiveToolResultBytes;
 //   3. dynamic_info(): one last system message, rebuilt for every request
@@ -18,7 +19,7 @@
 // a conversation.
 //
 // Every system message but the fixed prompt is movable (LlmMessage::movable,
-// spec 3.4): the summaries and the dynamic info. They are marked by origin,
+// spec 3.4): the summaries, the carry and the dynamic info. They are marked by origin,
 // not position. Under the dialect's system_msgs=first the body builder
 // moves each into the adjacent user message as a <context> text part, and
 // system_prompt() words its references to them for that; under anywhere
@@ -151,5 +152,13 @@ std::optional<std::pair<uint64_t, uint64_t>> pick_compression(
 // the result.
 BuiltRequest build_summary_request(std::span<const Message> history, uint64_t first_seq,
                                    uint64_t last_seq);
+
+// The rollover's carry request (spec 3.8): kCarryPrompt, then one
+// transcript in build_summary_request()'s line format: every live summary
+// unit, then the newest whole turns while the transcript's bytes / 3 stay
+// within budget_tokens (it stops at the first turn that does not fit). No
+// messages when the transcript is empty. The history must outlive the
+// result.
+BuiltRequest build_carry_request(std::span<const Message> history, size_t budget_tokens);
 
 }  // namespace wisp::agent

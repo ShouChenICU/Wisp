@@ -53,7 +53,7 @@ const MAX_MESSAGE_CHARS = 4000;
  * @property {number} seq
  * @property {number} ts
  * @property {number} turn
- * @property {'user'|'assistant'|'tool'|'note'|'summary'|'marker'} role
+ * @property {'user'|'assistant'|'tool'|'note'|'summary'|'marker'|'carry'} role
  * @property {string} [text]
  * @property {string} [source]
  * @property {ToolCall[]} [calls]
@@ -64,6 +64,7 @@ const MAX_MESSAGE_CHARS = 4000;
  * @property {number} [result_len]
  * @property {boolean} [hidden]
  * @property {boolean} [dropped]
+ * @property {number} [from]  carry: the archive number it summarizes
  *
  * @typedef {Object} Conversation  GET /conversation
  * @property {number} epoch

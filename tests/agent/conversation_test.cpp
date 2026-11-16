@@ -444,3 +444,69 @@ TEST_F(Conversation, ToValueCutsToolResults) {
     EXPECT_EQ(u.find("source")->as_string(), "device_text");
     EXPECT_EQ(u.find("text")->as_string(), "hi");
 }
+
+// Spec 3.8: the summary a rollover keeps, at the start of the new
+// conversation.
+namespace {
+Message carry(std::string text, uint32_t from) {
+    Message m;
+    m.role = Role::Carry;
+    m.turn = 0;
+    m.ts = 1767225600;
+    m.text = text.c_str();
+    m.from = from;
+    return m;
+}
+}  // namespace
+
+TEST_F(Conversation, CarryRoundTrips) {
+    ASSERT_TRUE(store->append(carry("C\"ü", 3)));
+    EXPECT_EQ(read_raw(current()),
+              R"({"seq":1,"ts":1767225600,"role":"carry","turn":0,"text":"C\"ü","from":3})"
+              "\n");
+    reboot();
+    const auto h = *store->history();
+    ASSERT_EQ(h.size(), 1u);
+    EXPECT_EQ(h[0].role, Role::Carry);
+    EXPECT_EQ(h[0].text, "C\"ü");
+    EXPECT_EQ(h[0].from, 3u);
+    EXPECT_EQ(h[0].turn, 0u);
+}
+
+// How an older firmware reads a carry (spec 3.8): a role it does not know
+// drops that line and keeps the rest.
+TEST_F(Conversation, UnknownRoleLineIsDropped) {
+    write_raw(current(), R"({"seq":1,"ts":0,"role":"user","turn":1,"text":"q"})"
+                         "\n"
+                         R"({"seq":2,"ts":0,"role":"from_the_future","turn":1,"text":"x"})"
+                         "\n"
+                         R"({"seq":3,"ts":0,"role":"assistant","turn":1,"text":"a","calls":[]})"
+                         "\n");
+    reboot();
+    const auto h = *store->history();
+    ASSERT_EQ(h.size(), 2u);
+    EXPECT_EQ(h[0].seq, 1u);
+    EXPECT_EQ(h[1].seq, 3u);
+}
+
+TEST_F(Conversation, ArchiveReturnsItsNumber) {
+    auto empty = store->archive();
+    ASSERT_TRUE(empty);
+    EXPECT_EQ(empty.value(), 0u);
+    ASSERT_TRUE(store->append(user(1, "one")));
+    auto first = store->archive();
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first.value(), 1u);
+    ASSERT_TRUE(store->append(user(1, "two")));
+    auto second = store->archive();
+    ASSERT_TRUE(second);
+    EXPECT_EQ(second.value(), 2u);
+}
+
+TEST_F(Conversation, CarryToValue) {
+    wisp::Value v = wisp::agent::to_value(carry("C", 3), 200);
+    EXPECT_EQ(v.find("role")->as_string(), "carry");
+    EXPECT_EQ(v.find("text")->as_string(), "C");
+    EXPECT_EQ(v.find("from")->as_int(), 3);
+    EXPECT_EQ(v.find("turn")->as_int(), 0);
+}

@@ -230,3 +230,20 @@ TEST(AgentWiring, DeltasCoalescedPer100ms) {
     for (const Value& v : f) text += str(v, "text");
     EXPECT_EQ(text, all + "tail");
 }
+
+// The carry (spec 3.8) is for the model: hidden like a summary.
+TEST(AgentWiring, CarryIsHidden) {
+    Message m;
+    m.seq = 1;
+    m.role = Role::Carry;
+    m.turn = 0;
+    m.text.assign("C");
+    m.from = 3;
+    const Value v = wisp::app::agent_message_value(m, 200);
+    EXPECT_EQ(str(v, "role"), "carry");
+    ASSERT_NE(v.find("hidden"), nullptr);
+    EXPECT_TRUE(v.find("hidden")->as_bool());
+    ASSERT_NE(v.find("from"), nullptr);
+    EXPECT_EQ(v.find("from")->as_int(), 3);
+    EXPECT_EQ(v.find("dropped"), nullptr);
+}

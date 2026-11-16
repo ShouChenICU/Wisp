@@ -85,7 +85,9 @@ Value model_value(const core::ModelProfileService& models) {
 
 Value agent_message_value(const agent::Message& m, size_t max_result_chars) {
     Value v = agent::to_value(m, max_result_chars);
-    if (m.role != agent::Role::Summary && m.role != agent::Role::Marker) return v;
+    if (m.role != agent::Role::Summary && m.role != agent::Role::Marker &&
+        m.role != agent::Role::Carry)
+        return v;
     Map out = v.as_map();
     out["hidden"] = Value(true);
     if (m.role == agent::Role::Summary && m.text.empty()) out["dropped"] = Value(true);

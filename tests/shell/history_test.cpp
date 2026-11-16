@@ -69,6 +69,26 @@ TEST(GroupTurns, UserSayAndBodyPerTurn) {
     EXPECT_EQ(str(turns[1].body), "没有网络");
 }
 
+// The carry is the model's summary of the archived conversation (spec 3.8):
+// the history page skips it as it skips summaries.
+TEST(GroupTurns, SkipsTheCarry) {
+    std::vector<Message> msgs;
+    Message c = msg(0, Role::Carry, "C");
+    c.from = 3;
+    msgs.push_back(c);
+    msgs.push_back(msg(1, Role::User, "q"));
+    msgs.push_back(msg(1, Role::Assistant, "a"));
+    const auto turns = group_turns(msgs);
+    ASSERT_EQ(turns.size(), 1u);
+    EXPECT_EQ(turns[0].turn, 1u);
+    EXPECT_EQ(str(turns[0].heard), "q");
+    for (const auto& t : turns) {
+        EXPECT_EQ(str(t.heard).find('C'), std::string::npos);
+        EXPECT_EQ(str(t.say).find('C'), std::string::npos);
+        EXPECT_EQ(str(t.body).find('C'), std::string::npos);
+    }
+}
+
 namespace {
 
 class HistoryTest : public ::testing::Test {

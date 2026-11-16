@@ -17,6 +17,10 @@
 //              meaning they were dropped without a summary
 //   marker     kind ("turn_begin" | "turn_end"), status (turn_end: "done",
 //              "stopped", "step_limit", "time_limit", "error", "interrupted")
+//   carry      text, from (the archive number it summarizes): the summary a
+//              rollover keeps, at seq 1, turn 0 of the new conversation
+//              (spec 3.8); a live summary unit in the model context. An
+//              older firmware knows no "carry" role and drops the line.
 //
 // Appends go through StorageManager::append(), the same exception to
 // write_atomic() as SceneStore's log: a torn tail (a last line without its
@@ -51,8 +55,8 @@
 
 namespace wisp::agent {
 
-enum class Role : uint8_t { User, Assistant, Tool, Note, Summary, Marker };
-// "user" "assistant" "tool" "note" "summary" "marker"
+enum class Role : uint8_t { User, Assistant, Tool, Note, Summary, Marker, Carry };
+// "user" "assistant" "tool" "note" "summary" "marker" "carry"
 const char* to_string(Role r);
 
 // Where a user message came from.
@@ -71,13 +75,14 @@ struct Message {
     int64_t ts = 0;  // unix s, 0 while the clock is unset
     uint32_t turn = 0;
     Role role = Role::User;
-    os::LargeString text;                // user/assistant/note/summary text; tool result JSON
+    os::LargeString text;                // user/assistant/note/summary/carry text; tool result JSON
     Source source = Source::Web;         // user
     os::LargeVector<ToolCallRec> calls;  // assistant
     os::LargeString call_id, tool;       // tool
     bool ok = true;                      // tool
     os::LargeString marker, status;      // marker
     uint64_t covers_first = 0, covers_last = 0;  // summary
+    uint32_t from = 0;                           // carry: the archive number it summarizes
 };
 
 using History = os::LargeVector<Message>;
@@ -117,8 +122,10 @@ public:
 
     // Moves current.jsonl to archive-<n>.jsonl and starts an empty
     // conversation (seq and turn start over); an empty conversation is not
-    // archived. Keeps the kArchivesKept newest archives.
-    Result<void> archive();
+    // archived. Keeps the kArchivesKept newest archives. Returns the
+    // archive's number; 0 when the conversation was empty and nothing was
+    // archived.
+    Result<uint32_t> archive();
     // Newest first.
     Result<std::vector<ArchiveInfo>> archives();
     // NotFound for an archive that does not exist.

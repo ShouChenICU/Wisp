@@ -55,7 +55,7 @@ os::LargeVector<HistoryTurn> group_turns(std::span<const agent::Message> msgs) {
     bool open = false;
     for (const agent::Message& m : msgs) {
         if (m.role == agent::Role::Marker || m.role == agent::Role::Summary ||
-            m.role == agent::Role::Tool)
+            m.role == agent::Role::Carry || m.role == agent::Role::Tool)
             continue;
         if (!open || m.turn != cur.turn) {
             if (open) close_turn(out, cur, reply, notes);

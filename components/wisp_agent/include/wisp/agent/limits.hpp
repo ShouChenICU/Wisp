@@ -42,6 +42,10 @@ inline constexpr uint32_t kCompressTargetPercent = 40;
 inline constexpr uint32_t kKeepRecentTurns = 2;
 // The reasoning of the running turn kept for echo (spec 3.3, decision 3).
 inline constexpr size_t kReasoningKeepBytes = 64 * 1024;
+// The rollover's carry (spec 3.8): its transcript stays within this share
+// of the window (decision 10), and its stored text is cut to this size.
+inline constexpr uint32_t kCarryInputPercent = 50;
+inline constexpr size_t kCarryMaxBytes = 4096;
 
 // An unanswered confirmation dialog counts as a refusal after this long.
 inline constexpr uint32_t kConfirmMs = 30000;

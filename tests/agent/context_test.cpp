@@ -12,6 +12,7 @@
 #include "wisp/agent/limits.hpp"
 #include "wisp/hal/display_geometry.hpp"
 
+using wisp::agent::build_carry_request;
 using wisp::agent::build_history;
 using wisp::agent::build_request;
 using wisp::agent::build_summary_request;
@@ -760,4 +761,122 @@ TEST(Context, ReasoningAttachedBySeq) {
     EXPECT_TRUE(r.messages[3].reasoning.empty());
     EXPECT_TRUE(r.messages[0].reasoning.empty());
     EXPECT_EQ(r.est_tokens, (kBytes + 2) / 3);
+}
+
+// Spec 3.8: the carry, the summary a rollover keeps, is a live summary unit
+// at the start of the new conversation.
+
+namespace {
+
+const std::string kCarryLead = "Summary of the previous conversation:\n";
+
+Message& add_carry(Conv& c, std::string_view t, uint32_t from = 3) {
+    Message& m = c.add(Role::Carry, t);
+    m.from = from;
+    return m;
+}
+
+}  // namespace
+
+TEST(Context, CarryLeadsTheHistory) {
+    Conv c;
+    add_carry(c, "C");
+    c.next_turn();
+    c.add(Role::User, "q");
+    const BuiltRequest r = build_request(c.h(), snapshot());
+    ASSERT_EQ(r.messages.size(), 4u);
+    EXPECT_EQ(r.messages[1].role, LlmRole::System);
+    EXPECT_EQ(text(r.messages[1]), kCarryLead + "C");
+    EXPECT_TRUE(r.messages[1].movable);
+    EXPECT_EQ(text(r.messages[2]), "q");
+    EXPECT_EQ(r.est_tokens, r.fixed_tokens + (kCarryLead.size() + 1 + 1) / 3);
+}
+
+TEST(Context, CarryIsFoldedIntoALaterSummary) {
+    Conv c;
+    add_carry(c, "C");  // seq 1
+    c.next_turn();
+    c.add(Role::User, "q1");       // seq 2
+    c.add(Role::Assistant, "a1");  // seq 3
+    c.summary("S", 1, 3);          // seq 4
+    c.next_turn();
+    c.add(Role::User, "q2");  // seq 5
+    const std::vector<std::string> t = texts(build_history(c.h()));
+    ASSERT_EQ(t.size(), 2u);
+    EXPECT_EQ(t[0], "Summary of the earlier conversation:\nS");
+    EXPECT_EQ(t[1], "q2");
+    for (const std::string& m : t) EXPECT_FALSE(has(m, "C")) << m;
+}
+
+TEST(Context, CarryIsASummaryForCompression) {
+    Conv c;
+    add_carry(c, std::string(3000, 'c'));  // seq 1
+    c.turn("u", "a");                      // seq 2-5
+    c.turn("u", "a");                      // seq 6-9
+    c.turn("u", "a");                      // seq 10-13
+    // A fixed part that never fits: everything but the kept turns is picked.
+    auto pick = pick_compression(c.h(), 4096, /*fixed_tokens=*/2000);
+    ASSERT_TRUE(pick);
+    EXPECT_EQ(pick->first, 1u);
+    EXPECT_EQ(pick->second, 5u);
+    // Keeping three turns leaves the carry alone, which is not summarized
+    // again; counted as a turn of its own it would be picked.
+    EXPECT_FALSE(pick_compression(c.h(), 4096, 2000, /*keep_recent=*/3));
+
+    Conv lone;
+    add_carry(lone, std::string(3000, 'c'));
+    lone.turn("u", "a");
+    EXPECT_FALSE(pick_compression(lone.h(), 4096, 2000));
+}
+
+TEST(Context, SummaryRequestQuotesTheCarry) {
+    Conv c;
+    add_carry(c, "C");
+    c.turn("q", "a");
+    const BuiltRequest r = build_summary_request(c.h(), 1, c.last_seq());
+    ASSERT_EQ(r.messages.size(), 2u);
+    const std::string t = text(r.messages[1]);
+    EXPECT_EQ(t.rfind("Earlier summary: C\nUser: q", 0), 0u) << t;
+}
+
+TEST(Context, CarryRequestHasSummariesThenTheNewestTurns) {
+    Conv c;
+    c.turn("turn1", "a1");  // seq 1-4
+    c.summary("S", 1, 4);   // seq 5
+    for (int i = 2; i <= 4; ++i)
+        c.turn("turn" + std::to_string(i) + std::string(1250, 'u'), std::string(1250, 'a'));
+    const BuiltRequest r = build_carry_request(c.h(), 2048);
+    ASSERT_EQ(r.messages.size(), 2u);
+    EXPECT_EQ(r.messages[0].role, LlmRole::System);
+    EXPECT_EQ(text(r.messages[0]),
+              "Summarize the conversation transcript in the next message for a new conversation "
+              "that starts from this summary: the transcript will be archived and only your "
+              "summary carried over. Keep what still matters: what the user asked for and "
+              "decided, their preferences, the scenes created or changed (ids, files, versions), "
+              "problems left open and anything promised. Leave out greetings and tool output "
+              "that no longer matters. Write plain sentences in the language of the "
+              "conversation, at most 300 words, without <say> tags or Markdown.");
+    EXPECT_EQ(r.messages[1].role, LlmRole::User);
+    const std::string t = text(r.messages[1]);
+    EXPECT_EQ(t.rfind("Earlier summary: S\nUser: turn3", 0), 0u) << t.substr(0, 80);
+    EXPECT_FALSE(has(t, "turn1"));
+    EXPECT_FALSE(has(t, "turn2"));
+    const size_t t3 = t.find("turn3");
+    const size_t t4 = t.find("turn4");
+    ASSERT_NE(t4, std::string::npos);
+    EXPECT_LT(t3, t4);
+    EXPECT_LE(t.size() / 3, 2048u);
+    for (const auto& m : r.messages) EXPECT_TRUE(m.tool_calls.empty());
+    EXPECT_EQ(r.est_tokens, (text(r.messages[0]).size() + t.size()) / 3);
+}
+
+TEST(Context, CarryRequestIsEmptyWhenNothingFits) {
+    Conv c;
+    c.next_turn();
+    c.begin();
+    c.add(Role::User, "q");
+    c.add(Role::Note, std::string(1024 * 1024, 'n'));
+    c.end();
+    EXPECT_TRUE(build_carry_request(c.h(), 2048).messages.empty());
+    EXPECT_TRUE(build_carry_request({}, 2048).messages.empty());
 }
