@@ -14,7 +14,15 @@
 // "model=<m> status=<s> ms=<t> tokens=<u>", plus " error=<error>" (the
 // LlmError's to_string() word) when it failed and then " code=<code>" when the provider sent one
 // that passed the scrub (LlmResult::code: dropped when it holds the key or any 8 or more bytes of
-// it).
+// it). Reasoning text is never logged either.
+//
+// Dialect (spec 3.2): each call resolves the profile's options against its
+// preset's defaults (core::resolve_llm_dialect()) and builds the body with
+// that dialect; a profile without options on a preset without defaults
+// sends exactly the plain body. reasoning_content deltas are kept in
+// LlmResult::reasoning only under LlmReasoning::Echo; they never count as
+// part of the reply (any_body), so a retry loses nothing, and each attempt
+// starts them afresh.
 //
 // Retries: a 429, a 5xx and a transport error that came before any of
 // the reply (any_body false) share one budget of two retries,
@@ -57,8 +65,18 @@ namespace wisp::net {
 // {"include_usage":true},"messages":[...],"tools":<tools_json>} (tools left
 // out when tools_json is empty). Strings are escaped as to_json() does, so
 // the body is valid UTF-8 JSON whatever the input.
+//
+// The dialect adds, after "tools" so that LlmDialect{} gives the plain
+// body: "parallel_tool_calls" (only with tools), then "max_tokens" or
+// "max_completion_tokens". Under Echo an assistant message with reasoning
+// ends with "reasoning_content". Under system_msgs First each movable
+// system message goes into the first user message after it, else the last
+// one before it (none: it stays a system message); a user message that
+// receives any becomes a content array of text parts: the movable messages
+// after it, then those before it, each as "<context>\n...\n</context>",
+// then its own text (spec 3.4).
 os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessage> msgs,
-                                std::string_view tools_json);
+                                std::string_view tools_json, const LlmDialect& dialect = {});
 
 // Splits a server-sent event stream into events. Lines end with LF, CRLF
 // or CR; ':' lines are comments; only the "data" field is kept, one space
@@ -100,6 +118,9 @@ public:
     // LlmCall::on_tool reports a call's growing arguments at most this
     // often.
     static constexpr uint32_t kToolProgressMs = 500;
+    // One reply's reasoning past this is dropped whole: a cut reasoning
+    // block is not echoed.
+    static constexpr size_t kMaxReasoningBytes = 64 * 1024;
 
     LlmClient(HttpClient& http, core::ModelProfileService& models,
               std::function<void(uint32_t)> sleep_ms = os::sleep_ms);

@@ -909,4 +909,294 @@ TEST(LlmBodyGolden, ClientSendsExactlyTheBuiltBody) {
                                         {"Authorization", std::string("Bearer ") + kKey}}));
 }
 
+// LlmDialectBody: the body each dialect option writes (plan decisions 3-5).
+
+using wisp::core::LlmDialect;
+using wisp::core::LlmOutField;
+using wisp::core::LlmReasoning;
+using wisp::core::LlmSystemMsgs;
+
+std::string body_of(std::span<const LlmMessage> msgs, const LlmDialect& d,
+                    std::string_view tools = kGoldenTools) {
+    return str(wisp::net::build_chat_body("m", msgs, tools, d));
+}
+
+// Today's body for `msgs` with `tail` in place of its closing '}'.
+std::string todays_with(std::span<const LlmMessage> msgs, std::string_view tail) {
+    std::string base = str(wisp::net::build_chat_body("m", msgs, kGoldenTools));
+    base.pop_back();
+    return base + std::string(tail);
+}
+
+TEST(LlmDialectBody, DefaultDialectIsTodaysBody) {
+    const std::vector<LlmMessage> msgs = every_shape();
+    EXPECT_EQ(
+        body_of(msgs, LlmDialect{}),
+        R"({"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[)"
+        R"({"role":"system","content":"S"},{"role":"user","content":"q\"\nü"},)"
+        R"({"role":"assistant","content":"A"},)"
+        R"({"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"a_b","arguments":"{\"x\":1}"}},)"
+        R"({"id":"c2","type":"function","function":{"name":"c_d","arguments":""}}]},)"
+        R"({"role":"assistant","content":"T","tool_calls":[{"id":"c3","type":"function","function":{"name":"a_b","arguments":"{}"}}]},)"
+        R"({"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}],"tools":)" +
+            kGoldenTools + "}");
+}
+
+TEST(LlmDialectBody, OutTokensUsesTheNamedField) {
+    const std::vector<LlmMessage> msgs = every_shape();
+    EXPECT_EQ(body_of(msgs, {.out_tokens = 1024}), todays_with(msgs, R"(,"max_tokens":1024})"));
+    EXPECT_EQ(body_of(msgs, {.out_tokens = 1024, .out_field = LlmOutField::MaxCompletionTokens}),
+              todays_with(msgs, R"(,"max_completion_tokens":1024})"));
+    EXPECT_EQ(body_of(msgs, {.out_field = LlmOutField::MaxCompletionTokens}),
+              todays_with(msgs, "}"));
+}
+
+TEST(LlmDialectBody, ParallelToolsOnlyWithTools) {
+    const std::vector<LlmMessage> msgs = every_shape();
+    const std::string body = body_of(msgs, {.out_tokens = 512, .parallel_tools = false});
+    const std::string tail =
+        R"(,"tools":)" + kGoldenTools + R"(,"parallel_tool_calls":false,"max_tokens":512})";
+    ASSERT_GE(body.size(), tail.size());
+    EXPECT_EQ(body.substr(body.size() - tail.size()), tail);
+    EXPECT_EQ(body, todays_with(msgs, R"(,"parallel_tool_calls":false,"max_tokens":512})"));
+
+    const std::string no_tools = body_of(msgs, {.parallel_tools = true}, "");
+    EXPECT_EQ(no_tools.find("parallel_tool_calls"), std::string::npos);
+    EXPECT_EQ(no_tools, str(wisp::net::build_chat_body("m", msgs, "")));
+}
+
+TEST(LlmDialectBody, ReasoningSentOnlyUnderEcho) {
+    const std::vector<LlmMessage> shapes = every_shape();
+    std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::Assistant, .text = "A", .reasoning = "r\"1"},
+        shapes[4],  // "T" with the call c3
+        {.role = LlmRole::Assistant, .text = "B"},
+    };
+    msgs[1].reasoning = "r2";
+
+    const std::string drop = body_of(msgs, LlmDialect{});
+    EXPECT_EQ(drop.find("reasoning_content"), std::string::npos);
+    EXPECT_EQ(drop, todays_with(msgs, "}"));
+
+    const std::string echo = body_of(msgs, {.reasoning = LlmReasoning::Echo});
+    EXPECT_NE(echo.find(R"({"role":"assistant","content":"A","reasoning_content":"r\"1"})"),
+              std::string::npos)
+        << echo;
+    EXPECT_NE(
+        echo.find(
+            R"({"role":"assistant","content":"T","tool_calls":[{"id":"c3","type":"function","function":{"name":"a_b","arguments":"{}"}}],"reasoning_content":"r2"})"),
+        std::string::npos)
+        << echo;
+    EXPECT_NE(echo.find(R"({"role":"assistant","content":"B"}])"), std::string::npos) << echo;
+}
+
+const std::string kBodyHead =
+    R"({"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[)";
+
+TEST(LlmDialectBody, FirstMergesMovablesIntoUserMessages) {
+    const std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "P"},
+        {.role = LlmRole::System, .text = "S1", .movable = true},
+        {.role = LlmRole::User, .text = "u1"},
+        {.role = LlmRole::Assistant, .text = "a1"},
+        {.role = LlmRole::User, .text = "u2"},
+        {.role = LlmRole::System, .text = "D", .movable = true},
+    };
+    EXPECT_EQ(
+        body_of(msgs, {.system_msgs = LlmSystemMsgs::First}, ""),
+        kBodyHead +
+            R"({"role":"system","content":"P"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nS1\n</context>"},{"type":"text","text":"u1"}]},)"
+            R"({"role":"assistant","content":"a1"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nD\n</context>"},{"type":"text","text":"u2"}]}]})");
+}
+
+TEST(LlmDialectBody, FirstPutsTheDynamicInfoFirst) {
+    const std::vector<LlmMessage> shapes = every_shape();
+    const std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "P"},
+        {.role = LlmRole::User, .text = "u1"},
+        {.role = LlmRole::System, .text = "S", .movable = true},
+        {.role = LlmRole::User, .text = "u2"},
+        shapes[4],
+        {.role = LlmRole::Tool, .text = "{}", .tool_call_id = "c3"},
+        {.role = LlmRole::System, .text = "D\"", .movable = true},
+    };
+    EXPECT_EQ(
+        body_of(msgs, {.system_msgs = LlmSystemMsgs::First}, ""),
+        kBodyHead +
+            R"({"role":"system","content":"P"},{"role":"user","content":"u1"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nD\"\n</context>"},)"
+            R"({"type":"text","text":"<context>\nS\n</context>"},{"type":"text","text":"u2"}]},)"
+            R"({"role":"assistant","content":"T","tool_calls":[{"id":"c3","type":"function","function":{"name":"a_b","arguments":"{}"}}]},)"
+            R"({"role":"tool","tool_call_id":"c3","content":"{}"}]})");
+}
+
+TEST(LlmDialectBody, FirstWithoutAUserKeepsSystem) {
+    const std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "P"},
+        {.role = LlmRole::System, .text = "S", .movable = true},
+    };
+    EXPECT_EQ(body_of(msgs, {.system_msgs = LlmSystemMsgs::First}), body_of(msgs, LlmDialect{}));
+    EXPECT_EQ(body_of(msgs, LlmDialect{}),
+              kBodyHead +
+                  R"({"role":"system","content":"P"},{"role":"system","content":"S"}],)"
+                  R"("tools":)" +
+                  kGoldenTools + "}");
+}
+
+TEST(LlmDialectBody, AnywhereIgnoresMovable) {
+    std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "P"},
+        {.role = LlmRole::System, .text = "S1", .movable = true},
+        {.role = LlmRole::User, .text = "u1"},
+        {.role = LlmRole::Assistant, .text = "a1"},
+        {.role = LlmRole::User, .text = "u2"},
+        {.role = LlmRole::System, .text = "D", .movable = true},
+    };
+    const std::string movable = body_of(msgs, LlmDialect{});
+    for (LlmMessage& m : msgs) m.movable = false;
+    EXPECT_EQ(movable, body_of(msgs, LlmDialect{}));
+    EXPECT_EQ(movable, str(wisp::net::build_chat_body("m", msgs, kGoldenTools)));
+}
+
+// LlmClient with dialect options: the resolved dialect reaches the body,
+// and reasoning is read only under echo.
+
+std::string sse_reasoning(std::string_view s) {
+    return FakeLlmServer::sse_event(
+        Map{{"choices", List{Map{{"index", 0},
+                                 {"delta", Map{{"reasoning_content", std::string(s)}}},
+                                 {"finish_reason", Value()}}}}});
+}
+
+void set_options(Fixture& f, wisp::core::ModelOptions options,
+                 std::optional<std::string> preset = std::nullopt) {
+    wisp::core::ProfileUpdate u;
+    u.options = std::move(options);
+    u.preset = std::move(preset);
+    ASSERT_TRUE(f.models->update(f.models->get().active_for(ModelKind::Llm), u));
+}
+
+std::string ok_body_tail(Fixture& f) {
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    f.run_user("hi");
+    const auto reqs = f.server.requests();
+    return reqs.empty() ? std::string() : reqs.back().body;
+}
+
+bool ends_with(std::string_view s, std::string_view tail) {
+    return s.size() >= tail.size() && s.substr(s.size() - tail.size()) == tail;
+}
+
+TEST(LlmClient, CustomProfileWithoutOptionsSendsTodaysBody) {
+    Fixture f;
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    const std::vector<LlmMessage> msgs = every_shape();
+    LlmCall call;
+    call.messages = msgs;
+    call.tools_json = kGoldenTools;
+    f.run(call);
+    const auto reqs = f.server.requests();
+    ASSERT_EQ(reqs.size(), 1u);
+    EXPECT_EQ(reqs[0].body, str(wisp::net::build_chat_body("m", msgs, kGoldenTools)));
+}
+
+TEST(LlmClient, SendsTheResolvedDialect) {
+    Fixture f;
+    set_options(f, {{"out_tokens", "512"}});
+    EXPECT_TRUE(ends_with(ok_body_tail(f), R"("max_tokens":512})"));
+
+    set_options(f, {{"out_tokens", "512"}}, "openai");
+    EXPECT_TRUE(ends_with(ok_body_tail(f), R"("max_completion_tokens":512})"));
+
+    set_options(f, {{"out_tokens", "512"}, {"out_field", "max_tokens"}});
+    EXPECT_TRUE(ends_with(ok_body_tail(f), R"(,"max_tokens":512})"));
+    EXPECT_EQ(f.server.requests().size(), 3u);
+}
+
+TEST(LlmClient, ActiveModelResolvesTheDialect) {
+    Fixture f;
+    EXPECT_EQ(f.client->active_model()->dialect, LlmDialect{});
+    set_options(f, {}, "anthropic");
+    EXPECT_EQ(f.client->active_model()->dialect.system_msgs, LlmSystemMsgs::First);
+    set_options(f, {{"system_msgs", "anywhere"}});
+    EXPECT_EQ(f.client->active_model()->dialect.system_msgs, LlmSystemMsgs::Anywhere);
+}
+
+struct ReasoningRun {
+    LlmResult r;
+    std::vector<std::string> texts;
+    int bytes = 0;
+};
+
+ReasoningRun run_reasoning_stream(Fixture& f) {
+    f.server.push(
+        {.status = 200,
+         .chunks = {sse_reasoning("th"), sse_reasoning("ink"), FakeLlmServer::sse_text("hi"),
+                    FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()}});
+    ReasoningRun out;
+    LlmMessage msg{.role = LlmRole::User, .text = "q"};
+    LlmCall call;
+    call.messages = {&msg, 1};
+    call.on_text = [&](std::string_view d) { out.texts.emplace_back(d); };
+    call.on_bytes = [&] { ++out.bytes; };
+    out.r = f.run(call);
+    return out;
+}
+
+TEST(LlmClient, ReasoningKeptUnderEcho) {
+    Fixture f;
+    set_options(f, {{"reasoning", "echo"}});
+    const ReasoningRun run = run_reasoning_stream(f);
+    EXPECT_EQ(run.r.error, LlmError::None);
+    EXPECT_EQ(str(run.r.reasoning), "think");
+    EXPECT_EQ(str(run.r.text), "hi");
+    EXPECT_EQ(run.texts, (std::vector<std::string>{"hi"}));
+}
+
+TEST(LlmClient, ReasoningIgnoredUnderDrop) {
+    Fixture echo_f;
+    set_options(echo_f, {{"reasoning", "echo"}});
+    const ReasoningRun echo = run_reasoning_stream(echo_f);
+
+    Fixture f;
+    const ReasoningRun drop = run_reasoning_stream(f);
+    EXPECT_EQ(drop.r.error, LlmError::None);
+    EXPECT_TRUE(drop.r.reasoning.empty());
+    EXPECT_EQ(str(drop.r.text), "hi");
+    EXPECT_EQ(drop.texts, (std::vector<std::string>{"hi"}));
+    EXPECT_GT(drop.bytes, 0);
+    EXPECT_EQ(drop.bytes, echo.bytes);
+}
+
+TEST(LlmClient, ReasoningIsNotDuplicatedByARetry) {
+    Fixture f;
+    set_options(f, {{"reasoning", "echo"}});
+    f.server.push({.status = 200, .chunks = {sse_reasoning("r")}, .fail = TransportError::Tls});
+    f.server.push({.status = 200,
+                   .chunks = {sse_reasoning("r"), FakeLlmServer::sse_text("ok"),
+                              FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, LlmError::None);
+    EXPECT_EQ(r.attempts, 2u);
+    EXPECT_EQ(str(r.reasoning), "r");
+    EXPECT_EQ(str(r.text), "ok");
+    EXPECT_TRUE(r.any_body);
+}
+
+TEST(LlmClient, ReasoningOverTheCapIsDropped) {
+    Fixture f;
+    set_options(f, {{"reasoning", "echo"}});
+    const std::string half(LlmClient::kMaxReasoningBytes / 2, 'x');
+    f.server.push({.status = 200,
+                   .chunks = {sse_reasoning(half), sse_reasoning(half), sse_reasoning("y"),
+                              FakeLlmServer::sse_text("hi"), FakeLlmServer::sse_finish("stop"),
+                              FakeLlmServer::sse_done()}});
+    LlmResult r = f.run_user("q");
+    EXPECT_EQ(r.error, LlmError::None);
+    EXPECT_TRUE(r.reasoning.empty());
+    EXPECT_EQ(str(r.text), "hi");
+}
+
 }  // namespace

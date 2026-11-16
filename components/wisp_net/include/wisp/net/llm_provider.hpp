@@ -18,11 +18,16 @@
 #include <string_view>
 #include <vector>
 
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/request_watch.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::net {
+
+// How a profile's requests are shaped (spec 3.2); LlmDialect{} is the
+// plain chat-completions body.
+using LlmDialect = core::LlmDialect;
 
 // Why a request failed. ContextLength: the provider refused the prompt
 // as too long for the model (error.code context_length_exceeded, or a
@@ -59,6 +64,12 @@ struct LlmMessage {
     std::string_view text{};
     std::span<const LlmToolCall> tool_calls{};  // Assistant only
     std::string_view tool_call_id{};            // Tool only
+    // Assistant only: the reply's reasoning, sent only under
+    // LlmReasoning::Echo.
+    std::string_view reasoning{};
+    // System only: content the dialect may move into a user message
+    // (spec 3.4); the fixed prompt never is.
+    bool movable = false;
 };
 
 enum class LlmFinish : uint8_t { Stop, ToolCalls, Length, Other };
@@ -86,6 +97,9 @@ struct LlmResult {
     // attempt's body: at most 64 bytes of [A-Za-z0-9_.-], "" when absent,
     // malformed or holding the API key or any 8 or more bytes of it.
     std::string code{};
+    // The reply's reasoning_content, kept only under LlmReasoning::Echo
+    // and only while it stays within LlmClient::kMaxReasoningBytes.
+    os::LargeString reasoning{};
 };
 
 // A tool call the model is still writing (LlmCall::on_tool).
@@ -121,6 +135,7 @@ struct LlmModelInfo {
     std::string model{};
     uint32_t context_window = 0;
     bool vision = false;
+    LlmDialect dialect{};
 
     bool operator==(const LlmModelInfo&) const = default;
 };

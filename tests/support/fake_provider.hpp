@@ -10,8 +10,10 @@
 // script runs out it answers error Server, status 500.
 //
 // Every call is recorded with the body LlmClient would have sent for it
-// (build_chat_body), built while the call's messages are alive. All state
-// is under one mutex; it allocates freely, being a test double.
+// (build_chat_body with the model's dialect), built while the call's
+// messages are alive. As the client does, a result keeps its reasoning
+// only under LlmReasoning::Echo. All state is under one mutex; it
+// allocates freely, being a test double.
 
 #include <chrono>
 #include <cstddef>
@@ -49,7 +51,7 @@ public:
     static constexpr uint32_t kHoldMs = 10000;
 
     struct Recorded {
-        std::string body;  // build_chat_body(model, call.messages, call.tools_json)
+        std::string body;  // build_chat_body(model, messages, tools_json, dialect)
         std::string tools_json;
         uint32_t timeout_ms = 0;
         size_t messages = 0;
@@ -83,7 +85,7 @@ public:
                 return none;
             }
             const os::LargeString body =
-                net::build_chat_body(model->model, call.messages, call.tools_json);
+                net::build_chat_body(model->model, call.messages, call.tools_json, model->dialect);
             calls_.push_back({.body = std::string(body.data(), body.size()),
                               .tools_json = std::string(call.tools_json),
                               .timeout_ms = call.timeout_ms,
@@ -101,6 +103,7 @@ public:
         res.model = model->model;
         res.profile_id = model->profile_id;
         res.attempts = 1;
+        if (model->dialect.reasoning != core::LlmReasoning::Echo) res.reasoning.clear();
         res.any_body = res.any_body || !step.deltas.empty() || !step.calls.empty();
 
         os::LargeString text;

@@ -40,7 +40,36 @@ const char* role_name(LlmRole role) {
     return "user";
 }
 
-void append_message(os::LargeString& out, const LlmMessage& m) {
+// A sink for append_json_string() that drops the literal's two quotes, so
+// that a string can be written in pieces into one literal. The quotes are
+// the only bare '"' it writes: one inside the text arrives escaped through
+// append().
+struct UnquotedSink {
+    os::LargeString& out;
+    void push_back(char c) {
+        if (c != '"') out.push_back(c);
+    }
+    void append(const char* s, size_t len) { out.append(s, len); }
+    void append(const char* s) { out.append(s); }
+};
+
+// One text part of a user message's content array (spec 3.4), the text
+// wrapped as "<context>\n" + text + "\n</context>" when `context`, written
+// in pieces so that the wrapped text is never copied whole.
+void append_text_part(os::LargeString& out, std::string_view text, bool context) {
+    out += "{\"type\":\"text\",\"text\":";
+    if (context) {
+        out += "\"<context>\\n";
+        UnquotedSink sink{out};
+        append_json_string(sink, text);
+        out += "\\n</context>\"";
+    } else {
+        append_json_string(out, text);
+    }
+    out += '}';
+}
+
+void append_message(os::LargeString& out, const LlmMessage& m, bool echo_reasoning) {
     out += "{\"role\":\"";
     out += role_name(m.role);
     out += '"';
@@ -74,7 +103,31 @@ void append_message(os::LargeString& out, const LlmMessage& m) {
         out += ",\"content\":";
         append_json_string(out, m.text);
     }
+    if (echo_reasoning && m.role == LlmRole::Assistant && !m.reasoning.empty()) {
+        out += ",\"reasoning_content\":";
+        append_json_string(out, m.reasoning);
+    }
     out += '}';
+}
+
+bool is_movable(const LlmMessage& m) { return m.role == LlmRole::System && m.movable; }
+
+// A user message under system_msgs First that received movable system
+// messages: it takes the movable ones in `after`, then those in `before`,
+// so that the dynamic info, which follows the last user message, is its
+// first part (spec 3.4).
+void append_merged_user(os::LargeString& out, const LlmMessage& m,
+                        std::span<const LlmMessage> after, std::span<const LlmMessage> before) {
+    out += "{\"role\":\"user\",\"content\":[";
+    for (std::span<const LlmMessage> range : {after, before}) {
+        for (const LlmMessage& c : range) {
+            if (!is_movable(c)) continue;
+            append_text_part(out, c.text, /*context=*/true);
+            out += ',';
+        }
+    }
+    append_text_part(out, m.text, /*context=*/false);
+    out += "]}";
 }
 
 const Value* field(const Value& v, std::string_view key) {
@@ -102,7 +155,8 @@ LlmFinish parse_finish(std::string_view s) {
 // The state of one streamed reply, fed one event at a time.
 class StreamReader {
 public:
-    StreamReader(const LlmCall& call, LlmResult& result) : call_(call), result_(result) {}
+    StreamReader(const LlmCall& call, LlmResult& result, bool keep_reasoning)
+        : call_(call), result_(result), keep_reasoning_(keep_reasoning) {}
 
     // False once the stream must not be read any further: [DONE] or a
     // broken event.
@@ -152,6 +206,18 @@ public:
 
 private:
     bool read_delta(const Value& delta) {
+        // Reasoning reaches no listener, so it does not set any_body: a
+        // retry after it repeats nothing the caller saw. Past the cap the
+        // whole of it is dropped for this reply: a cut block is not echoed.
+        if (const std::string* r = string_field(delta, "reasoning_content");
+            r != nullptr && keep_reasoning_) {
+            if (result_.reasoning.size() + r->size() > LlmClient::kMaxReasoningBytes) {
+                os::LargeString().swap(result_.reasoning);
+                keep_reasoning_ = false;
+            } else {
+                result_.reasoning.append(r->data(), r->size());
+            }
+        }
         if (const std::string* content = string_field(delta, "content");
             content != nullptr && !content->empty()) {
             result_.any_body = true;
@@ -211,6 +277,7 @@ private:
 
     const LlmCall& call_;
     LlmResult& result_;
+    bool keep_reasoning_;
     // By stream index, like result_.tool_calls (at most kMaxToolCalls).
     std::vector<Progress> progress_;
     bool done_ = false;
@@ -300,10 +367,28 @@ std::optional<uint64_t> retry_after_ms(const HttpClientResponse& res) {
 }  // namespace
 
 os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessage> msgs,
-                                std::string_view tools_json) {
+                                std::string_view tools_json, const LlmDialect& dialect) {
+    const bool echo = dialect.reasoning == core::LlmReasoning::Echo;
+    // Under First each movable system message goes into the first user
+    // message after it, else the last one before it: so a user message takes
+    // those since the previous user message, and the last one also those
+    // after it. Without a user message nothing moves.
+    constexpr size_t kNone = SIZE_MAX;
+    size_t last_user = kNone;
+    if (dialect.system_msgs == core::LlmSystemMsgs::First) {
+        for (size_t i = msgs.size(); i-- > 0;) {
+            if (msgs[i].role == LlmRole::User) {
+                last_user = i;
+                break;
+            }
+        }
+    }
+    const bool merge = last_user != kNone;
+
     size_t estimate = 128 + model.size() + tools_json.size();
     for (const LlmMessage& m : msgs) {
-        estimate += 48 + m.text.size() + m.tool_call_id.size();
+        estimate += 48 + m.text.size() + m.tool_call_id.size() + m.reasoning.size();
+        if (m.movable) estimate += 40;
         for (const LlmToolCall& c : m.tool_calls)
             estimate += 80 + c.id.size() + c.name.size() + c.arguments.size();
     }
@@ -314,15 +399,41 @@ os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessa
     append_json_string(out, model);
     out += ",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[";
     bool first = true;
-    for (const LlmMessage& m : msgs) {
+    size_t since_user = 0;  // the message after the previous user message
+    for (size_t i = 0; i < msgs.size(); ++i) {
+        const LlmMessage& m = msgs[i];
+        if (merge && is_movable(m)) continue;
         if (!first) out += ',';
         first = false;
-        append_message(out, m);
+        if (merge && m.role == LlmRole::User) {
+            const std::span<const LlmMessage> before = msgs.subspan(since_user, i - since_user);
+            const std::span<const LlmMessage> after =
+                i == last_user ? msgs.subspan(i + 1) : std::span<const LlmMessage>{};
+            since_user = i + 1;
+            if (std::any_of(before.begin(), before.end(), is_movable) ||
+                std::any_of(after.begin(), after.end(), is_movable)) {
+                append_merged_user(out, m, after, before);
+                continue;
+            }
+        }
+        append_message(out, m, echo);
     }
     out += ']';
     if (!tools_json.empty()) {
         out += ",\"tools\":";
         out.append(tools_json.data(), tools_json.size());
+        if (dialect.parallel_tools)
+            out += *dialect.parallel_tools ? ",\"parallel_tool_calls\":true"
+                                           : ",\"parallel_tool_calls\":false";
+    }
+    if (dialect.out_tokens) {
+        out += dialect.out_field == core::LlmOutField::MaxCompletionTokens
+                   ? ",\"max_completion_tokens\":"
+                   : ",\"max_tokens\":";
+        char digits[12];
+        // Ten digits always fit a uint32_t.
+        const auto res = std::to_chars(digits, digits + sizeof(digits), *dialect.out_tokens);
+        out.append(digits, static_cast<size_t>(res.ptr - digits));
     }
     out += '}';
     return out;
@@ -340,7 +451,8 @@ std::optional<LlmModelInfo> LlmClient::active_model() const {
             return LlmModelInfo{.profile_id = p.id,
                                 .model = p.model,
                                 .context_window = core::profile_context_window(p.options),
-                                .vision = core::profile_vision(p.options)};
+                                .vision = core::profile_vision(p.options),
+                                .dialect = core::resolve_llm_dialect(p.options, p.preset)};
     }
     return std::nullopt;
 }
@@ -357,7 +469,10 @@ LlmResult LlmClient::complete(const LlmCall& call) {
     result.model = profile->model;
     result.profile_id = profile->id;
 
-    const os::LargeString body = build_chat_body(profile->model, call.messages, call.tools_json);
+    const LlmDialect dialect = core::resolve_llm_dialect(profile->options, profile->preset);
+    const bool keep_reasoning = dialect.reasoning == core::LlmReasoning::Echo;
+    const os::LargeString body =
+        build_chat_body(profile->model, call.messages, call.tools_json, dialect);
     HttpClientRequest req;
     req.method = Method::Post;
     // ModelProfileService strips trailing '/' from base_url.
@@ -393,7 +508,9 @@ LlmResult LlmClient::complete(const LlmCall& call) {
 
         int status = 0;
         SseParser parser;
-        StreamReader reader(call, result);
+        StreamReader reader(call, result, keep_reasoning);
+        // A retried attempt streams its reasoning again from the start.
+        result.reasoning.clear();
         // A failed request's body may quote the key: it stays in here, is
         // never logged, and only read_provider_error()'s scrubbed code
         // leaves this attempt.
