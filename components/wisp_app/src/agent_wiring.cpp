@@ -427,17 +427,28 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         .layer = deps_.layer,
         .wake = deps_.wake,
     });
-    // DeviceSnapshot::memory comes from here, not from `deps_.context`
-    // itself: list() is memory-only (no flash) and this runs on
-    // wisp.agent, exactly where it is safe to call.
+    // The MCP provider exists only where http.fetch does (a SceneHttp);
+    // it connects to no server until a search or call needs one.
+    if (deps_.mcp != nullptr && deps_.scene_http != nullptr) {
+        mcp_client_ = std::make_unique<net::McpClient>(
+            *deps_.scene_http, *deps_.mcp,
+            net::McpClientConfig{.client_version = deps_.firmware_version});
+        mcp_tools_ = std::make_unique<agent::McpToolProvider>(*mcp_client_, *deps_.mcp);
+    }
+    // DeviceSnapshot::memory and ::mcp come from here, not from
+    // `deps_.context` itself: list() and summary_lines() are memory-only
+    // (no flash, no request) and this runs on wisp.agent, exactly where it
+    // is safe to call.
     core::MemoryStore* memory = memory_.get();
+    agent::McpToolProvider* mcp_tools = mcp_tools_.get();
     agent::ContextSource outer_context = deps_.context;
-    agent::ContextSource context_with_memory = [outer_context, memory](agent::Source s) {
+    agent::ContextSource context_with_memory = [outer_context, memory, mcp_tools](agent::Source s) {
         agent::DeviceSnapshot d = outer_context ? outer_context(s) : agent::DeviceSnapshot{};
         for (const core::MemoryNote& n : memory->list()) {
             d.memory.push_back("[" + std::to_string(n.id) + "] " +
                                std::string(n.text.data(), n.text.size()));
         }
+        if (mcp_tools) d.mcp = mcp_tools->summary_lines();
         return d;
     };
     service_ = std::make_unique<agent::AgentService>(
@@ -534,7 +545,14 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     }
     check("lua", agent::add_lua_tools(*registry_, agent::LuaToolDeps{.runtime = deps_.runtime}));
     registry_->add_provider(*scene_tools_);
+    if (mcp_tools_) registry_->add_provider(*mcp_tools_);
     check("find tools", agent::add_find_tools(*registry_));
+    if (mcp_tools_) {
+        check("mcp", agent::add_mcp_tools(*registry_, agent::McpToolDeps{
+                                                          .servers = *deps_.mcp,
+                                                          .provider = *mcp_tools_,
+                                                      }));
+    }
     check("memory", agent::add_memory_tools(*registry_, agent::MemoryToolDeps{.store = *memory_}));
     if (deps_.reminders != nullptr) {
         check("todo", agent::add_todo_tools(*registry_,

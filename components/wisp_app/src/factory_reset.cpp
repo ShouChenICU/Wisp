@@ -122,6 +122,7 @@ void factory_reset(App& app) {
         if (net::WifiService* wifi = app.wifi()) wifi->forget_all();
         if (net::PairingService* pairing = app.pairing()) pairing->revoke_all();
         app.models().clear();
+        app.mcp().clear();
         // The todos and the memory notes go from memory before their
         // files, so no timer pass, tool call or reminder action still
         // running can write them back before the restart.

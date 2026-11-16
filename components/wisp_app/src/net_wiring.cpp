@@ -163,6 +163,7 @@ void NetWiring::start() {
             .wifi = *wifi_,
             .pairing = *pairing_,
             .models = deps_.models,
+            .mcp = deps_.mcp,
             .settings = deps_.system_settings,
             .assets = has_assets_ ? &assets_ : nullptr,
             .board = platform.board->name(),

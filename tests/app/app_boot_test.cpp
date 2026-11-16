@@ -37,6 +37,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/device_service.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
@@ -89,6 +90,8 @@ struct MakeAppOptions {
     std::string display_role = wisp::hal::role::kMain;
     // The settings backend is CountedLangReads below.
     bool count_lang_reads = false;
+    // The internal storage's root; empty: a fresh temporary directory.
+    std::string internal_root;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -175,11 +178,12 @@ public:
             maybe_register(registry, report, display_);
         }
         if (opts_.with_internal_storage) {
-            maybe_register(
-                registry, report,
-                std::make_shared<FakeStorage>(opts_.renamed_ids ? "storage.flash" : "storage.int",
-                                              wisp::test::temp_dir().string(),
-                                              /*removable=*/false));
+            maybe_register(registry, report,
+                           std::make_shared<FakeStorage>(
+                               opts_.renamed_ids ? "storage.flash" : "storage.int",
+                               opts_.internal_root.empty() ? wisp::test::temp_dir().string()
+                                                           : opts_.internal_root,
+                               /*removable=*/false));
         }
         if (opts_.sd) maybe_register(registry, report, opts_.sd);
         if (opts_.power) maybe_register(registry, report, opts_.power);
@@ -521,6 +525,26 @@ TEST(AppBoot, SettingsCellIsSeededFromStorage) {
     EXPECT_TRUE(h.app.bus().wait_idle(2000));
     EXPECT_EQ(events.load(), 0);
     h.app.bus().unsubscribe(sub);
+}
+
+// The MCP servers are read at boot (on the storage thread), as the model
+// profiles are.
+TEST(AppBoot, McpServersLoadAtBoot) {
+    const std::string root = wisp::test::temp_dir().string();
+    std::filesystem::create_directories(root + "/system/secrets");
+    {
+        std::ofstream f(root + "/system/secrets/mcp.json");
+        f << R"({"version":1,"servers":[{"id":"files","name":"Files",)"
+             R"("url":"http://mcp.local/mcp","enabled":true,"timeout_ms":60000,)"
+             R"("headers":[{"name":"Authorization","value":"Bearer t"}]}]})";
+    }
+    auto h = make_app({.with_display = false, .internal_root = root});
+    ASSERT_TRUE(h.app.start());
+    const std::vector<wisp::core::McpServerInfo> servers = h.app.mcp().list();
+    ASSERT_EQ(servers.size(), 1u);
+    EXPECT_EQ(servers[0].id, "files");
+    ASSERT_EQ(servers[0].headers.size(), 1u);
+    EXPECT_TRUE(servers[0].headers[0].has_value);
 }
 
 // The stored language is the screen's from the first frame, and the cell
