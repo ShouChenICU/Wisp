@@ -312,13 +312,13 @@ const char* strings_ja(StrId id) {
         case StrId::AgentNoteToolCall:
             return "「{}」を呼び出し · {}";
         case StrId::AgentNoteMcpAdded:
-            return "MCP サーバー「{}」を追加";
+            return "MCP サーバー「{}」を追加しました";
         case StrId::AgentNoteMcpRemoved:
-            return "MCP サーバー「{}」を削除";
+            return "MCP サーバー「{}」を削除しました";
         case StrId::AgentNoteMcpEnabled:
-            return "MCP サーバー「{}」を有効化";
+            return "MCP サーバー「{}」を有効にしました";
         case StrId::AgentNoteMcpDisabled:
-            return "MCP サーバー「{}」を無効化";
+            return "MCP サーバー「{}」を無効にしました";
         case StrId::AgentConfirmDelete:
             return "Agent がシーン「{}」を削除しようとしています";
         case StrId::AgentConfirmWithData:

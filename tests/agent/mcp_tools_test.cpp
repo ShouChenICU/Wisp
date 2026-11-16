@@ -233,7 +233,7 @@ TEST_F(McpTools, RemoveAndEnable) {
     out = run("mcp_enable", {{"id", Value("files")}, {"enabled", Value(true)}});
     ASSERT_TRUE(out.ok) << raw(out);
     EXPECT_TRUE(parsed(out).find("enabled")->as_bool());
-    EXPECT_EQ(out.note, "MCP サーバー「Files」を有効化");
+    EXPECT_EQ(out.note, "MCP サーバー「Files」を有効にしました");
     EXPECT_TRUE(servers->get("files")->enabled);
     // The headers survive an enable switch.
     EXPECT_EQ(servers->get("files")->headers.size(), 1u);
@@ -263,12 +263,13 @@ TEST_F(McpTools, RemoveAndEnable) {
               "启用了 MCP 服务器「Docs」");
     ctx.lang = "ja";
     EXPECT_EQ(run("mcp_enable", {{"id", Value("docs")}, {"enabled", Value(false)}}).note,
-              "MCP サーバー「Docs」を無効化");
+              "MCP サーバー「Docs」を無効にしました");
     ctx.lang = "en";
     EXPECT_EQ(run("mcp_enable", {{"id", Value("docs")}, {"enabled", Value(true)}}).note,
               "Enabled MCP server \"Docs\"");
     ctx.lang = "ja";
-    EXPECT_EQ(run("mcp_remove", {{"id", Value("docs")}}).note, "MCP サーバー「Docs」を削除");
+    EXPECT_EQ(run("mcp_remove", {{"id", Value("docs")}}).note,
+              "MCP サーバー「Docs」を削除しました");
     ASSERT_TRUE(servers->create(in));
     ctx.lang = "zh";
     EXPECT_EQ(run("mcp_remove", {{"id", Value("docs")}}).note, "删除了 MCP 服务器「Docs」");
@@ -276,7 +277,7 @@ TEST_F(McpTools, RemoveAndEnable) {
     ctx.lang = "ja";
     EXPECT_EQ(
         run("mcp_add", {{"name", Value("Wiki")}, {"url", Value("http://wiki.local/mcp")}}).note,
-        "MCP サーバー「Wiki」を追加");
+        "MCP サーバー「Wiki」を追加しました");
     ctx.lang = "en";
     EXPECT_EQ(
         run("mcp_add", {{"name", Value("Blog")}, {"url", Value("http://blog.local/mcp")}}).note,
