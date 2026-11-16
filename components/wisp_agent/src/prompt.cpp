@@ -235,6 +235,14 @@ std::string dynamic_info(const DeviceSnapshot& d) {
     out += "\nNetwork: ";
     out += d.wifi.empty() ? std::string("unknown") : d.wifi;
     out += '\n';
+    if (!d.mcp.empty()) {
+        out += "MCP: ";
+        for (size_t i = 0; i < d.mcp.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += d.mcp[i];
+        }
+        out += '\n';
+    }
     return out;
 }
 

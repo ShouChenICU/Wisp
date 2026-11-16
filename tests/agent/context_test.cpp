@@ -241,6 +241,19 @@ TEST(Context, DynamicInfoHasTimeScenesBatteryNetwork) {
     EXPECT_TRUE(has(none, "Network: unknown"));
 }
 
+TEST(Context, DynamicInfoListsMcpServers) {
+    DeviceSnapshot d = snapshot();
+    d.mcp = {"files (3 tools)", "web (not connected yet)"};
+    const std::string info = dynamic_info(d);
+    EXPECT_TRUE(has(info, "Network: connected\nMCP: files (3 tools), web (not connected yet)\n"))
+        << info;
+}
+
+TEST(Context, DynamicInfoWithoutMcpServersIsUnchanged) {
+    const std::string info = dynamic_info(snapshot());
+    EXPECT_FALSE(has(info, "MCP")) << info;
+}
+
 TEST(Context, DynamicInfoHasLocalTimeAndWeekday) {
     DeviceSnapshot d = snapshot();
     const std::string info = dynamic_info(d);

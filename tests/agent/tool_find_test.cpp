@@ -63,6 +63,10 @@ public:
         for (const ToolSourceIssue& issue : unavailable) out.unavailable.push_back(issue);
     }
     size_t count() const override { return total; }
+    void report_unavailable(ToolSearch& out) const override {
+        ++reports;
+        for (const ToolSourceIssue& issue : unavailable) out.unavailable.push_back(issue);
+    }
     std::optional<ToolInfo> describe(std::string_view, ToolCtx&) override { return std::nullopt; }
     ToolOutput call(std::string_view full_name, const Value& args, ToolCtx&) override {
         calls.push_back({std::string(full_name), wisp::to_json(args)});
@@ -77,6 +81,7 @@ public:
     std::vector<ToolSourceIssue> unavailable;
     std::vector<SearchCall> searches;
     std::vector<CallRecord> calls;
+    mutable size_t reports = 0;
 
 private:
     std::string id_;
@@ -213,6 +218,37 @@ TEST_F(ToolFind, UnavailableAppearsOnlyWhenSomeProviderReportsIt) {
     EXPECT_EQ(
         raw(listed),
         R"({"ok":true,"tools":[{"name":"a1","description":"d"}],"total":1,"unavailable":[{"server":"srv","error":"timeout"}]})");
+}
+
+// A provider the full list leaves unsearched still reports the sources it
+// already knows to be failing.
+TEST_F(ToolFind, SkippedProvidersStillReportUnavailableSources) {
+    a.tools = {info("a1")};
+    a.overfill = true;
+    ToolSourceIssue issue;
+    issue.source = "srv";
+    issue.error = "connect";
+    b.unavailable.push_back(issue);
+    add_both();
+    ToolOutput out = call("tools_find", Value(wisp::Map{{"query", Value("")}}));
+    ASSERT_TRUE(out.ok) << raw(out);
+    EXPECT_TRUE(b.searches.empty());
+    EXPECT_EQ(b.reports, 1u);
+    EXPECT_EQ(wisp::to_json(*parsed(out).find("unavailable")),
+              R"([{"error":"connect","server":"srv"}])");
+    EXPECT_EQ(a.reports, 0u);
+}
+
+TEST_F(ToolFind, CancelledBetweenProvidersIsCancelled) {
+    a.tools = {info("a1")};
+    b.tools = {info("b1")};
+    add_both();
+    ctx.cancelled = [this] { return !a.searches.empty(); };
+    ToolOutput out = call("tools_find", Value(wisp::Map{{"query", Value("")}}));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(parsed(out).find("error")->as_string(), "cancelled");
+    EXPECT_EQ(a.searches.size(), 1u);
+    EXPECT_TRUE(b.searches.empty());
 }
 
 TEST_F(ToolFind, ScopeIsPassedToEveryProvider) {

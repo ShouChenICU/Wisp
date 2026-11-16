@@ -429,6 +429,20 @@ TEST_F(McpClientTest, CancelStopsTheRequest) {
     EXPECT_EQ(client->status()[0].error, "");
 }
 
+// A page that answers within one poll never lets the wait look at the
+// caller: the list itself looks between pages.
+TEST_F(McpClientTest, CancelIsSeenBetweenPages) {
+    fake.tools.clear();
+    for (int i = 0; i < 5; ++i) fake.tools.push_back(FakeMcpServer::tool("t" + std::to_string(i)));
+    fake.page_size = 1;
+    McpListResult r =
+        list(false,
+             McpWait{.deadline_ms = 0, .cancelled = [&] { return fake.count("tools/list") >= 1; }});
+    EXPECT_EQ(r.failure.error, McpError::Cancelled);
+    EXPECT_EQ(fake.count("tools/list"), 1u);
+    EXPECT_EQ(client->status()[0].error, "");
+}
+
 TEST_F(McpClientTest, DeadlineEndsTheWait) {
     fake.hold = true;
     const uint64_t start = real_ms();

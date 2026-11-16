@@ -32,9 +32,9 @@ bool contains_folded(std::string_view text, std::string_view needle) {
     return false;
 }
 
-bool matches_query(const IndexedTool& tool, std::string_view query) {
-    const std::string_view name(tool.full_name.data(), tool.full_name.size());
-    const std::string_view description(tool.description.data(), tool.description.size());
+}  // namespace
+
+bool match_query(std::string_view query, std::string_view name, std::string_view description) {
     size_t i = 0;
     while (i < query.size()) {
         while (i < query.size() && ascii_space(query[i])) ++i;
@@ -45,6 +45,13 @@ bool matches_query(const IndexedTool& tool, std::string_view query) {
         if (!contains_folded(name, term) && !contains_folded(description, term)) return false;
     }
     return true;
+}
+
+namespace {
+
+bool matches_query(const IndexedTool& tool, std::string_view query) {
+    return match_query(query, std::string_view(tool.full_name.data(), tool.full_name.size()),
+                       std::string_view(tool.description.data(), tool.description.size()));
 }
 
 bool before(const IndexedTool& a, const IndexedTool& b) {

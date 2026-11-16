@@ -61,7 +61,11 @@ struct DeviceSnapshot {
     int utc_offset_min = core::setting_default_int(core::SettingId::UtcOffsetMin);
     std::vector<std::string> memory;  // "[<id>] <text>"
     int weekday = 0;                  // 1 = Monday; 0 while the clock is unset
-    Source source = Source::Web;      // the running turn's
+    // Enabled MCP servers, in configuration order: "<id> (<n> tools)",
+    // "<id> (not connected yet)", "<id> (unavailable: <category>)"
+    // (McpToolProvider::summary_lines()); empty: no "MCP:" line.
+    std::vector<std::string> mcp;
+    Source source = Source::Web;  // the running turn's
 };
 
 // Called on the wisp.agent task once per request, with the running turn's

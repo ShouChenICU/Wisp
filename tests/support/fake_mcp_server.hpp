@@ -124,6 +124,10 @@ public:
             }
         }
         if (transport != net::TransportError::None) return {.transport = transport};
+        if (transport_for) {
+            if (const auto t = transport_for(rec.url); t != net::TransportError::None)
+                return {.transport = t};
+        }
 
         net::HttpClientResponse res;
         res.status = 200;
@@ -203,6 +207,9 @@ public:
     // Non-zero: every request answers this status with an empty body.
     int status = 0;
     net::TransportError transport = net::TransportError::None;
+    // Per URL, after `transport`: None lets the request through (one of
+    // several servers failing).
+    std::function<net::TransportError(std::string_view url)> transport_for;
     std::atomic<bool> hold{false};
     std::atomic<int> held{0};
     std::atomic<bool> saw_cancel{false};

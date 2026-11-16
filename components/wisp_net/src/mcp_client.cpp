@@ -335,6 +335,16 @@ McpListResult list_all(const Link& l, McpSession& s) {
     bool reinitialized = false;
     os::LargeString cursor;
     for (size_t page = 0; page < kMcpMaxListPages;) {
+        // A page answered within one poll of send() never lets it look at
+        // the caller, so the caller is asked between pages too.
+        if (l.wait.cancelled && l.wait.cancelled()) {
+            out.failure = failure(McpError::Cancelled);
+            return out;
+        }
+        if (l.wait.deadline_ms != 0 && l.now() >= l.wait.deadline_ms) {
+            out.failure = failure(McpError::Timeout);
+            return out;
+        }
         const bool had_session = !s.id.empty();
         const int64_t id = s.next_request++;
         Exchange ex = send(l, s, "tools/list", id, detail::mcp_list_body(id, cursor));

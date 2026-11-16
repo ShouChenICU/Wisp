@@ -65,7 +65,14 @@ ToolOutput find(const ToolRegistry& reg, const Value& args, ToolCtx& ctx) {
     size_t got = 0;
     ToolSearch found;
     for (ToolProvider* provider : reg.providers()) {
-        if (got >= max) break;
+        // Searching a provider can take seconds (an MCP server): a stopped
+        // turn ends here rather than ask the next one.
+        if (ctx.cancelled && ctx.cancelled())
+            return tool_error("cancelled", "the turn was stopped");
+        if (got >= max) {
+            provider->report_unavailable(found);
+            continue;
+        }
         found.tools.clear();
         provider->search(query, scope, max - got, details, ctx, found);
         const ToolFindFields fields = provider->find_fields();
@@ -76,6 +83,7 @@ ToolOutput find(const ToolRegistry& reg, const Value& args, ToolCtx& ctx) {
             append_entry(out.result_json, found.tools[i], details, fields);
         }
     }
+    if (ctx.cancelled && ctx.cancelled()) return tool_error("cancelled", "the turn was stopped");
     out.result_json.push_back(']');
     if (!details) {
         size_t total = 0;
