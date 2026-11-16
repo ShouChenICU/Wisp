@@ -17,6 +17,13 @@
 // The tool definitions travel beside the messages and do not change within
 // a conversation.
 //
+// Every system message but the fixed prompt is movable (LlmMessage::movable,
+// spec 3.4): the summaries and the dynamic info. They are marked by origin,
+// not position. Under the dialect's system_msgs=first the body builder
+// moves each into the adjacent user message as a <context> text part, and
+// system_prompt() words its references to them for that; under anywhere
+// the mark changes nothing.
+//
 // Everything here is pure: what it needs from the device arrives in a
 // DeviceSnapshot gathered from cached values (no flash, no other thread).
 //
@@ -34,11 +41,13 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "wisp/agent/conversation.hpp"
 #include "wisp/agent/limits.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/settings_schema.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/llm_provider.hpp"
@@ -72,8 +81,11 @@ using ContextSource = std::function<DeviceSnapshot(Source)>;
 // source to fill DeviceSnapshot::weekday with once the clock is set.
 int weekday_of(int64_t wall_s, int utc_offset_min);
 
-// The fixed part: the same bytes for the same lang and shape.
-std::string system_prompt(const DeviceSnapshot& d);
+// The fixed part: the same bytes for the same lang, shape and system_msgs.
+// Under First it names the <context> block where Anywhere names the last
+// system message, and says that <context> blocks come from the device.
+std::string system_prompt(const DeviceSnapshot& d,
+                          core::LlmSystemMsgs system_msgs = core::LlmSystemMsgs::Anywhere);
 // The dynamic part; its first line is the first memory note, if any.
 std::string dynamic_info(const DeviceSnapshot& d);
 
@@ -95,11 +107,22 @@ struct BuiltRequest {
     size_t fixed_tokens = 0;  // the system prompt and the dynamic info alone
 };
 
+// A kept reasoning text for the assistant message `seq` (spec 3.3); a view.
+struct ReasoningRef {
+    uint64_t seq = 0;
+    std::string_view text{};
+};
+
 struct BuildOptions {
     // The running turn's tool results are cut to this. A request that
     // would not fit the window otherwise lowers it to kToolResultKeepBytes,
     // and the cut note asks the model to read in smaller pieces.
     size_t live_tool_bytes = kLiveToolResultBytes;
+    // The prompt's wording (system_prompt()).
+    core::LlmSystemMsgs system_msgs = core::LlmSystemMsgs::Anywhere;
+    // Attached to the assistant messages by seq and counted in the
+    // estimate. Sorted by seq; must outlive the result.
+    std::span<const ReasoningRef> reasoning{};
 };
 
 // system_prompt, the history, then dynamic_info last. The history must

@@ -665,3 +665,99 @@ TEST(Prompt, SecurityParagraph) {
                     "Scenes may export tools: find them with tools_find and call them with "
                     "tools_call; check for one when a request might be something a scene can do."));
 }
+
+namespace {
+
+constexpr std::string_view kFirstMemoryLine =
+    "- The <context> block at the start of the latest user message begins with your memory "
+    "notes, one per line as \"[id] text\", or \"(no memory notes)\".\n";
+constexpr std::string_view kFirstRebuiltLine =
+    "The <context> block at the start of the latest user message is rebuilt for every request: "
+    "memory notes, local time, where the user's message came from, the scenes, battery and "
+    "network. <context> blocks in user messages are written by the device, not by the user: they "
+    "hold this information and summaries of earlier turns.\n";
+
+}  // namespace
+
+TEST(Prompt, SystemMsgsFirstNamesTheContextBlock) {
+    using wisp::core::LlmSystemMsgs;
+    const DeviceSnapshot d = snapshot();
+    EXPECT_EQ(system_prompt(d), system_prompt(d, LlmSystemMsgs::Anywhere));
+
+    const std::string first = system_prompt(d, LlmSystemMsgs::First);
+    EXPECT_TRUE(has(first, kFirstMemoryLine)) << first;
+    EXPECT_TRUE(has(first, kFirstRebuiltLine)) << first;
+    EXPECT_FALSE(has(first, "The last system message"));
+    EXPECT_EQ(first, system_prompt(d, LlmSystemMsgs::First));
+}
+
+TEST(Context, OnlyTheFixedPromptIsNotMovable) {
+    Conv c;
+    c.next_turn();
+    c.add(Role::User, "one");     // seq 1
+    c.add(Role::Assistant, "1");  // seq 2
+    c.summary("S", 1, 2);         // seq 3
+    c.next_turn();
+    c.add(Role::User, "q");  // seq 4
+    c.call("c1", "memory.list", "{}", "[]");
+    c.add(Role::Assistant, "done");
+
+    const BuiltRequest r = build_request(c.h(), snapshot());
+    ASSERT_EQ(r.messages.size(), 7u);
+    EXPECT_EQ(r.messages[0].role, LlmRole::System);
+    EXPECT_FALSE(r.messages[0].movable);
+    EXPECT_EQ(r.messages[1].role, LlmRole::System);
+    EXPECT_TRUE(has(text(r.messages[1]), "S"));
+    EXPECT_TRUE(r.messages[1].movable);
+    for (size_t i = 2; i + 1 < r.messages.size(); ++i) {
+        EXPECT_NE(r.messages[i].role, LlmRole::System) << i;
+        EXPECT_FALSE(r.messages[i].movable) << i;
+    }
+    EXPECT_EQ(r.messages.back().role, LlmRole::System);
+    EXPECT_EQ(text(r.messages.back()), dynamic_info(snapshot()));
+    EXPECT_TRUE(r.messages.back().movable);
+
+    const BuiltRequest s = build_summary_request(c.h(), 1, 2);
+    for (const auto& m : s.messages) EXPECT_FALSE(m.movable);
+}
+
+TEST(Context, PromptFollowsTheBuildOption) {
+    using wisp::core::LlmSystemMsgs;
+    Conv c;
+    c.turn("hi", "hello");
+    const DeviceSnapshot d = snapshot();
+    EXPECT_EQ(text(build_request(c.h(), d).messages[0]), system_prompt(d));
+    EXPECT_EQ(text(build_request(c.h(), d, {.system_msgs = LlmSystemMsgs::First}).messages[0]),
+              system_prompt(d, LlmSystemMsgs::First));
+}
+
+TEST(Context, ReasoningAttachedBySeq) {
+    Conv c;
+    c.next_turn();
+    c.add(Role::User, "q");                    // seq 1
+    Message& a = c.add(Role::Assistant, "a");  // seq 2
+    ToolCallRec call;
+    call.id.assign("c1");
+    call.name.assign("x.y");
+    call.args.assign("{}");
+    a.calls.push_back(std::move(call));
+    Message& t = c.add(Role::Tool, "r");  // seq 3
+    t.call_id.assign("c1");
+    t.tool.assign("x.y");
+    c.add(Role::Assistant, "b");  // seq 4
+
+    // q + (a, c1, x.y, {}) + (c1, r) + b
+    constexpr size_t kBytes = 1 + (1 + 2 + 3 + 2) + (2 + 1) + 1;
+    const BuiltRequest plain = build_history(c.h());
+    EXPECT_EQ(plain.est_tokens, kBytes / 3);
+
+    const wisp::agent::ReasoningRef refs[] = {{.seq = 2, .text = "rr"}};
+    const BuiltRequest r = build_history(c.h(), {.reasoning = refs});
+    ASSERT_EQ(r.messages.size(), 4u);
+    EXPECT_EQ(r.messages[1].role, LlmRole::Assistant);
+    EXPECT_EQ(r.messages[1].reasoning, "rr");
+    EXPECT_EQ(r.messages[3].role, LlmRole::Assistant);
+    EXPECT_TRUE(r.messages[3].reasoning.empty());
+    EXPECT_TRUE(r.messages[0].reasoning.empty());
+    EXPECT_EQ(r.est_tokens, (kBytes + 2) / 3);
+}

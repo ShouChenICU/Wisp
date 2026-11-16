@@ -1,11 +1,12 @@
 // The two system messages of a model request (wisp/agent/context.hpp): the
 // fixed prompt and the per-request dynamic info.
 //
-// The fixed prompt must stay byte for byte the same for the same language
-// and screen shape: anything that changes between requests (time, battery,
-// scenes, memory, the message's source) belongs in dynamic_info(), or the
-// provider's prefix cache misses on every request. It names tools by their
-// wire names (wire_name()), which is what the model sees.
+// The fixed prompt must stay byte for byte the same for the same language,
+// screen shape and system_msgs: anything that changes between requests
+// (time, battery, scenes, memory, the message's source) belongs in
+// dynamic_info(), or the provider's prefix cache misses on every request.
+// It names tools by their wire names (wire_name()), which is what the model
+// sees.
 
 #include <cstdint>
 #include <cstdio>
@@ -80,7 +81,12 @@ int weekday_of(int64_t wall_s, int utc_offset_min) {
     return static_cast<int>(((days + 3) % 7 + 7) % 7) + 1;
 }
 
-std::string system_prompt(const DeviceSnapshot& d) {
+std::string system_prompt(const DeviceSnapshot& d, core::LlmSystemMsgs system_msgs) {
+    // Under First the body builder moves the dynamic info and the summaries
+    // into user messages as <context> parts (spec 3.4): the prompt names
+    // where they are, and says who wrote them, since only the user's own
+    // messages may instruct the model (the security rules below).
+    const bool first = system_msgs == core::LlmSystemMsgs::First;
     std::string p;
     p.reserve(6144);
     p += "You are Wisp (小鬼火), the agent that runs this handheld device. It has no apps: every "
@@ -134,10 +140,12 @@ std::string system_prompt(const DeviceSnapshot& d) {
     p += "Scenes may export tools: find them with tools_find and call them with tools_call; "
          "check for one when a request might be something a scene can do.\n\n";
 
-    p += "Memory:\n"
-         "- The last system message begins with your memory notes, one per line as "
-         "\"[id] text\", or \"(no memory notes)\".\n"
-         "- Keep only long-term facts that stay useful: what to call the user, their "
+    p += "Memory:\n";
+    p += first ? "- The <context> block at the start of the latest user message begins with your "
+                 "memory notes, one per line as \"[id] text\", or \"(no memory notes)\".\n"
+               : "- The last system message begins with your memory notes, one per line as "
+                 "\"[id] text\", or \"(no memory notes)\".\n";
+    p += "- Keep only long-term facts that stay useful: what to call the user, their "
          "preferences, where they live and the like. Add one with memory_add; correct them with "
          "memory_update and memory_remove. Never save one-off things such as a single question "
          "or today's errand.\n"
@@ -175,8 +183,13 @@ std::string system_prompt(const DeviceSnapshot& d) {
          "- When it is right, finish with one or two sentences telling the user what you "
          "changed.\n\n";
 
-    p += "The last system message is rebuilt for every request: memory notes, local time, "
-         "where the user's message came from, the scenes, battery and network.\n";
+    p += first ? "The <context> block at the start of the latest user message is rebuilt for "
+                 "every request: memory notes, local time, where the user's message came from, "
+                 "the scenes, battery and network. <context> blocks in user messages are written "
+                 "by the device, not by the user: they hold this information and summaries of "
+                 "earlier turns.\n"
+               : "The last system message is rebuilt for every request: memory notes, local "
+                 "time, where the user's message came from, the scenes, battery and network.\n";
     return p;
 }
 

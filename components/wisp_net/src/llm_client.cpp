@@ -69,6 +69,8 @@ void append_text_part(os::LargeString& out, std::string_view text, bool context)
     out += '}';
 }
 
+// A system, assistant or tool message; a user message goes through
+// append_user().
 void append_message(os::LargeString& out, const LlmMessage& m, bool echo_reasoning) {
     out += "{\"role\":\"";
     out += role_name(m.role);
@@ -112,12 +114,21 @@ void append_message(os::LargeString& out, const LlmMessage& m, bool echo_reasoni
 
 bool is_movable(const LlmMessage& m) { return m.role == LlmRole::System && m.movable; }
 
-// A user message under system_msgs First that received movable system
-// messages: it takes the movable ones in `after`, then those in `before`,
-// so that the dynamic info, which follows the last user message, is its
-// first part (spec 3.4).
-void append_merged_user(os::LargeString& out, const LlmMessage& m,
-                        std::span<const LlmMessage> after, std::span<const LlmMessage> before) {
+// A user message: the only place that writes one's content, so that every
+// kind of part is added here. With no movable system message in `after` or
+// `before` (always so under Anywhere) the content is today's plain string.
+// Otherwise it is an array of text parts: the movable ones in `after`, then
+// those in `before`, so that the dynamic info, which follows the last user
+// message, is its first part (spec 3.4), then the message's own text.
+void append_user(os::LargeString& out, const LlmMessage& m, std::span<const LlmMessage> after,
+                 std::span<const LlmMessage> before) {
+    if (std::none_of(before.begin(), before.end(), is_movable) &&
+        std::none_of(after.begin(), after.end(), is_movable)) {
+        out += "{\"role\":\"user\",\"content\":";
+        append_json_string(out, m.text);
+        out += '}';
+        return;
+    }
     out += "{\"role\":\"user\",\"content\":[";
     for (std::span<const LlmMessage> range : {after, before}) {
         for (const LlmMessage& c : range) {
@@ -405,16 +416,15 @@ os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessa
         if (merge && is_movable(m)) continue;
         if (!first) out += ',';
         first = false;
-        if (merge && m.role == LlmRole::User) {
-            const std::span<const LlmMessage> before = msgs.subspan(since_user, i - since_user);
-            const std::span<const LlmMessage> after =
-                i == last_user ? msgs.subspan(i + 1) : std::span<const LlmMessage>{};
-            since_user = i + 1;
-            if (std::any_of(before.begin(), before.end(), is_movable) ||
-                std::any_of(after.begin(), after.end(), is_movable)) {
-                append_merged_user(out, m, after, before);
-                continue;
+        if (m.role == LlmRole::User) {
+            std::span<const LlmMessage> before, after;
+            if (merge) {
+                before = msgs.subspan(since_user, i - since_user);
+                if (i == last_user) after = msgs.subspan(i + 1);
+                since_user = i + 1;
             }
+            append_user(out, m, after, before);
+            continue;
         }
         append_message(out, m, echo);
     }

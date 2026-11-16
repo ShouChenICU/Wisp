@@ -76,8 +76,9 @@ bool in_sorted(const os::LargeVector<std::string_view>& v, std::string_view id) 
 
 class Layout {
 public:
-    explicit Layout(std::span<const Message> h, size_t live_cap = kLiveToolResultBytes)
-        : live_turn_(h.empty() ? 0 : h.back().turn), live_cap_(live_cap) {
+    explicit Layout(std::span<const Message> h, size_t live_cap = kLiveToolResultBytes,
+                    std::span<const ReasoningRef> reasoning = {})
+        : live_turn_(h.empty() ? 0 : h.back().turn), live_cap_(live_cap), reasoning_(reasoning) {
         find_live(h);
         os::LargeVector<bool> emitted(live_.size(), false);
         for (const Message& m : h) {
@@ -118,8 +119,14 @@ public:
                 return m.text.size();
             case Role::Assistant: {
                 size_t n = m.text.size();
-                for (const ToolCallRec& c : m.calls)
-                    if (kept(c)) n += c.id.size() + c.name.size() + args_bytes(m, c);
+                bool any_call = false;
+                for (const ToolCallRec& c : m.calls) {
+                    if (!kept(c)) continue;
+                    any_call = true;
+                    n += c.id.size() + c.name.size() + args_bytes(m, c);
+                }
+                // An assistant message that sends nothing carries no reasoning.
+                if (!m.text.empty() || any_call) n += reasoning_for(m.seq).size();
                 return n;
             }
             case Role::Tool:
@@ -149,7 +156,9 @@ public:
             return r.messages.size() - 1;
         };
         if (u.summary) {
-            if (!m.text.empty()) arena_text(net::LlmRole::System, kSummaryLead, sv(m.text));
+            if (!m.text.empty())
+                r.messages[arena_text(net::LlmRole::System, kSummaryLead, sv(m.text))].movable =
+                    true;
             return;
         }
         switch (m.role) {
@@ -174,6 +183,7 @@ public:
                 out.text = sv(m.text);
                 // The inner vector's buffer stays put when `calls` grows.
                 out.tool_calls = {r.calls.back().data(), r.calls.back().size()};
+                out.reasoning = reasoning_for(m.seq);
                 break;
             }
             case Role::Tool: {
@@ -202,6 +212,13 @@ public:
 
 private:
     static constexpr size_t kNone = static_cast<size_t>(-1);
+
+    // The kept reasoning of the assistant message `seq`, or "".
+    std::string_view reasoning_for(uint64_t seq) const {
+        auto it = std::lower_bound(reasoning_.begin(), reasoning_.end(), seq,
+                                   [](const ReasoningRef& r, uint64_t s) { return r.seq < s; });
+        return it != reasoning_.end() && it->seq == seq ? it->text : std::string_view{};
+    }
 
     // The turn in progress gets its results whole: the model has not seen
     // them yet, or is still working from them. Earlier turns keep a short cut.
@@ -267,9 +284,10 @@ private:
         return seq <= (*it)->covers_last ? static_cast<size_t>(it - live_.begin()) : kNone;
     }
 
-    uint32_t live_turn_;                    // turn of the last message
-    size_t live_cap_;                       // its tool results' cut
-    os::LargeVector<const Message*> live_;  // by covers_first
+    uint32_t live_turn_;                       // turn of the last message
+    size_t live_cap_;                          // its tool results' cut
+    std::span<const ReasoningRef> reasoning_;  // by seq
+    os::LargeVector<const Message*> live_;     // by covers_first
     os::LargeVector<Unit> units_;
     os::LargeVector<std::string_view> answered_, asked_;
 };
@@ -283,10 +301,10 @@ void settle(BuiltRequest& r, const os::LargeVector<std::pair<size_t, size_t>>& a
 
 BuiltRequest build(std::span<const Message> history, const DeviceSnapshot* d, BuildOptions opts) {
     BuiltRequest r;
-    const Layout layout(history, opts.live_tool_bytes);
+    const Layout layout(history, opts.live_tool_bytes, opts.reasoning);
     std::string prompt, info;
     if (d != nullptr) {
-        prompt = system_prompt(*d);
+        prompt = system_prompt(*d, opts.system_msgs);
         info = dynamic_info(*d);
     }
     // Always on the heap, so a move keeps every view valid.
@@ -310,7 +328,7 @@ BuiltRequest build(std::span<const Message> history, const DeviceSnapshot* d, Bu
         which.push_back(r.messages.size());
         at.emplace_back(r.arena.size(), info.size());
         r.arena += info;
-        r.messages.push_back({.role = net::LlmRole::System});
+        r.messages.push_back({.role = net::LlmRole::System, .movable = true});
         r.fixed_tokens = (prompt.size() + info.size()) / 3;
     }
     settle(r, at, which);
