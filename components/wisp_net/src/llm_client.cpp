@@ -332,16 +332,30 @@ LlmClient::LlmClient(HttpClient& http, core::ModelProfileService& models,
                      std::function<void(uint32_t)> sleep_ms)
     : http_(http), models_(models), sleep_ms_(std::move(sleep_ms)) {}
 
+std::optional<LlmModelInfo> LlmClient::active_model() const {
+    const core::ProfilesState st = models_.get();
+    const std::string& id = st.active_for(core::ModelKind::Llm);
+    for (const core::ModelProfile& p : st.profiles) {
+        if (p.id == id)
+            return LlmModelInfo{.profile_id = p.id,
+                                .model = p.model,
+                                .context_window = core::profile_context_window(p.options),
+                                .vision = core::profile_vision(p.options)};
+    }
+    return std::nullopt;
+}
+
 LlmResult LlmClient::complete(const LlmCall& call) {
     LlmResult result;
     const uint64_t start = os::now_ms();
     std::optional<core::ResolvedProfile> profile = models_.active_for_request(core::ModelKind::Llm);
     if (!profile) {
-        result.error = "no_model";
+        result.error = LlmError::NoModel;
         WLOG_W(kTag, "no active llm profile");
         return result;
     }
     result.model = profile->model;
+    result.profile_id = profile->id;
 
     const os::LargeString body = build_chat_body(profile->model, call.messages, call.tools_json);
     HttpClientRequest req;
@@ -366,13 +380,13 @@ LlmResult LlmClient::complete(const LlmCall& call) {
 
     for (uint32_t retry = 0;; ++retry) {
         if (stopped()) {
-            result.error = "cancelled";
+            result.error = LlmError::Cancelled;
             result.transport = TransportError::Cancelled;
             break;
         }
         const uint32_t left = left_ms();
         if (left == 0) {
-            result.error = "transport";
+            result.error = LlmError::Transport;
             result.transport = TransportError::Timeout;
             break;
         }
@@ -411,7 +425,7 @@ LlmResult LlmClient::complete(const LlmCall& call) {
         result.status = status != 0 ? status : res.status;
         result.transport = res.transport;
         if (reader.bad()) {
-            result.error = "bad_stream";
+            result.error = LlmError::BadStream;
             result.transport = TransportError::None;
             break;
         }
@@ -425,42 +439,42 @@ LlmResult LlmClient::complete(const LlmCall& call) {
         uint32_t delay = may_retry ? kRetryDelaysMs[retry] : 0;
         if (res.transport != TransportError::None) {
             if (res.transport == TransportError::Cancelled) {
-                result.error = "cancelled";
+                result.error = LlmError::Cancelled;
                 break;
             }
-            result.error = "transport";
+            result.error = LlmError::Transport;
             // Once part of the reply reached the caller a retry would
             // repeat it; before that, nothing is lost by asking again.
             if (result.any_body) break;
         } else {
             const int s = result.status;
             if (s >= 200 && s < 300) {
-                if (!reader.complete()) result.error = "bad_stream";
+                if (!reader.complete()) result.error = LlmError::BadStream;
                 break;
             }
             const ProviderError provider =
                 read_provider_error({error_body.data(), error_body.size()}, s, key);
             result.code = provider.code;
             if (s == 401) {
-                result.error = "unauthorized";
+                result.error = LlmError::Unauthorized;
                 break;
             }
             if (provider.context_length) {
-                result.error = "context_length";
+                result.error = LlmError::ContextLength;
                 break;
             }
             if (s != 429 && s < 500) {
-                result.error = "http";
+                result.error = LlmError::Http;
                 break;
             }
-            result.error = s == 429 ? "rate_limited" : "server";
+            result.error = s == 429 ? LlmError::RateLimited : LlmError::Server;
             if (std::optional<uint64_t> after = retry_after_ms(res); after && may_retry) {
                 delay = static_cast<uint32_t>(
                     std::min<uint64_t>({*after, kMaxRetryAfterMs, left_ms()}));
             }
         }
         if (!may_retry || delay >= left_ms()) break;
-        result.error.clear();
+        result.error = LlmError::None;
         result.transport = TransportError::None;
         for (uint32_t wait = delay; wait > 0 && !stopped();) {
             const uint32_t slice = std::min(wait, kWaitSliceMs);
@@ -476,16 +490,16 @@ LlmResult LlmClient::complete(const LlmCall& call) {
 
     const auto ms = static_cast<unsigned>(os::now_ms() - start);
     const unsigned tokens = result.usage ? result.usage->total : 0;
-    if (result.error.empty()) {
+    if (result.error == LlmError::None) {
         WLOG_I(kTag, "model=%s status=%d ms=%u tokens=%u", result.model.c_str(), result.status, ms,
                tokens);
     } else if (result.code.empty()) {
         WLOG_W(kTag, "model=%s status=%d ms=%u tokens=%u error=%s", result.model.c_str(),
-               result.status, ms, tokens, result.error.c_str());
+               result.status, ms, tokens, to_string(result.error));
     } else {
         // The code is read_provider_error()'s: scrubbed of the key.
         WLOG_W(kTag, "model=%s status=%d ms=%u tokens=%u error=%s code=%s", result.model.c_str(),
-               result.status, ms, tokens, result.error.c_str(), result.code.c_str());
+               result.status, ms, tokens, to_string(result.error), result.code.c_str());
     }
     return result;
 }

@@ -621,7 +621,8 @@ struct AgentService::Impl {
         const bool finished = res.finish == net::LlmFinish::Stop ||
                               res.finish == net::LlmFinish::ToolCalls ||
                               res.finish == net::LlmFinish::Length;
-        return res.error.empty() || (res.error == "transport" && finished);
+        return res.error == net::LlmError::None ||
+               (res.error == net::LlmError::Transport && finished);
     }
 
     // Summarizes history[first..last] and stores the summary, or, when the
@@ -642,8 +643,9 @@ struct AgentService::Impl {
         if (aborted()) return Compressed::Aborted;
         const bool ok = whole(res) && !res.text.empty();
         if (!ok &&
-            (res.error == "no_model" || res.error == "unauthorized" || res.error == "transport")) {
-            WLOG_W(kTag, "context not compressed: %s", res.error.c_str());
+            (res.error == net::LlmError::NoModel || res.error == net::LlmError::Unauthorized ||
+             res.error == net::LlmError::Transport)) {
+            WLOG_W(kTag, "context not compressed: %s", net::to_string(res.error));
             return Compressed::Kept;
         }
         WLOG_I(kTag, "context %s seq %llu-%llu", ok ? "summarized" : "dropped",
@@ -773,7 +775,7 @@ struct AgentService::Impl {
                 // aborted() also checks the time limit: a request that ran
                 // into it ends as time_limit, not as an error.
                 if (aborted()) return finish_abort(turn, out);
-                if (res.error == "context_length" && !overflow_retried) {
+                if (res.error == net::LlmError::ContextLength && !overflow_retried) {
                     // Our estimate was short of the model's count: trust it
                     // less from now on, compress harder and try once more.
                     overflow_retried = true;
@@ -789,11 +791,13 @@ struct AgentService::Impl {
                     const char* reason;
                 };
                 Why why{ui::StrId::AgentErrServer, "server"};
-                if (res.error == "context_length") why = {ui::StrId::AgentErrContext, "context"};
-                if (res.error == "no_model") why = {ui::StrId::AgentErrNoModel, "no_model"};
-                if (res.error == "unauthorized")
+                if (res.error == net::LlmError::ContextLength)
+                    why = {ui::StrId::AgentErrContext, "context"};
+                if (res.error == net::LlmError::NoModel)
+                    why = {ui::StrId::AgentErrNoModel, "no_model"};
+                if (res.error == net::LlmError::Unauthorized)
                     why = {ui::StrId::AgentErrUnauthorized, "unauthorized"};
-                if (res.error == "transport")
+                if (res.error == net::LlmError::Transport)
                     why = res.any_body ? Why{ui::StrId::AgentErrNetworkLost, "network_lost"}
                                        : Why{ui::StrId::AgentErrNetwork, "network"};
                 set_state(AgentState::Error);

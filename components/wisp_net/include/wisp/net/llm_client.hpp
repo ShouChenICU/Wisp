@@ -11,23 +11,26 @@
 // up to kErrorBodyBytes for its error code, never logged or kept: only
 // LlmResult::code, an identifier with the key scrubbed, comes out of it.
 // The only log line per call is metadata under the "llm" tag:
-// "model=<m> status=<s> ms=<t> tokens=<u>", plus " error=<error>" when it
-// failed and then " code=<code>" when the provider sent one that passed
-// the scrub (LlmResult::code: dropped when it holds the key or any 8 or
-// more bytes of it).
+// "model=<m> status=<s> ms=<t> tokens=<u>", plus " error=<error>" (the
+// LlmError's to_string() word) when it failed and then " code=<code>" when the provider sent one
+// that passed the scrub (LlmResult::code: dropped when it holds the key or any 8 or more bytes of
+// it).
 //
 // Retries: a 429, a 5xx and a transport error that came before any of
 // the reply (any_body false) share one budget of two retries,
 // kRetryDelaysMs apart; a 429/5xx's Retry-After in whole seconds
 // replaces the delay (capped at kMaxRetryAfterMs). Waiting ends early
 // when `cancelled` says so, and no retry starts that the call's timeout
-// could not wait for. A 401 is "unauthorized", a refusal of the prompt's
-// size "context_length", any other non-2xx "http"; none of those is
+// could not wait for. A 401 is LlmError::Unauthorized, a refusal of the
+// prompt's size ContextLength, any other non-2xx Http; none of those is
 // retried, nor is a 2xx, a cancellation or a transport error once part
 // of the reply has arrived.
 //
 // Memory: the request body, the reply text and tool arguments live in
 // os::LargeString (PSRAM on the device); each event is parsed on its own.
+//
+// active_model() reads ModelProfileService::get(), as the agent's window
+// and calibration need it, without the key.
 //
 // complete() blocks; one call at a time per client (TLS limits are the
 // caller's: see wisp/net/tls_gate.hpp).
@@ -43,81 +46,12 @@
 
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/net/http.hpp"
+#include "wisp/net/llm_provider.hpp"
 #include "wisp/net/request_watch.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::net {
-
-enum class LlmRole : uint8_t { System, User, Assistant, Tool };
-
-struct LlmToolCall {
-    std::string id;
-    std::string name;
-    os::LargeString arguments;  // the JSON text as the model wrote it
-};
-
-// Views only: everything must outlive complete().
-struct LlmMessage {
-    LlmRole role = LlmRole::User;
-    std::string_view text{};
-    std::span<const LlmToolCall> tool_calls{};  // Assistant only
-    std::string_view tool_call_id{};            // Tool only
-};
-
-enum class LlmFinish : uint8_t { Stop, ToolCalls, Length, Other };
-
-struct LlmUsage {
-    uint32_t prompt = 0, completion = 0, total = 0;
-};
-
-struct LlmResult {
-    // "" ok; "no_model" "unauthorized" "rate_limited" "server" "http"
-    // "transport" "cancelled" "bad_stream"; "context_length" when the
-    // provider refused the prompt as too long for the model (error.code
-    // context_length_exceeded, or a 400/413 whose message says so).
-    std::string error;
-    TransportError transport = TransportError::None;
-    int status = 0;  // last attempt; 0 without a response
-    os::LargeString text;
-    std::vector<LlmToolCall> tool_calls;  // by stream index
-    LlmFinish finish = LlmFinish::Other;
-    std::optional<LlmUsage> usage;
-    uint32_t attempts = 0;
-    bool any_body = false;  // a delta or tool fragment arrived
-    std::string model;      // the profile's model name
-    // The provider's error.code (else error.type) from a failed
-    // attempt's body: at most 64 bytes of [A-Za-z0-9_.-], "" when absent,
-    // malformed or holding the API key or any 8 or more bytes of it.
-    std::string code;
-};
-
-// A tool call the model is still writing (LlmCall::on_tool).
-struct LlmToolProgress {
-    size_t index = 0;       // the call's stream index
-    std::string_view name;  // the wire name, as the model wrote it
-    size_t arg_bytes = 0;   // the arguments' bytes received so far
-};
-
-struct LlmCall {
-    std::span<const LlmMessage> messages;
-    std::string_view tools_json;  // a JSON array, "" for none
-    // For the whole call, retries and their waits included.
-    uint32_t timeout_ms = 300000;
-    // Armed by complete() for each attempt; the caller aborts it with the
-    // ticket on_armed() last reported (RequestWatch::abort).
-    RequestWatch* watch = nullptr;
-    std::function<void(uint32_t ticket)> on_armed;
-    std::function<void(std::string_view)> on_text;
-    std::function<void()> on_bytes;   // any body bytes (stall detection)
-    std::function<bool()> cancelled;  // also stops the retry waits
-    // A tool call while it streams: once as soon as its name has arrived,
-    // then as its arguments grow, at most once per kToolProgressMs for
-    // each call. Runs on the calling thread, from inside the stream.
-    std::function<void(const LlmToolProgress&)> on_tool;
-    // on_tool's clock; empty: os::now_ms.
-    std::function<uint64_t()> now_ms;
-};
 
 // The request body: {"model","stream":true,"stream_options":
 // {"include_usage":true},"messages":[...],"tools":<tools_json>} (tools left
@@ -149,7 +83,7 @@ private:
     bool overflowed_ = false;
 };
 
-class LlmClient {
+class LlmClient final : public LlmProvider {
 public:
     static constexpr uint32_t kRetryDelaysMs[2] = {1000, 4000};
     // The longest Retry-After wait honoured.
@@ -170,7 +104,8 @@ public:
     LlmClient(HttpClient& http, core::ModelProfileService& models,
               std::function<void(uint32_t)> sleep_ms = os::sleep_ms);
 
-    LlmResult complete(const LlmCall& call);
+    std::optional<LlmModelInfo> active_model() const override;
+    LlmResult complete(const LlmCall& call) override;
 
 private:
     HttpClient& http_;

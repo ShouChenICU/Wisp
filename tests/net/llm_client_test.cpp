@@ -32,8 +32,11 @@ using wisp::Value;
 using wisp::core::ModelKind;
 using wisp::net::LlmCall;
 using wisp::net::LlmClient;
+using wisp::net::LlmError;
 using wisp::net::LlmFinish;
 using wisp::net::LlmMessage;
+using wisp::net::LlmModelInfo;
+using wisp::net::LlmProvider;
 using wisp::net::LlmResult;
 using wisp::net::LlmRole;
 using wisp::net::LlmToolCall;
@@ -111,7 +114,8 @@ const Value* at(const Value& v, std::initializer_list<const char*> path) {
 
 bool mentions_key(const LlmResult& r) {
     auto has = [](std::string_view s) { return s.find(kKey) != std::string_view::npos; };
-    if (has(r.error) || has(r.code) || has(r.model) || has({r.text.data(), r.text.size()}))
+    if (has(wisp::net::to_string(r.error)) || has(r.code) || has(r.model) ||
+        has({r.text.data(), r.text.size()}))
         return true;
     for (const LlmToolCall& c : r.tool_calls) {
         if (has(c.id) || has(c.name) || has({c.arguments.data(), c.arguments.size()})) return true;
@@ -134,7 +138,7 @@ TEST(LlmClient, StreamsTextDeltasInOrder) {
 
     LlmResult r = f.run(call);
 
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(deltas, (std::vector<std::string>{"Hel", "lo"}));
     EXPECT_EQ(std::string(r.text.data(), r.text.size()), "Hello");
     EXPECT_EQ(r.finish, LlmFinish::Stop);
@@ -159,7 +163,7 @@ TEST(LlmClient, DoneEndsTheStream) {
 
     LlmResult r = f.run(call);
 
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(seen, "A");
     EXPECT_EQ(std::string(r.text.data(), r.text.size()), "A");
     EXPECT_EQ(r.finish, LlmFinish::Other);
@@ -176,7 +180,7 @@ TEST(LlmClient, AssemblesToolCallFragmentsByIndex) {
 
     LlmResult r = f.run_user("make a counter");
 
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     ASSERT_EQ(r.tool_calls.size(), 2u);
     EXPECT_EQ(r.tool_calls[0].id, "call_a");
     EXPECT_EQ(r.tool_calls[0].name, "scene_install");
@@ -222,7 +226,7 @@ TEST(LlmClient, ReportsToolCallsWhileTheyStream) {
 
     LlmResult r = f.run(call);
 
-    ASSERT_EQ(r.error, "");
+    ASSERT_EQ(r.error, LlmError::None);
     ASSERT_EQ(seen.size(), 4u);
     // The name first, with nothing written yet.
     EXPECT_EQ(seen[0].index, 0u);
@@ -256,7 +260,7 @@ TEST(LlmClient, NoToolProgressForText) {
     LlmCall call;
     call.messages = {&msg, 1};
     call.on_tool = [&](const wisp::net::LlmToolProgress&) { ++calls; };
-    EXPECT_EQ(f.run(call).error, "");
+    EXPECT_EQ(f.run(call).error, LlmError::None);
     EXPECT_EQ(calls, 0);
 }
 
@@ -265,7 +269,7 @@ TEST(LlmClient, ToolCallIndexOutOfRangeIsBadStream) {
     f.server.push(
         {.status = 200,
          .chunks = {FakeLlmServer::sse_tool(100000, "x", "y", "{}"), FakeLlmServer::sse_done()}});
-    EXPECT_EQ(f.run_user("hi").error, "bad_stream");
+    EXPECT_EQ(f.run_user("hi").error, LlmError::BadStream);
 }
 
 TEST(LlmClient, ReadsUsageFromFinalChunk) {
@@ -301,7 +305,7 @@ TEST(LlmClient, RequestCarriesModelToolsAndBearer) {
 
     LlmResult r = f.run(call);
 
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     auto reqs = f.server.requests();
     ASSERT_EQ(reqs.size(), 1u);
     EXPECT_EQ(reqs[0].method, wisp::net::Method::Post);
@@ -348,7 +352,7 @@ TEST(LlmClient, AssistantToolCallsAndToolResultShape) {
     LlmCall call;
     call.messages = msgs;
 
-    EXPECT_EQ(f.run(call).error, "");
+    EXPECT_EQ(f.run(call).error, LlmError::None);
 
     const Value body = f.server.body_json(0);
     const List& m = body.find("messages")->as_list();
@@ -376,7 +380,7 @@ TEST(LlmClient, Retries429And5xxWithBackoff) {
 
     LlmResult r = f.run_user("hi");
 
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(r.status, 200);
     EXPECT_EQ(r.attempts, 3u);
     EXPECT_EQ(f.server.requests().size(), 3u);
@@ -392,7 +396,7 @@ TEST(LlmClient, GivesUpAfterTwoRetries) {
 
     LlmResult r = f.run_user("hi");
 
-    EXPECT_EQ(r.error, "server");
+    EXPECT_EQ(r.error, LlmError::Server);
     EXPECT_EQ(r.status, 500);
     EXPECT_EQ(r.attempts, 3u);
     EXPECT_EQ(f.server.requests().size(), 3u);
@@ -404,7 +408,7 @@ TEST(LlmClient, RateLimitedAfterRetries) {
     Fixture f;
     for (int i = 0; i < 3; ++i) f.server.push({.status = 429});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "rate_limited");
+    EXPECT_EQ(r.error, LlmError::RateLimited);
     EXPECT_EQ(r.status, 429);
     EXPECT_EQ(r.attempts, 3u);
 }
@@ -413,7 +417,7 @@ TEST(LlmClient, NoRetryOnUnauthorized) {
     Fixture f;
     f.server.push({.status = 401, .chunks = {"{\"error\":\"bad key\"}"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "unauthorized");
+    EXPECT_EQ(r.error, LlmError::Unauthorized);
     EXPECT_EQ(r.status, 401);
     EXPECT_EQ(r.attempts, 1u);
     EXPECT_TRUE(f.sleeps.empty());
@@ -423,7 +427,7 @@ TEST(LlmClient, OtherClientErrorIsHttp) {
     Fixture f;
     f.server.push({.status = 400, .chunks = {"{\"error\":\"bad request\"}"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.error, LlmError::Http);
     EXPECT_EQ(r.status, 400);
     EXPECT_EQ(r.attempts, 1u);
 }
@@ -441,7 +445,7 @@ TEST(LlmClient, CancelledDuringBackoffStopsWaiting) {
 
     LlmResult r = f.run(call);
 
-    EXPECT_EQ(r.error, "cancelled");
+    EXPECT_EQ(r.error, LlmError::Cancelled);
     EXPECT_EQ(r.attempts, 1u);
     EXPECT_EQ(f.server.requests().size(), 1u);
     // The wait ended after its first slice, well short of the 1 s.
@@ -452,9 +456,81 @@ TEST(LlmClient, CancelledDuringBackoffStopsWaiting) {
 TEST(LlmClient, NoActiveProfileMakesNoRequest) {
     Fixture f(/*with_profile=*/false);
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "no_model");
+    EXPECT_EQ(r.error, LlmError::NoModel);
     EXPECT_EQ(r.attempts, 0u);
     EXPECT_EQ(f.server.requests().size(), 0u);
+}
+
+TEST(LlmClient, ErrorWordsAreTodays) {
+    using wisp::net::to_string;
+    EXPECT_STREQ(to_string(LlmError::None), "");
+    EXPECT_STREQ(to_string(LlmError::NoModel), "no_model");
+    EXPECT_STREQ(to_string(LlmError::Unauthorized), "unauthorized");
+    EXPECT_STREQ(to_string(LlmError::RateLimited), "rate_limited");
+    EXPECT_STREQ(to_string(LlmError::Server), "server");
+    EXPECT_STREQ(to_string(LlmError::Http), "http");
+    EXPECT_STREQ(to_string(LlmError::Transport), "transport");
+    EXPECT_STREQ(to_string(LlmError::Cancelled), "cancelled");
+    EXPECT_STREQ(to_string(LlmError::BadStream), "bad_stream");
+    EXPECT_STREQ(to_string(LlmError::ContextLength), "context_length");
+}
+
+TEST(LlmClient, ActiveModelDescribesTheActiveProfile) {
+    Fixture f;
+    const std::string id = f.models->get().active_for(ModelKind::Llm);
+    ASSERT_FALSE(id.empty());
+
+    EXPECT_EQ(
+        f.client->active_model(),
+        (LlmModelInfo{.profile_id = id, .model = "m", .context_window = 65536, .vision = false}));
+
+    wisp::core::ProfileUpdate u;
+    u.options = wisp::core::ModelOptions{{"context_window", "32768"}, {"vision", "true"}};
+    ASSERT_TRUE(f.models->update(id, u));
+    EXPECT_EQ(
+        f.client->active_model(),
+        (LlmModelInfo{.profile_id = id, .model = "m", .context_window = 32768, .vision = true}));
+    EXPECT_TRUE(f.server.requests().empty());
+}
+
+TEST(LlmClient, NoActiveProfileHasNoModel) {
+    Fixture f(/*with_profile=*/false);
+    EXPECT_EQ(f.client->active_model(), std::nullopt);
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, LlmError::NoModel);
+    EXPECT_EQ(r.profile_id, "");
+}
+
+TEST(LlmClient, ResultNamesTheProfileThatAnswered) {
+    Fixture f;
+    f.server.push({.status = 200,
+                   .chunks = {FakeLlmServer::sse_text("ok"), FakeLlmServer::sse_finish("stop"),
+                              FakeLlmServer::sse_done()}});
+    LlmResult r = f.run_user("hi");
+    EXPECT_EQ(r.error, LlmError::None);
+    EXPECT_EQ(r.model, "m");
+    EXPECT_EQ(r.profile_id, f.models->get().active_for(ModelKind::Llm));
+    EXPECT_FALSE(r.profile_id.empty());
+}
+
+TEST(LlmClient, IsAnLlmProvider) {
+    Fixture f;
+    f.server.push({.status = 200,
+                   .chunks = {FakeLlmServer::sse_text("h"), FakeLlmServer::sse_text("i"),
+                              FakeLlmServer::sse_finish("stop"), FakeLlmServer::sse_done()}});
+    LlmProvider& p = *f.client;
+    std::vector<std::string> deltas;
+    LlmMessage msg{.role = LlmRole::User, .text = "hi"};
+    LlmCall call;
+    call.messages = {&msg, 1};
+    call.on_text = [&](std::string_view d) { deltas.emplace_back(d); };
+
+    LlmResult r = p.complete(call);
+
+    EXPECT_EQ(r.error, LlmError::None);
+    EXPECT_EQ(deltas, (std::vector<std::string>{"h", "i"}));
+    EXPECT_EQ(std::string(r.text.data(), r.text.size()), "hi");
+    EXPECT_EQ(r.finish, LlmFinish::Stop);
 }
 
 TEST(LlmClient, CancelMidStreamKeepsPartialText) {
@@ -479,7 +555,7 @@ TEST(LlmClient, CancelMidStreamKeepsPartialText) {
     watch->abort(ticket.load());
     t.join();
 
-    EXPECT_EQ(r.error, "cancelled");
+    EXPECT_EQ(r.error, LlmError::Cancelled);
     EXPECT_EQ(r.transport, TransportError::Cancelled);
     EXPECT_EQ(std::string(r.text.data(), r.text.size()), "Hel");
     EXPECT_TRUE(r.any_body);
@@ -493,7 +569,7 @@ TEST(LlmClient, BodilessTransportErrorIsRetried) {
                    .chunks = {FakeLlmServer::sse_text("hi"), FakeLlmServer::sse_finish("stop"),
                               FakeLlmServer::sse_done()}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(r.transport, TransportError::None);
     EXPECT_EQ(std::string(r.text.data(), r.text.size()), "hi");
     EXPECT_EQ(r.attempts, 2u);
@@ -509,7 +585,7 @@ TEST(LlmClient, TransportErrorAfterADeltaIsNotRetried) {
         {.status = 200,
          .chunks = {FakeLlmServer::sse_text("never"), FakeLlmServer::sse_finish("stop")}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "transport");
+    EXPECT_EQ(r.error, LlmError::Transport);
     EXPECT_EQ(r.transport, TransportError::Tls);
     EXPECT_TRUE(r.any_body);
     EXPECT_EQ(r.attempts, 1u);
@@ -524,7 +600,7 @@ TEST(LlmClient, TransportRetriesShareTheBudgetWith5xx) {
     f.server.push({.fail = TransportError::Dns});
     f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "transport");
+    EXPECT_EQ(r.error, LlmError::Transport);
     EXPECT_EQ(r.transport, TransportError::Dns);
     EXPECT_EQ(r.status, 0);
     EXPECT_EQ(r.attempts, 3u);
@@ -540,7 +616,7 @@ TEST(LlmClient, RetryAfterSecondsReplaceTheBackoff) {
     int slices = 0;
     f.on_sleep = [&] { ++slices; };
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(r.attempts, 2u);
     EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, 7000}}));
     EXPECT_EQ(slices, static_cast<int>(7000 / LlmClient::kWaitSliceMs));
@@ -551,7 +627,7 @@ TEST(LlmClient, RetryAfterIsCapped) {
     f.server.push({.status = 503, .headers = {{"retry-after", "600"}}});
     f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, LlmClient::kMaxRetryAfterMs}}));
 }
 
@@ -560,7 +636,7 @@ TEST(LlmClient, RetryAfterDateUsesTheSchedule) {
     Fixture f;
     f.server.push({.status = 429, .headers = {{"retry-after", "Wed, 21 Oct 2015 07:28:00 GMT"}}});
     f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
-    EXPECT_EQ(f.run_user("hi").error, "");
+    EXPECT_EQ(f.run_user("hi").error, LlmError::None);
     EXPECT_EQ(f.sleeps, (std::map<size_t, uint32_t>{{1, 1000}}));
 }
 
@@ -570,7 +646,7 @@ TEST(LlmClient, ContextLengthCodeIsReported) {
         {.status = 400,
          .chunks = {R"({"error":{"code":"context_length_exceeded","message":"too long"}})"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "context_length");
+    EXPECT_EQ(r.error, LlmError::ContextLength);
     EXPECT_EQ(r.code, "context_length_exceeded");
     EXPECT_EQ(r.status, 400);
     EXPECT_EQ(r.attempts, 1u);
@@ -584,7 +660,7 @@ TEST(LlmClient, ContextLengthIsRecognisedFromTheMessage) {
          .chunks = {R"({"error":{"type":"invalid_request_error",)",
                     R"("message":"This model's maximum context length is 32768 tokens"}})"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "context_length");
+    EXPECT_EQ(r.error, LlmError::ContextLength);
     EXPECT_EQ(r.code, "invalid_request_error");
     EXPECT_EQ(r.attempts, 1u);
 }
@@ -595,10 +671,10 @@ TEST(LlmClient, ContextLengthMessageNeeds400Or413) {
     Fixture f;
     f.server.push(
         {.status = 422, .chunks = {R"({"error":{"message":"Too many tokens requested"}})"}});
-    EXPECT_EQ(f.run_user("hi").error, "http");
+    EXPECT_EQ(f.run_user("hi").error, LlmError::Http);
     f.server.push(
         {.status = 413, .chunks = {R"({"error":{"message":"Too Many Tokens in the prompt"}})"}});
-    EXPECT_EQ(f.run_user("hi").error, "context_length");
+    EXPECT_EQ(f.run_user("hi").error, LlmError::ContextLength);
 }
 
 TEST(LlmClient, ErrorCodeOutsideTheCharacterSetIsDropped) {
@@ -612,7 +688,7 @@ TEST(LlmClient, ErrorCodeOutsideTheCharacterSetIsDropped) {
     EXPECT_EQ(f.run_user("hi").code, "");
     // A successful retry reports no earlier attempt's code.
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.error, LlmError::None);
     EXPECT_EQ(r.code, "");
 }
 
@@ -622,7 +698,7 @@ TEST(LlmClient, ErrorBodyNeverLeaksTheKey) {
         {.status = 400,
          .chunks = {R"({"error":{"code":"sk-test-key","message":"bad key sk-test-key"}})"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.error, LlmError::Http);
     EXPECT_EQ(r.code.find("sk-test"), std::string::npos);
     EXPECT_FALSE(mentions_key(r));
     for (const auto& e : wisp::log::ring_entries()) {
@@ -639,7 +715,7 @@ TEST(LlmClient, ErrorCodeThatIsAPieceOfTheKeyIsDropped) {
         {.status = 400,
          .chunks = {R"({"error":{"code":")" + key.substr(0, 12) + R"(","message":"bad"}})"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.error, LlmError::Http);
     EXPECT_EQ(r.code, "");
 }
 
@@ -653,7 +729,7 @@ TEST(LlmClient, ErrorCodeHoldingAPieceOfTheKeyIsDropped) {
     f.server.push({.status = 400,
                    .chunks = {R"({"error":{"code":"bad_)" + piece + R"(_key","message":"bad"}})"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.error, LlmError::Http);
     EXPECT_EQ(r.code, "");
     for (const auto& e : wisp::log::ring_entries()) {
         EXPECT_EQ(e.msg.find(piece), std::string::npos) << e.msg;
@@ -667,7 +743,7 @@ TEST(LlmClient, FailedRequestLogsTheProviderCode) {
     f.server.push(
         {.status = 400, .chunks = {R"({"error":{"code":"model_not_found","message":"no such"}})"}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "http");
+    EXPECT_EQ(r.error, LlmError::Http);
     EXPECT_EQ(r.code, "model_not_found");
     bool logged = false;
     for (const auto& e : wisp::log::ring_entries()) {
@@ -689,7 +765,7 @@ TEST(LlmClient, BrokenEventIsBadStream) {
 
     LlmResult r = f.run(call);
 
-    EXPECT_EQ(r.error, "bad_stream");
+    EXPECT_EQ(r.error, LlmError::BadStream);
     EXPECT_EQ(seen, "Hi");
     EXPECT_EQ(r.attempts, 1u);
 }
@@ -698,7 +774,7 @@ TEST(LlmClient, StreamEndingWithoutFinishIsBadStream) {
     Fixture f;
     f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("Hal")}});
     LlmResult r = f.run_user("hi");
-    EXPECT_EQ(r.error, "bad_stream");
+    EXPECT_EQ(r.error, LlmError::BadStream);
     EXPECT_EQ(std::string(r.text.data(), r.text.size()), "Hal");
 }
 
@@ -707,7 +783,7 @@ TEST(LlmClient, ErrorEventInStreamIsBadStream) {
     f.server.push({.status = 200,
                    .chunks = {"data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
                               FakeLlmServer::sse_done()}});
-    EXPECT_EQ(f.run_user("hi").error, "bad_stream");
+    EXPECT_EQ(f.run_user("hi").error, LlmError::BadStream);
 }
 
 TEST(LlmClient, KeyNeverInLogsOrResult) {
@@ -738,7 +814,7 @@ TEST(LlmClient, LogsOnlyMetadata) {
                    .chunks = {FakeLlmServer::sse_text("Hello"), FakeLlmServer::sse_finish("stop"),
                               FakeLlmServer::sse_usage(12, 34), FakeLlmServer::sse_done()}});
 
-    EXPECT_EQ(f.run_user("secret question").error, "");
+    EXPECT_EQ(f.run_user("secret question").error, LlmError::None);
 
     std::vector<std::string> lines;
     for (const auto& e : wisp::log::ring_entries()) {

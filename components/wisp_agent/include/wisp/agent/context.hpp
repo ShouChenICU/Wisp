@@ -41,7 +41,7 @@
 #include "wisp/agent/limits.hpp"
 #include "wisp/core/settings_schema.hpp"
 #include "wisp/hal/display_geometry.hpp"
-#include "wisp/net/llm_client.hpp"
+#include "wisp/net/llm_provider.hpp"
 #include "wisp/os/large.hpp"
 
 namespace wisp::agent {
