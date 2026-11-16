@@ -31,6 +31,11 @@ size_t prefix_code_points(std::string_view s, size_t max_cp) {
 // A time limit in whole minutes for the note, at least 1.
 uint64_t minutes(uint64_t ms) { return std::max<uint64_t>(1, (ms + 30000) / 60000); }
 
+// The instruction after a reply cut by the length limit (spec 3.7).
+constexpr std::string_view kContinuePrompt =
+    "Your previous reply was cut off by the length limit. Continue exactly where it stopped. Do "
+    "not repeat anything.";
+
 }  // namespace
 
 std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
@@ -159,6 +164,29 @@ net::LlmResult TurnRunner::request(std::span<const net::LlmMessage> messages,
     return res;
 }
 
+// The request that was sent, then the cut reply and the instruction to go
+// on (spec 3.7); neither of the two is stored. The request is reused as it
+// is, not rebuilt or compressed again.
+net::LlmResult TurnRunner::continue_reply(std::span<const net::LlmMessage> sent,
+                                          std::string_view tools_json, const net::LlmResult& cut,
+                                          std::function<void(std::string_view)> on_text) {
+    os::LargeVector<net::LlmMessage> msgs;
+    msgs.reserve(sent.size() + 2);
+    msgs.assign(sent.begin(), sent.end());
+    net::LlmMessage partial;
+    partial.role = net::LlmRole::Assistant;
+    partial.text = sv(cut.text);
+    // A cut reasoning block is never echoed (plan decision 7).
+    if (cut.error == net::LlmError::None && dialect().reasoning == core::LlmReasoning::Echo)
+        partial.reasoning = sv(cut.reasoning);
+    msgs.push_back(partial);
+    net::LlmMessage go_on;
+    go_on.role = net::LlmRole::User;
+    go_on.text = kContinuePrompt;
+    msgs.push_back(go_on);
+    return request({msgs.data(), msgs.size()}, tools_json, std::move(on_text));
+}
+
 // A connection dropped after finish_reason but before [DONE] still
 // delivered the whole reply.
 bool TurnRunner::whole(const net::LlmResult& res) {
@@ -233,6 +261,9 @@ const char* TurnRunner::loop(uint32_t window, Outcome& out) {
         env_.set_state(AgentState::Thinking);
 
         net::LlmResult res;
+        // The continuation of a reply cut by the length limit, once per
+        // reply (spec 3.7).
+        std::optional<net::LlmResult> cont;
         size_t sent_tokens = 0;
         {
             const std::shared_ptr<const History> hist = store_.history();
@@ -284,21 +315,54 @@ const char* TurnRunner::loop(uint32_t window, Outcome& out) {
             }
             refused_tokens.reset();
             bool output = false;
-            res = request({req.messages.data(), req.messages.size()}, tools_json,
-                          [&](std::string_view d) {
-                              if (!output) {
-                                  output = true;
-                                  env_.set_state(AgentState::Output);
-                              }
-                              AgentEvent e;
-                              e.kind = AgentEvent::Kind::Delta;
-                              e.text.assign(d);
-                              env_.emit(e);
-                          });
+            // Shared by the continuation: its deltas go on with the same
+            // text, and Output is set once.
+            const auto on_text = [&](std::string_view d) {
+                if (!output) {
+                    output = true;
+                    env_.set_state(AgentState::Output);
+                }
+                AgentEvent e;
+                e.kind = AgentEvent::Kind::Delta;
+                e.text.assign(d);
+                env_.emit(e);
+            };
+            const std::span<const net::LlmMessage> sent(req.messages.data(), req.messages.size());
+            res = request(sent, tools_json, on_text);
+            // An empty cut reply has nothing to go on from; with tool calls
+            // the bad_args rule below applies instead; after a stop the
+            // partial text is stored and the turn ends.
+            if (whole(res) && res.finish == net::LlmFinish::Length && res.tool_calls.empty() &&
+                !res.text.empty() && !env_.aborted())
+                cont = continue_reply(sent, tools_json, res, on_text);
         }
         if (res.usage) out.tokens += res.usage->total;
+        // Only the first request's usage calibrates: the continuation's
+        // request is not the one estimated.
         if (whole(res) && res.usage && res.usage->prompt > 0) {
             cal_.observe(res.profile_id, res.model, res.usage->prompt, sent_tokens);
+        }
+        // A reply's reasoning is echoed only from an attempt without an
+        // error (a cut reasoning block never is).
+        bool echo_reasoning = res.error == net::LlmError::None;
+        if (cont) {
+            if (cont->usage) out.tokens += cont->usage->total;
+            // The reply is the cut text followed by what came of the
+            // continuation, so far as it got. Only a whole continuation
+            // brings its calls and its finish: a failed one leaves the
+            // reply cut (finish Length), which the note below reports.
+            res.text.append(cont->text.data(), cont->text.size());
+            os::LargeString reasoning;
+            if (echo_reasoning) reasoning = std::move(res.reasoning);
+            if (whole(*cont)) {
+                if (cont->error == net::LlmError::None)
+                    reasoning.append(cont->reasoning.data(), cont->reasoning.size());
+                res.tool_calls = std::move(cont->tool_calls);
+                res.finish = cont->finish;
+            }
+            res.reasoning = std::move(reasoning);
+            echo_reasoning = true;
+            cont.reset();
         }
 
         if (!whole(res)) {
@@ -365,11 +429,15 @@ const char* TurnRunner::loop(uint32_t window, Outcome& out) {
             // A reply whose connection dropped after finish_reason is
             // whole enough to store, but its reasoning may be cut, and a
             // cut reasoning block is never echoed.
-            if (res.error == net::LlmError::None && dialect().reasoning == core::LlmReasoning::Echo)
+            if (echo_reasoning && dialect().reasoning == core::LlmReasoning::Echo)
                 keep_.add(seq, sv(res.reasoning));
         }
         if (res.tool_calls.empty()) {
             if (env_.aborted()) return finish_abort(out);
+            // Still cut after the continuation, or cut with nothing to
+            // continue: said in a note that leaves the reply as the done
+            // notice's text (spec 3.7).
+            if (res.finish == net::LlmFinish::Length) note(ui::StrId::AgentReplyCut);
             return "done";
         }
 

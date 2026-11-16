@@ -222,6 +222,9 @@ enum class StrId : uint16_t {
     AgentRolledOver,
     // The context grew past the model's window and its summary failed.
     AgentContextDropped,
+    // A reply still cut by the length limit after its one continuation
+    // (spec 3.7).
+    AgentReplyCut,
     // The agent_done notice (agent-core spec 3.7): "{}" is the first line
     // of the reply.
     NoticeAgentDone,

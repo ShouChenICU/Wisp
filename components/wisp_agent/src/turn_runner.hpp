@@ -109,6 +109,9 @@ private:
     BuiltRequest build(std::span<const Message> h, BuildOptions opts = {}) const;
     net::LlmResult request(std::span<const net::LlmMessage> messages, std::string_view tools_json,
                            std::function<void(std::string_view)> on_text);
+    net::LlmResult continue_reply(std::span<const net::LlmMessage> sent,
+                                  std::string_view tools_json, const net::LlmResult& cut,
+                                  std::function<void(std::string_view)> on_text);
     static bool whole(const net::LlmResult& res);
     Compressed compress(std::span<const Message> h, std::pair<uint64_t, uint64_t> range,
                         Outcome& out);

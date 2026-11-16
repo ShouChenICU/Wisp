@@ -273,6 +273,8 @@ const char* strings_ja(StrId id) {
         case StrId::AgentContextDropped:
             return "会話が長くなり、古い部分を要約できなかったため、文脈から省きました（記録は残っ"
                    "ています）";
+        case StrId::AgentReplyCut:
+            return "モデルの長さの上限で返答が途中で切れました";
         case StrId::NoticeAgentDone:
             return "完了：{}";
         case StrId::NoticeSettingsNotSaved:

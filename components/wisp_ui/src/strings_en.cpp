@@ -270,6 +270,8 @@ const char* strings_en(StrId id) {
         case StrId::AgentContextDropped:
             return "The conversation got long and its older part could not be summarized, so it "
                    "was left out of the context (the record is kept)";
+        case StrId::AgentReplyCut:
+            return "The reply was cut off by the model's length limit";
         case StrId::NoticeAgentDone:
             return "Done: {}";
         case StrId::NoticeSettingsNotSaved:

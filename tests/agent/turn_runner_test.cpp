@@ -675,4 +675,222 @@ TEST_F(TurnRunner, PromptFollowsTheDialect) {
     EXPECT_EQ(body.find(system, at + 1), std::string::npos) << body;
 }
 
+// Two steps' reasoning is echoed in order, each on its own reply.
+TEST_F(TurnRunner, TwoStepsReasoningEchoedInOrder) {
+    r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
+    r->add_tool("test.echo");
+    for (const char* id : {"c1", "c2"}) {
+        FakeStep call;
+        call.calls.push_back({.id = id, .name = "test_echo", .arguments = "{}"});
+        call.result.finish = net::LlmFinish::ToolCalls;
+        call.result.reasoning.assign(std::string(id) == "c1" ? "r1" : "r2");
+        r->fake.push(std::move(call));
+    }
+    r->fake.push(text_step("ok"));
+    EXPECT_STREQ(r->run().status, "done");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    const std::string& body = calls[2].body;
+    const size_t r1 = body.find("\"reasoning_content\":\"r1\"");
+    const size_t r2 = body.find("\"reasoning_content\":\"r2\"");
+    ASSERT_NE(r1, std::string::npos) << body;
+    ASSERT_NE(r2, std::string::npos) << body;
+    EXPECT_LT(r1, r2);
+    const std::string assistant = "\"role\":\"assistant\"";
+    const size_t a1 = body.find(assistant);
+    const size_t a2 = body.find(assistant, a1 + 1);
+    ASSERT_NE(a2, std::string::npos) << body;
+    EXPECT_LT(a1, r1);
+    EXPECT_LT(r1, a2);
+    EXPECT_LT(a2, r2);
+}
+
+// Spec 3.7: a reply cut by the length limit is continued once.
+
+const std::string kContinue =
+    "Your previous reply was cut off by the length limit. Continue exactly where it stopped. "
+    "Do not repeat anything.";
+
+FakeStep cut_step(const std::string& text) {
+    FakeStep s;
+    if (!text.empty()) s.deltas = {text};
+    s.result.finish = net::LlmFinish::Length;
+    return s;
+}
+
+std::vector<Message> stored(Rig& rig, Role role) {
+    std::vector<Message> out;
+    for (const Message& m : *rig.h.store->history())
+        if (m.role == role) out.push_back(m);
+    return out;
+}
+
+TEST_F(TurnRunner, LengthReplyIsContinuedOnce) {
+    FakeStep a = cut_step("Hel");
+    a.result.usage = net::LlmUsage{.prompt = 0, .completion = 0, .total = 10};
+    r->fake.push(std::move(a));
+    FakeStep b = text_step("lo");
+    b.result.usage = net::LlmUsage{.prompt = 0, .completion = 0, .total = 5};
+    r->fake.push(std::move(b));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_EQ(out.steps, 0u);
+    EXPECT_EQ(out.tokens, 15u);
+    EXPECT_EQ(str(out.last_text), "Hello");
+    const auto replies = stored(*r, Role::Assistant);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(str(replies[0].text), "Hello");
+    EXPECT_TRUE(stored(*r, Role::Note).empty());
+    int outputs = 0;
+    for (const std::string& line : r->env.trace) outputs += line == "state output" ? 1 : 0;
+    EXPECT_EQ(outputs, 1);
+    const int hel = r->env.index("Delta Hel");
+    const int lo = r->env.index("Delta lo");
+    ASSERT_GE(hel, 0);
+    EXPECT_LT(hel, lo);
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_NE(
+        calls[1].body.find(R"({"role":"assistant","content":"Hel"},{"role":"user","content":")" +
+                           kContinue + R"("}])"),
+        std::string::npos)
+        << calls[1].body;
+}
+
+TEST_F(TurnRunner, SecondCutStoresTheTextWithANote) {
+    r->fake.push(cut_step("Hel"));
+    r->fake.push(cut_step("lo"));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_EQ(str(out.last_text), "Hello");
+    const auto replies = stored(*r, Role::Assistant);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(str(replies[0].text), "Hello");
+    const auto notes = stored(*r, Role::Note);
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(str(notes[0].text), zh(StrId::AgentReplyCut));
+    EXPECT_LT(replies[0].seq, notes[0].seq);
+    EXPECT_EQ(r->fake.calls().size(), 2u);
+}
+
+TEST_F(TurnRunner, FailedContinuationStoresTheTextWithANote) {
+    r->fake.push(cut_step("Hel"));
+    FakeStep b = error_step(net::LlmError::Server);
+    b.deltas = {"lo"};
+    r->fake.push(std::move(b));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_STREQ(out.reason, "");
+    EXPECT_EQ(str(out.last_text), "Hello");
+    const auto replies = stored(*r, Role::Assistant);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(str(replies[0].text), "Hello");
+    const auto notes = stored(*r, Role::Note);
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(str(notes[0].text), zh(StrId::AgentReplyCut));
+    EXPECT_EQ(r->env.index("state error"), -1);
+    EXPECT_EQ(r->fake.calls().size(), 2u);
+}
+
+// Steps of the continuation that makes a tool call: "Hel" cut, then call
+// c1, then "ok".
+void push_continued_call(Rig& rig, const char* r1 = "", const char* r2 = "") {
+    rig.add_tool("test.echo");
+    FakeStep a = cut_step("Hel");
+    a.result.reasoning.assign(r1);
+    rig.fake.push(std::move(a));
+    FakeStep b;
+    b.calls.push_back({.id = "c1", .name = "test_echo", .arguments = "{}"});
+    b.result.finish = net::LlmFinish::ToolCalls;
+    b.result.reasoning.assign(r2);
+    rig.fake.push(std::move(b));
+    rig.fake.push(text_step("ok"));
+}
+
+TEST_F(TurnRunner, ContinuationToolCallsRun) {
+    push_continued_call(*r);
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_EQ(out.steps, 1u);
+    const auto replies = stored(*r, Role::Assistant);
+    ASSERT_EQ(replies.size(), 2u);
+    EXPECT_EQ(str(replies[0].text), "Hel");
+    ASSERT_EQ(replies[0].calls.size(), 1u);
+    EXPECT_EQ(str(replies[0].calls[0].id), "c1");
+    EXPECT_GE(r->env.index("ToolEnd test.echo ok"), 0);
+    const auto tools = stored(*r, Role::Tool);
+    ASSERT_EQ(tools.size(), 1u);
+    EXPECT_TRUE(tools[0].ok);
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    EXPECT_EQ(calls[2].body.find(kContinue), std::string::npos) << calls[2].body;
+}
+
+TEST_F(TurnRunner, ContinuationReasoningJoins) {
+    r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
+    push_continued_call(*r, "r1", "r2");
+    EXPECT_STREQ(r->run().status, "done");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    EXPECT_NE(
+        calls[1].body.find(
+            R"({"role":"assistant","content":"Hel","reasoning_content":"r1"},{"role":"user")"),
+        std::string::npos)
+        << calls[1].body;
+    EXPECT_NE(calls[2].body.find(R"("reasoning_content":"r1r2")"), std::string::npos)
+        << calls[2].body;
+}
+
+TEST_F(TurnRunner, StopDuringTheContinuationKeepsTheText) {
+    r->fake.push(cut_step("Hel"));
+    FakeStep b;
+    b.deltas = {"l"};
+    b.hold = true;
+    b.during = [this](const net::LlmCall&) {
+        r->env.reason = Abort::Stop;
+        r->env.aborted_flag = true;
+    };
+    r->fake.push(std::move(b));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "stopped");
+    const auto replies = stored(*r, Role::Assistant);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(str(replies[0].text), "Hell");
+    const auto notes = stored(*r, Role::Note);
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(str(notes[0].text), zh(StrId::AgentStopped));
+    EXPECT_EQ(r->fake.calls().size(), 2u);
+}
+
+TEST_F(TurnRunner, EmptyCutReplyIsNotContinued) {
+    r->fake.push(cut_step(""));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_EQ(r->fake.calls().size(), 1u);
+    EXPECT_TRUE(stored(*r, Role::Assistant).empty());
+    const auto notes = stored(*r, Role::Note);
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(str(notes[0].text), zh(StrId::AgentReplyCut));
+}
+
+// A cut with tool calls keeps the bad_args rule; the model's next request
+// is the continuation.
+TEST_F(TurnRunner, LengthWithToolCallsIsNotContinued) {
+    r->add_tool("test.echo");
+    FakeStep a;
+    a.calls.push_back({.id = "c1", .name = "test_echo", .arguments = "{\"x\":"});
+    a.result.finish = net::LlmFinish::Length;
+    r->fake.push(std::move(a));
+    r->fake.push(text_step("ok"));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_NE(calls[1].body.find("\"role\":\"tool\",\"tool_call_id\":\"c1\""), std::string::npos)
+        << calls[1].body;
+    EXPECT_NE(calls[1].body.find("bad_args"), std::string::npos) << calls[1].body;
+    EXPECT_EQ(calls[1].body.find(kContinue), std::string::npos) << calls[1].body;
+    EXPECT_TRUE(stored(*r, Role::Note).empty());
+}
+
 }  // namespace

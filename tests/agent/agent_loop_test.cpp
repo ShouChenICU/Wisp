@@ -2187,3 +2187,90 @@ TEST_F(AgentLoop, WindowComesFromTheProvider) {
     EXPECT_EQ(str(stored->text), "they asked q1 and q2");
     EXPECT_EQ(last_status(), "done");
 }
+
+// Spec 3.7: a reply cut by the length limit and continued reaches the
+// listeners as one stream of deltas and the history as one message.
+TEST_F(AgentLoop, ContinuedReplyIsOneMessageOnTheWire) {
+    start();
+    h->server.push({.status = 200,
+                    .chunks = {FakeLlmServer::sse_text("Hel"), FakeLlmServer::sse_finish("length"),
+                               FakeLlmServer::sse_done()}});
+    h->server.push(text_reply("lo"));
+    ASSERT_TRUE(svc->submit("go", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "done");
+
+    std::vector<std::string> deltas;
+    std::vector<uint64_t> seqs;
+    for (const AgentEvent& e : snapshot()) {
+        if (e.kind == Kind::Delta) deltas.push_back(e.text);
+        if (e.kind == Kind::Message) seqs.push_back(e.seq);
+    }
+    EXPECT_EQ(deltas, (std::vector<std::string>{"Hel", "lo"}));
+    const History all = history();
+    size_t replies = 0;
+    for (const Message& m : all) {
+        EXPECT_NE(m.role, Role::Note);
+        if (m.role != Role::Assistant) continue;
+        ++replies;
+        EXPECT_EQ(str(m.text), "Hello");
+        EXPECT_EQ(std::count(seqs.begin(), seqs.end(), m.seq), 1);
+    }
+    EXPECT_EQ(replies, 1u);
+    const std::vector<AgentState> seen = states();
+    EXPECT_EQ(std::count(seen.begin(), seen.end(), AgentState::Output), 1);
+
+    ASSERT_EQ(h->server.requests().size(), 2u);
+    const Value body = h->server.body_json(1);
+    const List& msgs = body.find("messages")->as_list();
+    ASSERT_GE(msgs.size(), 3u);
+    const Value& partial = msgs[msgs.size() - 2];
+    EXPECT_EQ(partial.find("role")->as_string(), "assistant");
+    EXPECT_EQ(partial.find("content")->as_string(), "Hel");
+    const Value& prompt = msgs.back();
+    EXPECT_EQ(prompt.find("role")->as_string(), "user");
+    EXPECT_EQ(prompt.find("content")->as_string(),
+              "Your previous reply was cut off by the length limit. Continue exactly where it "
+              "stopped. Do not repeat anything.");
+}
+
+// The summary request's text is used as it is, even when cut by the length
+// limit (spec 3.7): it is never continued.
+TEST_F(AgentLoop, SummaryRequestsAreNotContinued) {
+    FakeProvider fake;
+    harness().provider = &fake;
+    fake.set_model(
+        wisp::net::LlmModelInfo{.profile_id = "p1", .model = "m", .context_window = 4096});
+    add_tool("scene.list");
+    start();
+    const std::string big(4000, 'a');
+    for (int i = 1; i <= 3; ++i) {
+        const size_t ends = count(Kind::TurnEnd);
+        FakeStep step;
+        step.deltas = {big};
+        step.result.finish = wisp::net::LlmFinish::Stop;
+        fake.push(std::move(step));
+        ASSERT_TRUE(svc->submit("q" + std::to_string(i), Source::Web));
+        ASSERT_TRUE(wait_turns(ends + 1));
+    }
+    FakeStep summary;
+    summary.deltas = {"S"};
+    summary.result.finish = wisp::net::LlmFinish::Length;
+    fake.push(std::move(summary));
+    FakeStep reply;
+    reply.deltas = {"done"};
+    reply.result.finish = wisp::net::LlmFinish::Stop;
+    fake.push(std::move(reply));
+    ASSERT_TRUE(svc->submit("q4", Source::Web));
+    ASSERT_TRUE(wait_turns(4));
+
+    const auto recorded = fake.calls();
+    ASSERT_EQ(recorded.size(), 5u);
+    EXPECT_EQ(recorded[3].tools_json, "");
+    for (const auto& c : recorded)
+        EXPECT_EQ(c.body.find("Your previous reply was cut off"), std::string::npos) << c.body;
+    const auto stored = last_of(history(), Role::Summary);
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(str(stored->text), "S");
+    EXPECT_EQ(last_status(), "done");
+}
