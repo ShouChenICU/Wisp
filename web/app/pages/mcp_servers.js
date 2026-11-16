@@ -129,8 +129,10 @@ export function McpServersCard() {
     };
   }, []);
 
+  // A probe still in flight keeps its entry, so the Test button stays
+  // disabled and the answer lands on the right server.
   function forget(id) {
-    setTests((m) => ({ ...m, [id]: undefined }));
+    setTests((m) => (m[id] && m[id].testing ? m : { ...m, [id]: undefined }));
   }
 
   async function runTest(s) {
@@ -172,6 +174,7 @@ export function McpServersCard() {
       if (!alive.current) return;
       if (editing === s.id) setEditing(null);
       forget(s.id);
+      setDropped((m) => ({ ...m, [s.id]: undefined }));
       toast(t('mcp.deleted'), 'ok');
     } catch (e) {
       if (e.status !== 401) toast(describeError(e), 'err');
@@ -245,12 +248,13 @@ export function McpServersCard() {
             )}
           </ul>`
         : null}
-      <p class="muted model-count">${t('mcp.count', { count: formatCount(servers.length), max: formatCount(max) })}</p>
     `;
   }
 
   return html`<${Card}
-    title=${t('mcp.title')}
+    title=${list
+      ? html`${t('mcp.title')} <span class="muted">${t('mcp.count', { count: formatCount(servers.length), max: formatCount(max) })}</span>`
+      : t('mcp.title')}
     icon=${IconLink}
     actions=${html`<button
       type="button"

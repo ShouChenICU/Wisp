@@ -412,7 +412,7 @@ export default {
   'mcp.header_value': 'ヘッダーの値',
   'mcp.header_value_ph': '値',
   'mcp.header_keep_ph': '変更なし',
-  'mcp.header_remove': '削除',
+  'mcp.header_remove': '外す',
   'mcp.header_will_clear': '消去されます：URL が別のサーバーになりました。このヘッダーを残すには値を入力し直してください。',
   'mcp.err_header_name': 'ヘッダー名は英数字と !#$%&\'*+-.^_`|~ のみ、最大 {max} バイトです。',
   'mcp.err_header_reserved': '{name} はデバイスが自分で設定します。',

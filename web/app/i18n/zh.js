@@ -412,7 +412,7 @@ export default {
   'mcp.header_value': '请求头的值',
   'mcp.header_value_ph': '值',
   'mcp.header_keep_ph': '保持不变',
-  'mcp.header_remove': '删除',
+  'mcp.header_remove': '移除',
   'mcp.header_will_clear': '将被清除：地址已换到另一台服务器。要保留这个请求头，请重新填写它的值。',
   'mcp.err_header_name': '请求头名称只能由字母、数字和 !#$%&\'*+-.^_`|~ 组成，最多 {max} 字节。',
   'mcp.err_header_reserved': '{name} 由设备自己设置，不能填写。',
