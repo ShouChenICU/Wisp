@@ -863,7 +863,9 @@ Result<std::vector<uint8_t>> UiRuntime::snapshot_rgb888(uint32_t timeout_ms) {
     if (!state->done.take(timeout_ms)) {
         return Result<std::vector<uint8_t>>::err(ErrorCode::Timeout, "snapshot timed out");
     }
-    return state->result;
+    // The lambda's give() is its last touch of state, so the buffer (hundreds
+    // of KiB) can be moved out rather than copied.
+    return std::move(state->result);
 }
 
 UiPerf UiRuntime::perf() const {
