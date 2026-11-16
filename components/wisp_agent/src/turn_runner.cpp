@@ -48,8 +48,9 @@ Outcome TurnRunner::run(const TurnInput& in) {
     in_ = in;
     Outcome out;
     keep_ = ReasoningKeep();
-    // The provider's active model's context window, model, profile and
-    // dialect, read once per turn.
+    images_.clear();
+    // The provider's active model's context window, model, profile,
+    // dialect and vision, read once per turn.
     model_ = llm_.active_model();
     const std::optional<net::LlmModelInfo>& m = model_;
     const uint32_t window = m ? m->context_window : kDefaultContextWindow;
@@ -164,10 +165,29 @@ BuiltRequest TurnRunner::build(std::span<const Message> h, BuildOptions opts) co
     // Only what is sent counts in the estimate: without Echo the body
     // drops reasoning, so none is attached.
     if (dl.reasoning == core::LlmReasoning::Echo) opts.reasoning = keep_.refs();
-    if (!context_) return build_history(h, opts);
-    DeviceSnapshot d = context_(in_.source);
-    d.source = in_.source;
-    return build_request(h, d, opts);
+    BuiltRequest req;
+    if (!context_) {
+        req = build_history(h, opts);
+    } else {
+        DeviceSnapshot d = context_(in_.source);
+        d.source = in_.source;
+        req = build_request(h, d, opts);
+    }
+    if (!images_.empty()) {
+        os::LargeVector<RequestImage> list;
+        list.reserve(images_.size());
+        for (const TurnImage& t : images_) {
+            RequestImage& ri = list.emplace_back();
+            ri.tool = sv(t.tool);
+            ri.call_id = sv(t.call_id);
+            if (t.image) {
+                ri.mime = t.image->mime;
+                ri.bytes = {t.image->bytes.data(), t.image->bytes.size()};
+            }
+        }
+        attach_images(req, {list.data(), list.size()});
+    }
+    return req;
 }
 
 // One model request under the turn's controls: the user's stop, the
@@ -294,7 +314,7 @@ const char* TurnRunner::loop(uint32_t window, Outcome& out) {
     // The refused request's estimate while its retry is being
     // prepared: a retry that did not shrink is the same request.
     std::optional<size_t> refused_tokens;
-    const std::string_view tools_json = sv(tools_.tools_json());
+    const std::string_view tools_json = sv(tools_.tools_json(vision()));
     const size_t tools_tokens = tools_json.size() / 3;
     for (;;) {
         if (env_.aborted()) return finish_abort(out);
@@ -529,8 +549,20 @@ void TurnRunner::run_tool(const net::LlmToolCall& c, bool cut, Outcome& out) {
         ctx.deadline_ms = os::now_ms() + left;
         ctx.lang = ui::lang_code(env_.lang());
         ctx.turn = in_.serial;
+        ctx.vision = vision();
         o = tools_.call(c.name, sv(c.arguments), ctx);
     }
+    // Only the newest image is kept whole (spec 3.5): the previous one's
+    // bytes are freed now, and its request message says a newer one was
+    // taken. Without vision, or from a failed call, the image is dropped.
+    if (o.ok && o.image && vision()) {
+        if (!images_.empty()) images_.back().image.reset();
+        TurnImage& t = images_.emplace_back();
+        t.tool.assign(dotted);
+        t.call_id.assign(c.id);
+        t.image = std::move(o.image);
+    }
+    o.image.reset();
     ++out.steps;
     const auto ms = static_cast<unsigned>(env_.now_ms() - t0);
 

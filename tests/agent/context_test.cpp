@@ -880,3 +880,149 @@ TEST(Context, CarryRequestIsEmptyWhenNothingFits) {
     EXPECT_TRUE(build_carry_request(c.h(), 2048).messages.empty());
     EXPECT_TRUE(build_carry_request({}, 2048).messages.empty());
 }
+
+// AttachImages: the running turn's images, each in one user message after
+// the run of tool messages that produced it (spec 3.5).
+
+using wisp::agent::attach_images;
+using wisp::agent::kImageEstTokens;
+using wisp::agent::kImageOmittedNewer;
+using wisp::agent::RequestImage;
+using wisp::net::LlmMessage;
+using wisp::net::LlmPartKind;
+
+namespace {
+
+const uint8_t kJpeg4[] = {0xFF, 0xD8, 0xFF, 0xD9};
+
+LlmMessage msg(LlmRole role, std::string_view text, std::string_view call_id = {}) {
+    LlmMessage m;
+    m.role = role;
+    m.text = text;
+    m.tool_call_id = call_id;
+    m.movable = role == LlmRole::System && text == "D";
+    return m;
+}
+
+// system S, user q, assistant (calls c1, c2), tool c1, tool c2, system D.
+BuiltRequest one_step() {
+    BuiltRequest r;
+    r.messages.push_back(msg(LlmRole::System, "S"));
+    r.messages.push_back(msg(LlmRole::User, "q"));
+    r.messages.push_back(msg(LlmRole::Assistant, ""));
+    r.messages.push_back(msg(LlmRole::Tool, "{\"ok\":true}", "c1"));
+    r.messages.push_back(msg(LlmRole::Tool, "{\"ok\":true}", "c2"));
+    r.messages.push_back(msg(LlmRole::System, "D"));
+    r.est_tokens = 100;
+    return r;
+}
+
+RequestImage jpeg(std::string_view call_id) {
+    return {.tool = "t.shot", .call_id = call_id, .mime = "image/jpeg", .bytes = kJpeg4};
+}
+
+RequestImage older(std::string_view call_id) { return {.tool = "t.shot", .call_id = call_id}; }
+
+// One line per message: its role and, for a tool, its call; for a user
+// message with parts, each part.
+std::vector<std::string> shape(const BuiltRequest& r) {
+    std::vector<std::string> out;
+    for (const LlmMessage& m : r.messages) {
+        static const char* const kRoles[] = {"system", "user", "assistant", "tool"};
+        std::string line = kRoles[static_cast<int>(m.role)];
+        if (!m.tool_call_id.empty()) line += " " + std::string(m.tool_call_id);
+        if (m.parts.empty() && m.role != LlmRole::Tool) line += " " + std::string(m.text);
+        for (const wisp::net::LlmPart& p : m.parts) {
+            if (p.kind == LlmPartKind::Text)
+                line += " [" + std::string(p.text) + "]";
+            else
+                line += " <" + std::string(p.mime) + " " + std::to_string(p.bytes.size()) + ">";
+        }
+        out.push_back(line);
+    }
+    return out;
+}
+
+TEST(AttachImages, ImageFollowsItsToolRun) {
+    BuiltRequest r = one_step();
+    const RequestImage images[] = {jpeg("c2")};
+    attach_images(r, images);
+    EXPECT_EQ(shape(r), (std::vector<std::string>{
+                            "system S", "user q", "assistant ", "tool c1", "tool c2",
+                            "user [Image from t.shot (call c2):] <image/jpeg 4>", "system D"}));
+    ASSERT_EQ(r.messages[5].parts.size(), 2u);
+    EXPECT_EQ(r.messages[5].parts[1].bytes.data(), kJpeg4);
+    EXPECT_TRUE(r.messages[6].movable);
+}
+
+TEST(AttachImages, ParallelCallsShareOneMessage) {
+    BuiltRequest r = one_step();
+    const RequestImage images[] = {older("c1"), jpeg("c2")};
+    attach_images(r, images);
+    EXPECT_EQ(shape(r),
+              (std::vector<std::string>{"system S", "user q", "assistant ", "tool c1", "tool c2",
+                                        "user [Image from t.shot (call c1):] [" +
+                                            std::string(kImageOmittedNewer) +
+                                            "] [Image from t.shot (call c2):] <image/jpeg 4>",
+                                        "system D"}));
+}
+
+TEST(AttachImages, OneMessagePerRun) {
+    BuiltRequest r;
+    r.messages.push_back(msg(LlmRole::System, "S"));
+    r.messages.push_back(msg(LlmRole::User, "q"));
+    r.messages.push_back(msg(LlmRole::Assistant, ""));
+    r.messages.push_back(msg(LlmRole::Tool, "{}", "c1"));
+    r.messages.push_back(msg(LlmRole::Assistant, ""));
+    r.messages.push_back(msg(LlmRole::Tool, "{}", "c2"));
+    r.messages.push_back(msg(LlmRole::Tool, "{}", "c3"));
+    r.messages.push_back(msg(LlmRole::System, "D"));
+    const RequestImage images[] = {older("c1"), jpeg("c3")};
+    attach_images(r, images);
+    EXPECT_EQ(shape(r),
+              (std::vector<std::string>{
+                  "system S", "user q", "assistant ", "tool c1",
+                  "user [Image from t.shot (call c1):] [" + std::string(kImageOmittedNewer) + "]",
+                  "assistant ", "tool c2", "tool c3",
+                  "user [Image from t.shot (call c3):] <image/jpeg 4>", "system D"}));
+}
+
+TEST(AttachImages, EstimateCountsTheImageNotItsBytes) {
+    BuiltRequest r = one_step();
+    const std::vector<uint8_t> big(100 * 1024, 0x55);
+    const RequestImage images[] = {
+        {.tool = "t.shot", .call_id = "c2", .mime = "image/jpeg", .bytes = big}};
+    attach_images(r, images);
+    const std::string_view lead = "Image from t.shot (call c2):";
+    EXPECT_EQ(r.est_tokens, 100 + kImageEstTokens + lead.size() / 3);
+}
+
+TEST(AttachImages, UnknownCallIsSkipped) {
+    BuiltRequest r = one_step();
+    const std::vector<std::string> before = shape(r);
+    const RequestImage images[] = {jpeg("c9")};
+    attach_images(r, images);
+    EXPECT_EQ(shape(r), before);
+    EXPECT_EQ(r.est_tokens, 100u);
+}
+
+TEST(AttachImages, NoImagesNoChange) {
+    BuiltRequest r = one_step();
+    const std::vector<std::string> before = shape(r);
+    attach_images(r, {});
+    EXPECT_EQ(shape(r), before);
+    EXPECT_EQ(r.est_tokens, 100u);
+    EXPECT_TRUE(r.parts.empty());
+}
+
+// The views survive a move of the request, as build() returns it.
+TEST(AttachImages, ViewsSurviveAMove) {
+    BuiltRequest r = one_step();
+    const RequestImage images[] = {jpeg("c2")};
+    attach_images(r, images);
+    const std::vector<std::string> before = shape(r);
+    BuiltRequest moved = std::move(r);
+    EXPECT_EQ(shape(moved), before);
+}
+
+}  // namespace

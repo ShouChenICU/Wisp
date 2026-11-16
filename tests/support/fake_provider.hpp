@@ -50,6 +50,11 @@ class FakeProvider final : public net::LlmProvider {
 public:
     static constexpr uint32_t kHoldMs = 10000;
 
+    // The active model {"p1", "m", 65536} with this vision flag.
+    explicit FakeProvider(bool vision = false)
+        : model_(net::LlmModelInfo{
+              .profile_id = "p1", .model = "m", .context_window = 65536, .vision = vision}) {}
+
     struct Recorded {
         std::string body;  // build_chat_body(model, messages, tools_json, dialect, vision)
         std::string tools_json;
@@ -148,8 +153,7 @@ public:
 
 private:
     mutable std::mutex mu_;
-    std::optional<net::LlmModelInfo> model_ =
-        net::LlmModelInfo{.profile_id = "p1", .model = "m", .context_window = 65536};
+    std::optional<net::LlmModelInfo> model_;
     std::deque<FakeStep> script_;
     std::vector<Recorded> calls_;
     mutable int active_model_calls_ = 0;

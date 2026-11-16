@@ -225,7 +225,7 @@ private:
 // Everything a runner needs: the store (loaded), a scripted provider, the
 // calibration and the env.
 struct Rig {
-    Rig() {
+    explicit Rig(bool vision = false) : fake(vision) {
         EXPECT_TRUE(h.worker.run_sync([&] { EXPECT_TRUE(h.store->load()); }, wisp::os::kForever));
     }
 
@@ -292,9 +292,9 @@ class TurnRunner : public ::testing::Test {
 protected:
     // A new rig in place of the old one: two harnesses cannot run at once
     // (each starts its own flash thread).
-    Rig& fresh() {
+    Rig& fresh(bool vision = false) {
         r.reset();
-        r = std::make_unique<Rig>();
+        r = std::make_unique<Rig>(vision);
         return *r;
     }
 
@@ -1128,6 +1128,240 @@ TEST_F(TurnRunner, MakeCarryBudgetCountsTheSummaries) {
     EXPECT_FALSE(carry(*r));
     EXPECT_TRUE(r->fake.calls().empty());
     EXPECT_EQ(r->env.index("state thinking"), -1);
+}
+
+// The image slot (spec 3.5): the turn's newest tool image goes to the next
+// request in a user message after its tool run; older ones become a text.
+
+const std::string kShotLead = R"({"type":"text","text":"Image from test.shot (call )";
+const std::string kShotImage =
+    R"({"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/2Q=="}})";
+
+size_t count(const std::string& hay, const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) ++n;
+    return n;
+}
+
+// "test.shot": result_json {"ok":true,"image":{...}} and the four-byte JPEG
+// FF D8 FF D9; records each call's ctx.vision.
+void add_shot(Rig& rig, std::vector<bool>* seen = nullptr, bool ok = true) {
+    agent::ToolDef def;
+    def.name = "test.shot";
+    def.description = "takes a picture";
+    def.run = [seen, ok](const Value&, agent::ToolCtx& ctx) {
+        if (seen != nullptr) seen->push_back(ctx.vision);
+        std::shared_ptr<agent::ToolImage> img = agent::make_tool_image("image/jpeg", 4);
+        const uint8_t jpeg[] = {0xFF, 0xD8, 0xFF, 0xD9};
+        std::copy(std::begin(jpeg), std::end(jpeg), img->bytes.data());
+        agent::ToolOutput o;
+        o.ok = ok;
+        o.result_json.assign(ok ? R"({"ok":true,"image":)" : R"({"ok":false,"error":"x","image":)");
+        agent::append_image_json(o.result_json, *img);
+        o.result_json.push_back('}');
+        if (!ok) o.result = Map{{"error", "x"}};
+        o.image = std::move(img);
+        return o;
+    };
+    ASSERT_TRUE(rig.h.tools->add(std::move(def)));
+}
+
+FakeStep calls_step(std::initializer_list<std::pair<const char*, const char*>> calls) {
+    FakeStep s;
+    for (const auto& [id, name] : calls)
+        s.calls.push_back({.id = id, .name = name, .arguments = "{}"});
+    s.result.finish = net::LlmFinish::ToolCalls;
+    return s;
+}
+
+std::string image_message(const std::string& id) {
+    return R"({"role":"user","content":[)" + kShotLead + id + R"():"},)" + kShotImage + "]}";
+}
+
+TEST_F(TurnRunner, ImageGoesToTheNextRequest) {
+    Rig& rig = fresh(/*vision=*/true);
+    add_shot(rig);
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[0].body.find("data:"), std::string::npos);
+    const std::string& body = calls[1].body;
+    const size_t tool = body.find("\"tool_call_id\":\"c1\"");
+    ASSERT_NE(tool, std::string::npos) << body;
+    const size_t image = body.find(image_message("c1"));
+    ASSERT_NE(image, std::string::npos) << body;
+    EXPECT_LT(tool, image);
+    EXPECT_EQ(count(body, "data:"), 1u);
+    const auto results = stored(rig, Role::Tool);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(str(results[0].text), R"({"ok":true,"image":{"mime":"image/jpeg","bytes":4}})");
+    for (const Message& m : *rig.h.store->history())
+        EXPECT_EQ(str(m.text).find("data:"), std::string::npos);
+}
+
+TEST_F(TurnRunner, OnlyTheNewestImageIsSent) {
+    Rig& rig = fresh(true);
+    add_shot(rig);
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(calls_step({{"c2", "test_shot"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    const std::string& body = calls[2].body;
+    EXPECT_EQ(count(body, "data:"), 1u) << body;
+    EXPECT_EQ(count(body, std::string(agent::kImageOmittedNewer)), 1u) << body;
+    const size_t c1 = body.find("\"tool_call_id\":\"c1\"");
+    const size_t omitted = body.find(R"({"role":"user","content":[)" + kShotLead +
+                                     R"(c1):"},{"type":"text","text":")" +
+                                     std::string(agent::kImageOmittedNewer) + R"("}]})");
+    const size_t c2 = body.find("\"tool_call_id\":\"c2\"");
+    const size_t image = body.find(image_message("c2"));
+    ASSERT_NE(omitted, std::string::npos) << body;
+    ASSERT_NE(image, std::string::npos) << body;
+    EXPECT_LT(c1, omitted);
+    EXPECT_LT(omitted, c2);
+    EXPECT_LT(c2, image);
+}
+
+TEST_F(TurnRunner, ParallelCallsShareOneImageMessage) {
+    Rig& rig = fresh(true);
+    add_shot(rig);
+    rig.fake.push(calls_step({{"c1", "test_shot"}, {"c2", "test_shot"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    const std::string& body = calls[1].body;
+    const std::string expected =
+        R"({"role":"tool","tool_call_id":"c1","content":"{\"ok\":true,\"image\":{\"mime\":\"image/jpeg\",\"bytes\":4}}"},)"
+        R"({"role":"tool","tool_call_id":"c2","content":"{\"ok\":true,\"image\":{\"mime\":\"image/jpeg\",\"bytes\":4}}"},)"
+        R"({"role":"user","content":[)" +
+        kShotLead + R"(c1):"},{"type":"text","text":")" + std::string(agent::kImageOmittedNewer) +
+        R"("},)" + kShotLead + R"(c2):"},)" + kShotImage + "]}";
+    EXPECT_NE(body.find(expected), std::string::npos) << body;
+    EXPECT_EQ(count(body, "\"role\":\"user\""), 2u) << body;
+}
+
+TEST_F(TurnRunner, NoVisionSendsNoImage) {
+    std::vector<bool> seen;
+    add_shot(*r, &seen);
+    r->fake.push(calls_step({{"c1", "test_shot"}}));
+    r->fake.push(text_step("ok"));
+    EXPECT_STREQ(r->run().status, "done");
+    EXPECT_EQ(seen, std::vector<bool>{false});
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[0].tools_json, str(r->h.tools->tools_json(false)));
+    for (const auto& c : calls) {
+        EXPECT_EQ(c.body.find("data:"), std::string::npos) << c.body;
+        EXPECT_EQ(c.body.find("Image from"), std::string::npos) << c.body;
+    }
+}
+
+TEST_F(TurnRunner, VisionPicksTheVisionArray) {
+    Rig& rig = fresh(true);
+    std::vector<bool> seen;
+    add_shot(rig, &seen);
+    agent::ToolDef only;
+    only.name = "test.look";
+    only.description = "vision only";
+    only.vision_only = true;
+    only.run = [](const Value&, agent::ToolCtx&) { return agent::ToolOutput{}; };
+    ASSERT_TRUE(rig.h.tools->add(std::move(only)));
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    EXPECT_EQ(seen, std::vector<bool>{true});
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[0].tools_json, str(rig.h.tools->tools_json(true)));
+    EXPECT_NE(calls[0].tools_json.find("test_look"), std::string::npos);
+}
+
+TEST_F(TurnRunner, TheSlotIsEmptiedAtTurnEnd) {
+    Rig& rig = fresh(true);
+    add_shot(rig);
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    rig.fake.push(text_step("again"));
+    TurnInput in = rig.input();
+    in.turn = 2;
+    in.serial = 2;
+    EXPECT_STREQ(rig.run(in, "more").status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    const std::string& body = calls[2].body;
+    EXPECT_EQ(body.find("data:"), std::string::npos) << body;
+    EXPECT_EQ(body.find("Image from"), std::string::npos) << body;
+    EXPECT_NE(body.find(R"(\"image\":{\"mime\":\"image/jpeg\",\"bytes\":4})"), std::string::npos)
+        << body;
+}
+
+TEST_F(TurnRunner, FailedToolImageIsIgnored) {
+    Rig& rig = fresh(true);
+    add_shot(rig, nullptr, /*ok=*/false);
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_NE(calls[1].body.find("\"tool_call_id\":\"c1\""), std::string::npos);
+    EXPECT_EQ(calls[1].body.find("data:"), std::string::npos) << calls[1].body;
+    EXPECT_EQ(calls[1].body.find("Image from"), std::string::npos) << calls[1].body;
+}
+
+// A length continuation re-sends the request as it was, its image included.
+TEST_F(TurnRunner, ContinuationResendsTheImage) {
+    Rig& rig = fresh(true);
+    add_shot(rig);
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(cut_step("Hel"));
+    rig.fake.push(text_step("lo"));
+    EXPECT_STREQ(rig.run().status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    EXPECT_EQ(count(calls[1].body, "data:"), 1u);
+    EXPECT_EQ(count(calls[2].body, "data:"), 1u);
+    EXPECT_NE(calls[2].body.find(image_message("c1")), std::string::npos) << calls[2].body;
+}
+
+// Under system_msgs=first the dynamic info merges into the latest user
+// message: the image message, also in later steps that bring no new image
+// (spec 3.4).
+TEST_F(TurnRunner, FirstDialectMergesContextIntoTheImageMessage) {
+    Rig& rig = fresh(true);
+    rig.context = [](agent::Source) { return agent::DeviceSnapshot{}; };
+    net::LlmModelInfo m = with_dialect({.system_msgs = wisp::core::LlmSystemMsgs::First});
+    m.vision = true;
+    rig.fake.set_model(m);
+    add_shot(rig);
+    rig.add_tool("test.echo");
+    rig.fake.push(calls_step({{"c1", "test_shot"}}));
+    rig.fake.push(calls_step({{"c2", "test_echo"}}));
+    rig.fake.push(text_step("ok"));
+    EXPECT_STREQ(rig.run().status, "done");
+    const auto calls = rig.fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    for (size_t i = 1; i < 3; ++i) {
+        SCOPED_TRACE(i);
+        const std::string& body = calls[i].body;
+        EXPECT_EQ(count(body, "\"role\":\"system\""), 1u) << body;
+        const std::string head = R"({"role":"user","content":[{"type":"text","text":"<context>\n)";
+        const size_t merged = body.find(head);
+        ASSERT_NE(merged, std::string::npos) << body;
+        // The only <context> is in the image message, before its lead.
+        EXPECT_EQ(count(body, "<context>\\n"), 1u) << body;
+        const size_t lead = body.find(kShotLead + R"(c1):"},)" + kShotImage + "]}");
+        ASSERT_NE(lead, std::string::npos) << body;
+        EXPECT_LT(merged, lead);
+        EXPECT_EQ(body.find("\"role\":\"user\"", merged + head.size()), std::string::npos) << body;
+        EXPECT_LT(body.find("\"tool_call_id\":\"c1\""), merged);
+    }
+    EXPECT_GT(calls[2].body.find("\"tool_call_id\":\"c2\""), calls[2].body.find(kShotImage));
 }
 
 }  // namespace

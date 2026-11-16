@@ -10,7 +10,8 @@
 //      with summaries in place of the turns they cover (a carry, the
 //      summary a rollover kept, is one too, at the start); tool results of
 //      earlier turns are cut to kToolResultKeepBytes, those of the turn in
-//      progress to kLiveToolResultBytes;
+//      progress to kLiveToolResultBytes; the running turn's images follow
+//      their tool runs as user messages (attach_images(), spec 3.5);
 //   3. dynamic_info(): one last system message, rebuilt for every request
 //      and never stored -- memory notes first (they change least), then the
 //      local time and weekday, the message's source, scenes, battery and
@@ -104,9 +105,38 @@ struct BuiltRequest {
     os::LargeString arena;
     // Each assistant message's calls, with wire names.
     os::LargeVector<os::LargeVector<net::LlmToolCall>> calls;
-    size_t est_tokens = 0;    // everything in `messages`, bytes / 3
+    // The content parts of the user messages attach_images() inserts, and
+    // their lead texts. Both are reserved to their final size before the
+    // first view is taken, so they never reallocate; part_text is always on
+    // the heap once used, so a move keeps the views valid.
+    os::LargeVector<net::LlmPart> parts;
+    os::LargeString part_text;
+    // Everything in `messages`: text bytes / 3, plus kImageEstTokens per
+    // image (plan decision 6).
+    size_t est_tokens = 0;
     size_t fixed_tokens = 0;  // the system prompt and the dynamic info alone
 };
+
+// What an older image of the running turn becomes in a request (spec 3.5).
+inline constexpr std::string_view kImageOmittedNewer = "[image omitted: a newer one was taken]";
+
+// One image-producing tool call of the running turn, oldest first. `bytes`
+// empty: an older image, replaced by kImageOmittedNewer.
+struct RequestImage {
+    std::string_view tool{};  // dotted name, for the lead text
+    std::string_view call_id{};
+    std::string_view mime{};
+    std::span<const uint8_t> bytes{};
+};
+
+// After each run of tool messages that answers one assistant message and
+// holds a call in `images`, inserts one user message (spec 3.5). For each
+// such call, in the run's order, it holds the text part
+// "Image from <tool> (call <id>):" and then the image part (or the text part
+// kImageOmittedNewer). Calls whose tool message is not in the request are
+// skipped. est_tokens grows by the text parts' bytes / 3 plus
+// kImageEstTokens per image sent. `images` must outlive the request.
+void attach_images(BuiltRequest& req, std::span<const RequestImage> images);
 
 // A kept reasoning text for the assistant message `seq` (spec 3.3); a view.
 struct ReasoningRef {

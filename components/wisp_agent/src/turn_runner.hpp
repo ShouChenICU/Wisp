@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -79,6 +80,12 @@ struct TurnInput {
     Source source = Source::Web;
 };
 
+// One image-producing tool call of the running turn (spec 3.5).
+struct TurnImage {
+    os::LargeString tool, call_id;
+    std::shared_ptr<const ToolImage> image;  // null once a newer image arrived
+};
+
 // Lives on wisp.agent's stack for one turn: references, small scalars, the
 // turn's model and its reasoning keep (whose entries are in PSRAM).
 class TurnRunner {
@@ -90,8 +97,8 @@ public:
     TurnRunner(const TurnRunner&) = delete;
     TurnRunner& operator=(const TurnRunner&) = delete;
 
-    // Reads llm.active_model() once (the window, the calibration's pair
-    // and the dialect), then runs the turn's requests and tools.
+    // Reads llm.active_model() once (the window, the calibration's pair,
+    // the dialect and vision), then runs the turn's requests and tools.
     Outcome run(const TurnInput& in);
 
     // The rollover's summary of the old conversation (spec 3.8). Uses
@@ -114,7 +121,10 @@ private:
     void skip_calls(std::span<const net::LlmToolCall> calls, std::string_view why);
     // The turn's dialect: the active model's, else the default one.
     core::LlmDialect dialect() const { return model_ ? model_->dialect : core::LlmDialect{}; }
-    // With the dialect's prompt wording and, under Echo, the kept reasoning.
+    // Whether the turn's model takes images.
+    bool vision() const { return model_ && model_->vision; }
+    // With the dialect's prompt wording, under Echo the kept reasoning, and
+    // the image slot's images after their tool runs.
     BuiltRequest build(std::span<const Message> h, BuildOptions opts = {}) const;
     net::LlmResult request(std::span<const net::LlmMessage> messages, std::string_view tools_json,
                            std::function<void(std::string_view)> on_text);
@@ -138,6 +148,10 @@ private:
     // This turn's reasoning, by the seq of the reply it came with; reset
     // by run(), so it never reaches another turn (spec 3.3).
     ReasoningKeep keep_;
+    // The image slot: this turn's image-producing calls, oldest first, only
+    // the last one still holding its bytes; cleared by run(). Never stored:
+    // the tool message keeps the tool's text result.
+    os::LargeVector<TurnImage> images_;
 };
 
 std::string summary(std::string_view s);  // at most kSummaryChars code points

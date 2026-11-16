@@ -354,6 +354,91 @@ BuiltRequest build_history(std::span<const Message> history, BuildOptions opts) 
     return build(history, nullptr, opts);
 }
 
+namespace {
+
+constexpr std::string_view kLeadHead = "Image from ";
+constexpr std::string_view kLeadMid = " (call ";
+constexpr std::string_view kLeadTail = "):";
+
+const RequestImage* image_for(std::span<const RequestImage> images, std::string_view call_id) {
+    for (const RequestImage& im : images)
+        if (im.call_id == call_id) return &im;
+    return nullptr;
+}
+
+size_t lead_size(const RequestImage& im) {
+    return kLeadHead.size() + im.tool.size() + kLeadMid.size() + im.call_id.size() +
+           kLeadTail.size();
+}
+
+}  // namespace
+
+void attach_images(BuiltRequest& req, std::span<const RequestImage> images) {
+    if (images.empty()) return;
+    // A first pass sizes `parts` and `part_text`, so the views taken in the
+    // second never move.
+    size_t inserts = 0, n_parts = 0, lead_bytes = 0;
+    bool run_has = false;
+    for (size_t i = 0; i <= req.messages.size(); ++i) {
+        const bool tool = i < req.messages.size() && req.messages[i].role == net::LlmRole::Tool;
+        if (!tool) {
+            if (run_has) ++inserts;
+            run_has = false;
+            continue;
+        }
+        const RequestImage* im = image_for(images, req.messages[i].tool_call_id);
+        if (im == nullptr) continue;
+        run_has = true;
+        n_parts += 2;
+        lead_bytes += lead_size(*im);
+    }
+    if (inserts == 0) return;
+    req.parts.reserve(req.parts.size() + n_parts);
+    // At least 64 bytes: never in the string's inline buffer, which a move
+    // would carry away from the views.
+    req.part_text.reserve(std::max<size_t>(64, req.part_text.size() + lead_bytes));
+
+    os::LargeVector<net::LlmMessage> out;
+    out.reserve(req.messages.size() + inserts);
+    size_t text_bytes = 0, sent = 0;
+    size_t run_first = req.parts.size();  // the parts of the run in progress
+    for (size_t i = 0; i <= req.messages.size(); ++i) {
+        const bool tool = i < req.messages.size() && req.messages[i].role == net::LlmRole::Tool;
+        if (!tool) {
+            if (req.parts.size() > run_first) {
+                net::LlmMessage& u = out.emplace_back();
+                u.role = net::LlmRole::User;
+                u.parts = {req.parts.data() + run_first, req.parts.size() - run_first};
+                run_first = req.parts.size();
+            }
+            if (i < req.messages.size()) out.push_back(req.messages[i]);
+            continue;
+        }
+        out.push_back(req.messages[i]);
+        const RequestImage* im = image_for(images, req.messages[i].tool_call_id);
+        if (im == nullptr) continue;
+        const size_t at = req.part_text.size();
+        req.part_text.append(kLeadHead.data(), kLeadHead.size());
+        req.part_text.append(im->tool.data(), im->tool.size());
+        req.part_text.append(kLeadMid.data(), kLeadMid.size());
+        req.part_text.append(im->call_id.data(), im->call_id.size());
+        req.part_text.append(kLeadTail.data(), kLeadTail.size());
+        const std::string_view lead = std::string_view(req.part_text).substr(at);
+        req.parts.push_back({.kind = net::LlmPartKind::Text, .text = lead});
+        text_bytes += lead.size();
+        if (im->bytes.empty()) {
+            req.parts.push_back({.kind = net::LlmPartKind::Text, .text = kImageOmittedNewer});
+            text_bytes += kImageOmittedNewer.size();
+        } else {
+            req.parts.push_back(
+                {.kind = net::LlmPartKind::Image, .mime = im->mime, .bytes = im->bytes});
+            ++sent;
+        }
+    }
+    req.messages = std::move(out);
+    req.est_tokens += text_bytes / 3 + sent * kImageEstTokens;
+}
+
 bool needs_compression(size_t est_tokens, uint32_t window) {
     return uint64_t{est_tokens} * 100 > uint64_t{window} * kCompressPercent;
 }

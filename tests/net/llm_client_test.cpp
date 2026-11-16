@@ -1367,6 +1367,38 @@ TEST(LlmBodyParts, FirstDialectPutsContextBeforeTheParts) {
     EXPECT_EQ(body.find(R"("role":"system")", body.find(R"("role":"user")")), std::string::npos);
 }
 
+// A movable system message before an image message (a summary in the turn):
+// under first it goes into the image message, ahead of its parts; under
+// anywhere it stays where it is (spec 3.4).
+std::vector<LlmMessage> movable_before_image() {
+    return {
+        {.role = LlmRole::System, .text = "S"},
+        {.role = LlmRole::User, .text = "q"},
+        {.role = LlmRole::System, .text = "M", .movable = true},
+        {.role = LlmRole::User, .parts = look_parts()},
+    };
+}
+
+TEST(LlmBodyParts, MovableBeforePartsGoesInFirstUnderFirst) {
+    EXPECT_EQ(
+        parts_body(movable_before_image(), true, {.system_msgs = LlmSystemMsgs::First}),
+        kBodyHead +
+            R"({"role":"system","content":"S"},{"role":"user","content":"q"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nM\n</context>"},)"
+            R"({"type":"text","text":"look:"},)"
+            R"({"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/2Q=="}}]}]})");
+}
+
+TEST(LlmBodyParts, MovableBeforePartsStaysUnderAnywhere) {
+    EXPECT_EQ(
+        parts_body(movable_before_image(), true),
+        kBodyHead +
+            R"({"role":"system","content":"S"},{"role":"user","content":"q"},)"
+            R"({"role":"system","content":"M"},)"
+            R"({"role":"user","content":[{"type":"text","text":"look:"},)"
+            R"({"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/2Q=="}}]}]})");
+}
+
 // The image's view must outlive the call: built once per test.
 LlmResult run_with_image(Fixture& f) {
     f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
