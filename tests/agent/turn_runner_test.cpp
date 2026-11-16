@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "calibration.hpp"
+#include "reasoning_keep.hpp"
 #include "support/agent_fixture.hpp"
 #include "support/fake_provider.hpp"
 #include "wisp/agent/agent_service.hpp"
@@ -22,6 +23,30 @@
 #include "wisp/ui/strings.hpp"
 
 using wisp::agent::Calibration;
+using wisp::agent::ReasoningKeep;
+
+TEST(ReasoningKeep, DropsTheOldestPastTheCap) {
+    ReasoningKeep keep(10);
+    const auto seqs = [&] {
+        std::vector<uint64_t> v;
+        for (const wisp::agent::ReasoningRef& r : keep.refs()) v.push_back(r.seq);
+        return v;
+    };
+    keep.add(1, "aaaa");
+    keep.add(2, "bbbb");
+    keep.add(3, "cccc");
+    EXPECT_EQ(seqs(), (std::vector<uint64_t>{2, 3}));
+    EXPECT_EQ(keep.bytes(), 8u);
+    ASSERT_EQ(keep.refs().size(), 2u);
+    EXPECT_EQ(keep.refs()[0].text, "bbbb");
+    EXPECT_EQ(keep.refs()[1].text, "cccc");
+    // Larger than the cap alone: not kept, and nothing else goes.
+    keep.add(4, "01234567890");
+    keep.add(0, "x");
+    keep.add(5, "");
+    EXPECT_EQ(seqs(), (std::vector<uint64_t>{2, 3}));
+    EXPECT_EQ(keep.bytes(), 8u);
+}
 
 TEST(Calibration, StartsAt100) {
     Calibration cal;
@@ -560,6 +585,94 @@ TEST_F(TurnRunner, ArmedAfterAStopAbortsAtOnce) {
     r->fake.push(std::move(s));
     r->run();
     EXPECT_EQ(seen, net::RequestWatch::Reason::Aborted);
+}
+
+net::LlmModelInfo with_dialect(wisp::core::LlmDialect d) {
+    return {.profile_id = "p1", .model = "m", .context_window = 65536, .dialect = d};
+}
+
+// Turn 1: a tool call with reasoning "r1", then a reply.
+void push_reasoned_call(Rig& rig) {
+    rig.add_tool("test.echo");
+    FakeStep call;
+    call.calls.push_back({.id = "c1", .name = "test_echo", .arguments = "{}"});
+    call.result.finish = net::LlmFinish::ToolCalls;
+    call.result.reasoning.assign("r1");
+    rig.fake.push(std::move(call));
+    rig.fake.push(text_step("ok"));
+}
+
+TEST_F(TurnRunner, ReasoningEchoedOnlyWithinTheTurn) {
+    r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
+    push_reasoned_call(*r);
+    EXPECT_STREQ(r->run().status, "done");
+    auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_NE(calls[1].body.find("\"reasoning_content\":\"r1\""), std::string::npos)
+        << calls[1].body;
+
+    // The next turn (a new runner) sends none of it.
+    r->fake.push(text_step("x"));
+    TurnInput in = r->input();
+    in.turn = 2;
+    EXPECT_STREQ(r->run(in).status, "done");
+    calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    EXPECT_EQ(calls[2].body.find("reasoning_content"), std::string::npos) << calls[2].body;
+
+    // Reasoning is never stored.
+    for (const Message& m : *r->h.store->history()) {
+        EXPECT_EQ(str(m.text).find("r1"), std::string::npos) << str(m.text);
+        for (const agent::ToolCallRec& c : m.calls)
+            EXPECT_EQ(str(c.args).find("r1"), std::string::npos);
+    }
+}
+
+TEST_F(TurnRunner, ReasoningNotKeptUnderDrop) {
+    push_reasoned_call(*r);
+    EXPECT_STREQ(r->run().status, "done");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[1].body.find("reasoning_content"), std::string::npos) << calls[1].body;
+}
+
+// The connection dropped after finish_reason: the calls run, but the
+// attempt was cut, so its reasoning is not echoed (plan decision 7).
+TEST_F(TurnRunner, ReasoningOfACutAttemptIsNotKept) {
+    r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
+    r->add_tool("test.echo");
+    FakeStep call;
+    call.deltas = {"t"};
+    call.calls.push_back({.id = "c1", .name = "test_echo", .arguments = "{}"});
+    call.result.finish = net::LlmFinish::ToolCalls;
+    call.result.error = net::LlmError::Transport;
+    call.result.reasoning.assign("r1");
+    r->fake.push(std::move(call));
+    r->fake.push(text_step("ok"));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_EQ(out.steps, 1u);
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_NE(calls[1].body.find("\"tool_call_id\":\"c1\""), std::string::npos) << calls[1].body;
+    EXPECT_EQ(calls[1].body.find("reasoning_content"), std::string::npos) << calls[1].body;
+}
+
+TEST_F(TurnRunner, PromptFollowsTheDialect) {
+    r->context = [](agent::Source) { return agent::DeviceSnapshot{}; };
+    r->fake.set_model(with_dialect({.system_msgs = wisp::core::LlmSystemMsgs::First}));
+    r->fake.push(text_step("hi"));
+    EXPECT_STREQ(r->run().status, "done");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 1u);
+    const std::string& body = calls[0].body;
+    EXPECT_NE(body.find("The <context> block at the start of the latest user message"),
+              std::string::npos)
+        << body;
+    const std::string system = "\"role\":\"system\"";
+    const size_t at = body.find(system);
+    ASSERT_NE(at, std::string::npos);
+    EXPECT_EQ(body.find(system, at + 1), std::string::npos) << body;
 }
 
 }  // namespace

@@ -42,9 +42,11 @@ std::string summary(std::string_view s) {
 Outcome TurnRunner::run(const TurnInput& in) {
     in_ = in;
     Outcome out;
-    // The provider's active model's context window, model and profile,
-    // read once per turn.
-    const std::optional<net::LlmModelInfo> m = llm_.active_model();
+    keep_ = ReasoningKeep();
+    // The provider's active model's context window, model, profile and
+    // dialect, read once per turn.
+    model_ = llm_.active_model();
+    const std::optional<net::LlmModelInfo>& m = model_;
     const uint32_t window = m ? m->context_window : kDefaultContextWindow;
     cal_.begin_turn(m ? std::string_view(m->profile_id) : std::string_view(),
                     m ? std::string_view(m->model) : std::string_view());
@@ -106,6 +108,11 @@ void TurnRunner::skip_calls(std::span<const net::LlmToolCall> calls, std::string
 }
 
 BuiltRequest TurnRunner::build(std::span<const Message> h, BuildOptions opts) const {
+    const core::LlmDialect dl = dialect();
+    opts.system_msgs = dl.system_msgs;
+    // Only what is sent counts in the estimate: without Echo the body
+    // drops reasoning, so none is attached.
+    if (dl.reasoning == core::LlmReasoning::Echo) opts.reasoning = keep_.refs();
     if (!context_) return build_history(h, opts);
     DeviceSnapshot d = context_(in_.source);
     d.source = in_.source;
@@ -353,7 +360,14 @@ const char* TurnRunner::loop(uint32_t window, Outcome& out) {
             reply.calls.push_back(std::move(rec));
         }
         if (!res.text.empty()) out.last_text = res.text;
-        if (!reply.text.empty() || !reply.calls.empty()) env_.append(std::move(reply));
+        if (!reply.text.empty() || !reply.calls.empty()) {
+            const uint64_t seq = env_.append(std::move(reply));
+            // A reply whose connection dropped after finish_reason is
+            // whole enough to store, but its reasoning may be cut, and a
+            // cut reasoning block is never echoed.
+            if (res.error == net::LlmError::None && dialect().reasoning == core::LlmReasoning::Echo)
+                keep_.add(seq, sv(res.reasoning));
+        }
         if (res.tool_calls.empty()) {
             if (env_.aborted()) return finish_abort(out);
             return "done";

@@ -1045,6 +1045,50 @@ TEST(LlmDialectBody, FirstWithoutAUserKeepsSystem) {
                   kGoldenTools + "}");
 }
 
+// Movable blocks in a row keep their order inside the user message that
+// takes them, both before a user message and after the last one.
+TEST(LlmDialectBody, FirstKeepsSeveralMovablesInOrder) {
+    const std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "P"},
+        {.role = LlmRole::System, .text = "S1", .movable = true},
+        {.role = LlmRole::System, .text = "S2", .movable = true},
+        {.role = LlmRole::User, .text = "u1"},
+        {.role = LlmRole::Assistant, .text = "a1"},
+        {.role = LlmRole::User, .text = "u2"},
+        {.role = LlmRole::System, .text = "D1", .movable = true},
+        {.role = LlmRole::System, .text = "D2", .movable = true},
+    };
+    EXPECT_EQ(
+        body_of(msgs, {.system_msgs = LlmSystemMsgs::First}, ""),
+        kBodyHead +
+            R"({"role":"system","content":"P"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nS1\n</context>"},)"
+            R"({"type":"text","text":"<context>\nS2\n</context>"},{"type":"text","text":"u1"}]},)"
+            R"({"role":"assistant","content":"a1"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nD1\n</context>"},)"
+            R"({"type":"text","text":"<context>\nD2\n</context>"},{"type":"text","text":"u2"}]}]})");
+}
+
+// A movable block after the last user message, past the assistant's reply,
+// goes back into that user message ahead of the blocks before it; the
+// messages between keep their place.
+TEST(LlmDialectBody, FirstMovesATrailingMovableBackPastTheReply) {
+    const std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "P"},
+        {.role = LlmRole::System, .text = "S", .movable = true},
+        {.role = LlmRole::User, .text = "u1"},
+        {.role = LlmRole::Assistant, .text = "a1"},
+        {.role = LlmRole::System, .text = "D", .movable = true},
+    };
+    EXPECT_EQ(
+        body_of(msgs, {.system_msgs = LlmSystemMsgs::First}, ""),
+        kBodyHead +
+            R"({"role":"system","content":"P"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nD\n</context>"},)"
+            R"({"type":"text","text":"<context>\nS\n</context>"},{"type":"text","text":"u1"}]},)"
+            R"({"role":"assistant","content":"a1"}]})");
+}
+
 TEST(LlmDialectBody, AnywhereIgnoresMovable) {
     std::vector<LlmMessage> msgs = {
         {.role = LlmRole::System, .text = "P"},

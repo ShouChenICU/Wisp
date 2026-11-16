@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "calibration.hpp"
+#include "reasoning_keep.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/context.hpp"
 #include "wisp/agent/conversation.hpp"
@@ -78,8 +79,8 @@ struct TurnInput {
     Source source = Source::Web;
 };
 
-// Lives on wisp.agent's stack for one turn: references and small scalars
-// only.
+// Lives on wisp.agent's stack for one turn: references, small scalars, the
+// turn's model and its reasoning keep (whose entries are in PSRAM).
 class TurnRunner {
 public:
     TurnRunner(net::LlmProvider& llm, ToolRegistry& tools, ConversationStore& store,
@@ -89,8 +90,8 @@ public:
     TurnRunner(const TurnRunner&) = delete;
     TurnRunner& operator=(const TurnRunner&) = delete;
 
-    // Reads llm.active_model() once (the window and the calibration's
-    // pair), then runs the turn's requests and tools.
+    // Reads llm.active_model() once (the window, the calibration's pair
+    // and the dialect), then runs the turn's requests and tools.
     Outcome run(const TurnInput& in);
 
 private:
@@ -102,6 +103,9 @@ private:
     void note_text(std::string_view text, Outcome* out = nullptr);
     const char* finish_abort(Outcome& out);
     void skip_calls(std::span<const net::LlmToolCall> calls, std::string_view why);
+    // The turn's dialect: the active model's, else the default one.
+    core::LlmDialect dialect() const { return model_ ? model_->dialect : core::LlmDialect{}; }
+    // With the dialect's prompt wording and, under Echo, the kept reasoning.
     BuiltRequest build(std::span<const Message> h, BuildOptions opts = {}) const;
     net::LlmResult request(std::span<const net::LlmMessage> messages, std::string_view tools_json,
                            std::function<void(std::string_view)> on_text);
@@ -117,6 +121,11 @@ private:
     Calibration& cal_;
     TurnEnv& env_;
     TurnInput in_{};
+    // Read once per turn in run(), so every step sees the same model.
+    std::optional<net::LlmModelInfo> model_;
+    // This turn's reasoning, by the seq of the reply it came with; reset
+    // by run(), so it never reaches another turn (spec 3.3).
+    ReasoningKeep keep_;
 };
 
 std::string_view sv(const os::LargeString& s);

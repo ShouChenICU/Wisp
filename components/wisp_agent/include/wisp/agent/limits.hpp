@@ -40,6 +40,8 @@ inline constexpr uint32_t kDefaultContextWindow = 65536;
 inline constexpr uint32_t kCompressPercent = 75;
 inline constexpr uint32_t kCompressTargetPercent = 40;
 inline constexpr uint32_t kKeepRecentTurns = 2;
+// The reasoning of the running turn kept for echo (spec 3.3, decision 3).
+inline constexpr size_t kReasoningKeepBytes = 64 * 1024;
 
 // An unanswered confirmation dialog counts as a refusal after this long.
 inline constexpr uint32_t kConfirmMs = 30000;
