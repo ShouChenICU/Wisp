@@ -402,7 +402,8 @@ wisp_test(NAME shell_talk_overlay_test SRCS shell/talk_overlay_test.cpp
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
-foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_firmware_test
+foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_mcp_test
+                   routes_firmware_test
                    routes_scenes_test routes_power_test routes_scene_files_test routes_memory_test
                    ws_hub_test)
     wisp_test(NAME ${admin_test} SRCS admin/${admin_test}.cpp
