@@ -532,6 +532,9 @@ wisp_test(NAME tool_registry_heap_test SRCS agent/tool_registry_heap_test.cpp
 # The MCP provider against FakeMcpServer behind a real SceneHttp.
 wisp_test(NAME mcp_tool_provider_test SRCS agent/mcp_tool_provider_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+# The mcp.* tools over a real McpServerService and McpToolProvider.
+wisp_test(NAME mcp_tools_test SRCS agent/mcp_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME context_test SRCS agent/context_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME agent_loop_test SRCS agent/agent_loop_test.cpp

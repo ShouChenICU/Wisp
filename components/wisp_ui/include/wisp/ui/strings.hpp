@@ -253,6 +253,12 @@ enum class StrId : uint16_t {
     // lua.run's note (agent-tools spec 4.1).
     AgentNoteLuaRun,
     AgentNoteToolCall,
+    // The mcp.* tools' notes (llm-tool-providers spec 4.3), "{}" the
+    // server's name.
+    AgentNoteMcpAdded,
+    AgentNoteMcpRemoved,
+    AgentNoteMcpEnabled,
+    AgentNoteMcpDisabled,
     // Device confirmations (spec 6.1): deleting a scene, followed by
     // AgentConfirmWithData when its data goes too; removing one of its
     // files ("{}" the scene's name, then the file name).
@@ -556,6 +562,10 @@ enum class StrId : uint16_t {
     ActLuaRun,
     ActToolsFind,
     ActToolsCall,
+    ActMcpServers,
+    ActMcpAdd,
+    ActMcpRemove,
+    ActMcpEnable,
 
     Count,  // not a string; keep last
 };
