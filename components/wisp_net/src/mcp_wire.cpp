@@ -44,6 +44,23 @@ os::LargeString mcp_list_body(int64_t id, std::string_view cursor) {
     return out;
 }
 
+os::LargeString mcp_call_body(int64_t id, std::string_view tool, std::string_view args_json) {
+    os::LargeString out;
+    out.reserve(args_json.size() + tool.size() + 96);
+    out += R"({"jsonrpc":"2.0","id":)";
+    append_id(out, id);
+    out += R"(,"method":"tools/call","params":{"name":)";
+    append_json_string(out, tool);
+    out += R"(,"arguments":)";
+    if (args_json.empty()) {
+        out += "{}";
+    } else {
+        out.append(args_json.data(), args_json.size());
+    }
+    out += "}}";
+    return out;
+}
+
 void append_clean_utf8(os::LargeString& out, std::string_view s, size_t max_bytes) {
     static constexpr std::string_view kReplacement = "\xef\xbf\xbd";
     size_t i = 0;

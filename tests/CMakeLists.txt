@@ -352,6 +352,8 @@ wisp_test(NAME request_watch_test SRCS net/request_watch_test.cpp LIBS wisp_net 
 wisp_test(NAME time_sync_test SRCS net/time_sync_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME mcp_client_test SRCS net/mcp_client_test.cpp
           LIBS wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
+# secret_scrub.hpp is wisp_net's internal header.
+target_include_directories(mcp_client_test PRIVATE ${WISP_ROOT}/components/wisp_net/src)
 # Replaces the global operator new/delete to count the default heap.
 wisp_test(NAME mcp_client_heap_test SRCS net/mcp_client_heap_test.cpp
           LIBS wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)

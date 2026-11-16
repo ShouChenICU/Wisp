@@ -8,6 +8,7 @@
 
 #include "large_json.hpp"
 #include "mcp_wire.hpp"
+#include "secret_scrub.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 
@@ -117,12 +118,33 @@ void log_request(std::string_view server_id, std::string_view method, const McpF
     }
 }
 
+// Whether `text` quotes any of the server's header values, whole or in
+// part (spec 4.4 "Scrubbing").
+bool quotes_a_credential(std::string_view text, const core::McpServerTarget& target) {
+    return std::any_of(target.headers.begin(), target.headers.end(), [&](const auto& h) {
+        return detail::holds_secret_piece(text, std::string_view(h.second));
+    });
+}
+
+// A server's message as it may reach the model: kWithheldMessage when it
+// quotes a credential, else valid UTF-8 cut to `max_bytes`.
+void set_server_text(os::LargeString& out, std::string_view text,
+                     const core::McpServerTarget& target, size_t max_bytes) {
+    out.clear();
+    if (quotes_a_credential(text, target)) {
+        out.assign(detail::kWithheldMessage.data(), detail::kWithheldMessage.size());
+        return;
+    }
+    detail::append_clean_utf8(out, text, max_bytes);
+}
+
 // Sends one JSON-RPC message and waits for its answer (see the file
 // header). `id` 0 is a notification: any 2xx answers it, its body unread.
+// `timeout_ms` and `cap` bound the request and its answer.
 Exchange send(const Link& l, const McpSession& s, std::string_view method, int64_t id,
-              os::LargeString body) {
+              os::LargeString body, uint32_t timeout_ms = kMcpRequestTimeoutMs,
+              size_t cap = kMcpMaxResponse) {
     const bool notification = id == 0;
-    const size_t cap = kMcpMaxResponse;
     const uint64_t started = os::now_ms();
     Exchange ex;
 
@@ -148,7 +170,7 @@ Exchange send(const Link& l, const McpSession& s, std::string_view method, int64
             req.headers.emplace_back("Mcp-Session-Id", std::string(s.id.data(), s.id.size()));
         req.headers.emplace_back("MCP-Protocol-Version", s.protocol);
     }
-    req.timeout_ms = kMcpRequestTimeoutMs;
+    req.timeout_ms = timeout_ms;
     req.max_redirects = 2;
     req.body = std::move(body);
     req.max_body = cap;
@@ -164,7 +186,7 @@ Exchange send(const Link& l, const McpSession& s, std::string_view method, int64
     });
 
     // kMcpWaitSlackMs: see its comment; past it the wait gives up as "timeout".
-    const uint64_t guard = l.now() + kMcpRequestTimeoutMs + kMcpWaitSlackMs;
+    const uint64_t guard = l.now() + timeout_ms + kMcpWaitSlackMs;
     for (;;) {
         if (pending->done.take(kPollMs)) break;
         if (l.wait.cancelled && l.wait.cancelled()) {
@@ -204,8 +226,8 @@ Exchange send(const Link& l, const McpSession& s, std::string_view method, int64
             if (err.type() != JsonView::Type::Null) {
                 ex.failure = failure(McpError::RpcError);
                 ex.failure.rpc_code = err.find("code").integer().value_or(0);
-                detail::append_clean_utf8(ex.failure.message, err.find("message").string(),
-                                          kMaxMessageBytes);
+                set_server_text(ex.failure.message, err.find("message").string(), l.target,
+                                kMaxMessageBytes);
             } else if (root.find("result").type() != JsonView::Type::Object) {
                 ex.failure = failure(McpError::BadResponse);
             }
@@ -353,6 +375,121 @@ McpListResult list_all(const Link& l, McpSession& s) {
     return out;
 }
 
+bool has_tool(const os::LargeVector<McpTool>& tools, std::string_view name) {
+    return std::any_of(tools.begin(), tools.end(),
+                       [&](const McpTool& t) { return std::string_view(t.name) == name; });
+}
+
+// Sends tools/call, initializing first when needed. A 404 to a request
+// that carried a session re-initializes once and retries the call once
+// (the session rule of spec 4.2; never any other retry).
+Exchange call_once(const Link& l, McpSession& s, std::string_view tool, std::string_view args_json,
+                   uint32_t timeout_ms) {
+    Exchange ex;
+    if (!s.initialized) {
+        ex.failure = initialize(l, s);
+        if (ex.failure.error != McpError::None) return ex;
+    }
+    bool reinitialized = false;
+    for (;;) {
+        const bool had_session = !s.id.empty();
+        const int64_t id = s.next_request++;
+        ex = send(l, s, "tools/call", id, detail::mcp_call_body(id, tool, args_json), timeout_ms,
+                  kMcpMaxCallResponse);
+        if (ex.failure.error == McpError::Unavailable && ex.failure.http_status == 404 &&
+            had_session && !reinitialized) {
+            reinitialized = true;
+            ex = {};
+            ex.failure = initialize(l, s);
+            if (ex.failure.error != McpError::None) return ex;
+            continue;
+        }
+        return ex;
+    }
+}
+
+// Whether a JSON-RPC error to tools/call says the tool is unknown: the
+// invalid-params code servers use for it, or a message that says so.
+bool says_unknown_tool(const McpFailure& f) {
+    if (f.rpc_code == -32602) return true;
+    std::string lower(std::string_view(f.message).substr(0, kMaxMessageBytes));
+    for (char& c : lower)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return lower.find("tool") != std::string::npos &&
+           (lower.find("unknown") != std::string::npos ||
+            lower.find("not found") != std::string::npos);
+}
+
+// The bytes base64 `data` decodes to; padding and line breaks are not data.
+size_t base64_decoded_size(std::string_view data) {
+    const size_t chars = static_cast<size_t>(std::count_if(data.begin(), data.end(), [](char c) {
+        return c != '=' && c != '\r' && c != '\n' && c != ' ' && c != '\t';
+    }));
+    return chars * 3 / 4;
+}
+
+// A tools/call result as the text the model gets (spec 4.4 "Results";
+// plan decisions 3 and 7): the content items in order, joined with "\n",
+// then structuredContent when no item was text. All of it valid UTF-8, as
+// the LLM request body takes it unrepaired.
+os::LargeString call_text(JsonView result) {
+    constexpr size_t kMaxText = kMcpMaxCallResponse;
+    constexpr size_t kMaxField = 1024;
+    os::LargeString out;
+    bool any = false;
+    auto next = [&] {
+        if (any) out += '\n';
+        any = true;
+    };
+    auto field = [&](std::string_view v) {
+        detail::append_clean_utf8(out, v, std::min(kMaxText, out.size() + kMaxField));
+    };
+    bool has_text = false;
+    const JsonView content = result.find("content");
+    const size_t n = content.type() == JsonView::Type::Array ? content.size() : 0;
+    for (size_t i = 0; i < n; ++i) {
+        const JsonView item = content.at(i);
+        const std::string_view type = item.find("type").string();
+        if (type == "text") {
+            has_text = true;
+            next();
+            detail::append_clean_utf8(out, item.find("text").string(), kMaxText);
+        } else if (type == "image") {
+            next();
+            out += "[image omitted: ";
+            field(item.find("mimeType").string());
+            out += ", ";
+            const std::string bytes =
+                std::to_string(base64_decoded_size(item.find("data").string()));
+            out.append(bytes.data(), bytes.size());
+            out += " bytes]";
+        } else if (type == "resource_link") {
+            next();
+            out += "[resource: ";
+            field(item.find("name").string());
+            out += ' ';
+            field(item.find("uri").string());
+            out += ']';
+        } else if (type == "audio") {
+            next();
+            out += "[audio omitted]";
+        } else if (type == "resource") {
+            next();
+            out += "[resource omitted]";
+        }
+    }
+    const JsonView structured = result.find("structuredContent");
+    if (!has_text && structured.type() != JsonView::Type::Null) {
+        os::LargeString json;
+        structured.append_to(json);
+        next();
+        // A string inside may hold bytes that are not UTF-8; replacing them
+        // keeps the JSON valid (every byte past ASCII is inside a string).
+        detail::append_clean_utf8(out, json, kMaxText);
+    }
+    return out;
+}
+
 }  // namespace
 
 McpClient::McpClient(SceneHttp& http, core::McpServerService& servers, McpClientConfig config)
@@ -440,10 +577,58 @@ McpListResult McpClient::list_tools(std::string_view server_id, const McpWait& w
     return out;
 }
 
-McpCallResult McpClient::call_tool(std::string_view, std::string_view, std::string_view,
-                                   const McpWait&) {
+McpCallResult McpClient::call_tool(std::string_view server_id, std::string_view tool,
+                                   std::string_view args_json, const McpWait& wait) {
     McpCallResult out;
-    out.failure = failure(McpError::NotFound);
+    McpListResult listed = list_tools(server_id, wait);
+    if (listed.failure.error != McpError::None) {
+        out.failure = std::move(listed.failure);
+        return out;
+    }
+    const auto target = servers_.resolve_for_request(server_id);
+    if (!has_tool(listed.tools, tool) || !target) {
+        out.failure = failure(McpError::NotFound);
+        return out;
+    }
+    listed = {};
+
+    auto find_state = [&] {
+        return std::find_if(state_.begin(), state_.end(), [&](const Server& s) {
+            return std::string_view(s.id) == target->id && s.revision == target->revision;
+        });
+    };
+    McpSession session;
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        if (auto it = find_state(); it != state_.end()) session = it->session;
+    }
+    const Link link{http_, *target, config_.client_version, config_.now_ms, wait};
+    Exchange ex = call_once(link, session, tool, args_json, target->timeout_ms);
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        if (auto it = find_state(); it != state_.end()) it->session = std::move(session);
+    }
+    // A failed call starts no backoff: the server answered its list, and a
+    // slow or failing tool says little about its others.
+
+    if (ex.failure.error == McpError::RpcError && says_unknown_tool(ex.failure)) {
+        // Plan decision 16: refresh once; the call itself is not retried.
+        const McpListResult fresh = list_tools(server_id, wait, /*refresh=*/true);
+        if (fresh.failure.error == McpError::None && !has_tool(fresh.tools, tool)) {
+            out.failure = failure(McpError::NotFound);
+            return out;
+        }
+    }
+    if (ex.failure.error != McpError::None) {
+        out.failure = std::move(ex.failure);
+        return out;
+    }
+    const JsonView result = ex.doc->root().find("result");
+    out.is_error = result.find("isError").boolean();
+    out.text = call_text(result);
+    // A tool's error text is a server message like a JSON-RPC error's.
+    if (out.is_error && quotes_a_credential(out.text, *target))
+        out.text.assign(detail::kWithheldMessage.data(), detail::kWithheldMessage.size());
     return out;
 }
 

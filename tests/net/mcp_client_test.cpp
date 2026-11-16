@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "secret_scrub.hpp"
 #include "support/fake_devices.hpp"
 #include "support/fake_io_queue.hpp"
 #include "support/fake_mcp_server.hpp"
@@ -569,6 +570,293 @@ TEST_F(McpClientTest, ProbeMapsCategories) {
     p = McpClient::probe(*http, target, "1");
     EXPECT_FALSE(p.ok);
     EXPECT_EQ(p.error, "unsupported_protocol");
+}
+
+}  // namespace
+
+namespace {
+
+using wisp::net::McpCallResult;
+
+class McpClientCallTest : public McpClientTest {
+protected:
+    McpCallResult call(std::string_view tool = "read", std::string_view args = R"({"path":"/a"})",
+                       const McpWait& wait = {}) {
+        return client->call_tool("files", tool, args, wait);
+    }
+
+    // Answers every tools/call with `result`.
+    void answer(std::string result) {
+        fake.on_call = [result = std::move(result)](std::string_view, const wisp::Value&) {
+            return wisp::test::FakeMcpAnswer{.result = result, .error = ""};
+        };
+    }
+    void fail(std::string error) {
+        fake.on_call = [error = std::move(error)](std::string_view, const wisp::Value&) {
+            return wisp::test::FakeMcpAnswer{.result = "", .error = error};
+        };
+    }
+};
+
+TEST_F(McpClientCallTest, CallSendsNameAndArguments) {
+    answer(R"({"content":[{"type":"text","text":"done"}]})");
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_FALSE(r.is_error);
+    EXPECT_EQ(str(r.text), "done");
+
+    const auto reqs = fake.requests();
+    ASSERT_EQ(reqs.back().method, "tools/call");
+    const wisp::Value& p = reqs.back().params;
+    ASSERT_NE(p.find("name"), nullptr);
+    EXPECT_EQ(p.find("name")->as_string(), "read");
+    const wisp::Value* args = p.find("arguments");
+    ASSERT_NE(args, nullptr);
+    ASSERT_EQ(args->type(), wisp::Value::Type::Map);
+    EXPECT_EQ(args->find("path")->as_string(), "/a");
+    EXPECT_EQ(reqs.back().header("Mcp-Session-Id"), "s-1");
+    EXPECT_EQ(reqs.back().header("MCP-Protocol-Version"), "2025-06-18");
+    EXPECT_EQ(reqs.back().header("Authorization"), std::string("Bearer ") + kSecret);
+}
+
+TEST_F(McpClientCallTest, CallJoinsContentInOrder) {
+    answer(R"({"content":[)"
+           R"({"type":"text","text":"a"},)"
+           R"({"type":"image","mimeType":"image/png","data":")" +
+           std::string(400, 'A') +
+           R"("},)"
+           R"({"type":"resource_link","name":"n","uri":"u"},)"
+           R"({"type":"audio","mimeType":"audio/wav","data":"AAAA"},)"
+           R"({"type":"resource","resource":{"uri":"x","text":"t"}},)"
+           R"({"type":"text","text":"b"}]})");
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text),
+              "a\n[image omitted: image/png, 300 bytes]\n[resource: n u]\n[audio omitted]\n"
+              "[resource omitted]\nb");
+}
+
+TEST_F(McpClientCallTest, ImageSizeCountsPadding) {
+    // 299 bytes: 400 characters ending "=", 298: "==".
+    answer(R"({"content":[{"type":"image","mimeType":"image/jpeg","data":")" +
+           std::string(399, 'A') + R"(="},{"type":"image","mimeType":"image/jpeg","data":")" +
+           std::string(398, 'A') + R"(=="}]})");
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text),
+              "[image omitted: image/jpeg, 299 bytes]\n[image omitted: image/jpeg, 298 bytes]");
+}
+
+TEST_F(McpClientCallTest, StructuredContentOnlyWithoutText) {
+    answer(R"({"content":[{"type":"text","text":"{\"n\":1}"}],"structuredContent":{"n":1}})");
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text), R"({"n":1})");
+
+    answer(R"({"content":[],"structuredContent":{ "n" : 1 }})");
+    r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text), R"({"n":1})");
+
+    answer(
+        R"({"content":[{"type":"resource_link","name":"n","uri":"u"}],"structuredContent":{"n":1}})");
+    r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text), "[resource: n u]\n{\"n\":1}");
+}
+
+// Server text reaches the LLM request body as it is, so it must be valid
+// UTF-8 here (JsonView::write keeps a string's bytes).
+TEST_F(McpClientCallTest, ServerTextIsMadeValidUtf8) {
+    fake.raw_body.clear();
+    answer(
+        "{\"content\":[{\"type\":\"text\",\"text\":\"ok\xff\"}],"
+        "\"structuredContent\":{\"k\":\"v\xfe\"}}");
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text), "ok\xef\xbf\xbd");
+
+    answer("{\"content\":[],\"structuredContent\":{\"k\":\"v\xfe\"}}");
+    r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_TRUE(wisp::test::is_valid_utf8(str(r.text)));
+    EXPECT_EQ(str(r.text), "{\"k\":\"v\xef\xbf\xbd\"}");
+}
+
+TEST_F(McpClientCallTest, IsErrorIsReported) {
+    answer(R"({"content":[{"type":"text","text":"no such file"}],"isError":true})");
+    McpCallResult r = call();
+    EXPECT_EQ(r.failure.error, McpError::None);
+    EXPECT_TRUE(r.is_error);
+    EXPECT_EQ(str(r.text), "no such file");
+}
+
+TEST_F(McpClientCallTest, RpcErrorCarriesCodeAndMessage) {
+    fail(R"({"code":-32000,"message":"disk full"})");
+    McpCallResult r = call();
+    EXPECT_EQ(r.failure.error, McpError::RpcError);
+    EXPECT_EQ(r.failure.rpc_code, -32000);
+    EXPECT_EQ(str(r.failure.message), "disk full");
+    EXPECT_EQ(fake.count("tools/call"), 1u);
+    // A call's failure is not the server's: it is still listed, not backing off.
+    EXPECT_EQ(client->status()[0].error, "");
+}
+
+TEST_F(McpClientCallTest, QuotedCredentialIsWithheld) {
+    const std::string kWithheld(wisp::net::detail::kWithheldMessage);
+    for (const std::string msg :
+         {std::string("bad token ") + kSecret, std::string("prefix SECRET-1 suffix")}) {
+        fail(R"({"code":-32001,"message":")" + msg + R"("})");
+        McpCallResult r = call();
+        EXPECT_EQ(r.failure.error, McpError::RpcError);
+        EXPECT_EQ(str(r.failure.message), kWithheld) << msg;
+    }
+    fail(R"({"code":-32001,"message":"invalid"})");
+    EXPECT_EQ(str(call().failure.message), "invalid");
+
+    // A tool's own error text is a server message too.
+    answer(std::string(R"({"content":[{"type":"text","text":"rejected )") + kSecret +
+           R"("}],"isError":true})");
+    McpCallResult r = call();
+    EXPECT_TRUE(r.is_error);
+    EXPECT_EQ(str(r.text), kWithheld);
+
+    // So is a JSON-RPC error while listing.
+    client = std::make_unique<McpClient>(*http, *servers, config());
+    fake.raw_body =
+        std::string(R"({"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"no )") + kSecret +
+        R"("}})";
+    McpListResult l = list();
+    EXPECT_EQ(l.failure.error, McpError::RpcError);
+    EXPECT_EQ(str(l.failure.message), kWithheld);
+}
+
+TEST_F(McpClientCallTest, UnknownToolRefreshesTheListAndIsNotRetried) {
+    fail(R"({"code":-32602,"message":"Unknown tool: read"})");
+    ASSERT_EQ(list().failure.error, McpError::None);
+    fake.tools = {FakeMcpServer::tool("write")};
+    McpCallResult r = call();
+    EXPECT_EQ(r.failure.error, McpError::NotFound);
+    EXPECT_EQ(fake.count("tools/call"), 1u);
+    EXPECT_EQ(fake.count("tools/list"), 2u);
+
+    // A message that says so, with another code, does the same.
+    fake.tools = {FakeMcpServer::tool("read"), FakeMcpServer::tool("write")};
+    ASSERT_EQ(list(/*refresh=*/true).failure.error, McpError::None);
+    fail(R"({"code":-32000,"message":"Tool read not found"})");
+    fake.tools = {FakeMcpServer::tool("write")};
+    EXPECT_EQ(call().failure.error, McpError::NotFound);
+    EXPECT_EQ(fake.count("tools/call"), 2u);
+}
+
+TEST_F(McpClientCallTest, UnknownToolStillListedIsRpcError) {
+    fail(R"({"code":-32602,"message":"Invalid params"})");
+    McpCallResult r = call();
+    EXPECT_EQ(r.failure.error, McpError::RpcError);
+    EXPECT_EQ(r.failure.rpc_code, -32602);
+    EXPECT_EQ(str(r.failure.message), "Invalid params");
+    EXPECT_EQ(fake.count("tools/call"), 1u);
+    EXPECT_EQ(fake.count("tools/list"), 2u);
+}
+
+TEST_F(McpClientCallTest, ToolNotInTheListIsNotFoundWithoutACall) {
+    EXPECT_EQ(call("delete").failure.error, McpError::NotFound);
+    EXPECT_EQ(fake.count("tools/call"), 0u);
+
+    McpServerUpdate u;
+    u.enabled = false;
+    ASSERT_TRUE(servers->update("files", u));
+    EXPECT_EQ(call().failure.error, McpError::NotFound);
+    EXPECT_EQ(client->call_tool("nope", "read", "{}", {}).failure.error, McpError::NotFound);
+    EXPECT_EQ(fake.count("tools/call"), 0u);
+}
+
+TEST_F(McpClientCallTest, CallUsesTheServersTimeout) {
+    McpServerUpdate u;
+    u.timeout_ms = 1000;
+    ASSERT_TRUE(servers->update("files", u));
+    ASSERT_EQ(list().failure.error, McpError::None);
+    fake.hold = true;
+    const uint64_t start = real_ms();
+    McpCallResult r = call();
+    const uint64_t took = real_ms() - start;
+    EXPECT_EQ(r.failure.error, McpError::Unavailable);
+    EXPECT_EQ(r.failure.category, "timeout");
+    EXPECT_GE(took, 900u);
+    EXPECT_LT(took, 3000u);
+}
+
+TEST_F(McpClientCallTest, CallDeadlineAndCancel) {
+    ASSERT_EQ(list().failure.error, McpError::None);
+    fake.hold = true;
+    McpCallResult r = call("read", "{}", McpWait{.deadline_ms = now() + 200, .cancelled = {}});
+    EXPECT_EQ(r.failure.error, McpError::Timeout);
+    r = call("read", "{}", McpWait{.deadline_ms = 0, .cancelled = [] { return true; }});
+    EXPECT_EQ(r.failure.error, McpError::Cancelled);
+}
+
+TEST_F(McpClientCallTest, CallResponseOver1MiBIsBadResponse) {
+    answer(R"({"content":[{"type":"text","text":")" + std::string(1024 * 1024 + 10, 't') +
+           R"("}]})");
+    EXPECT_EQ(call().failure.error, McpError::BadResponse);
+    fake.sse = true;
+    EXPECT_EQ(call().failure.error, McpError::BadResponse);
+
+    // Up to the cap is fine (past the 512 KiB list cap).
+    fake.sse = false;
+    answer(R"({"content":[{"type":"text","text":")" + std::string(700 * 1024, 't') + R"("}]})");
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(r.text.size(), 700u * 1024);
+}
+
+TEST_F(McpClientCallTest, ExpiredSessionReinitializesAndRetriesTheCallOnce) {
+    answer(R"({"content":[{"type":"text","text":"done"}]})");
+    ASSERT_EQ(list().failure.error, McpError::None);
+    fake.expire_sessions = 1;
+    McpCallResult r = call();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(str(r.text), "done");
+    EXPECT_EQ(fake.count("initialize"), 2u);
+    EXPECT_EQ(fake.count("tools/call"), 2u);
+
+    fake.expire_sessions = 2;
+    r = call();
+    EXPECT_EQ(r.failure.error, McpError::Unavailable);
+    EXPECT_EQ(r.failure.http_status, 404);
+    EXPECT_EQ(fake.count("initialize"), 3u);
+    EXPECT_EQ(fake.count("tools/call"), 4u);
+}
+
+TEST_F(McpClientCallTest, NoLogLineCarriesAHeaderValue) {
+    const std::string args = R"({"path":"/very/private/argument"})";
+    answer(R"({"content":[{"type":"text","text":"private result text"}]})");
+    ASSERT_EQ(call("read", args).failure.error, McpError::None);
+    fail(std::string(R"({"code":-32001,"message":"bad )") + kSecret + R"("})");
+    EXPECT_EQ(call("read", args).failure.error, McpError::RpcError);
+    answer(std::string(R"({"content":[{"type":"text","text":"no )") + kSecret +
+           R"("}],"isError":true})");
+    EXPECT_TRUE(call("read", args).is_error);
+
+    EXPECT_EQ(log_lines_with("files tools/call ok"), 2u);
+    EXPECT_EQ(log_lines_with("files tools/call error:mcp_error"), 1u);
+    EXPECT_EQ(log_lines_with("files tools/call"), 3u);
+    expect_no_secret_in_logs();
+    for (const auto& e : wisp::log::ring_entries()) {
+        EXPECT_EQ(e.msg.find("/mcp"), std::string::npos) << e.msg;
+        EXPECT_EQ(e.msg.find("private"), std::string::npos) << e.msg;
+    }
+}
+
+TEST(SecretScrub, FindsWholeAndEightBytePieces) {
+    using wisp::net::detail::holds_secret_piece;
+    EXPECT_TRUE(holds_secret_piece("x tok-SECRET-123456 y", "tok-SECRET-123456"));
+    EXPECT_TRUE(holds_secret_piece("..SECRET-1..", "tok-SECRET-123456"));
+    EXPECT_TRUE(holds_secret_piece("123456", "123456"));
+    EXPECT_FALSE(holds_secret_piece("SECRET-", "tok-SECRET-123456"));
+    EXPECT_FALSE(holds_secret_piece("invalid", "tok-SECRET-123456"));
+    EXPECT_FALSE(holds_secret_piece("12345", "123456"));
+    EXPECT_FALSE(holds_secret_piece("anything", ""));
 }
 
 }  // namespace

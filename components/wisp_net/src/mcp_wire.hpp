@@ -24,6 +24,9 @@ os::LargeString mcp_initialize_body(int64_t id, std::string_view client_version)
 os::LargeString mcp_initialized_body();
 // tools/list; the cursor goes in params unless it is empty.
 os::LargeString mcp_list_body(int64_t id, std::string_view cursor);
+// tools/call {"name":<tool>,"arguments":<args_json>}; `args_json` is a
+// JSON object's text, copied as it is ("" sends {}).
+os::LargeString mcp_call_body(int64_t id, std::string_view tool, std::string_view args_json);
 
 // Appends `s` with every ill-formed UTF-8 sequence replaced by U+FFFD
 // (as to_json() does), stopping before the character that would take

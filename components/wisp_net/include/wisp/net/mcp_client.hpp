@@ -29,8 +29,11 @@
 // ok|error:<code> <ms> ms"; never a URL, a header, arguments or results.
 // Tool descriptions are made valid UTF-8 when listed (the LLM request body
 // is not repaired later); schemas that are not valid UTF-8 are replaced.
-// McpFailure::message carries a server's text unscrubbed: whatever hands
-// it to the model must scrub it first (spec 4.4 "Scrubbing").
+// A server message (McpFailure::message, and a tool result's text when
+// isError) that quotes any of that server's header values, whole or 8 or
+// more bytes of one, is replaced by "(message withheld: it quoted a
+// credential)" (spec 4.4 "Scrubbing"). All server text in a result is
+// valid UTF-8.
 
 #include <cstddef>
 #include <cstdint>
@@ -91,7 +94,7 @@ struct McpFailure {
     std::string category{};
     int http_status = 0;
     int64_t rpc_code = 0;
-    // Server text only for RpcError/ToolError, valid UTF-8 and unscrubbed
+    // Server text only for RpcError/ToolError, valid UTF-8 and scrubbed
     // (see the file header).
     os::LargeString message{};
 };
@@ -164,6 +167,15 @@ public:
     // server, without a request; the remembered failure, without a
     // request, within kMcpRetryAfterMs of it.
     McpListResult list_tools(std::string_view server_id, const McpWait& wait, bool refresh = false);
+    // Calls `tool` (one of list_tools()'s, else NotFound without a request)
+    // with `args_json` (a JSON object's text), waiting at most the server's
+    // timeout_ms. The result's text is its content items joined with "\n"
+    // (an image as "[image omitted: <mime>, <n> bytes]"), then
+    // structuredContent as JSON when no item was text; isError sets
+    // is_error. A JSON-RPC error is RpcError; one that says the tool is
+    // unknown (-32602, or its message) refreshes the list once, and is
+    // NotFound when the tool is gone from it. The call is never retried
+    // but under the session rule above. A failed call starts no backoff.
     McpCallResult call_tool(std::string_view server_id, std::string_view tool,
                             std::string_view args_json, const McpWait& wait);
     // Every configured server, in configuration order.
