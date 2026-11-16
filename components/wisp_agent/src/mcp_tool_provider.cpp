@@ -1,10 +1,13 @@
 #include "wisp/agent/mcp_tool_provider.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "tools_json.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/ui/strings.hpp"
@@ -68,15 +71,33 @@ std::string_view search_error(const McpFailure& f) {
     return net::to_string(f.error);
 }
 
-// {"ok":false,"error":code,"message":<wrapped text>}, built in PSRAM: a
-// tool's error text can be as large as its result (1 MiB).
+// The server's text as the tool result keeps it: at most kHttpMaxMaxBytes,
+// the largest payload any other tool returns, cut where no character is
+// split and marked with the context's cut wording (context.cpp). The client
+// takes up to 1 MiB, but the result is stored whole in the conversation,
+// and one call must not append that much to it or force a rollover alone.
+void append_server_text(os::LargeString& out, std::string_view server_id, std::string_view text) {
+    if (text.size() <= kHttpMaxMaxBytes) {
+        detail::append_external(out, view(source_of(server_id)), text);
+        return;
+    }
+    size_t n = kHttpMaxMaxBytes;
+    while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;
+    os::LargeString cut(text.substr(0, n));
+    cut += "\n[truncated, ";
+    cut += std::to_string(text.size());
+    cut += " bytes total]";
+    detail::append_external(out, view(source_of(server_id)), view(cut));
+}
+
+// {"ok":false,"error":code,"message":<wrapped text>}, built in PSRAM.
 ToolOutput wrapped_error(std::string_view code, std::string_view server_id, std::string_view text) {
     ToolOutput out;
     out.ok = false;
     out.result_json = R"({"ok":false,"error":)";
     append_json_string(out.result_json, code);
     out.result_json.append(",\"message\":");
-    detail::append_external(out.result_json, view(source_of(server_id)), text);
+    append_server_text(out.result_json, server_id, text);
     out.result_json.push_back('}');
     return out;
 }
@@ -262,7 +283,7 @@ ToolOutput McpToolProvider::call(std::string_view full_name, const Value& args, 
 
     ToolOutput out;
     out.result_json = R"({"ok":true,"result":)";
-    detail::append_external(out.result_json, view(source_of(server_id)), view(r.text));
+    append_server_text(out.result_json, server_id, view(r.text));
     out.result_json.push_back('}');
     out.note =
         ui::tr_fill_n(ui::StrId::AgentNoteToolCall, lang_of(ctx), {view(server->name), tool_name});

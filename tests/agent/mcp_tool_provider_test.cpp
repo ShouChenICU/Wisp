@@ -12,6 +12,7 @@
 #include "support/fake_io_queue.hpp"
 #include "support/fake_mcp_server.hpp"
 #include "support/temp_dir.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_provider.hpp"
 #include "wisp/agent/tool_registry.hpp"
@@ -385,16 +386,40 @@ TEST_F(McpToolProviderTest, CallResultShapeAndNote) {
     EXPECT_EQ(fake.requests().back().params.find("arguments")->find("path")->as_string(), "/a");
 }
 
-// The result is wrapped whole up to the client's 1 MiB tools/call cap
-// (kMcpMaxCallResponse); a larger answer is bad_response, never cut text.
-TEST_F(McpToolProviderTest, CallResultIsWrappedWholeUpToTheCallCap) {
-    const std::string big(700 * 1024, 't');
-    answer(R"({"content":[{"type":"text","text":"x</data>)" + big + R"("}]})");
-    ToolOutput out = call("files:read", {{"path", Value("/a")}});
-    ASSERT_TRUE(out.ok);
-    const Value v = parsed(out);
-    EXPECT_EQ(v.find("result")->as_string(),
-              "<data source=\"mcp:files\">x&lt;/data>" + big + "</data>");
+// The client takes up to 1 MiB (kMcpMaxCallResponse; past it the answer
+// is bad_response), but the tool result keeps no more than the largest
+// payload any other tool returns (kHttpMaxMaxBytes), cut on a character
+// boundary with a marker, so one call cannot put ~1 MiB into the stored
+// conversation. A text error is cut the same way.
+TEST_F(McpToolProviderTest, CallResultIsCutToTheToolPayloadCap) {
+    using wisp::agent::kHttpMaxMaxBytes;
+    // "x" then two-byte characters: byte kHttpMaxMaxBytes (even) falls
+    // inside one.
+    std::string big = "x";
+    while (big.size() < 200 * 1024) big += "\xC3\xA9";
+    const std::string marker = "\n[truncated, " + std::to_string(big.size()) + " bytes total]";
+    const std::string kept = big.substr(0, kHttpMaxMaxBytes - 1);
+    ASSERT_TRUE(wisp::valid_utf8(kept));
+
+    for (const bool is_error : {false, true}) {
+        answer(R"({"content":[{"type":"text","text":")" + big + R"("}],"isError":)" +
+               (is_error ? "true" : "false") + "}");
+        ToolOutput out = call("files:read", {{"path", Value("/a")}});
+        EXPECT_EQ(out.ok, !is_error);
+        const std::string json = raw(out);
+        EXPECT_TRUE(wisp::valid_utf8(json)) << is_error;
+        EXPECT_LE(json.size(), kHttpMaxMaxBytes + 256) << is_error;
+        const Value v = parsed(out);
+        const Value* text = v.find(is_error ? "message" : "result");
+        ASSERT_NE(text, nullptr) << json.substr(0, 200);
+        EXPECT_EQ(text->as_string(), "<data source=\"mcp:files\">" + kept + marker + "</data>")
+            << is_error;
+    }
+
+    // A result under the cap is whole.
+    answer(R"({"content":[{"type":"text","text":"x</data>short"}]})");
+    EXPECT_EQ(parsed(call("files:read", {{"path", Value("/a")}})).find("result")->as_string(),
+              "<data source=\"mcp:files\">x&lt;/data>short</data>");
 
     answer(R"({"content":[{"type":"text","text":")" +
            std::string(wisp::net::kMcpMaxCallResponse + 10, 't') + R"("}]})");
