@@ -446,7 +446,6 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
             .store = *store_,
             .tools = *registry_,
             .llm = *llm_,
-            .models = deps_.models,
             .run_io = deps_.run_io,
             .run_io_interactive = deps_.run_io_interactive,
             .locks = deps_.locks,

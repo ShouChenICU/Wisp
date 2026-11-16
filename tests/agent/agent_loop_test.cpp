@@ -18,6 +18,7 @@
 #include "support/agent_fixture.hpp"
 #include "support/bus_flood.hpp"
 #include "support/confirm_harness.hpp"
+#include "support/fake_provider.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/limits.hpp"
@@ -46,7 +47,9 @@ using wisp::agent::ToolDef;
 using wisp::agent::ToolOutput;
 using wisp::test::AgentHarness;
 using wisp::test::FakeLlmServer;
+using wisp::test::FakeProvider;
 using wisp::test::FakeReply;
+using wisp::test::FakeStep;
 using wisp::test::wait_until;
 using Kind = AgentEvent::Kind;
 
@@ -2054,4 +2057,101 @@ TEST_F(AgentLoop, AppendsFallBackToRunIoWithoutAnInteractiveExecutor) {
     EXPECT_EQ(h->io_calls.load() - io_before, 4);
     EXPECT_EQ(h->interactive_io_calls.load(), 0);
     EXPECT_GT(history().size(), stored);
+}
+
+// The agent reaches the model only through net::LlmProvider: a scripted
+// provider runs a whole tool turn, and the HTTP client is never used.
+TEST_F(AgentLoop, RunsOverAnyProvider) {
+    FakeProvider fake;
+    harness().provider = &fake;
+    add_tool("scene.list");
+    FakeStep call;
+    call.calls.push_back({.id = "c1", .name = "scene_list", .arguments = "{}"});
+    call.result.finish = wisp::net::LlmFinish::ToolCalls;
+    fake.push(std::move(call));
+    FakeStep answer;
+    answer.deltas = {"hi"};
+    answer.result.finish = wisp::net::LlmFinish::Stop;
+    fake.push(std::move(answer));
+    start();
+    ASSERT_TRUE(svc->submit("list", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+
+    EXPECT_EQ(last_status(), "done");
+    EXPECT_EQ(tool_calls(), std::vector<std::string>{"scene.list"});
+    std::vector<Role> roles;
+    for (const auto& m : history()) roles.push_back(m.role);
+    EXPECT_EQ(roles, (std::vector<Role>{Role::Marker, Role::User, Role::Assistant, Role::Tool,
+                                        Role::Assistant, Role::Marker}));
+    const auto recorded = fake.calls();
+    ASSERT_EQ(recorded.size(), 2u);
+    EXPECT_NE(recorded[1].body.find("\"tool_call_id\":\"c1\""), std::string::npos)
+        << recorded[1].body;
+    EXPECT_TRUE(h->server.requests().empty());
+}
+
+// The provider's own "no model" ends the turn as no_model, with the note.
+TEST_F(AgentLoop, NoModelFromTheProvider) {
+    FakeProvider fake;
+    harness().provider = &fake;
+    fake.set_model(std::nullopt);
+    FakeStep step;
+    step.result.error = wisp::net::LlmError::NoModel;
+    fake.push(std::move(step));
+    start();
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+
+    EXPECT_EQ(last_reason(), "no_model");
+    const auto n = notes();
+    ASSERT_FALSE(n.empty());
+    EXPECT_EQ(n.back(), wisp::ui::tr(wisp::ui::StrId::AgentErrNoModel, wisp::ui::Lang::Zh));
+}
+
+// The context window is the provider's active model's, read once per turn:
+// at 4096 tokens the history of three long turns is compressed before the
+// fourth turn's request.
+TEST_F(AgentLoop, WindowComesFromTheProvider) {
+    FakeProvider fake;
+    harness().provider = &fake;
+    fake.set_model(
+        wisp::net::LlmModelInfo{.profile_id = "p1", .model = "m", .context_window = 4096});
+    add_tool("scene.list");
+    start();
+    const std::string big(4000, 'a');
+    for (int i = 1; i <= 3; ++i) {
+        const int before = fake.active_model_calls();
+        const size_t ends = count(Kind::TurnEnd);
+        FakeStep step;
+        step.deltas = {big};
+        step.result.finish = wisp::net::LlmFinish::Stop;
+        fake.push(std::move(step));
+        ASSERT_TRUE(svc->submit("q" + std::to_string(i), Source::Web));
+        ASSERT_TRUE(wait_turns(ends + 1));
+        EXPECT_EQ(fake.active_model_calls(), before + 1);
+    }
+    ASSERT_EQ(fake.calls().size(), 3u);
+    EXPECT_FALSE(last_of(history(), Role::Summary));
+
+    const int before = fake.active_model_calls();
+    FakeStep summary;
+    summary.deltas = {"they asked q1 and q2"};
+    summary.result.finish = wisp::net::LlmFinish::Stop;
+    fake.push(std::move(summary));
+    FakeStep reply;
+    reply.deltas = {"done"};
+    reply.result.finish = wisp::net::LlmFinish::Stop;
+    fake.push(std::move(reply));
+    ASSERT_TRUE(svc->submit("q4", Source::Web));
+    ASSERT_TRUE(wait_turns(4));
+    EXPECT_EQ(fake.active_model_calls(), before + 1);
+
+    const auto recorded = fake.calls();
+    ASSERT_EQ(recorded.size(), 5u);
+    EXPECT_EQ(recorded[3].tools_json, "");
+    EXPECT_NE(recorded[4].tools_json, "");
+    const auto stored = last_of(history(), Role::Summary);
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(str(stored->text), "they asked q1 and q2");
+    EXPECT_EQ(last_status(), "done");
 }

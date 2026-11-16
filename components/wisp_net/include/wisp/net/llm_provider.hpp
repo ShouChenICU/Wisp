@@ -48,9 +48,9 @@ const char* to_string(LlmError e);
 enum class LlmRole : uint8_t { System, User, Assistant, Tool };
 
 struct LlmToolCall {
-    std::string id;
-    std::string name;
-    os::LargeString arguments;  // the JSON text as the model wrote it
+    std::string id{};
+    std::string name{};
+    os::LargeString arguments{};  // the JSON text as the model wrote it
 };
 
 // Views only: everything must outlive complete().
@@ -71,48 +71,48 @@ struct LlmResult {
     LlmError error = LlmError::None;
     TransportError transport = TransportError::None;
     int status = 0;  // last attempt; 0 without a response
-    os::LargeString text;
-    std::vector<LlmToolCall> tool_calls;  // by stream index
+    os::LargeString text{};
+    std::vector<LlmToolCall> tool_calls{};  // by stream index
     LlmFinish finish = LlmFinish::Other;
-    std::optional<LlmUsage> usage;
+    std::optional<LlmUsage> usage{};
     uint32_t attempts = 0;
     bool any_body = false;  // a delta or tool fragment arrived
-    std::string model;      // the profile's model name
+    std::string model{};    // the profile's model name
     // The profile that served the call ("" when none), so that what is
     // learned from the reply is kept under the profile that answered,
     // even when the active one changed during the call.
-    std::string profile_id;
+    std::string profile_id{};
     // The provider's error.code (else error.type) from a failed
     // attempt's body: at most 64 bytes of [A-Za-z0-9_.-], "" when absent,
     // malformed or holding the API key or any 8 or more bytes of it.
-    std::string code;
+    std::string code{};
 };
 
 // A tool call the model is still writing (LlmCall::on_tool).
 struct LlmToolProgress {
-    size_t index = 0;       // the call's stream index
-    std::string_view name;  // the wire name, as the model wrote it
-    size_t arg_bytes = 0;   // the arguments' bytes received so far
+    size_t index = 0;         // the call's stream index
+    std::string_view name{};  // the wire name, as the model wrote it
+    size_t arg_bytes = 0;     // the arguments' bytes received so far
 };
 
 struct LlmCall {
-    std::span<const LlmMessage> messages;
-    std::string_view tools_json;  // a JSON array, "" for none
+    std::span<const LlmMessage> messages{};
+    std::string_view tools_json{};  // a JSON array, "" for none
     // For the whole call, retries and their waits included.
     uint32_t timeout_ms = 300000;
     // Armed by complete() for each attempt; the caller aborts it with the
     // ticket on_armed() last reported (RequestWatch::abort).
     RequestWatch* watch = nullptr;
-    std::function<void(uint32_t ticket)> on_armed;
-    std::function<void(std::string_view)> on_text;
-    std::function<void()> on_bytes;   // any body bytes (stall detection)
-    std::function<bool()> cancelled;  // also stops the retry waits
+    std::function<void(uint32_t ticket)> on_armed{};
+    std::function<void(std::string_view)> on_text{};
+    std::function<void()> on_bytes{};   // any body bytes (stall detection)
+    std::function<bool()> cancelled{};  // also stops the retry waits
     // A tool call while it streams: once as soon as its name has arrived,
     // then as its arguments grow, at most once per kToolProgressMs for
     // each call. Runs on the calling thread, from inside the stream.
-    std::function<void(const LlmToolProgress&)> on_tool;
+    std::function<void(const LlmToolProgress&)> on_tool{};
     // on_tool's clock; empty: os::now_ms.
-    std::function<uint64_t()> now_ms;
+    std::function<uint64_t()> now_ms{};
 };
 
 // The model the next complete() will use.

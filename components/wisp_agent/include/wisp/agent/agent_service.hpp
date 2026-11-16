@@ -100,11 +100,10 @@
 #include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/core/event_bus.hpp"
-#include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/core/wakelock.hpp"
-#include "wisp/net/llm_client.hpp"
+#include "wisp/net/llm_provider.hpp"
 #include "wisp/net/request_watch.hpp"
 #include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/os/large.hpp"
@@ -180,8 +179,7 @@ struct AgentDeps {
     core::EventBus& bus;
     ConversationStore& store;
     ToolRegistry& tools;
-    net::LlmClient& llm;
-    core::ModelProfileService& models;  // get() only
+    net::LlmProvider& llm;
     // Runs a job on the storage worker and waits for it to finish; an
     // error if it could not be queued (it then never runs). The service
     // passes jobs that reference its own stack, so the wait must be

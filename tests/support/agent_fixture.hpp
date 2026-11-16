@@ -3,13 +3,14 @@
 // AgentHarness: everything an agent::AgentService needs, wired for tests.
 // A temporary directory behind a StorageManager, a real StorageWorker
 // (wisp.fs), the scripted FakeLlmServer behind a real LlmClient (retry
-// waits skipped), a ModelProfileService with one llm profile (or none),
-// an EventBus, a WakeLockRegistry, a NotificationService that saves
-// nothing, an empty ToolRegistry whose ui/io executors are plain worker
-// threads and whose fs/fs_interactive ones are the worker's Normal and
-// Interactive lanes, and a clock that runs with os::now_ms() but can be
-// moved ahead. `wifi` stands in for WifiService's cell: a test hands it to
-// the service with set_wifi() (otherwise the service asks `network_up`).
+// waits skipped; when `provider` is set, the service gets that instead),
+// a ModelProfileService with one llm profile (or none), an EventBus, a
+// WakeLockRegistry, a NotificationService that saves nothing, an empty
+// ToolRegistry whose ui/io executors are plain worker threads and whose
+// fs/fs_interactive ones are the worker's Normal and Interactive lanes,
+// and a clock that runs with os::now_ms() but can be moved ahead. `wifi`
+// stands in for WifiService's cell: a test hands it to the service with
+// set_wifi() (otherwise the service asks `network_up`).
 //
 // Tests add tools to `tools` before they start the service.
 
@@ -39,6 +40,7 @@
 #include "wisp/core/storage_worker.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/net/llm_client.hpp"
+#include "wisp/net/llm_provider.hpp"
 #include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/os/os.hpp"
 
@@ -141,8 +143,7 @@ struct AgentHarness {
             .bus = bus,
             .store = *store,
             .tools = *tools,
-            .llm = *llm,
-            .models = *models,
+            .llm = provider != nullptr ? *provider : *llm,
             .run_io =
                 [this](std::function<void()> fn) {
                     ++io_calls;
@@ -189,6 +190,8 @@ struct AgentHarness {
     FakeLlmServer server;
     std::unique_ptr<core::ModelProfileService> models;
     std::unique_ptr<net::LlmClient> llm;
+    // When set, deps() hands the service this instead of `llm`.
+    net::LlmProvider* provider = nullptr;
     std::unique_ptr<core::WakeLockRegistry> locks;
     std::unique_ptr<core::NotificationService> notes;
     std::string dir;

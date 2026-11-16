@@ -553,17 +553,16 @@ struct AgentService::Impl {
 
     struct ActiveLlm {
         uint32_t window = kDefaultContextWindow;
-        std::string model;
+        std::string model{};
+        std::string profile_id{};
     };
 
-    // The active llm profile's context window and model, read once per
-    // turn.
+    // The provider's active model's context window, model and profile,
+    // read once per turn.
     ActiveLlm active_llm() const {
-        const core::ProfilesState st = deps.models.get();
-        const std::string& id = st.active_for(core::ModelKind::Llm);
-        for (const core::ModelProfile& p : st.profiles)
-            if (p.id == id) return {core::profile_context_window(p.options), p.model};
-        return {};
+        const std::optional<net::LlmModelInfo> m = deps.llm.active_model();
+        if (!m) return {kDefaultContextWindow, "", ""};
+        return {m->context_window, m->model, m->profile_id};
     }
 
     BuiltRequest build(std::span<const Message> h, Source source, BuildOptions opts = {}) const {
