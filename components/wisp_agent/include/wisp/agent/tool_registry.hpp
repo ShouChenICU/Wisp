@@ -11,6 +11,10 @@
 // (tool_error()). call() itself produces unknown_tool, bad_args (with
 // "field"), busy, timeout and cancelled.
 //
+// Vision (llm-tool-providers spec 3.5): tools_json() has two arrays, with
+// and without the vision-only tools, and a tool may return one image
+// (ToolOutput::image) that the turn shows to a vision model.
+//
 // A tool on another thread is handed a copy of the ToolCtx and shares only
 // a reference-counted state with call(). When call() gives up (timeout,
 // cancel) the thread cannot be interrupted: it runs to the end, its

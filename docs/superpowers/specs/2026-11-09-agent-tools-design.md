@@ -91,7 +91,7 @@
 | `body` | string 或 object | 字符串原样发送；对象按 JSON 发送，并在未指定时加 `Content-Type: application/json`；最大 256 KiB |
 | `timeout_ms` | integer | 默认 30000，1000–120000 |
 | `follow` | boolean | 跟随重定向，最多 5 跳，默认 false |
-| `as` | string | `raw`（默认）或 `text`：去掉 HTML 标签只留文字 |
+| `as` | string | `raw`（默认）或 `text`：去掉 HTML 标签只留文字；或 `image`：JPEG/PNG 原样交给有视觉的模型，最大 128 KiB（2026-11-16 修订，见 provider 设计 3.5） |
 | `offset` | integer | 从响应体（或文字）的第几个字节开始返回，默认 0 |
 | `max_bytes` | integer | 本次最多返回多少字节，默认 16384，最大 65536 |
 | `ref` | string | 读上一次响应的缓存而不重发请求（3.3） |

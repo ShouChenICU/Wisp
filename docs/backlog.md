@@ -15,7 +15,6 @@ Deferred work, collected in fast mode from 2026-11-06: Minor review findings, it
 - 4a:
   - daily token budget and usage stats;
   - `ui.check`;
-  - screenshots and vision;
   - simulated input (`ui.tap` / `ui.swipe` / `ui.type`).
 - Scene list: pin and export.
 - Settings page: wisp colour, storage management.
