@@ -41,6 +41,7 @@ wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
 wisp_test(NAME sha256_test SRCS base/sha256_test.cpp LIBS wisp_base)
 wisp_test(NAME base64_test SRCS base/base64_test.cpp LIBS wisp_base)
+wisp_test(NAME image_test SRCS base/image_test.cpp LIBS wisp_base)
 wisp_test(NAME crc32_test SRCS base/crc32_test.cpp LIBS wisp_base)
 wisp_test(NAME fixed_string_test SRCS base/fixed_string_test.cpp LIBS wisp_base)
 # zlib only produces the reference streams; wisp_base itself never links it.

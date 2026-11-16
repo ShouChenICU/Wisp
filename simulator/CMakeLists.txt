@@ -19,6 +19,8 @@ find_package(SDL2 REQUIRED)
 # (tests/smoke/sim_smoke.py) via ${Python3_EXECUTABLE}.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+# Vendored stb_image_write (third_party/stb_image_write), used only by wisp_base.
+add_subdirectory(${WISP_ROOT}/third_party/stb_image_write stb_image_write)
 add_subdirectory(${WISP_ROOT}/components/wisp_base wisp_base)
 add_subdirectory(${WISP_ROOT}/components/wisp_os wisp_os)
 add_subdirectory(${WISP_ROOT}/components/wisp_hal wisp_hal)

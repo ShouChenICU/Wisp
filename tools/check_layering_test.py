@@ -369,6 +369,33 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("forbidden REQUIRES <lua>", errors[0])
 
+    def test_stb_header_outside_base_is_flagged(self):
+        write(self.root, "components/wisp_base/src/ok.cpp", '#include "stb_image_write.h"\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_net/src/bad.cpp", '#include "stb_image_write.h"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("stb_image_write.h", errors[0])
+        self.assertIn("only wisp_base may", errors[0])
+
+    def test_cmake_requires_stb_only_for_base(self):
+        write(
+            self.root,
+            "components/wisp_base/CMakeLists.txt",
+            minimal_cmake("wisp_base", requires="stb_image_write"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(
+            self.root,
+            "components/wisp_agent/CMakeLists.txt",
+            minimal_cmake("wisp_agent", requires="wisp_base stb_image_write"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("forbidden REQUIRES <stb_image_write>", errors[0])
+
     def test_cmake_whitelisted_dependencies_are_not_flagged(self):
         write(
             self.root,

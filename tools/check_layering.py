@@ -34,10 +34,14 @@ docs/architecture.md):
     idf_component_register()'s own REQUIRES, so a platform or
     higher-layer component could otherwise be pulled in there without
     ever being #include'd.
-  - Lua's headers (lua.h, lauxlib.h, lualib.h, lua.hpp, luaconf.h) may
-    only be #included by wisp_scene, and only wisp_scene may REQUIRES
-    the vendored `lua` component (third_party/lua): every other layer
-    reaches scripts through wisp_scene's services, never the VM itself.
+  - Vendored third_party/ headers have one owning layer each
+    (THIRD_PARTY_HEADERS), and only that layer may REQUIRES the
+    component (THIRD_PARTY_REQUIRES). Lua's headers (lua.h, lauxlib.h,
+    lualib.h, lua.hpp, luaconf.h) and the `lua` component belong to
+    wisp_scene: every other layer reaches scripts through wisp_scene's
+    services, never the VM itself. stb_image_write.h and the
+    `stb_image_write` component belong to wisp_base: every other layer
+    encodes through wisp::encode_jpeg().
   - Flash access (spec 3.3 of the flash-thread design): calls to nvs_*,
     esp_partition_*, esp_ota_*, esp_flash_, spi_flash_ and esp_littlefs_,
     and #include of nvs.h, esp_ota_ops.h, esp_partition.h, esp_flash.h,
@@ -140,16 +144,25 @@ FORBIDDEN_EXACT = ("sdkconfig.h", "nvs.h", "nvs_flash.h", "sdmmc_cmd.h")
 # be listed by exact name either.
 FORBIDDEN_BASENAME_PREFIXES = ("dev_", "gen_board_")
 
-# Lua's public headers (third_party/lua/lua-5.5.1/src): only the layer
-# that owns the VM may see them.
-LUA_HEADERS = ("lua.h", "lauxlib.h", "lualib.h", "lua.hpp", "luaconf.h")
-LUA_HEADER_OWNERS = ("wisp_scene",)
+# Vendored third_party/ public headers, each mapped to the layers that may
+# include it: Lua's (third_party/lua/lua-5.5.1/src) only the layer that
+# owns the VM, stb_image_write's only the layer that wraps it in
+# wisp::encode_jpeg().
+_LUA_OWNERS = ("wisp_scene",)
+THIRD_PARTY_HEADERS = {
+    "lua.h": _LUA_OWNERS,
+    "lauxlib.h": _LUA_OWNERS,
+    "lualib.h": _LUA_OWNERS,
+    "lua.hpp": _LUA_OWNERS,
+    "luaconf.h": _LUA_OWNERS,
+    "stb_image_write.h": ("wisp_base",),
+}
 
 # Non-wisp_* components a portable layer may list in REQUIRES (as
 # opposed to IDF_REQUIRES): the vendored third_party/ components, which
 # build the same way under idf.py (EXTRA_COMPONENT_DIRS) and on the host
 # (add_subdirectory), keyed by the one layer allowed to require each.
-THIRD_PARTY_REQUIRES = {"wisp_scene": {"lua"}}
+THIRD_PARTY_REQUIRES = {"wisp_scene": {"lua"}, "wisp_base": {"stb_image_write"}}
 
 # The only files that may call nvs_*/esp_partition_*/esp_ota_* or include
 # their headers, each with the reason it needs raw flash access.
@@ -287,10 +300,15 @@ def check_file(path, component, errors):
         include_path = match.group(1)
         if is_forbidden_platform_include(include_path):
             errors.append(f"{path}:{lineno}: forbidden include <{include_path}>")
-        elif include_path in LUA_HEADERS and component not in LUA_HEADER_OWNERS:
+        elif (
+            include_path in THIRD_PARTY_HEADERS
+            and component not in THIRD_PARTY_HEADERS[include_path]
+        ):
+            owners = THIRD_PARTY_HEADERS[include_path]
+            what = "Lua" if owners is _LUA_OWNERS else include_path
             errors.append(
                 f"{path}:{lineno}: forbidden include <{include_path}> ({component} must "
-                f"not use Lua directly; only {', '.join(LUA_HEADER_OWNERS)} may)"
+                f"not use {what} directly; only {', '.join(owners)} may)"
             )
         elif include_path.startswith(reverse_prefixes):
             errors.append(

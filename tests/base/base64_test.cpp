@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -31,4 +32,16 @@ TEST(Base64, Rfc4648Vectors) {
     EXPECT_EQ(wisp::base64url_encode(bytes("f")), "Zg");
     EXPECT_EQ(wisp::base64url_encode(bytes("fo")), "Zm8");
     EXPECT_EQ(wisp::base64url_encode(bytes("foobar")), "Zm9vYmFy");
+}
+
+TEST(Base64, EncodeIntoMatchesEncode) {
+    const uint8_t data[] = {0, 1, 2, 0xfb, 0xff, 0x10, 0x80};
+    for (size_t n = 0; n <= sizeof(data); ++n) {
+        const std::span<const uint8_t> in(data, n);
+        const size_t len = wisp::base64_encoded_size(n);
+        std::string buf(len + 1, '#');
+        wisp::base64_encode_into(in, buf.data());
+        EXPECT_EQ(buf.back(), '#') << "n=" << n;
+        EXPECT_EQ(std::string_view(buf).substr(0, len), wisp::base64_encode(in)) << "n=" << n;
+    }
 }

@@ -170,6 +170,41 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+## stb_image_write
+
+- Project: https://github.com/nothings/stb
+- Version: `stb_image_write.h` v1.16 at commit
+  `aeb69073d7570a481245a665dc17726d68827062` (SHA-256
+  `03f49804a8cf8a28c7ce4ed870e0eb642737ef97249aec30fdd3a8dc7886ae40`;
+  the repository's `LICENSE`, SHA-256
+  `bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63`),
+  vendored verbatim into `third_party/stb_image_write/stb-aeb6907/` by
+  `tools/vendor_stb.sh`; not modified or forked
+- License: public domain (Unlicense) or MIT, at the user's choice; Wisp
+  uses it under the MIT License (alternative A)
+
+Alternative A of `third_party/stb_image_write/stb-aeb6907/LICENSE`, copied
+verbatim:
+
+```
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Noto Sans CJK SC (via `lv_font_cjk_16.c` and `noto_sans_cjk_sc_subset.ttf`)
 
 - `components/wisp_ui/fonts/lv_font_cjk_16.c` embeds glyph bitmap data
