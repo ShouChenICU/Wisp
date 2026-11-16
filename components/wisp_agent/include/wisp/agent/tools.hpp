@@ -8,7 +8,6 @@
 #include <string>
 
 #include "wisp/agent/scene_workspace.hpp"
-#include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"

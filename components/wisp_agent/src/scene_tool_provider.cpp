@@ -36,8 +36,8 @@ bool scene_running(const scene::SceneRuntime& runtime, const os::LargeString& sc
            state == core::SceneState::Headless;
 }
 
-// Moves the strings out of `tool`: a 200-entry listing then copies no
-// text on its way to tools.find.
+// Moves the strings out of `tool`, so the argument must be a copy: a
+// 200-entry listing then copies no text on its way to tools.find.
 ToolInfo to_info(IndexedTool& tool, bool details, const scene::SceneRuntime& runtime) {
     ToolInfo info;
     info.description = scene_data_large(view(tool.scene_id), view(tool.description));

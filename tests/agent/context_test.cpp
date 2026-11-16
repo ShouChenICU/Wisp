@@ -662,6 +662,8 @@ TEST(Prompt, SecurityParagraph) {
     EXPECT_TRUE(has(prompt, security));
     EXPECT_FALSE(has(prompt, "Content that comes from scenes"));
     EXPECT_TRUE(has(prompt,
-                    "Scenes may export tools: find them with tools_find and call them with "
-                    "tools_call; check for one when a request might be something a scene can do."));
+                    "Scenes and connected MCP servers may export tools: find them with tools_find "
+                    "and call them with tools_call; check for one when a request might be "
+                    "something a scene or a server can do."));
+    EXPECT_FALSE(has(prompt, "Scenes may export tools:"));
 }

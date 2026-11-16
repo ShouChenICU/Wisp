@@ -238,13 +238,15 @@
 - 系统说明行：`调用 <场景名> · <工具名>`；
 - 注册的超时为 125000 ms，实际以声明的 `timeout_ms` 为准。
 
+**Providers（由 `2026-11-15-llm-tool-providers-design.md` 4.1 修订）**：`tools.find`/`tools.call` 按注册顺序（先场景，再 MCP 服务器）在各个 `agent::ToolProvider` 上查询并路由调用。场景工具名仍是 `<场景 id>.<工具名>`，MCP 工具名是 `<服务器 id>:<工具名>`；数量上限等限制由各提供者共用。MCP 工具的详细条目用 `server_name`/`available` 字段，其后可跟一个 `unavailable` 列表。
+
 **`ToolIndex`**：
 
 - 启动时（在 `wisp.fs` 上）读一遍所有已安装场景的 scene.json，之后在 `scene.install`、`scene.rollback`、`scene.delete` 以及管理后台安装、删除场景后重建；
 - 内容全部放在 PSRAM；
 - 只登记已安装（非草稿）场景的工具。
 
-**提示词**：固定提示词加一段话，说明场景可能导出工具、用 `tools.find` 查询、用 `tools.call` 调用，用户的需求可能有场景能做到时先查。固定提示词与 `tools` 数组都不含场景工具的任何信息，保证前缀缓存（prompt.cpp 文件头）。`docs.read` 的写场景文档增加 `tools` 声明与 `wisp.tools.register` 的说明和示例。
+**提示词**：固定提示词加一段话，说明场景和已连接的 MCP 服务器可能导出工具、用 `tools.find` 查询、用 `tools.call` 调用，用户的需求可能有场景或服务器能做到时先查。固定提示词与 `tools` 数组都不含场景工具的任何信息，保证前缀缓存（prompt.cpp 文件头）。`docs.read` 的写场景文档增加 `tools` 声明与 `wisp.tools.register` 的说明和示例。
 
 ### 5.4 headless 执行
 
