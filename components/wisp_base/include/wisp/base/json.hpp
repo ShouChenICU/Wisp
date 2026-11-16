@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -41,6 +42,69 @@ Result<Value> from_json(std::string_view s);
 // Parsing recurses once per level, so this bounds the stack it needs; the
 // parser itself enforces it, so no string can hide a level from it.
 Result<Value> from_json(std::string_view s, uint8_t max_depth);
+
+// Where parse_json_large() takes its memory. wisp_base sits below wisp_os
+// and cannot reach os::alloc(Mem::Large) itself, so the caller passes it
+// in (wisp_net's large_json_alloc()). reallocate(nullptr, n) must behave
+// like allocate(n); every function may return nullptr on failure.
+struct JsonAlloc {
+    void* (*allocate)(size_t) = nullptr;
+    void (*deallocate)(void*) = nullptr;
+    void* (*reallocate)(void*, size_t) = nullptr;
+};
+
+// A read-only view into a LargeJson; valid while that document lives.
+// Copying a view copies two pointers. A default view is Null.
+class JsonView {
+public:
+    enum class Type : uint8_t { Null, Bool, Int, Double, String, Array, Object };
+    Type type() const;
+    JsonView find(std::string_view key) const;  // Null view: not an object, or absent
+    JsonView at(size_t i) const;                // Null view past the end, or not an array
+    size_t size() const;                        // members of an array/object, else 0
+    std::string_view string() const;            // "" unless String; points into the document
+    std::optional<int64_t> integer() const;     // Int only
+    bool boolean(bool fallback = false) const;  // `fallback` unless Bool
+    // Compact JSON of this subtree, in pieces, without a temporary copy on
+    // the heap. Control bytes inside strings are escaped, as to_json()
+    // does; other bytes are written as the document holds them.
+    void write(void (*sink)(void* ctx, const char* p, size_t n), void* ctx) const;
+    // Calls write() with S::append; `S` is any std::basic_string<char>.
+    template <class S>
+    void append_to(S& out) const {
+        write([](void* ctx, const char* p, size_t n) { static_cast<S*>(ctx)->append(p, n); }, &out);
+    }
+
+private:
+    friend struct JsonViewAccess;
+    // An ArduinoJson JsonVariantConst, which is two pointers (static_assert
+    // in json.cpp); kept opaque so json.cpp stays ArduinoJson's only user.
+    alignas(void*) unsigned char v_[2 * sizeof(void*)] = {};
+};
+
+// A parsed document whose every byte lives in the JsonAlloc it was parsed
+// with. Move-only; a moved-from document's root() is Null.
+class LargeJson {
+public:
+    LargeJson(LargeJson&& other) noexcept;
+    LargeJson& operator=(LargeJson&& other) noexcept;
+    LargeJson(const LargeJson&) = delete;
+    LargeJson& operator=(const LargeJson&) = delete;
+    ~LargeJson();
+    JsonView root() const;
+
+private:
+    friend Result<LargeJson> parse_json_large(std::string_view, const JsonAlloc&, uint8_t);
+    LargeJson() = default;
+    void* impl_ = nullptr;  // {Allocator adapter, JsonDocument}, itself placed with the JsonAlloc
+};
+
+// InvalidArgument on a parse error (ArduinoJson's text), QuotaExceeded past
+// max_depth (as from_json(s, max_depth)), NoMemory when the allocator fails.
+// Every byte of the document comes from `mem`; strings are copied out of
+// `text`, which need not outlive the result.
+Result<LargeJson> parse_json_large(std::string_view text, const JsonAlloc& mem,
+                                   uint8_t max_depth = 32);
 
 // Whether `s` is well-formed UTF-8: exactly the strings to_json() keeps
 // without replacing anything.

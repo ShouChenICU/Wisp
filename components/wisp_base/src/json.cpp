@@ -10,8 +10,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace wisp {
@@ -302,6 +304,203 @@ Result<Value> from_json(std::string_view s, uint8_t max_depth) {
     }
     // The document is at most max_depth deep, and so is this recursion.
     return Result<Value>::ok(read_value(doc.as<JsonVariantConst>()));
+}
+
+// ---- parse_json_large() ----------------------------------------------------
+
+static_assert(sizeof(JsonVariantConst) <= sizeof(JsonView{}) &&
+                  alignof(JsonVariantConst) <= alignof(void*),
+              "JsonView::v_ must hold a JsonVariantConst");
+static_assert(std::is_trivially_copyable_v<JsonVariantConst> &&
+                  std::is_trivially_destructible_v<JsonVariantConst>,
+              "JsonView copies and drops v_ as plain bytes");
+
+struct JsonViewAccess {
+    static JsonVariantConst get(const JsonView& view) {
+        JsonVariantConst v;
+        std::memcpy(static_cast<void*>(&v), view.v_, sizeof v);
+        return v;
+    }
+    static JsonView make(JsonVariantConst v) {
+        JsonView view;
+        std::memcpy(view.v_, static_cast<const void*>(&v), sizeof v);
+        return view;
+    }
+};
+
+namespace {
+
+class AllocAdapter : public ArduinoJson::Allocator {
+public:
+    explicit AllocAdapter(const JsonAlloc& mem) : mem_(mem) {}
+    void* allocate(size_t size) override { return mem_.allocate(size); }
+    void deallocate(void* ptr) override { mem_.deallocate(ptr); }
+    void* reallocate(void* ptr, size_t new_size) override { return mem_.reallocate(ptr, new_size); }
+    const JsonAlloc& mem() const { return mem_; }
+
+private:
+    JsonAlloc mem_;
+};
+
+// The document keeps a pointer to its allocator, so both live together at
+// one address that a LargeJson move does not change.
+struct LargeJsonImpl {
+    explicit LargeJsonImpl(const JsonAlloc& mem) : alloc(mem), doc(&alloc) {}
+    AllocAdapter alloc;
+    JsonDocument doc;
+};
+
+void destroy_impl(void* p) {
+    if (p == nullptr) return;
+    auto* impl = static_cast<LargeJsonImpl*>(p);
+    // Copied out first: the adapter holding it dies with the document.
+    void (*deallocate)(void*) = impl->alloc.mem().deallocate;
+    impl->~LargeJsonImpl();
+    deallocate(impl);
+}
+
+// Batches ArduinoJson's byte-at-a-time output into fixed chunks for the
+// sink, escaping control bytes on the way (see fix_up()). Compact output
+// has no whitespace, so any byte below 0x20 is inside a string.
+class SinkWriter {
+public:
+    SinkWriter(void (*sink)(void*, const char*, size_t), void* ctx) : sink_(sink), ctx_(ctx) {}
+    ~SinkWriter() { flush(); }
+    SinkWriter(const SinkWriter&) = delete;
+    SinkWriter& operator=(const SinkWriter&) = delete;
+
+    size_t write(uint8_t c) {
+        put(c);
+        return 1;
+    }
+    size_t write(const uint8_t* s, size_t n) {
+        for (size_t i = 0; i < n; ++i) put(s[i]);
+        return n;
+    }
+    void flush() {
+        if (n_ > 0) sink_(ctx_, buf_, n_);
+        n_ = 0;
+    }
+
+private:
+    void put(uint8_t c) {
+        if (c >= 0x20) {
+            if (n_ == sizeof buf_) flush();
+            buf_[n_++] = static_cast<char>(c);
+            return;
+        }
+        static constexpr char kHex[] = "0123456789abcdef";
+        const char esc[] = {'\\', 'u', '0', '0', kHex[c >> 4], kHex[c & 0xF]};
+        if (n_ + sizeof esc > sizeof buf_) flush();
+        std::memcpy(buf_ + n_, esc, sizeof esc);
+        n_ += sizeof esc;
+    }
+
+    void (*sink_)(void*, const char*, size_t);
+    void* ctx_;
+    char buf_[256] = {};
+    size_t n_ = 0;
+};
+
+}  // namespace
+
+JsonView::Type JsonView::type() const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    if (v.isNull()) return Type::Null;
+    if (v.is<JsonObjectConst>()) return Type::Object;
+    if (v.is<JsonArrayConst>()) return Type::Array;
+    if (v.is<bool>()) return Type::Bool;
+    // An integer also satisfies is<double>(), so Int is checked first, as
+    // read_value() does.
+    if (v.is<int64_t>()) return Type::Int;
+    if (v.is<double>()) return Type::Double;
+    if (v.is<JsonString>()) return Type::String;
+    return Type::Null;
+}
+
+JsonView JsonView::find(std::string_view key) const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    if (!v.is<JsonObjectConst>()) return {};
+    return JsonViewAccess::make(v.as<JsonObjectConst>()[JsonString(key.data(), key.size())]);
+}
+
+JsonView JsonView::at(size_t i) const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    if (!v.is<JsonArrayConst>()) return {};
+    return JsonViewAccess::make(v.as<JsonArrayConst>()[i]);
+}
+
+size_t JsonView::size() const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    if (v.is<JsonObjectConst>() || v.is<JsonArrayConst>()) return v.size();
+    return 0;
+}
+
+std::string_view JsonView::string() const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    if (!v.is<JsonString>()) return {};
+    const JsonString s = v.as<JsonString>();
+    return {s.c_str(), s.size()};
+}
+
+std::optional<int64_t> JsonView::integer() const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    if (v.is<bool>() || !v.is<int64_t>()) return std::nullopt;
+    return v.as<int64_t>();
+}
+
+bool JsonView::boolean(bool fallback) const {
+    const JsonVariantConst v = JsonViewAccess::get(*this);
+    return v.is<bool>() ? v.as<bool>() : fallback;
+}
+
+void JsonView::write(void (*sink)(void* ctx, const char* p, size_t n), void* ctx) const {
+    SinkWriter writer(sink, ctx);
+    serializeJson(JsonViewAccess::get(*this), writer);
+}
+
+LargeJson::LargeJson(LargeJson&& other) noexcept : impl_(std::exchange(other.impl_, nullptr)) {}
+
+LargeJson& LargeJson::operator=(LargeJson&& other) noexcept {
+    if (this != &other) {
+        destroy_impl(impl_);
+        impl_ = std::exchange(other.impl_, nullptr);
+    }
+    return *this;
+}
+
+LargeJson::~LargeJson() { destroy_impl(impl_); }
+
+JsonView LargeJson::root() const {
+    if (impl_ == nullptr) return {};
+    return JsonViewAccess::make(
+        static_cast<const LargeJsonImpl*>(impl_)->doc.as<JsonVariantConst>());
+}
+
+Result<LargeJson> parse_json_large(std::string_view text, const JsonAlloc& mem, uint8_t max_depth) {
+    void* storage = mem.allocate(sizeof(LargeJsonImpl));
+    if (storage == nullptr) {
+        return Result<LargeJson>::err(ErrorCode::NoMemory, "out of memory for a JSON document");
+    }
+    LargeJson out;
+    out.impl_ = new (storage) LargeJsonImpl(mem);
+    auto* impl = static_cast<LargeJsonImpl*>(out.impl_);
+    // (const char*, size_t) makes ArduinoJson copy every string into the
+    // document; it would otherwise point into `text`.
+    const DeserializationError err = deserializeJson(
+        impl->doc, text.data(), text.size(), DeserializationOption::NestingLimit(max_depth));
+    if (err == DeserializationError::TooDeep) {
+        return Result<LargeJson>::err(
+            ErrorCode::QuotaExceeded,
+            "nested deeper than " + std::to_string(max_depth) + " levels");
+    }
+    if (err == DeserializationError::NoMemory) {
+        return Result<LargeJson>::err(ErrorCode::NoMemory, "out of memory for a JSON document");
+    }
+    if (err) {
+        return Result<LargeJson>::err(ErrorCode::InvalidArgument, err.c_str());
+    }
+    return Result<LargeJson>::ok(std::move(out));
 }
 
 }  // namespace wisp
