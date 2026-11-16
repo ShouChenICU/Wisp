@@ -97,7 +97,8 @@ fi
 # ("Fix round N", "Re-review N", "review round N", "round N, item M",
 # "(final review)") and bare finding IDs (a letter from
 # I/M/N/C immediately followed by digits, immediately followed by ':'
-# or wrapped alone in parens, e.g. "N3:" or "(M8)") -- narrow enough
+# or wrapped alone in parens, e.g. "N3:" or "(M8)", and ruling ids such
+# as "R10:") -- narrow enough
 # that a real identifier like "I2C" or an unrelated "(I1)" sharing the
 # same shape (see lv_conf.h's color-depth comment, excluded below)
 # doesn't trip it.
@@ -112,7 +113,7 @@ echo "==> process-history / review-marker guard (AGENTS.md section 5)"
 # comment ("1 (I1), 8 (L8), ...") is the one real identifier in this
 # tree shaped like a bare finding ID.
 GUARD_MATCHES="$(grep -rnE \
-    '\.superpowers/|task-[0-9a-zA-Z]+-(brief|report|review)\.md|global-constraints\.md|[Ff]ix round|[Rr]e-review|[Rr]eview round|\bround [0-9]+, item|\bR2-[0-9]|\bTask [0-9]+[a-z]?\b|\((final review|[CIMN][0-9]+)\)|\b[CIMN][0-9]+:' \
+    '\.superpowers/|task-[0-9a-zA-Z]+-(brief|report|review)\.md|global-constraints\.md|[Ff]ix round|[Rr]e-review|[Rr]eview round|\bround [0-9]+, item|\bR2-[0-9]|\bTask [0-9]+[a-z]?\b|\((final review|[CIMN][0-9]+)\)|\b[CIMNR][0-9]+:' \
     --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.c' \
     --include='*.md' --include='*.yaml' --include='*.yml' --include='*.py' \
     --include='CMakeLists.txt' --include='*.cmake' --include='*.sh' \

@@ -81,7 +81,7 @@ protected:
         bus.stop();
     }
 
-    // R10: one clock for everything compared with a wait deadline -- real
+    // One clock for everything compared with a wait deadline -- real
     // time plus a skew a test bumps to jump a minute or ten.
     McpClientConfig config() {
         return {.client_version = "1.2.3",
@@ -99,7 +99,7 @@ protected:
         return out;
     }
 
-    // R13: no log line holds the header value or any 8-byte piece of it.
+    // No log line holds the header value or any 8-byte piece of it.
     static void expect_no_secret_in_logs() {
         for (const auto& e : wisp::log::ring_entries())
             EXPECT_FALSE(wisp::test::holds_secret_piece(e.msg, kSecret)) << e.msg;

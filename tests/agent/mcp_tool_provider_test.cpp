@@ -175,7 +175,8 @@ protected:
         ASSERT_TRUE(wisp::agent::add_find_tools(*tools));
     }
 
-    // R10: real time plus a skew, shared by the client and the provider.
+    // Real time plus a skew, shared by the client and the provider: waits
+    // run in real time while a test jumps a minute or ten.
     uint64_t now() const { return wisp::os::now_ms() + skew.load(); }
 
     ToolOutput find(Map args = {}) {
@@ -307,7 +308,7 @@ TEST_F(McpToolProviderTest, FailedServerIsListedWhenSceneToolsFillTheList) {
     EXPECT_EQ(fake.calls(), sent);
 }
 
-// R16: a find scoped to one scene names no MCP server, however full.
+// A find scoped to one scene names no MCP server, however full.
 TEST_F(McpToolProviderTest, SceneScopedFullFindNamesNoServer) {
     fail_web();
     ASSERT_EQ(unavailable(parsed(find({{"query", Value("")}}))),
