@@ -57,6 +57,11 @@ void add_issue(ToolSearch& out, std::string_view server_id, std::string_view err
     out.unavailable.push_back(std::move(issue));
 }
 
+// A server the client knows to be failing (in its backoff window).
+void add_known_failure(ToolSearch& out, const net::McpServerStatus& s) {
+    if (!s.error.empty()) add_issue(out, s.id, s.error);
+}
+
 // The word tools.find shows for a server that could not be listed.
 std::string_view search_error(const McpFailure& f) {
     if (f.error == McpError::Unavailable) return f.category;
@@ -148,7 +153,7 @@ void McpToolProvider::search(std::string_view query, std::string_view scope, siz
         if (got >= max) {
             // No room left, so no request; a known failure is still named.
             for (const auto& s : known)
-                if (s.id == server.id && !s.error.empty()) add_issue(out, server.id, s.error);
+                if (s.id == server.id) add_known_failure(out, s);
             continue;
         }
         if (ctx.cancelled && ctx.cancelled()) return;
@@ -188,9 +193,9 @@ size_t McpToolProvider::count() const {
     return total;
 }
 
-void McpToolProvider::report_unavailable(ToolSearch& out) const {
+void McpToolProvider::report_unavailable(ToolSearch& out, std::string_view scope) const {
     for (const auto& s : client_.status())
-        if (s.enabled && !s.error.empty()) add_issue(out, s.id, s.error);
+        if (s.enabled && (scope.empty() || scope == s.id)) add_known_failure(out, s);
 }
 
 std::optional<ToolInfo> McpToolProvider::describe(std::string_view full_name, ToolCtx& ctx) {

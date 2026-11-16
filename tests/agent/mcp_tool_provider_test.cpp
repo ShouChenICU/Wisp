@@ -304,6 +304,21 @@ TEST_F(McpToolProviderTest, FailedServerIsListedWhenSceneToolsFillTheList) {
     EXPECT_EQ(fake.calls(), sent);
 }
 
+// R16: a find scoped to one scene names no MCP server, however full.
+TEST_F(McpToolProviderTest, SceneScopedFullFindNamesNoServer) {
+    fail_web();
+    ASSERT_EQ(unavailable(parsed(find({{"query", Value("")}}))),
+              R"([{"error":"connect","server":"web"}])");
+
+    filler.fill = true;
+    const Value scoped = parsed(find({{"scene", Value("weather")}}));
+    EXPECT_EQ(names(scoped).size(), wisp::agent::kFindMax);
+    EXPECT_EQ(scoped.find("unavailable"), nullptr) << wisp::to_json(scoped);
+    // Scoped to the failing server itself, it is still named.
+    EXPECT_EQ(unavailable(parsed(find({{"scene", Value("web")}}))),
+              R"([{"error":"connect","server":"web"}])");
+}
+
 TEST_F(McpToolProviderTest, SearchBudgetBoundsSlowServers) {
     start(/*budget_ms=*/300);
     fake.hold = true;

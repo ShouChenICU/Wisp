@@ -70,7 +70,7 @@ ToolOutput find(const ToolRegistry& reg, const Value& args, ToolCtx& ctx) {
         if (ctx.cancelled && ctx.cancelled())
             return tool_error("cancelled", "the turn was stopped");
         if (got >= max) {
-            provider->report_unavailable(found);
+            provider->report_unavailable(found, scope);
             continue;
         }
         found.tools.clear();

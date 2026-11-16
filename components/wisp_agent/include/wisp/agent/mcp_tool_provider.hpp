@@ -51,8 +51,9 @@ public:
                 ToolCtx& ctx, ToolSearch& out) override;
     // Cached tools of enabled servers.
     size_t count() const override;
-    // Enabled servers in their backoff window, with the remembered category.
-    void report_unavailable(ToolSearch& out) const override;
+    // Enabled servers in `scope` ("" for all) in their backoff window, with
+    // the remembered category.
+    void report_unavailable(ToolSearch& out, std::string_view scope) const override;
     std::optional<ToolInfo> describe(std::string_view full_name, ToolCtx& ctx) override;
     ToolOutput call(std::string_view full_name, const Value& args, ToolCtx& ctx) override;
 

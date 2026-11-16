@@ -68,8 +68,12 @@ public:
     // Called instead of search() when the merged list was already full:
     // appends to out.unavailable the sources this provider already knows to
     // be failing, from memory only (no I/O), so a failing server is named
-    // whatever came before it.
-    virtual void report_unavailable(ToolSearch& out) const { (void)out; }
+    // whatever came before it. `scope` is search()'s: only sources inside
+    // it are reported ("" for all).
+    virtual void report_unavailable(ToolSearch& out, std::string_view scope) const {
+        (void)out;
+        (void)scope;
+    }
     virtual std::optional<ToolInfo> describe(std::string_view full_name, ToolCtx& ctx) = 0;
     // `args` is tools.call's "args" as given. ToolRegistry::call() checks
     // tools.call's own schema before routing, so over the wire it is always

@@ -63,8 +63,9 @@ public:
         for (const ToolSourceIssue& issue : unavailable) out.unavailable.push_back(issue);
     }
     size_t count() const override { return total; }
-    void report_unavailable(ToolSearch& out) const override {
+    void report_unavailable(ToolSearch& out, std::string_view scope) const override {
         ++reports;
+        report_scopes.emplace_back(scope);
         for (const ToolSourceIssue& issue : unavailable) out.unavailable.push_back(issue);
     }
     std::optional<ToolInfo> describe(std::string_view, ToolCtx&) override { return std::nullopt; }
@@ -82,6 +83,7 @@ public:
     std::vector<SearchCall> searches;
     std::vector<CallRecord> calls;
     mutable size_t reports = 0;
+    mutable std::vector<std::string> report_scopes;
 
 private:
     std::string id_;
@@ -234,9 +236,18 @@ TEST_F(ToolFind, SkippedProvidersStillReportUnavailableSources) {
     ASSERT_TRUE(out.ok) << raw(out);
     EXPECT_TRUE(b.searches.empty());
     EXPECT_EQ(b.reports, 1u);
+    EXPECT_EQ(b.report_scopes, std::vector<std::string>{""});
     EXPECT_EQ(wisp::to_json(*parsed(out).find("unavailable")),
               R"([{"error":"connect","server":"srv"}])");
     EXPECT_EQ(a.reports, 0u);
+}
+
+TEST_F(ToolFind, SkippedProvidersGetTheScope) {
+    a.tools = {info("a1")};
+    a.overfill = true;
+    add_both();
+    ASSERT_TRUE(call("tools_find", Value(wisp::Map{{"scene", Value("weather")}})).ok);
+    EXPECT_EQ(b.report_scopes, std::vector<std::string>{"weather"});
 }
 
 TEST_F(ToolFind, CancelledBetweenProvidersIsCancelled) {
