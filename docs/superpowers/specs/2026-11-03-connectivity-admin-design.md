@@ -312,6 +312,11 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | | `DELETE /ai/profiles/{id}` | 是 | 见 5.3 的删除规则 |
 | | `POST /ai/active {id}` | 是 | 设为其类型的激活配置 |
 | | `POST /ai/profiles/{id}/test` | 是 | 测试该配置的连通性 |
+| MCP 服务器 | `GET /mcp/servers` | 是 | `{servers, max}`，`max` 为 8；每项不含请求头的值，只有 `headers: [{name, has_value}]` |
+| | `POST /mcp/servers {name, url, enabled?, timeout_ms?, headers?: [{name, value}]}` | 是 | 201，返回新服务器；超过 8 个返回 409 `limit_reached` |
+| | `PUT /mcp/servers/{id} {name?, url?, enabled?, timeout_ms?, headers?: [{name, value?}]}` | 是 | 部分更新，未知字段 400；`headers` 里不带 `value` 的项沿用已存的值；`url` 的源（协议、主机、端口）变了而 `headers` 没有给出新值时，请求头的值被清除 |
+| | `DELETE /mcp/servers/{id}` | 是 | 204 |
+| | `POST /mcp/servers/{id}/test` | 是 | `{ok, error, latency_ms, protocol, tools}`，`error` 为类别或 null；最长约 30 秒，期间占用后台 httpd；没有接上服务时（以及所有 `/mcp` 路由）返回 503 `unavailable` |
 | 系统 | `POST /system/reboot` | 是 | 直接执行 |
 | | `POST /system/factory-reset` | 是 | 先在设备上弹确认框，接口返回 202，结果通过 WebSocket 推送；范围见下文 |
 | | `GET /system/firmware`、`POST /system/firmware` | 是 | 固件信息与网页上传固件，见 6.5 |
@@ -322,7 +327,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 
 **强制门户探测路径**（`/generate_204`、`/hotspot-detect.html`、`/connecttest.txt`、`/ncsi.txt` 等）在热点模式下一律重定向到 `http://<热点地址>:8900/setup.html`；非热点模式下返回 404。
 
-**恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌和全部模型配置（含 Key），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
+**恢复出厂设置的范围**：清除 Settings、已保存的网络、全部令牌、全部模型配置（含 Key）和全部 MCP 服务器（含请求头的值，`secrets/mcp.json`），然后重启；不删除 Library 和 Backup 区的数据（以后的场景与用户数据）。完整擦除留给子项目 7。
 
 **SSID 的字节**：SSID 是最多 32 字节的原始字节，不一定是 UTF-8（GBK 编码的路由器很常见），而 JSON 字符串里的非法 UTF-8 会被替换成 U+FFFD。所以响应和事件里的每个 SSID 都附带 `ssid_hex`（原始字节的小写十六进制），前端遇到含 U+FFFD 的 SSID 时用 `ssid_hex` 回传。
 

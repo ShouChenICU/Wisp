@@ -34,7 +34,7 @@ These are the five failures most likely to reach a user that no feature test wou
 1. **Scene tool results change bytes.** The model has seen today's shapes for months, and the web chat's tool view parses them. Pinned by `SceneToolsGolden.*` (Task 1), which must stay unchanged through Task 3.
 2. **A name in neither syntax.** `tools_call {"name":"weather"}` (no `.`, no `:`) must answer exactly as today, `not_found` "no scene tool named weather". It must not answer a new generic message. Pinned by `SceneToolsGolden.CallNameWithoutADot` (Task 1), and by `SceneTools.ProviderOwnsEveryNameWithoutAColon` (Task 3).
 3. **A provider returns more than it was asked for.** The merged list must still stop at 20 (details) or 200 (listed). Pinned by `ToolFind.MergedListKeepsTheLimitsWhenAProviderOverfills` (Task 2).
-4. **`args` missing or not an object.** `tools.call` answers `bad_args` (field `args`) before any name lookup, even for an unknown name, as today; `not_found` applies only to well-formed calls with an unknown name. Pinned by `SceneToolsGolden.UnknownToolWithBadArgsIsNotFound` (Task 1).
+4. **`args` missing or not an object.** `tools.call` answers `bad_args` (field `args`) before any name lookup, even for an unknown name, as today; `not_found` applies only to well-formed calls with an unknown name. Pinned by `SceneToolsGolden.UnknownToolWithNonObjectArgsIsBadArgs` (Task 1).
 5. **Merging leaks to the default heap.** A 200-entry listing must stay in PSRAM. Pinned by the existing `tool_registry_heap_test`, which Task 3 ports to the provider API without loosening its bounds.
 
 ## Plan decisions
@@ -78,7 +78,7 @@ TEST_F(SceneToolsGolden, CallNotFoundBytes)
 // tools_call {"name":"missing.tool","args":{}} -> exact error JSON
 TEST_F(SceneToolsGolden, CallNameWithoutADot)
 // tools_call {"name":"weather","args":{}} -> not_found, message "no scene tool named weather"
-TEST_F(SceneToolsGolden, UnknownToolWithBadArgsIsNotFound)
+TEST_F(SceneToolsGolden, UnknownToolWithNonObjectArgsIsBadArgs)
 // tools_call {"name":"missing.tool","args":7}  -> error "not_found" (not bad_args)
 TEST_F(SceneToolsGolden, CallArgsNotAnObjectBytes)
 // install_weather(); tools_call {"name":"weather.lookup","args":[1]} -> bad_args, field "", exact JSON
