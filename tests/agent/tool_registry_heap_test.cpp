@@ -273,8 +273,15 @@ TEST(ToolRegistryHeap, RegistrationKeepsNothingOnTheDefaultHeap) {
         Counting counting;
         const bool sample = static_cast<bool>(add_sample_tools(reg, deps));
         const bool docs = static_cast<bool>(wisp::agent::add_docs_tools(reg));
+        wisp::agent::ToolDef shot;
+        shot.name = "sample.shot";
+        shot.description = "a vision-only tool";
+        shot.vision_only = true;
+        shot.run = [](const Value&, ToolCtx&) { return wisp::agent::ToolOutput{}; };
+        const bool vision_tool = static_cast<bool>(reg.add(std::move(shot)));
         // Built here if it is built lazily: it must land in Mem::Large too.
         const size_t json = reg.tools_json().size();
+        const size_t vision_json = reg.tools_json(true).size();
         const bool found = reg.find("sample.one") != nullptr &&
                            reg.find_wire("docs_read") == reg.find("docs.read");
         blocks = g_live_blocks.load();
@@ -283,7 +290,9 @@ TEST(ToolRegistryHeap, RegistrationKeepsNothingOnTheDefaultHeap) {
         t_counting = false;
         ASSERT_TRUE(sample);
         ASSERT_TRUE(docs);
+        ASSERT_TRUE(vision_tool);
         ASSERT_GT(json, 0u);
+        ASSERT_GT(vision_json, json);
         ASSERT_TRUE(found);
     }
     EXPECT_EQ(blocks, 0) << bytes << " bytes in " << blocks << " blocks stay on the default "

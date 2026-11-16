@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <utility>
 
 #include "wisp/base/json.hpp"
@@ -170,7 +171,17 @@ Result<void> ToolRegistry::add(ToolDef def) {
         by_wire_.begin(), by_wire_.end(), e.wire,
         [this](uint16_t i, const os::LargeString& k) { return entries_[i].wire < k; });
     by_wire_.insert(wire_at, pos);
-    append_json(e, parameters);
+    if (e.def.vision_only) {
+        if (!vision_tail_.empty()) vision_tail_.push_back(',');
+        append_entry_json(vision_tail_, e, parameters);
+    } else {
+        // Appended in place of the closing ']', so adding a tool costs only
+        // its own text and the array is complete after every add().
+        json_.pop_back();
+        if (json_.size() > 1) json_.push_back(',');
+        append_entry_json(json_, e, parameters);
+        json_.push_back(']');
+    }
     return Result<void>::ok();
 }
 
@@ -196,26 +207,58 @@ const ToolDef* ToolRegistry::find_wire(std::string_view wire) const {
     return e == nullptr ? nullptr : &e->def;
 }
 
-const os::LargeString& ToolRegistry::tools_json() const { return json_; }
+const os::LargeString& ToolRegistry::tools_json(bool vision) const {
+    if (!vision || vision_tail_.empty()) return json_;
+    // Registration is over by the first request (add() is not thread-safe),
+    // so the array is built once and never changes after.
+    std::call_once(vision_once_, [this] {
+        vision_json_.reserve(json_.size() + 1 + vision_tail_.size() + 1);
+        vision_json_.append(json_.data(), json_.size() - 1);
+        if (json_.size() > 2) vision_json_.push_back(',');
+        vision_json_.append(vision_tail_);
+        vision_json_.push_back(']');
+    });
+    return vision_json_;
+}
 
-// Appended in place of the closing ']', so adding a tool costs only its own
-// text and the array is complete after every add().
-void ToolRegistry::append_json(const Entry& e, std::string_view parameters) {
-    json_.pop_back();
-    if (entries_.size() > 1) json_.push_back(',');
-    json_.append(R"({"type":"function","function":{"name":)");
-    append_json_string(json_, e.wire);
-    json_.append(R"(,"description":)");
-    append_json_string(json_, e.def.description);
-    json_.append(R"(,"parameters":)");
-    json_.append(parameters.data(), parameters.size());
-    json_.append("}}]");
+void ToolRegistry::append_entry_json(os::LargeString& out, const Entry& e,
+                                     std::string_view parameters) {
+    out.append(R"({"type":"function","function":{"name":)");
+    append_json_string(out, e.wire);
+    out.append(R"(,"description":)");
+    append_json_string(out, e.def.description);
+    out.append(R"(,"parameters":)");
+    out.append(parameters.data(), parameters.size());
+    out.append("}}");
+}
+
+std::shared_ptr<ToolImage> make_tool_image(const char* mime, size_t size) {
+    auto img = std::allocate_shared<ToolImage>(os::LargeAllocator<ToolImage>{});
+    img->mime = mime;
+    img->bytes = os::LargeBuffer::allocate(size);
+    if (!img->bytes.ok()) return nullptr;
+    return img;
+}
+
+void append_image_json(os::LargeString& out, const ToolImage& img) {
+    out.append(R"({"mime":)");
+    append_json_string(out, img.mime);
+    out.append(R"(,"bytes":)");
+    out.append(std::to_string(img.bytes.size()).c_str());
+    if (img.width != 0) {
+        out.append(R"(,"width":)");
+        out.append(std::to_string(img.width).c_str());
+        out.append(R"(,"height":)");
+        out.append(std::to_string(img.height).c_str());
+    }
+    out.push_back('}');
 }
 
 ToolOutput ToolRegistry::call(std::string_view wire, std::string_view args_json,
                               ToolCtx& ctx) const {
     const Entry* found = find_entry(wire, /*wire=*/true);
-    if (found == nullptr) {
+    // A vision-only tool was not in the array a model without vision got.
+    if (found == nullptr || (found->def.vision_only && !ctx.vision)) {
         return tool_error("unknown_tool", "no tool named " + std::string(wire));
     }
     const Entry& e = *found;

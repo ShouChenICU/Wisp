@@ -57,6 +57,11 @@ inline constexpr uint32_t kConfirmMs = 30000;
 // WS tool summaries: args and result cut to this many characters.
 inline constexpr size_t kSummaryChars = 200;
 
+// Largest encoded image a tool may hand the model (spec 3.5): about 171 KiB of base64.
+inline constexpr size_t kImageMaxBytes = 128 * 1024;
+// What one image counts toward the request estimate (plan decision 6).
+inline constexpr size_t kImageEstTokens = 1024;
+
 // Conversation files: archives kept, and the size of current.jsonl past
 // which the next user message starts a new conversation.
 inline constexpr uint32_t kArchivesKept = 5;

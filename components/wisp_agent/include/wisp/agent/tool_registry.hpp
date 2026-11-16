@@ -19,7 +19,7 @@
 // Everything the registry keeps for the life of the program lives in
 // Mem::Large (PSRAM on the device): the definitions' text and run
 // functions (os::LargeString, os::LargeFunction), the entries and their
-// indexes, and tools_json(). An ordinary allocation under 16 KB would
+// indexes, and both tools_json() arrays. An ordinary allocation under 16 KB would
 // stay in internal SRAM for good (AGENTS.md section 8), and with dozens
 // of tools that is tens of KB. Argument schemas are kept as text and
 // parsed per call: a parsed Value is a tree of std::map nodes on the
@@ -27,6 +27,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,6 +52,18 @@ struct ToolCtx {
     // conversation's turn number, which restarts in a new conversation);
     // 0 outside a turn.
     uint32_t turn = 0;
+    // Whether the turn's model takes images (spec 3.5); tools that would produce one
+    // answer "unsupported" without it.
+    bool vision = false;
+};
+
+// One encoded image a tool produced (spec 3.5). Allocated in Mem::Large
+// (std::allocate_shared with os::LargeAllocator); never stored.
+struct ToolImage {
+    const char* mime = "";    // "image/jpeg" | "image/png" (static strings)
+    os::LargeBuffer bytes{};  // at most kImageMaxBytes
+    uint32_t width = 0;       // 0 when unknown
+    uint32_t height = 0;
 };
 
 struct ToolOutput {
@@ -58,6 +72,9 @@ struct ToolOutput {
     // Large results may be pre-serialized into Mem::Large to avoid a default-heap Value tree.
     os::LargeString result_json;
     std::string note;  // the system note shown to the user, "" for none
+    // Set only by a tool whose text result already describes it
+    // ("image":{"mime","bytes","width","height"}); the turn shows it to a vision model.
+    std::shared_ptr<const ToolImage> image;
 };
 
 using ToolFn = os::LargeFunction<ToolOutput(const Value& args, ToolCtx& ctx)>;
@@ -71,6 +88,9 @@ struct ToolDef {
     os::LargeString description;
     os::LargeString schema_json{};  // JSON Schema subset (validate_args); "" is an empty object
     ToolRisk risk = ToolRisk::Normal;
+    // Offered only to a model with vision (spec 3.5): left out of tools_json(false), last
+    // in tools_json(true), and unknown to call() without ctx.vision.
+    bool vision_only = false;
     // Where run() runs. The default, Agent, runs it on wisp.agent itself,
     // whose stack may be in PSRAM (flash_access = false): a tool that
     // touches flash in any way -- Settings/NVS, StorageManager files on
@@ -112,13 +132,17 @@ public:
 
     // The request's "tools" array, in add() order:
     // [{"type":"function","function":{"name":<wire>,"description","parameters"}}].
-    const os::LargeString& tools_json() const;
+    // With `vision`, the vision-only tools follow (agent-core spec 3.2 item 2).
+    // Without any vision-only tool both are the same array. The vision array
+    // is built on its first use, so add() stays O(size of one tool).
+    const os::LargeString& tools_json(bool vision = false) const;
 
     // Parses args_json ("" means {}), validates it, runs the tool on its
     // thread and waits up to min(timeout_ms, ctx.deadline_ms), checking
     // ctx.cancelled() every 20 ms. An Agent tool runs right here. Leaves
     // the registry unchanged, so a const registry (App::agent_tools()) can
-    // call its tools.
+    // call its tools. A vision-only tool is unknown_tool without ctx.vision,
+    // as any name missing from the array the model got.
     ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) const;
 
 private:
@@ -128,7 +152,8 @@ private:
     };
 
     const Entry* find_entry(std::string_view key, bool wire) const;
-    void append_json(const Entry& e, std::string_view parameters);
+    static void append_entry_json(os::LargeString& out, const Entry& e,
+                                  std::string_view parameters);
 
     ToolExecutors ex_;
     os::LargeVector<Entry> entries_;
@@ -137,7 +162,19 @@ private:
     os::LargeVector<uint16_t> by_name_;
     os::LargeVector<uint16_t> by_wire_;
     os::LargeString json_;
+    // The vision-only entries' objects, comma-separated, without brackets.
+    os::LargeString vision_tail_;
+    mutable os::LargeString vision_json_;
+    mutable std::once_flag vision_once_;
 };
+
+// A ToolImage in Mem::Large whose bytes hold `size` bytes; null only when the
+// byte buffer could not be allocated (allocate_shared over os::LargeAllocator
+// aborts on out-of-memory, as every LargeAllocator does).
+std::shared_ptr<ToolImage> make_tool_image(const char* mime, size_t size);
+
+// Appends {"mime":…,"bytes":N,"width":W,"height":H} (width/height left out when 0).
+void append_image_json(os::LargeString& out, const ToolImage& img);
 
 std::string wire_name(std::string_view dotted);
 

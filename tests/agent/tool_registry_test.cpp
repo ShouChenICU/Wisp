@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "wisp/base/json.hpp"
 #include "wisp/os/os.hpp"
@@ -515,4 +517,134 @@ TEST(ToolRegistry, FsInteractiveFallsBackToFs) {
     ToolCtx c = ctx();
     EXPECT_TRUE(reg.call("memory_add", "", c).ok);
     EXPECT_EQ(note_on, fs.id());
+}
+
+namespace {
+
+ToolDef vision_tool(std::string name, std::atomic<int>* runs = nullptr) {
+    ToolDef d = tool(std::move(name));
+    d.vision_only = true;
+    if (runs != nullptr) {
+        d.run = [runs](const Value&, ToolCtx&) {
+            runs->fetch_add(1);
+            ToolOutput out;
+            out.result = Value(Map{{"ok", true}});
+            return out;
+        };
+    }
+    return d;
+}
+
+std::string str(const wisp::os::LargeString& s) { return std::string(s.data(), s.size()); }
+
+std::vector<std::string> names_in(const wisp::os::LargeString& json) {
+    std::vector<std::string> names;
+    auto parsed = wisp::from_json(str(json));
+    if (!parsed) return names;
+    for (const Value& t : parsed.value().as_list()) {
+        names.push_back(t.find("function")->find("name")->as_string());
+    }
+    return names;
+}
+
+}  // namespace
+
+TEST(ToolRegistry, WithoutVisionTheArrayIsTodays) {
+    ToolRegistry reg(ToolExecutors{});
+    ASSERT_TRUE(reg.add(tool("a.b")));
+    ASSERT_TRUE(reg.add(vision_tool("v.shot")));
+    ASSERT_TRUE(reg.add(tool("c.d")));
+    EXPECT_EQ(&reg.tools_json(false), &reg.tools_json());
+    EXPECT_EQ(names_in(reg.tools_json(false)), (std::vector<std::string>{"a_b", "c_d"}));
+    EXPECT_EQ(str(reg.tools_json(false)).find("v_shot"), std::string::npos);
+
+    ToolRegistry plain(ToolExecutors{});
+    ASSERT_TRUE(plain.add(tool("a.b")));
+    ASSERT_TRUE(plain.add(tool("c.d")));
+    EXPECT_EQ(str(reg.tools_json(false)), str(plain.tools_json()));
+}
+
+TEST(ToolRegistry, VisionOnlyToolsGoLast) {
+    ToolRegistry reg(ToolExecutors{});
+    ASSERT_TRUE(reg.add(tool("a.b")));
+    ASSERT_TRUE(reg.add(vision_tool("v.shot")));
+    ASSERT_TRUE(reg.add(tool("c.d")));
+    const wisp::os::LargeString& vision = reg.tools_json(true);
+    EXPECT_EQ(names_in(vision), (std::vector<std::string>{"a_b", "c_d", "v_shot"})) << str(vision);
+    EXPECT_EQ(reg.tools_json(true).data(), vision.data());
+    EXPECT_NE(vision.data(), reg.tools_json(false).data());
+
+    // Only vision-only tools: the base array is empty and the vision one has no stray comma.
+    ToolRegistry only(ToolExecutors{});
+    ASSERT_TRUE(only.add(vision_tool("v.shot")));
+    EXPECT_EQ(str(only.tools_json(false)), "[]");
+    EXPECT_EQ(names_in(only.tools_json(true)), (std::vector<std::string>{"v_shot"}))
+        << str(only.tools_json(true));
+}
+
+TEST(ToolRegistry, NoVisionOnlyToolMeansOneArray) {
+    ToolRegistry reg(ToolExecutors{});
+    ASSERT_TRUE(reg.add(tool("a.b")));
+    ASSERT_TRUE(reg.add(tool("c.d")));
+    EXPECT_EQ(reg.tools_json(true).data(), reg.tools_json(false).data());
+}
+
+TEST(ToolRegistry, VisionOnlyToolIsUnknownWithoutVision) {
+    ToolRegistry reg(ToolExecutors{});
+    std::atomic<int> runs{0};
+    ASSERT_TRUE(reg.add(vision_tool("v.shot", &runs)));
+    ToolCtx c = ctx();
+    const ToolOutput refused = reg.call("v_shot", "", c);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(error_of(refused), "unknown_tool");
+    EXPECT_EQ(runs.load(), 0);
+
+    c.vision = true;
+    EXPECT_TRUE(reg.call("v_shot", "", c).ok);
+    EXPECT_EQ(runs.load(), 1);
+}
+
+TEST(ToolRegistry, ImageSurvivesTheThreadHop) {
+    Worker ui;
+    ToolRegistry reg(executors_on(ui));
+    const wisp::agent::ToolImage* made = nullptr;
+    ToolDef d = tool("ui.shot", "", ToolThread::Ui);
+    d.run = [&made](const Value&, ToolCtx&) {
+        auto img = wisp::agent::make_tool_image("image/jpeg", 4);
+        if (img) {
+            const uint8_t bytes[] = {1, 2, 3, 4};
+            std::copy(bytes, bytes + 4, img->bytes.data());
+            made = img.get();
+        }
+        ToolOutput out;
+        out.result = Value(Map{{"ok", true}});
+        out.image = std::move(img);
+        return out;
+    };
+    ASSERT_TRUE(reg.add(d));
+    ToolCtx c = ctx();
+    const ToolOutput out = reg.call("ui_shot", "", c);
+    ASSERT_TRUE(out.ok);
+    ASSERT_NE(out.image, nullptr);
+    EXPECT_EQ(out.image.get(), made);
+    EXPECT_STREQ(out.image->mime, "image/jpeg");
+    ASSERT_EQ(out.image->bytes.size(), 4u);
+    EXPECT_EQ(out.image->bytes.data()[0], 1);
+    EXPECT_EQ(out.image->bytes.data()[3], 4);
+    EXPECT_EQ(out.image.use_count(), 1);
+}
+
+TEST(ToolRegistry, ImageJsonShape) {
+    auto img = wisp::agent::make_tool_image("image/png", 4);
+    ASSERT_NE(img, nullptr);
+    img->width = 2;
+    img->height = 3;
+    wisp::os::LargeString out;
+    wisp::agent::append_image_json(out, *img);
+    EXPECT_EQ(str(out), R"({"mime":"image/png","bytes":4,"width":2,"height":3})");
+
+    img->width = 0;
+    out.clear();
+    wisp::agent::append_image_json(out, *img);
+    EXPECT_EQ(str(out), R"({"mime":"image/png","bytes":4})");
 }
