@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 
+#include "utf8.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 
@@ -47,15 +48,6 @@ constexpr std::string_view kCarryPrompt =
     "of the conversation, at most 300 words, without <say> tags or Markdown.";
 
 std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
-
-// Bytes in the longest prefix of `s` of at most `max_bytes` bytes that
-// does not split a character.
-size_t prefix_bytes(std::string_view s, size_t max_bytes) {
-    if (s.size() <= max_bytes) return s.size();
-    size_t n = max_bytes;
-    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
-    return n;
-}
 
 std::string cut_note(size_t total) {
     char buf[64];

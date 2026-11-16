@@ -267,6 +267,9 @@ const char* strings_en(StrId id) {
                    "a larger context";
         case StrId::AgentRolledOver:
             return "The conversation got long, so it was archived and a new one started";
+        case StrId::AgentRolledOverCarry:
+            return "The conversation got long, so it was archived; a summary of it was kept in the "
+                   "new one";
         case StrId::AgentContextDropped:
             return "The conversation got long and its older part could not be summarized, so it "
                    "was left out of the context (the record is kept)";

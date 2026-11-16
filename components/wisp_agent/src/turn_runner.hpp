@@ -94,6 +94,15 @@ public:
     // and the dialect), then runs the turn's requests and tools.
     Outcome run(const TurnInput& in);
 
+    // The rollover's summary of the old conversation (spec 3.8). Uses
+    // in.start_ms and in.turn_ms only. nullopt: no model, network_up()
+    // false, an empty transcript (no request, no Thinking state), an
+    // error, an empty reply, or an abort (the caller tells that last case
+    // apart by TurnEnv::abort_reason()). The text is cut to
+    // kCarryMaxBytes at a character boundary.
+    std::optional<os::LargeString> make_carry(const TurnInput& in,
+                                              std::span<const Message> history);
+
 private:
     // Summarizing the history: what came of it (see compress()).
     enum class Compressed : uint8_t { Stored, Kept, Aborted };

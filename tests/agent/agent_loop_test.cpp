@@ -207,6 +207,47 @@ protected:
             wisp::os::kForever));
     }
 
+    // An old conversation over the rollover size whose last turn a carry
+    // request can quote (spec 3.8), written on the harness's worker (the
+    // flash thread): turn 1 a note past the rollover size, turn 2 user
+    // "q2" and assistant "a2".
+    void seed_old_conversation() {
+        harness();
+        ASSERT_TRUE(h->worker.run_sync(
+            [&] {
+                ConversationStore before(*h->storage, h->dir);
+                ASSERT_TRUE(before.load());
+                Message big;
+                big.turn = 1;
+                big.role = Role::Note;
+                big.text.assign(wisp::agent::kRolloverBytes + 10, 'x');
+                ASSERT_TRUE(before.append(big));
+                Message q;
+                q.turn = 2;
+                q.role = Role::User;
+                q.text.assign("q2");
+                ASSERT_TRUE(before.append(q));
+                Message a;
+                a.turn = 2;
+                a.role = Role::Assistant;
+                a.text.assign("a2");
+                ASSERT_TRUE(before.append(a));
+            },
+            wisp::os::kForever));
+    }
+
+    // The store's archives, newest first.
+    std::vector<wisp::agent::ArchiveInfo> archives() {
+        std::vector<wisp::agent::ArchiveInfo> list;
+        EXPECT_TRUE(h->worker.run_sync(
+            [&] {
+                auto r = h->store->archives();
+                if (r) list = r.value();
+            },
+            wisp::os::kForever));
+        return list;
+    }
+
     // Runs one whole turn: `user` in, `reply` out.
     void run_turn(const std::string& user, const std::string& reply) {
         const size_t before = count(Kind::TurnEnd);
@@ -2273,4 +2314,98 @@ TEST_F(AgentLoop, SummaryRequestsAreNotContinued) {
     ASSERT_TRUE(stored);
     EXPECT_EQ(str(stored->text), "S");
     EXPECT_EQ(last_status(), "done");
+}
+
+TEST_F(AgentLoop, RolloverCarriesASummary) {
+    seed_old_conversation();
+    start();
+    ASSERT_TRUE(h->store->needs_rollover());
+    h->server.push(text_reply("C"));
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "done");
+
+    ASSERT_EQ(h->server.requests().size(), 2u);
+    const Value carry_body = h->server.body_json(0);
+    EXPECT_EQ(carry_body.find("tools"), nullptr);
+    const List& carry_msgs = carry_body.find("messages")->as_list();
+    ASSERT_EQ(carry_msgs.size(), 2u);
+    EXPECT_NE(carry_msgs[1].find("content")->as_string().find("User: q2"), std::string::npos);
+
+    const History all = history();
+    ASSERT_GE(all.size(), 4u);
+    EXPECT_EQ(all[0].role, Role::Carry);
+    EXPECT_EQ(all[0].seq, 1u);
+    EXPECT_EQ(all[0].turn, 0u);
+    EXPECT_EQ(str(all[0].text), "C");
+    EXPECT_EQ(all[0].from, 1u);
+    EXPECT_EQ(all[1].role, Role::Note);
+    EXPECT_EQ(str(all[1].text),
+              wisp::ui::tr(wisp::ui::StrId::AgentRolledOverCarry, wisp::ui::Lang::Zh));
+    EXPECT_EQ(all[2].role, Role::Marker);
+    EXPECT_EQ(all[3].role, Role::User);
+    EXPECT_EQ(str(all[3].text), "hi");
+    EXPECT_FALSE(h->store->needs_rollover());
+
+    // Cleared comes before TurnBegin, or the web chat would wipe the new
+    // turn's bubble.
+    std::vector<Kind> order;
+    for (const AgentEvent& e : snapshot())
+        if (e.kind == Kind::State || e.kind == Kind::Cleared || e.kind == Kind::TurnBegin)
+            order.push_back(e.kind);
+    ASSERT_GE(order.size(), 3u);
+    const auto ev = snapshot();
+    EXPECT_EQ(ev[0].kind, Kind::State);
+    EXPECT_EQ(ev[0].state, AgentState::Thinking);
+    EXPECT_EQ(order[1], Kind::Cleared);
+    EXPECT_EQ(order[2], Kind::TurnBegin);
+    for (const AgentEvent& e : ev)
+        if (e.kind == Kind::TurnBegin) EXPECT_EQ(e.turn, 1u);
+
+    const Value body = h->server.body_json(1);
+    bool carried = false;
+    for (const Value& m : body.find("messages")->as_list())
+        carried = carried ||
+                  (m.find("role")->as_string() == "system" &&
+                   m.find("content")->as_string() == "Summary of the previous conversation:\nC");
+    EXPECT_TRUE(carried);
+}
+
+TEST_F(AgentLoop, FailedCarryStillRollsOver) {
+    seed_old_conversation();
+    start();
+    h->server.push(FakeReply{.status = 400});
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "done");
+    const History all = history();
+    ASSERT_GE(all.size(), 1u);
+    EXPECT_EQ(all[0].role, Role::Note);
+    EXPECT_EQ(str(all[0].text), wisp::ui::tr(wisp::ui::StrId::AgentRolledOver, wisp::ui::Lang::Zh));
+    for (const Message& m : all) EXPECT_NE(m.role, Role::Carry);
+    EXPECT_FALSE(h->store->needs_rollover());
+}
+
+// A stop during the carry request ends the turn before archiving: the turn
+// stays in the old conversation, and the next turn tries again.
+TEST_F(AgentLoop, StopDuringTheCarryKeepsTheConversation) {
+    seed_old_conversation();
+    start();
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("C")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
+    svc->stop_turn();
+    ASSERT_TRUE(wait_turns(1));
+    EXPECT_EQ(last_status(), "stopped");
+    EXPECT_TRUE(h->store->needs_rollover());
+    EXPECT_TRUE(archives().empty());
+    EXPECT_EQ(count(Kind::Cleared), 0u);
+    const History all = history();
+    const std::optional<Message> user = last_of(all, Role::User);
+    ASSERT_TRUE(user);
+    EXPECT_EQ(str(user->text), "hi");
+    EXPECT_EQ(user->turn, 3u);
+    EXPECT_EQ(h->server.requests().size(), 1u);
 }

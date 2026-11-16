@@ -11,6 +11,7 @@
 
 #include "calibration.hpp"
 #include "turn_runner.hpp"
+#include "utf8.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/topics.hpp"
@@ -28,15 +29,6 @@ constexpr const char* kLockReason = "agent_turn";
 size_t code_points(std::string_view s) {
     size_t n = 0;
     for (char c : s) n += (static_cast<unsigned char>(c) & 0xC0) != 0x80 ? 1 : 0;
-    return n;
-}
-
-// Bytes in the longest prefix of `s` of at most `max_bytes` bytes that
-// does not split a character.
-size_t prefix_bytes(std::string_view s, size_t max_bytes) {
-    if (s.size() <= max_bytes) return s.size();
-    size_t n = max_bytes;
-    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
     return n;
 }
 
@@ -396,13 +388,6 @@ struct AgentService::Impl final : TurnEnv {
     }
 
     void run_turn(const Command& c) {
-        const bool rolled = deps.store.needs_rollover() && archive();
-        const uint32_t turn = deps.store.last_turn() + 1;
-        ++turn_serial;
-        {
-            std::lock_guard<os::Mutex> lock(mu);
-            running_turn = turn;
-        }
         // This turn's limits: a change from now on waits for the next one.
         max_steps = next_steps.load();
         turn_ms = next_turn_ms.load();
@@ -417,6 +402,31 @@ struct AgentService::Impl final : TurnEnv {
             net_lock =
                 core::WakeLock(*deps.locks, kHolder, core::WakeLockKind::Network, kLockReason);
         }
+        TurnRunner runner(deps.llm, deps.tools, deps.store, deps.context, cal, *this);
+
+        // The rollover (spec 3.8) comes first, under the turn's limits and
+        // locks: its carry request can take as long as a reply. A stop (or
+        // Wi-Fi loss, stall, time) during it leaves the old conversation
+        // unarchived, and the turn, framed there, ends at once; the next
+        // turn tries again. Archiving emits Cleared, which must reach the
+        // listeners before TurnBegin, or the web chat wipes the new turn.
+        bool rolled = false;
+        std::optional<os::LargeString> carry;
+        uint32_t archived = 0;
+        if (deps.store.needs_rollover()) {
+            {
+                const std::shared_ptr<const History> old = deps.store.history();
+                carry = runner.make_carry({.start_ms = start, .turn_ms = turn_ms.load()}, *old);
+            }
+            if (!aborted()) rolled = archive(&archived).is_ok();
+        }
+
+        const uint32_t turn = deps.store.last_turn() + 1;
+        ++turn_serial;
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            running_turn = turn;
+        }
         WLOG_I(kTag, "turn %u start source=%s", static_cast<unsigned>(turn), to_string(c.source));
 
         AgentEvent begin;
@@ -426,7 +436,18 @@ struct AgentService::Impl final : TurnEnv {
         begin.source = c.source;
         emit(begin);
 
-        if (rolled) note(ui::StrId::AgentRolledOver, turn);
+        // A failed archive drops the carry: the old conversation goes on.
+        if (rolled && carry) {
+            Message m;
+            m.role = Role::Carry;
+            m.turn = 0;
+            m.text = std::move(*carry);
+            m.from = archived;
+            append(std::move(m));
+            note(ui::StrId::AgentRolledOverCarry, turn);
+        } else if (rolled) {
+            note(ui::StrId::AgentRolledOver, turn);
+        }
         marker(turn, "turn_begin", "");
         Message user;
         user.role = Role::User;
@@ -437,8 +458,7 @@ struct AgentService::Impl final : TurnEnv {
         set_state(AgentState::Thinking);
 
         turn_no = turn;
-        Outcome out = TurnRunner(deps.llm, deps.tools, deps.store, deps.context, cal, *this)
-                          .run({turn, turn_serial, max_steps, start, turn_ms.load(), c.source});
+        Outcome out = runner.run({turn, turn_serial, max_steps, start, turn_ms.load(), c.source});
 
         if (timer) timer->stop();
         in_turn = false;

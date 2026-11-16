@@ -17,6 +17,7 @@
 #include "support/agent_fixture.hpp"
 #include "support/fake_provider.hpp"
 #include "wisp/agent/agent_service.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/net/request_watch.hpp"
@@ -948,6 +949,185 @@ TEST_F(TurnRunner, LengthWithToolCallsIsNotContinued) {
     EXPECT_NE(calls[1].body.find("bad_args"), std::string::npos) << calls[1].body;
     EXPECT_EQ(calls[1].body.find(kContinue), std::string::npos) << calls[1].body;
     EXPECT_TRUE(stored(*r, Role::Note).empty());
+}
+
+// make_carry(): the rollover's summary of the old conversation (spec 3.8).
+
+// Appends `m` to the rig's store as it stands, without the env's trace.
+uint64_t seed(Rig& rig, Role role, uint32_t turn, const std::string& text) {
+    Message m;
+    m.role = role;
+    m.turn = turn;
+    m.text.assign(text);
+    wisp::Result<uint64_t> res = wisp::Result<uint64_t>::err(wisp::ErrorCode::Busy, "refused");
+    EXPECT_TRUE(rig.h.worker.run_sync([&] { res = rig.h.store->append(std::move(m)); },
+                                      wisp::os::kForever));
+    return res ? res.value() : 0;
+}
+
+void seed_turn(Rig& rig, uint32_t turn, const std::string& user, const std::string& reply) {
+    seed(rig, Role::User, turn, user);
+    seed(rig, Role::Assistant, turn, reply);
+}
+
+void seed_summary(Rig& rig, uint32_t turn, const std::string& text, uint64_t first, uint64_t last) {
+    Message m;
+    m.role = Role::Summary;
+    m.turn = turn;
+    m.text.assign(text);
+    m.covers_first = first;
+    m.covers_last = last;
+    EXPECT_TRUE(rig.h.worker.run_sync([&] { EXPECT_TRUE(rig.h.store->append(std::move(m))); },
+                                      wisp::os::kForever));
+}
+
+std::optional<wisp::os::LargeString> carry(Rig& rig, uint64_t turn_ms = 600000) {
+    const auto hist = rig.h.store->history();
+    return agent::TurnRunner(rig.fake, *rig.h.tools, *rig.h.store, rig.context, rig.cal, rig.env)
+        .make_carry({.start_ms = rig.env.clock, .turn_ms = turn_ms}, *hist);
+}
+
+size_t entries(Rig& rig) { return rig.h.store->history()->size(); }
+
+TEST_F(TurnRunner, MakeCarrySummarizesTheLiveContext) {
+    seed_turn(*r, 1, "q1", "a1");  // seq 1-2
+    seed_summary(*r, 2, "S", 1, 2);
+    seed_turn(*r, 2, "q2", "a2");
+    seed_turn(*r, 3, "q3", "a3");
+    FakeStep s;
+    s.deltas = {"C"};
+    s.result.finish = net::LlmFinish::Stop;
+    r->fake.push(std::move(s));
+    const size_t before = entries(*r);
+    const auto text = carry(*r, 60000);
+    ASSERT_TRUE(text);
+    EXPECT_EQ(str(*text), "C");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls[0].tools_json, "");
+    EXPECT_EQ(calls[0].messages, 2u);
+    EXPECT_NE(calls[0].body.find("Summarize the conversation transcript in the next message for a "
+                                 "new conversation that starts from this summary"),
+              std::string::npos);
+    EXPECT_NE(calls[0].body.find(R"("content":"Earlier summary: S\nUser: q2)"), std::string::npos)
+        << calls[0].body;
+    // The request runs under the turn's limit given.
+    EXPECT_EQ(calls[0].timeout_ms, 60000u + AgentService::kDeadlineMarginMs);
+    EXPECT_GE(r->env.index("state thinking"), 0);
+    EXPECT_EQ(entries(*r), before);
+    EXPECT_EQ(r->env.index("append note"), -1);
+}
+
+TEST_F(TurnRunner, MakeCarryCutsAtACharacterBoundary) {
+    seed_turn(*r, 1, "q1", "a1");
+    FakeStep s1 = text_step(std::string(4095, 'a') + "\xC3\xBC");
+    r->fake.push(std::move(s1));
+    const auto one = carry(*r);
+    ASSERT_TRUE(one);
+    EXPECT_EQ(one->size(), 4095u);
+    r->fake.push(text_step(std::string(5000, 'a')));
+    const auto two = carry(*r);
+    ASSERT_TRUE(two);
+    EXPECT_EQ(two->size(), agent::kCarryMaxBytes);
+}
+
+TEST_F(TurnRunner, MakeCarryFailures) {
+    {
+        Rig& g = fresh();
+        seed_turn(g, 1, "q1", "a1");
+        g.fake.set_model(std::nullopt);
+        EXPECT_FALSE(carry(g));
+        EXPECT_TRUE(g.fake.calls().empty());
+        EXPECT_EQ(g.env.index("state thinking"), -1);
+    }
+    {
+        Rig& g = fresh();
+        seed_turn(g, 1, "q1", "a1");
+        g.env.net = false;
+        EXPECT_FALSE(carry(g));
+        EXPECT_TRUE(g.fake.calls().empty());
+        EXPECT_EQ(g.env.index("state thinking"), -1);
+    }
+    {
+        Rig& g = fresh();
+        seed_turn(g, 1, "q1", "a1");
+        g.fake.push(error_step(net::LlmError::Server));
+        EXPECT_FALSE(carry(g));
+        EXPECT_EQ(g.fake.calls().size(), 1u);
+    }
+    {
+        Rig& g = fresh();
+        seed_turn(g, 1, "q1", "a1");
+        FakeStep empty;
+        empty.result.finish = net::LlmFinish::Stop;
+        g.fake.push(std::move(empty));
+        EXPECT_FALSE(carry(g));
+        EXPECT_EQ(g.fake.calls().size(), 1u);
+    }
+    {
+        // A stop while the reply comes: no carry, though the text arrived.
+        Rig& g = fresh();
+        seed_turn(g, 1, "q1", "a1");
+        FakeStep s = text_step("C");
+        s.during = [&g](const net::LlmCall&) {
+            g.env.reason = Abort::Stop;
+            g.env.aborted_flag = true;
+        };
+        g.fake.push(std::move(s));
+        EXPECT_FALSE(carry(g));
+        EXPECT_EQ(g.fake.calls().size(), 1u);
+    }
+    {
+        Rig& g = fresh();
+        seed(g, Role::Note, 1, std::string(1024 * 1024, 'n'));
+        EXPECT_FALSE(carry(g));
+        EXPECT_TRUE(g.fake.calls().empty());
+        EXPECT_EQ(g.env.index("state thinking"), -1);
+    }
+}
+
+TEST_F(TurnRunner, MakeCarryIsNotContinued) {
+    seed_turn(*r, 1, "q1", "a1");
+    FakeStep s;
+    s.deltas = {"C"};
+    s.result.finish = net::LlmFinish::Length;
+    r->fake.push(std::move(s));
+    const auto text = carry(*r);
+    ASSERT_TRUE(text);
+    EXPECT_EQ(str(*text), "C");
+    EXPECT_EQ(r->fake.calls().size(), 1u);
+}
+
+TEST_F(TurnRunner, MakeCarryBudgetIsHalfTheWindow) {
+    r->fake.set_model(net::LlmModelInfo{.profile_id = "p1", .model = "m", .context_window = 4096});
+    for (uint32_t t = 1; t <= 4; ++t)
+        seed_turn(*r, t, "turn" + std::to_string(t) + std::string(1250, 'u'),
+                  std::string(1250, 'a'));
+    r->fake.push(text_step("C"));
+    ASSERT_TRUE(carry(*r));
+    // The calibration counts too: the budget is half the window unscaled.
+    r->cal.observe("p1", "m", 2002, 1001);
+    r->fake.push(text_step("C"));
+    ASSERT_TRUE(carry(*r));
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[0].body.find("turn2"), std::string::npos);
+    EXPECT_NE(calls[0].body.find("turn3"), std::string::npos);
+    EXPECT_NE(calls[0].body.find("turn4"), std::string::npos);
+    EXPECT_EQ(calls[1].body.find("turn3"), std::string::npos);
+    EXPECT_NE(calls[1].body.find("turn4"), std::string::npos);
+}
+
+// The live summaries go in ahead of the turns: past the budget on their
+// own, nothing is sent.
+TEST_F(TurnRunner, MakeCarryBudgetCountsTheSummaries) {
+    r->fake.set_model(net::LlmModelInfo{.profile_id = "p1", .model = "m", .context_window = 4096});
+    seed_turn(*r, 1, "q1", "a1");  // seq 1-2
+    seed_summary(*r, 2, std::string(7000, 's'), 1, 2);
+    seed_turn(*r, 2, "q2", "a2");
+    EXPECT_FALSE(carry(*r));
+    EXPECT_TRUE(r->fake.calls().empty());
+    EXPECT_EQ(r->env.index("state thinking"), -1);
 }
 
 }  // namespace

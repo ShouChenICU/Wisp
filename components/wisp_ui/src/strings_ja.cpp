@@ -270,6 +270,8 @@ const char* strings_ja(StrId id) {
                    "トの大きいモデルに切り替えてください";
         case StrId::AgentRolledOver:
             return "会話が長くなったため、保存して新しい会話を始めました";
+        case StrId::AgentRolledOverCarry:
+            return "会話が長くなったため保存し、その要約を新しい会話に残しました";
         case StrId::AgentContextDropped:
             return "会話が長くなり、古い部分を要約できなかったため、文脈から省きました（記録は残っ"
                    "ています）";

@@ -6,6 +6,8 @@
 #include <string_view>
 #include <utility>
 
+#include "utf8.hpp"
+#include "wisp/agent/limits.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
@@ -57,6 +59,52 @@ Outcome TurnRunner::run(const TurnInput& in) {
                     m ? std::string_view(m->model) : std::string_view());
     out.status = loop(window, out);
     return out;
+}
+
+// Its usage neither counts in the turn's tokens nor calibrates: the turn
+// has not started, and the carry request is not one the estimate made
+// (plan decision 9).
+std::optional<os::LargeString> TurnRunner::make_carry(const TurnInput& in,
+                                                      std::span<const Message> history) {
+    // request() takes the turn's limit from in_.
+    in_ = in;
+    model_ = llm_.active_model();
+    if (!model_) {
+        WLOG_I(kTag, "carry skipped: no_model");
+        return std::nullopt;
+    }
+    if (!env_.network_up()) {
+        WLOG_I(kTag, "carry skipped: network");
+        return std::nullopt;
+    }
+    cal_.begin_turn(model_->profile_id, model_->model);
+    // bytes / 3 like the window the summaries fill (see loop()).
+    const size_t budget =
+        size_t{cal_.unscaled_window(model_->context_window)} * kCarryInputPercent / 100;
+    net::LlmResult res;
+    {
+        const BuiltRequest req = build_carry_request(history, budget);
+        // The live summaries go in whole, ahead of the turns: past the
+        // budget on their own, the request would be too.
+        if (req.messages.empty() || req.arena.size() / 3 > budget) {
+            WLOG_I(kTag, "carry skipped: empty");
+            return std::nullopt;
+        }
+        env_.set_state(AgentState::Thinking);
+        res = request({req.messages.data(), req.messages.size()}, {}, nullptr);
+    }
+    if (env_.aborted()) {
+        WLOG_I(kTag, "carry skipped: %s", net::to_string(net::LlmError::Cancelled));
+        return std::nullopt;
+    }
+    // A reply cut by the length limit is used as it is, like a summary's.
+    if (!whole(res) || res.text.empty()) {
+        WLOG_I(kTag, "carry skipped: %s", whole(res) ? "empty" : net::to_string(res.error));
+        return std::nullopt;
+    }
+    res.text.resize(prefix_bytes(sv(res.text), kCarryMaxBytes));
+    WLOG_I(kTag, "carry %zu bytes", res.text.size());
+    return std::move(res.text);
 }
 
 // Where `out` is given, the note is also the turn's last text.

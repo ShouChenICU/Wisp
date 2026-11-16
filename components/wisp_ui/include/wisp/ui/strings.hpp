@@ -220,6 +220,8 @@ enum class StrId : uint16_t {
     // The model refused the request as too long even after compression.
     AgentErrContext,
     AgentRolledOver,
+    // The rollover kept a summary of the old conversation (spec 3.8).
+    AgentRolledOverCarry,
     // The context grew past the model's window and its summary failed.
     AgentContextDropped,
     // A reply still cut by the length limit after its one continuation

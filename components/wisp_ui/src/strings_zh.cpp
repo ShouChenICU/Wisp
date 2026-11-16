@@ -265,6 +265,8 @@ const char* strings_zh(StrId id) {
             return "对话太长，模型装不下了。请开始新对话，或换用上下文更大的模型";
         case StrId::AgentRolledOver:
             return "对话太长，已存档并开始新对话";
+        case StrId::AgentRolledOverCarry:
+            return "对话太长，已存档，并在新对话中保留了摘要";
         case StrId::AgentContextDropped:
             return "对话太长，较早的内容没能总结，已从上下文中省略（记录仍保留）";
         case StrId::AgentReplyCut:
