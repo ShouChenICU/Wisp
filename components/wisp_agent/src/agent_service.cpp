@@ -2,10 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -14,7 +12,6 @@
 #include "calibration.hpp"
 #include "turn_runner.hpp"
 #include "wisp/agent/tools.hpp"
-#include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/os/large.hpp"

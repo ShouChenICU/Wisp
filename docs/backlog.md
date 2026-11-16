@@ -227,8 +227,7 @@ Source: `docs/superpowers/plans/2026-11-14-agent-turn-reliability.md`. Simulator
 
 - Deferred: wait for Wi-Fi to reconnect and resume the turn. Today a Wi-Fi disconnect ends a running turn (`Abort::Network` during a request, the `network_up()` check between steps; agent-core spec 3.6); the retries only cover TCP/TLS failures while the link stays up.
 - `docs.read` has no tests for an `offset` in the middle of a character or exactly at the end of the text.
-- The agent loop has no test for the keep-1 compression step on its own, nor for the 50/300 clamp of `est_scale_pct`.
-- The estimate scale is keyed on the model name only: two profiles with the same model name on different providers share it.
+- The agent loop has no test for the keep-1 compression step on its own.
 - A voice text refused "busy" in the window between the stop and the submit shows no outcome on screen.
 - `Home::fitted_url()` and `TalkOverlay::fit()` redo layout work on every refresh.
 - The talk overlay's tap tests send `LV_EVENT_CLICKED` directly and bypass hit-testing.

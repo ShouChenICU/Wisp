@@ -79,7 +79,7 @@
 | `ToolRegistry` | `wisp_agent` | 平台工具的登记、参数校验、分派到执行线程（第 4 节） |
 | `SceneWorkspace` | `wisp_agent` | 场景草稿、校验、安装、`.prev` 回滚（第 4.1 节） |
 | `UiInspector` | `wisp_scene` | 界面树、界面检查、截图、模拟输入（第 5 节）。放在场景层，以后 4b 的场景工具也能用 |
-| `AgentService` | `wisp_agent` | 对话循环、上下文、确认、事件（第 3、6 节） |
+| `AgentService` | `wisp_agent` | 对话循环、上下文、确认、事件（第 3、6 节）。一轮的循环在 `TurnRunner`（`turn_runner.{hpp,cpp}`），经 `TurnEnv` 借用服务的状态（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.10） |
 | 入口 | `wisp_admin`、`wisp_ui`、`web/` | REST、WebSocket、网页"对话"页、设备对话浮层（第 7 节） |
 
 内存与线程：
@@ -122,7 +122,7 @@
 
 ### 3.3 上下文长度
 
-- 用"字节数 ÷ 3"粗估 token，再乘以按模型校准的系数 `est_scale_pct`（百分比，默认 100，限定在 50–300）：每次请求成功后，取回复 `usage.prompt` 与这次请求粗估值之比更新它，跨轮保留；一轮开始时激活的模型名与上次校准的不同，就回到 100。超过激活配置 `context_window` 的 75%（`kCompressPercent`）时，额外请求一次，把最早的若干轮压成一段摘要，替换原文，压到 40%（`kCompressTargetPercent`）以下。原文仍保存在对话记录里。
+- 用"字节数 ÷ 3"粗估 token，再乘以按模型校准的系数 `est_scale_pct`（百分比，默认 100，限定在 50–300）：每次请求成功后，取回复 `usage.prompt` 与这次请求粗估值之比更新它，跨轮保留；一轮开始时激活的配置（id）或模型名与上次校准的不同（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.10），就回到 100。超过激活配置 `context_window` 的 75%（`kCompressPercent`）时，额外请求一次，把最早的若干轮压成一段摘要，替换原文，压到 40%（`kCompressTargetPercent`）以下。原文仍保存在对话记录里。
 - 工具结果分两种（2026-11-14 修订）：
   - **正在进行的一轮**的工具结果整段发给模型，最多 `kLiveToolResultBytes`（96 KB：最大的工具载荷 64 KB，即 `kReadMaxBytes` / `kHttpMaxMaxBytes`，加上 JSON 转义和元数据）。模型这一轮刚读的文件要能完整看到，否则它会基于截断的内容改写场景；
   - **更早各轮**的工具结果最多保留 `kToolResultKeepBytes`（4 KB），超出部分截断并注明总长度。网页上可以展开查看完整内容。
@@ -155,6 +155,7 @@
 
 ### 3.6 `net::LlmClient`
 
+- Provider 接口（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.1）：Agent 只依赖 `net::LlmProvider`（`active_model()`、`complete()`），`LlmClient` 是它的 chat completions 实现；`LlmResult::error` 改为 `net::LlmError` 枚举，日志里的取值不变；`AgentDeps` 不再持有 `ModelProfileService`。
 - 基于已有的 `HttpClient::on_body` 流式接收，自行解析 SSE：
   - 支持一个事件跨多次到达，`data: [DONE]` 结束；
   - 汇总文字增量；

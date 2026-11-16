@@ -2,9 +2,24 @@
 // token estimate's multiplier kept per (profile id, model) pair (agent-core
 // spec 3.3).
 
+#include "turn_runner.hpp"
+
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
 #include "calibration.hpp"
+#include "support/agent_fixture.hpp"
+#include "support/fake_provider.hpp"
+#include "wisp/agent/agent_service.hpp"
+#include "wisp/agent/tool_registry.hpp"
+#include "wisp/base/value.hpp"
+#include "wisp/net/request_watch.hpp"
+#include "wisp/ui/strings.hpp"
 
 using wisp::agent::Calibration;
 
@@ -81,21 +96,6 @@ TEST(Calibration, UnscaledWindow) {
 // TurnRunner: one turn against a TurnEnv (spec 3.10), with a scripted
 // provider. The fixture lives outside namespace wisp::agent, whose
 // TurnRunner class has the same name.
-
-#include <atomic>
-#include <memory>
-#include <optional>
-#include <string>
-#include <vector>
-
-#include "support/agent_fixture.hpp"
-#include "support/fake_provider.hpp"
-#include "turn_runner.hpp"
-#include "wisp/agent/agent_service.hpp"
-#include "wisp/agent/tool_registry.hpp"
-#include "wisp/base/value.hpp"
-#include "wisp/net/request_watch.hpp"
-#include "wisp/ui/strings.hpp"
 
 namespace {
 

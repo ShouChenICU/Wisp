@@ -1,9 +1,9 @@
 #pragma once
 
 // AgentService (agent-core spec 3): the conversation loop on its own task,
-// wisp.agent. One turn at a time: the user message, then model requests
-// and the tool calls they ask for, until the model answers without a tool
-// or the turn hits a limit, is stopped or fails.
+// wisp.agent. The turn itself runs in TurnRunner (src/turn_runner.hpp). One turn at a time: the
+// user message, then model requests and the tool calls they ask for, until the model answers
+// without a tool or the turn hits a limit, is stopped or fails.
 //
 // A turn
 //   - is framed by turn_begin/turn_end markers in the ConversationStore;
@@ -23,17 +23,15 @@
 // Each model request is laid out by context.hpp: with a context source,
 // the fixed system prompt, the history and the dynamic info (a snapshot
 // taken for that request with the turn's source); without one, the history
-// alone. Past kCompressPercent of the active llm profile's context window
-// (read once per turn) the oldest turns are first summarized by an extra
-// request without tools. If the model fails to summarize, they are left out
-// of the context (an empty summary) with a note; with no model, a refused
-// key or no connection nothing is stored and the request goes out whole.
-// Still too long, the turns before the running one are summarized too, and
-// past the whole window the running turn's tool results are cut to
-// kToolResultKeepBytes. The estimate (bytes / 3) is scaled by the prompt
-// tokens the model reported for the last request. A request the model
-// refuses as too long ("context_length") is retried once per turn, treated
-// as over the window; a second refusal ends the turn with a note.
+// alone. Past kCompressPercent of the provider's active model's context window
+// (`net::LlmProvider::active_model()`, read once per turn) the oldest turns are first summarized by
+// an extra request without tools. If the model fails to summarize, they are left out of the context
+// (an empty summary) with a note; with no model, a refused key or no connection nothing is stored
+// and the request goes out whole. Still too long, the turns before the running one are summarized
+// too, and past the whole window the running turn's tool results are cut to kToolResultKeepBytes.
+// The estimate (bytes / 3) is scaled by the prompt tokens the model reported for the last request.
+// A request the model refuses as too long ("context_length") is retried once per turn, treated as
+// over the window; a second refusal ends the turn with a note.
 //
 // A model request is aborted (its RequestWatch, and its cancelled() check,
 // which also covers the waits between retries) when the user stops the
