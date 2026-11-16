@@ -73,6 +73,9 @@ TEST(IoRunner, FinishedTasksAreJoinedByTheNextPost) {
 
     ASSERT_TRUE(runner.post([&] { ran.fetch_add(1); }));
     ASSERT_TRUE(eventually([&] { return ran.load() == 2; }));
+    // The done flag is set only after the job returns; give the second task time
+    // to finish, or it still runs beside the third.
+    wisp::os::sleep_ms(20);
     ASSERT_TRUE(runner.post([] {}));
     EXPECT_LE(runner.running(), 1u);
 
