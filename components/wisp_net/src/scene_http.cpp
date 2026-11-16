@@ -4,6 +4,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "wisp/core/http_rules.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/net/request_watch.hpp"
 
@@ -26,12 +27,6 @@ bool iequals(std::string_view a, std::string_view b) {
 
 bool istarts_with(std::string_view s, std::string_view prefix) {
     return s.size() >= prefix.size() && iequals(s.substr(0, prefix.size()), prefix);
-}
-
-// RFC 9110 tchar.
-bool is_tchar(char c) {
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
-    return std::strchr("!#$%&'*+-.^_`|~", c) != nullptr && c != '\0';
 }
 
 // The URL's host for logs: lowercase, only host characters, cut short.
@@ -1052,12 +1047,7 @@ std::string SceneHttp::check_url(std::string_view url, const std::vector<std::st
 }
 
 bool SceneHttp::header_syntax_ok(std::string_view name, std::string_view value) {
-    if (name.empty()) return false;
-    for (char c : name)
-        if (!is_tchar(c)) return false;
-    for (char c : value)
-        if (c == '\r' || c == '\n' || c == '\0') return false;
-    return true;
+    return core::http_header_syntax_ok(name, value);
 }
 
 bool SceneHttp::header_allowed(std::string_view name, std::string_view value) {

@@ -60,6 +60,7 @@ wisp_test(NAME button_service_test SRCS core/button_service_test.cpp LIBS wisp_c
 wisp_test(NAME settings_test SRCS core/settings_test.cpp LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
 wisp_test(NAME model_profiles_test SRCS core/model_profiles_test.cpp LIBS wisp_core wisp_port_sim_os
           TIMEOUT 20)
+wisp_test(NAME mcp_servers_test SRCS core/mcp_servers_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME system_settings_test SRCS core/system_settings_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
 wisp_test(NAME settings_schema_test SRCS core/settings_schema_test.cpp LIBS wisp_core wisp_port_sim_os)

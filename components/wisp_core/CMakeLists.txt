@@ -9,7 +9,7 @@ wisp_component(
          src/storage_manager.cpp
          src/storage_worker.cpp src/storage_router.cpp
          src/power_monitor.cpp src/wakelock.cpp src/notification_service.cpp src/tone_player.cpp
-         src/model_profiles.cpp src/model_presets.cpp src/system_settings.cpp src/settings_schema.cpp
+         src/model_profiles.cpp src/model_presets.cpp src/http_rules.cpp src/mcp_servers.cpp src/system_settings.cpp src/settings_schema.cpp
          src/firmware_image.cpp src/firmware_update.cpp src/zip.cpp
          src/scene_manifest.cpp src/scene_repository.cpp src/scene_install.cpp src/scene_store.cpp
          src/scene_host.cpp src/scene_files.cpp src/occupancy.cpp src/device_service.cpp src/gesture.cpp src/sensor_service.cpp

@@ -11,6 +11,7 @@
 
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/http_rules.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/os/flash_guard.hpp"
@@ -89,62 +90,12 @@ bool valid_utf8(std::string_view s) {
     return true;
 }
 
-// The normalized URL, or nullopt if it is not an acceptable http(s) base
-// URL. Never logs or echoes its input.
+// The normalized URL (trailing '/' stripped), or nullopt if it is not an
+// acceptable http(s) base URL. Never logs or echoes its input.
 std::optional<std::string> normalize_base_url(std::string_view url) {
-    std::string_view rest;
-    if (url.starts_with("http://")) {
-        rest = url.substr(7);
-    } else if (url.starts_with("https://")) {
-        rest = url.substr(8);
-    } else {
-        return std::nullopt;
-    }
-    if (has_control_or_space(url)) return std::nullopt;
-    size_t host_end = rest.find_first_of("/?#");
-    if (host_end == 0 || rest.empty()) return std::nullopt;
-    // A host must remain once user info and the port are taken off, the
-    // same way origin_of() reads it.
-    std::string_view host = rest.substr(0, host_end);
-    if (size_t at = host.rfind('@'); at != std::string_view::npos) host.remove_prefix(at + 1);
-    size_t colon = host.rfind(':');
-    size_t bracket = host.rfind(']');
-    if (colon != std::string_view::npos && (bracket == std::string_view::npos || colon > bracket)) {
-        host = host.substr(0, colon);
-    }
-    if (host.starts_with('[') && host.ends_with(']')) host = host.substr(1, host.size() - 2);
-    if (host.empty()) return std::nullopt;
-
+    if (!valid_http_url(url)) return std::nullopt;
     std::string out(url);
     while (out.ends_with('/')) out.pop_back();
-    return out;
-}
-
-// "scheme://host:port" of a URL normalize_base_url() accepted, with the
-// scheme and host lowercased, user info dropped and the default port made
-// explicit, so two URLs that reach the same server compare equal. "" for
-// "" (no endpoint yet).
-std::string origin_of(std::string_view url) {
-    if (url.empty()) return {};
-    const bool https = url.starts_with("https://");
-    std::string_view authority = url.substr(https ? 8 : 7);
-    authority = authority.substr(0, authority.find_first_of("/?#"));
-    if (size_t at = authority.rfind('@'); at != std::string_view::npos) {
-        authority.remove_prefix(at + 1);
-    }
-    std::string_view host = authority;
-    std::string_view port;
-    size_t colon = authority.rfind(':');
-    size_t bracket = authority.rfind(']');
-    if (colon != std::string_view::npos && (bracket == std::string_view::npos || colon > bracket)) {
-        host = authority.substr(0, colon);
-        port = authority.substr(colon + 1);
-    }
-    if (port.empty()) port = https ? "443" : "80";
-    std::string out = https ? "https://" : "http://";
-    for (char c : host) out += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    out += ':';
-    out += port;
     return out;
 }
 
@@ -718,7 +669,7 @@ Result<ModelProfile> ModelProfileService::create(const ProfileInput& in, ModelFa
     if (in.api_key_from) {
         const Stored* src = find(state_, *in.api_key_from);
         if (src == nullptr || src->api_key.empty() ||
-            origin_of(src->profile.base_url) != origin_of(p.base_url)) {
+            url_origin(src->profile.base_url) != url_origin(p.base_url)) {
             if (why != nullptr) *why = ModelFailure::KeyOriginMismatch;
             return fail<ModelProfile>(
                 invalid("api_key_from must name a profile with a key on the same origin"));
@@ -789,7 +740,7 @@ Result<ModelProfile> ModelProfileService::update(std::string_view id, const Prof
         // The key belongs to the server it was saved for. Moving to another
         // origin without a new key forgets it rather than sending it to a
         // host the owner never gave it to.
-        if (!u.api_key && !u.api_key_from && origin_of(*url) != origin_of(p.base_url)) {
+        if (!u.api_key && !u.api_key_from && url_origin(*url) != url_origin(p.base_url)) {
             s->api_key.clear();
         }
         p.base_url = std::move(*url);
@@ -797,7 +748,7 @@ Result<ModelProfile> ModelProfileService::update(std::string_view id, const Prof
     if (u.api_key_from) {
         const Stored* src = find(state_, *u.api_key_from);
         if (src == nullptr || src->api_key.empty() || p.base_url.empty() ||
-            origin_of(src->profile.base_url) != origin_of(p.base_url)) {
+            url_origin(src->profile.base_url) != url_origin(p.base_url)) {
             if (why != nullptr) *why = ModelFailure::KeyOriginMismatch;
             return fail<ModelProfile>(
                 invalid("api_key_from must name a profile with a key on the same origin"));
