@@ -799,9 +799,9 @@ const char* strings_en(StrId id) {
         case StrId::ActLuaRun:
             return "Run Lua script";
         case StrId::ActToolsFind:
-            return "Find scene tools";
+            return "Find tools";
         case StrId::ActToolsCall:
-            return "Call scene tool";
+            return "Call a tool";
         case StrId::ActMcpServers:
             return "Check MCP servers";
         case StrId::ActMcpAdd:

@@ -802,9 +802,9 @@ const char* strings_ja(StrId id) {
         case StrId::ActLuaRun:
             return "Lua スクリプトを実行";
         case StrId::ActToolsFind:
-            return "シーンツールを検索";
+            return "ツールを検索";
         case StrId::ActToolsCall:
-            return "シーンツールを呼び出す";
+            return "ツールを呼び出す";
         case StrId::ActMcpServers:
             return "MCP サーバーを確認";
         case StrId::ActMcpAdd:

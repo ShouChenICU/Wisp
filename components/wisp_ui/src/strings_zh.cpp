@@ -794,9 +794,9 @@ const char* strings_zh(StrId id) {
         case StrId::ActLuaRun:
             return "运行 Lua 脚本";
         case StrId::ActToolsFind:
-            return "查找场景工具";
+            return "查找工具";
         case StrId::ActToolsCall:
-            return "调用场景工具";
+            return "调用工具";
         case StrId::ActMcpServers:
             return "查看 MCP 服务器";
         case StrId::ActMcpAdd:
