@@ -11,6 +11,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "calibration.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
@@ -462,11 +463,7 @@ struct AgentService::Impl {
 
         Outcome out;
         const ActiveLlm llm = active_llm();
-        // The calibration is the last model's count, not this one's.
-        if (llm.model != scale_model) {
-            est_scale_pct = 100;
-            scale_model = llm.model;
-        }
+        cal.begin_turn(llm.profile_id, llm.model);
         out.status = loop(turn, c.source, llm.window, out);
 
         if (timer) timer->stop();
@@ -571,10 +568,6 @@ struct AgentService::Impl {
         d.source = source;
         return build_request(h, d, opts);
     }
-
-    // The estimate of a request in the model's own tokens: bytes / 3,
-    // scaled by what the model last reported.
-    size_t scaled(size_t est_tokens) const { return est_tokens * est_scale_pct / 100; }
 
     // One model request under the turn's controls: the user's stop, the
     // network, the stall check and the time limit.
@@ -695,12 +688,12 @@ struct AgentService::Impl {
                 const std::shared_ptr<const History> hist = deps.store.history();
                 BuiltRequest req = build(*hist, source);
                 const bool over =
-                    overflow || needs_compression(scaled(req.est_tokens + tools_tokens), window);
+                    overflow ||
+                    needs_compression(cal.scaled(req.est_tokens + tools_tokens), window);
                 if (over && !compressed_deep) {
                     // pick_compression() counts bytes / 3: the window it
                     // fills is the real one unscaled.
-                    const uint32_t est_window =
-                        static_cast<uint32_t>(uint64_t{window} * 100 / est_scale_pct);
+                    const uint32_t est_window = cal.unscaled_window(window);
                     const size_t fixed = req.fixed_tokens + tools_tokens;
                     std::optional<std::pair<uint64_t, uint64_t>> range;
                     if (!compressed) range = pick_compression(*hist, est_window, fixed);
@@ -722,7 +715,7 @@ struct AgentService::Impl {
                     }
                 }
                 if (overflow ||
-                    uint64_t{scaled(req.est_tokens + tools_tokens)} > uint64_t{window}) {
+                    uint64_t{cal.scaled(req.est_tokens + tools_tokens)} > uint64_t{window}) {
                     // Nothing more to summarize: the running turn's own
                     // results are what does not fit.
                     WLOG_W(kTag, "context over the window: cutting this turn's tool results");
@@ -756,11 +749,7 @@ struct AgentService::Impl {
             }
             if (res.usage) out.tokens += res.usage->total;
             if (whole(res) && res.usage && res.usage->prompt > 0) {
-                const uint64_t pct =
-                    uint64_t{res.usage->prompt} * 100 / std::max<size_t>(1, sent_tokens);
-                est_scale_pct =
-                    static_cast<uint32_t>(std::clamp<uint64_t>(pct, kMinScalePct, kMaxScalePct));
-                scale_model = res.model;
+                cal.observe(res.profile_id, res.model, res.usage->prompt, sent_tokens);
             }
 
             if (!whole(res)) {
@@ -780,8 +769,7 @@ struct AgentService::Impl {
                     overflow_retried = true;
                     overflow = true;
                     refused_tokens = sent_tokens;
-                    est_scale_pct = std::max(est_scale_pct, kOverflowScalePct);
-                    scale_model = res.model;
+                    cal.overflow(res.profile_id, res.model);
                     WLOG_W(kTag, "context too long for the model: compressing and retrying");
                     continue;
                 }
@@ -998,16 +986,9 @@ struct AgentService::Impl {
     os::LargeUnique<net::RequestWatch> watch;
     std::unique_ptr<os::Timer> timer;
 
-    // The token estimate's multiplier in percent (wisp.agent only): the
-    // model's reported prompt tokens over the bytes / 3 estimate of the
-    // last request it answered, kept across turns. A context-length
-    // refusal raises it to at least kOverflowScalePct. It holds for
-    // scale_model only: a turn on another model starts again from 100.
-    static constexpr uint32_t kMinScalePct = 50;
-    static constexpr uint32_t kMaxScalePct = 300;
-    static constexpr uint32_t kOverflowScalePct = 150;
-    uint32_t est_scale_pct = 100;
-    std::string scale_model;
+    // The estimate in the model's own tokens: bytes / 3, scaled by what
+    // the answering profile and model last reported (wisp.agent only).
+    Calibration cal;
 
     os::Mutex lmu;
     std::vector<std::shared_ptr<Listener>> listeners;

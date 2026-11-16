@@ -4,7 +4,8 @@
 // do not need the HTTP and SSE path under it. Each complete() takes the
 // next pushed FakeStep and plays it through the call's callbacks: every
 // delta as on_bytes() then on_text(), every tool call once through
-// on_tool(), then `during`, then (with `hold`) waits until cancelled().
+// on_tool(), then `during`, then (with `hold`) waits until cancelled(),
+// at most kHoldMs (a call without cancelled() is never cancelled).
 // Without an active model it answers NoModel and records nothing; once the
 // script runs out it answers error Server, status 500.
 //
@@ -36,13 +37,17 @@ struct FakeStep {
     // deltas and calls when left empty.
     net::LlmResult result{};
     // After the deltas, poll cancelled() every 1 ms; then error Cancelled,
-    // transport Cancelled.
+    // transport Cancelled. Not cancelled within FakeProvider::kHoldMs: error
+    // Transport, transport Timeout, so a test that never cancels fails
+    // instead of hanging.
     bool hold = false;
     std::function<void(const net::LlmCall&)> during{};  // inside complete(), after the deltas
 };
 
 class FakeProvider final : public net::LlmProvider {
 public:
+    static constexpr uint32_t kHoldMs = 10000;
+
     struct Recorded {
         std::string body;  // build_chat_body(model, call.messages, call.tools_json)
         std::string tools_json;
@@ -115,10 +120,15 @@ public:
         if (res.tool_calls.empty()) res.tool_calls = std::move(step.calls);
         if (step.during) step.during(call);
         if (step.hold) {
-            while (!(call.cancelled && call.cancelled()))
+            const auto until =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(kHoldMs);
+            bool cancelled = false;
+            while (!(cancelled = call.cancelled && call.cancelled()) &&
+                   std::chrono::steady_clock::now() < until)
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            res.error = net::LlmError::Cancelled;
-            res.transport = net::TransportError::Cancelled;
+            res.error = cancelled ? net::LlmError::Cancelled : net::LlmError::Transport;
+            res.transport =
+                cancelled ? net::TransportError::Cancelled : net::TransportError::Timeout;
         }
         return res;
     }

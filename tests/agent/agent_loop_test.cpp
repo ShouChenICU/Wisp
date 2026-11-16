@@ -1775,6 +1775,38 @@ TEST_F(AgentLoop, ModelSwitchResetsTheCalibration) {
     EXPECT_FALSE(last_of(history(), Role::Summary));
 }
 
+// Two profiles on different providers with the same model name do not
+// share it: as above, but switching to another profile whose model is also
+// "m", and turn 3 again fits without a summary.
+TEST_F(AgentLoop, SameModelOnAnotherProfileStartsUncalibrated) {
+    set_window(4096);
+    start();
+    run_turn("q1", std::string(3000, 'a'));
+    h->server.push(usage_reply("ok", 2002));
+    ASSERT_TRUE(svc->submit("q2", Source::Web));
+    ASSERT_TRUE(wait_turns(2));
+    ASSERT_EQ(h->server.requests().size(), 2u);
+
+    ASSERT_TRUE(h->worker.run_sync(
+        [&] {
+            auto p =
+                h->models->create({.kind = wisp::core::ModelKind::Llm,
+                                   .name = "other",
+                                   .preset = "custom",
+                                   .base_url = "https://other.example.com/v1",
+                                   .model = "m",
+                                   .options = wisp::core::ModelOptions{{"context_window", "4096"}},
+                                   .api_key = "sk-2"});
+            ASSERT_TRUE(p);
+            ASSERT_TRUE(h->models->activate(p.value().id));
+        },
+        wisp::os::kForever));
+    run_turn(std::string(3000, 'q'), "done");
+    EXPECT_EQ(last_status(), "done");
+    ASSERT_EQ(h->server.requests().size(), 3u);
+    EXPECT_FALSE(last_of(history(), Role::Summary));
+}
+
 namespace {
 
 ToolDef risky_tool(const std::string& name, wisp::agent::ToolRisk risk,
