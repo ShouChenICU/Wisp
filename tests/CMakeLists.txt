@@ -350,6 +350,11 @@ wisp_test(NAME network_window_test SRCS net/network_window_test.cpp LIBS wisp_ne
 wisp_test(NAME tls_gate_test SRCS net/tls_gate_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME request_watch_test SRCS net/request_watch_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME time_sync_test SRCS net/time_sync_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME mcp_client_test SRCS net/mcp_client_test.cpp
+          LIBS wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
+# Replaces the global operator new/delete to count the default heap.
+wisp_test(NAME mcp_client_heap_test SRCS net/mcp_client_heap_test.cpp
+          LIBS wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
 
 # wisp_voice: the pure voice algorithms.
 wisp_test(NAME say_parser_test SRCS voice/say_parser_test.cpp LIBS wisp_voice)
