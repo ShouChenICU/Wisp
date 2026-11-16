@@ -2616,6 +2616,11 @@ textarea {
   margin-bottom: var(--gap-sm);
 }
 
+/* The form's own field spacing, which a <details> does not inherit. */
+.model-advanced > .field + .field {
+  margin-top: var(--gap);
+}
+
 /* System page: a titled list card whose rows can grow a status line. */
 .maint-card .card-head {
   margin: 0;

@@ -56,6 +56,7 @@ import { formatCount } from '../util.js';
  * @property {Kind[]} kinds
  * @property {string} base_url  '' for custom; may hold a '<…>' placeholder
  * @property {boolean} key_required
+ * @property {Object<string, string>} [defaults]  option values the preset implies (spec 3.2)
  *
  * @typedef {Object} Profile  GET /ai/profiles "profiles", POST/PUT result
  * @property {string} id
@@ -113,6 +114,30 @@ const MANUAL = '\u0000manual';
 const MIN_CONTEXT_WINDOW = 4096;
 const MAX_CONTEXT_WINDOW = 1048576;
 const DEFAULT_CONTEXT_WINDOW = 65536;
+// The llm dialect options (spec 3.2). An absent key resolves to the
+// preset's default (GET /ai/presets "defaults"), else to the built-in value
+// below, which mirrors LlmDialect{} ('' = the field is not sent).
+const MIN_OUT_TOKENS = 256;
+const MAX_OUT_TOKENS = 131072;
+const DIALECT_KEYS = ['out_tokens', 'out_field', 'reasoning', 'system_msgs', 'parallel_tools'];
+const DIALECT_BUILTIN = { out_tokens: '', out_field: 'max_tokens', reasoning: 'drop', system_msgs: 'anywhere', parallel_tools: '' };
+const DIALECT_CHOICES = {
+  out_field: ['max_tokens', 'max_completion_tokens'],
+  reasoning: ['drop', 'echo'],
+  system_msgs: ['anywhere', 'first'],
+  parallel_tools: ['true', 'false'],
+};
+// out_field's values are wire field names and stay untranslated.
+const DIALECT_LABEL_KEYS = {
+  drop: 'models.reasoning_drop',
+  echo: 'models.reasoning_echo',
+  anywhere: 'models.system_msgs_anywhere',
+  first: 'models.system_msgs_first',
+  true: 'models.parallel_on',
+  false: 'models.parallel_off',
+};
+// What ModelProfileService's parse_out_tokens accepts besides the range.
+const OUT_TOKENS_RE = /^\d{1,6}$/;
 // asr.language and tts.sample_rate/speed (spec 2, ModelProfileService).
 const LANGUAGE_RE = /^[A-Za-z-]{1,8}$/;
 const MIN_SAMPLE_RATE = 8000;
@@ -156,6 +181,11 @@ function voiceLabel(v) {
 function catalogFor(catalog, kind) {
   if (!catalog) return NO_CATALOG;
   return { models: catalog.models.filter((m) => !catalog.details[m]?.kind || catalog.details[m].kind === kind), details: catalog.details };
+}
+
+function dialectLabel(v) {
+  if (v === '') return t('models.not_sent');
+  return DIALECT_LABEL_KEYS[v] ? t(DIALECT_LABEL_KEYS[v]) : v;
 }
 
 function presetLabel(preset) {
@@ -548,7 +578,11 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
   const [contextWindow, setContextWindow] = useState(profile?.options?.context_window || '');
   const [manualVoice, setManualVoice] = useState(false);
   const [manualLanguage, setManualLanguage] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(!!profile?.options?.sample_rate);
+  // Each dialect option as typed or chosen; '' = absent (the default).
+  const [dialect, setDialect] = useState(() => Object.fromEntries(DIALECT_KEYS.map((k) => [k, profile?.options?.[k] || ''])));
+  const [advancedOpen, setAdvancedOpen] = useState(
+    !!profile?.options?.sample_rate || DIALECT_KEYS.some((k) => !!profile?.options?.[k]),
+  );
   // Fields the user changed by hand: picking a model no longer fills them.
   const touched = useRef({ vision: false, context_window: false });
   const [problem, setProblem] = useState(null); // {field, text}
@@ -585,6 +619,7 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
   const speedNow = profile?.options?.speed || '';
   const visionNow = profile?.options?.vision === 'true';
   const contextWindowNow = profile?.options?.context_window || '';
+  const dialectChanged = DIALECT_KEYS.some((k) => dialect[k].trim() !== (profile?.options?.[k] || ''));
   const dirty =
     !profile ||
     presetId !== profile.preset ||
@@ -594,7 +629,7 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
     (kind === 'asr' && language.trim() !== languageNow) ||
     (kind === 'tts' &&
       (voice.trim() !== voiceNow || sampleRate.trim() !== sampleRateNow || speed.trim() !== speedNow)) ||
-    (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow)) ||
+    (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow || dialectChanged)) ||
     key !== '' ||
     reuse;
   // Saving now would drop the stored key.
@@ -639,6 +674,12 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
         return { field: 'context_window', text: t('models.err_context_window', { min: formatCount(MIN_CONTEXT_WINDOW), max: formatCount(MAX_CONTEXT_WINDOW) }) };
       }
     }
+    if (kind === 'llm' && dialect.out_tokens.trim()) {
+      const v = dialect.out_tokens.trim();
+      if (!OUT_TOKENS_RE.test(v) || Number(v) < MIN_OUT_TOKENS || Number(v) > MAX_OUT_TOKENS) {
+        return { field: 'out_tokens', text: t('models.err_out_tokens', { min: formatCount(MIN_OUT_TOKENS), max: formatCount(MAX_OUT_TOKENS) }) };
+      }
+    }
     return null;
   }
 
@@ -648,7 +689,7 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
     const bad = check(test);
     setProblem(bad);
     if (bad) {
-      if (bad.field === 'sample_rate') setAdvancedOpen(true);
+      if (bad.field === 'sample_rate' || bad.field === 'out_tokens') setAdvancedOpen(true);
       return;
     }
     const body = {};
@@ -677,11 +718,17 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
       else delete options.speed;
       body.options = options;
     }
-    if (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow)) {
+    if (kind === 'llm' && (vision !== visionNow || contextWindow.trim() !== contextWindowNow || dialectChanged)) {
       const options = { ...(profile?.options || {}) };
       options.vision = vision ? 'true' : 'false';
       if (contextWindow.trim()) options.context_window = contextWindow.trim();
       else delete options.context_window;
+      // An absent key means the preset's or the built-in default.
+      for (const k of DIALECT_KEYS) {
+        const v = dialect[k].trim();
+        if (v) options[k] = v;
+        else delete options[k];
+      }
       body.options = options;
     }
     if (reuse) body.api_key_from = keyFrom;
@@ -773,6 +820,28 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
   const useLanguageSelect = !manualLanguage && (!language.trim() || listedLanguages.includes(language.trim()));
   const modelRate = kind === 'tts' && info?.sample_rate >= MIN_SAMPLE_RATE && info.sample_rate <= MAX_SAMPLE_RATE ? info.sample_rate : 0;
   const speedValue = SPEED_RE.test(speed.trim()) ? Math.min(MAX_SPEED, Math.max(MIN_SPEED, Number(speed.trim()))) : 1;
+
+  function setDialectKey(k, v) {
+    setDialect((d) => ({ ...d, [k]: v }));
+    setProblem(null);
+  }
+  // What an absent dialect key resolves to for the chosen preset.
+  const dialectDefault = (k) => preset?.defaults?.[k] ?? DIALECT_BUILTIN[k];
+  const dialectSelect = (k, label, hintKey) => html`<div class="field">
+    <label class="field-label" for=${idp + k}>${t(label)}</label>
+    <select
+      id=${idp + k}
+      class="input select"
+      value=${dialect[k]}
+      onChange=${(e) => setDialectKey(k, e.currentTarget.value)}
+      disabled=${busy}
+      aria-describedby=${hintKey ? idp + k + '-hint' : undefined}
+    >
+      <option value="">${t('models.option_default', { value: dialectLabel(dialectDefault(k)) })}</option>
+      ${DIALECT_CHOICES[k].map((v) => html`<option key=${v} value=${v}>${dialectLabel(v)}</option>`)}
+    </select>
+    ${hintKey ? hint(k, t(hintKey)) : null}
+  </div>`;
 
   // A new profile starts with the platform; the rest follows once chosen.
   const presetField = html`<div class="field">
@@ -1230,7 +1299,33 @@ function ProfileForm({ kind, profile, presets, all, catalog, testing, onSaved, o
                   aria-describedby=${idp + 'context_window-hint'}
                 />
                 ${hint('context_window', t('models.context_window_hint', { default: formatCount(DEFAULT_CONTEXT_WINDOW) }))}
-              </div>`
+              </div>
+              <details class="model-advanced" open=${advancedOpen} onToggle=${(e) => setAdvancedOpen(e.currentTarget.open)}>
+                <summary>${t('models.advanced')}</summary>
+                <div class="field">
+                  <label class="field-label" for=${idp + 'out_tokens'}>${t('models.out_tokens')}</label>
+                  <input
+                    id=${idp + 'out_tokens'}
+                    class="input mono-input"
+                    type="number"
+                    inputmode="numeric"
+                    min=${MIN_OUT_TOKENS}
+                    max=${MAX_OUT_TOKENS}
+                    step="1"
+                    placeholder=${dialectLabel(dialectDefault('out_tokens'))}
+                    value=${dialect.out_tokens}
+                    onInput=${(e) => setDialectKey('out_tokens', e.currentTarget.value)}
+                    disabled=${busy}
+                    aria-invalid=${fieldError('out_tokens') ? 'true' : 'false'}
+                    aria-describedby=${idp + 'out_tokens-hint'}
+                  />
+                  ${hint('out_tokens', t('models.out_tokens_hint'))}
+                </div>
+                ${dialectSelect('out_field', 'models.out_field')}
+                ${dialectSelect('reasoning', 'models.reasoning', 'models.reasoning_hint')}
+                ${dialectSelect('system_msgs', 'models.system_msgs', 'models.system_msgs_hint')}
+                ${dialectSelect('parallel_tools', 'models.parallel_tools')}
+              </details>`
             : null}
 
           ${problem?.field === 'form'
