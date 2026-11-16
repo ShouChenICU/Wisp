@@ -65,7 +65,7 @@ void SseParser::feed(std::span<const uint8_t> bytes,
         size_t j = i;
         while (j < n && p[j] != '\n' && p[j] != '\r') ++j;
         line_.append(p + i, j - i);
-        if (pending_data_bytes() > kMaxEventBytes) {
+        if (pending_data_bytes() > max_event_bytes_) {
             overflowed_ = true;
             line_.clear();
             data_.clear();

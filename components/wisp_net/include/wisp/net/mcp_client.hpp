@@ -51,6 +51,13 @@ inline constexpr std::string_view kMcpProtocol = "2025-06-18";
 inline constexpr std::string_view kMcpProtocolOld = "2025-03-26";
 // initialize, notifications/initialized, each tools/list page.
 inline constexpr uint32_t kMcpRequestTimeoutMs = 15000;
+// How much longer than its own timeout a wait gives a request whose answer
+// never comes: one queued behind others on wisp.shttp, or one cancelled by
+// another holder of kAgentHttpId, which SceneHttp then never answers.
+inline constexpr uint32_t kMcpWaitSlackMs = 15000;
+// probe()'s whole budget, however many requests and pages it takes (the
+// admin test route waits for it): one request's timeout plus the slack.
+inline constexpr uint32_t kMcpProbeTimeoutMs = kMcpRequestTimeoutMs + kMcpWaitSlackMs;
 inline constexpr uint64_t kMcpListTtlMs = 10 * 60 * 1000;
 inline constexpr uint64_t kMcpRetryAfterMs = 60 * 1000;
 inline constexpr size_t kMcpMaxTools = 128;
@@ -165,9 +172,13 @@ public:
     // Initializes and lists once, sharing nothing with any client's cache
     // (the admin test route). It shares the Agent principal's scene id, so
     // a cancelled agent turn (cancel_scene(kAgentHttpId)) cancels a probe
-    // running at the same moment too; it then reports "timeout".
+    // running at the same moment too; it then reports "timeout". It ends
+    // after `timeout_ms` in all ("timeout"), and then abandons its request
+    // rather than cancel it, which would cancel the agent's too; the
+    // request still ends at its own timeout.
     static core::McpProbe probe(SceneHttp& http, const core::McpServerTarget& target,
-                                std::string_view client_version);
+                                std::string_view client_version,
+                                uint32_t timeout_ms = kMcpProbeTimeoutMs);
 
 private:
     // One server's state; see the file header.

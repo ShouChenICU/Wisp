@@ -38,12 +38,14 @@ bool is_response_to(JsonView v, int64_t id);
 // wisp.shttp; take() on the caller's thread once the request is done --
 // its done() callback orders the two). The first non-blank byte decides:
 // '{' is a JSON body, collected up to `cap` bytes and parsed by take();
-// anything else is a server-sent event stream, parsed as it arrives, its
+// anything else is a server-sent event stream (one event up to `cap`
+// bytes), parsed as it arrives, its
 // requests and notifications skipped, until the response to `id`, where
 // feed() returns false so the transfer stops there.
 class McpReader {
 public:
-    McpReader(int64_t id, size_t cap) : id_(id), cap_(cap) {}
+    // An event may be as large as the whole answer may be.
+    McpReader(int64_t id, size_t cap) : id_(id), cap_(cap), sse_(cap) {}
 
     bool feed(std::span<const uint8_t> bytes);
     // The response to `id`; nullopt when there was none (not JSON, not

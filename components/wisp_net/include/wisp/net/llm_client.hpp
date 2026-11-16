@@ -128,11 +128,15 @@ os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessa
 
 // Splits a server-sent event stream into events. Lines end with LF, CRLF
 // or CR; ':' lines are comments; only the "data" field is kept, one space
-// after the colon dropped. An event whose data would pass kMaxEventBytes
-// sets overflowed() and the parser ignores everything after it.
+// after the colon dropped. An event whose data would pass the parser's
+// limit (kMaxEventBytes unless given) sets overflowed() and the parser
+// ignores everything after it. Its buffers grow in PSRAM (os::LargeString).
 class SseParser {
 public:
     static constexpr size_t kMaxEventBytes = 256 * 1024;
+
+    explicit SseParser(size_t max_event_bytes = kMaxEventBytes)
+        : max_event_bytes_(max_event_bytes) {}
 
     // Calls on_data with each event's data (multi-line data joined by '\n').
     void feed(std::span<const uint8_t> bytes, const std::function<void(std::string_view)>& on_data);
@@ -142,6 +146,7 @@ private:
     void end_line(const std::function<void(std::string_view)>& on_data);
     size_t pending_data_bytes() const;
 
+    size_t max_event_bytes_;
     os::LargeString line_;
     os::LargeString data_;
     bool has_data_ = false;

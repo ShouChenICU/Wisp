@@ -45,12 +45,6 @@ constexpr const char* kTag = "mcp";
 // How often a wait looks at the caller's cancellation and deadline, as
 // http.fetch does.
 constexpr uint32_t kPollMs = 20;
-// A request whose done() never comes -- one cancelled by someone else
-// sharing kAgentHttpId (a probe while the agent turn is stopped), which
-// SceneHttp then never answers -- must not hold its caller forever. Past
-// its own timeout plus this, the wait gives up as "timeout"; the slack
-// covers time spent queued behind other requests on wisp.shttp.
-constexpr uint32_t kGuardSlackMs = 15000;
 constexpr std::string_view kObjectSchema = R"({"type":"object"})";
 constexpr size_t kMaxMessageBytes = 1024;
 // How much of a rejected tool name a log line shows.
@@ -68,6 +62,10 @@ struct Link {
     std::string_view client_version;
     const std::function<uint64_t()>& now;
     const McpWait& wait;
+    // At the caller's cancel or deadline: cancel the request (the agent's
+    // own), or just stop waiting for it (a probe, which shares
+    // kAgentHttpId with the agent's requests).
+    bool cancel_at_stop = true;
 };
 
 struct Exchange {
@@ -165,18 +163,19 @@ Exchange send(const Link& l, const McpSession& s, std::string_view method, int64
         pending->done.give();
     });
 
-    const uint64_t guard = l.now() + kMcpRequestTimeoutMs + kGuardSlackMs;
+    // kMcpWaitSlackMs: see its comment; past it the wait gives up as "timeout".
+    const uint64_t guard = l.now() + kMcpRequestTimeoutMs + kMcpWaitSlackMs;
     for (;;) {
         if (pending->done.take(kPollMs)) break;
         if (l.wait.cancelled && l.wait.cancelled()) {
-            l.http.cancel_scene(kAgentHttpId);
+            if (l.cancel_at_stop) l.http.cancel_scene(kAgentHttpId);
             ex.failure = failure(McpError::Cancelled);
             log_request(l.target.id, method, ex.failure, started);
             return ex;
         }
         const uint64_t now = l.now();
         if (l.wait.deadline_ms != 0 && now >= l.wait.deadline_ms) {
-            l.http.cancel_scene(kAgentHttpId);
+            if (l.cancel_at_stop) l.http.cancel_scene(kAgentHttpId);
             ex.failure = failure(McpError::Timeout);
             log_request(l.target.id, method, ex.failure, started);
             return ex;
@@ -471,12 +470,12 @@ std::vector<McpServerStatus> McpClient::status() const {
 }
 
 core::McpProbe McpClient::probe(SceneHttp& http, const core::McpServerTarget& target,
-                                std::string_view client_version) {
+                                std::string_view client_version, uint32_t timeout_ms) {
     const std::function<uint64_t()> now = os::now_ms;
-    const McpWait wait{};
-    const Link link{http, target, client_version, now, wait};
-    McpSession session;
     const uint64_t started = os::now_ms();
+    const McpWait wait{.deadline_ms = started + timeout_ms, .cancelled = {}};
+    const Link link{http, target, client_version, now, wait, /*cancel_at_stop=*/false};
+    McpSession session;
     McpListResult r = list_all(link, session);
 
     core::McpProbe p;

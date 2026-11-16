@@ -12,6 +12,7 @@
 #include "support/fake_devices.hpp"
 #include "support/fake_io_queue.hpp"
 #include "support/fake_mcp_server.hpp"
+#include "support/secret_pieces.hpp"
 #include "support/temp_dir.hpp"
 #include "support/utf8.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -97,6 +98,12 @@ protected:
         return out;
     }
 
+    // R13: no log line holds the header value or any 8-byte piece of it.
+    static void expect_no_secret_in_logs() {
+        for (const auto& e : wisp::log::ring_entries())
+            EXPECT_FALSE(wisp::test::holds_secret_piece(e.msg, kSecret)) << e.msg;
+    }
+
     static size_t log_lines_with(std::string_view needle) {
         size_t n = 0;
         for (const auto& e : wisp::log::ring_entries())
@@ -152,10 +159,9 @@ TEST_F(McpClientTest, InitializeSendsTheProtocolAndClientInfo) {
     // One log line per request, never a header value or the URL's path.
     EXPECT_EQ(log_lines_with("files initialize ok"), 1u);
     EXPECT_EQ(log_lines_with("files tools/list ok"), 1u);
-    for (const auto& e : wisp::log::ring_entries()) {
-        EXPECT_EQ(e.msg.find("SECRET"), std::string::npos) << e.msg;
+    expect_no_secret_in_logs();
+    for (const auto& e : wisp::log::ring_entries())
         EXPECT_EQ(e.msg.find("/mcp"), std::string::npos) << e.msg;
-    }
 }
 
 TEST_F(McpClientTest, AcceptsTheOlderRevision) {
@@ -441,6 +447,36 @@ TEST_F(McpClientTest, OversizeListPageIsBadResponse) {
     McpListResult r = list();
     EXPECT_EQ(r.failure.error, McpError::BadResponse);
     EXPECT_EQ(fake.count("tools/list"), 1u);
+
+    // The same over SSE.
+    skew += wisp::net::kMcpRetryAfterMs;
+    fake.sse = true;
+    EXPECT_EQ(list().failure.error, McpError::BadResponse);
+}
+
+// A page past SseParser's default event limit but under kMcpMaxResponse
+// is read whole when it comes as an event stream, as it is as JSON.
+TEST_F(McpClientTest, LargeSsePageIsAccepted) {
+    fake.sse = true;
+    fake.tools = {FakeMcpServer::tool("big", std::string(300 * 1024, 'd')),
+                  FakeMcpServer::tool("small")};
+    McpListResult r = list();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(names(r), (std::vector<std::string>{"big", "small"}));
+}
+
+TEST_F(McpClientTest, FailureLogsNeverCarryAHeaderValue) {
+    fake.status = 401;
+    EXPECT_EQ(list().failure.error, McpError::Unavailable);
+    EXPECT_EQ(log_lines_with("files initialize error:http"), 1u);
+    skew += wisp::net::kMcpRetryAfterMs;
+
+    fake.status = 0;
+    fake.raw_body = std::string(R"({"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":")") +
+                    "bad token Bearer " + kSecret + R"("}})";
+    EXPECT_EQ(list().failure.error, McpError::RpcError);
+    EXPECT_EQ(log_lines_with("files initialize error:mcp_error"), 1u);
+    expect_no_secret_in_logs();
 }
 
 TEST_F(McpClientTest, NotJsonRpcIsBadResponse) {
@@ -487,6 +523,25 @@ TEST_F(McpClientTest, ProbeReportsToolsAndLeavesNoState) {
     auto tested = servers->test("files");
     ASSERT_TRUE(tested);
     EXPECT_TRUE(tested.value().ok);
+}
+
+// The admin test route waits for probe(): it has one overall deadline,
+// however many requests and pages it would take, and abandons rather
+// than cancels at it (the agent's requests share kAgentHttpId).
+TEST_F(McpClientTest, ProbeHasAnOverallDeadline) {
+    EXPECT_EQ(wisp::net::kMcpProbeTimeoutMs,
+              wisp::net::kMcpRequestTimeoutMs + wisp::net::kMcpWaitSlackMs);
+    auto target = *servers->resolve_for_request("files");
+    fake.hold = true;
+    const uint64_t start = real_ms();
+    wisp::core::McpProbe p = McpClient::probe(*http, target, "1", /*timeout_ms=*/300);
+    const uint64_t took = real_ms() - start;
+    EXPECT_FALSE(p.ok);
+    EXPECT_EQ(p.error, "timeout");
+    EXPECT_GE(took, 250u);
+    EXPECT_LT(took, 1500u);
+    EXPECT_FALSE(fake.saw_cancel.load());
+    fake.hold = false;
 }
 
 TEST_F(McpClientTest, ProbeMapsCategories) {
