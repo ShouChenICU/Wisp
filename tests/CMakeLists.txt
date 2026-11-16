@@ -522,6 +522,8 @@ wisp_test(NAME context_test SRCS agent/context_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME agent_loop_test SRCS agent/agent_loop_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME agent_turn_golden_test SRCS agent/agent_turn_golden_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 # The device confirmation dialog on a real UI runtime (agent-core spec 6.1).
 wisp_test(NAME confirm_test SRCS agent/confirm_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)

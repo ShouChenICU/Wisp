@@ -759,4 +759,78 @@ TEST(LlmClient, BuildChatBodyIsValidJson) {
     EXPECT_EQ(*v.value().find("model"), Value("m\"x"));
 }
 
+// LlmBodyGolden: today's request bytes, compared as raw strings. A gateway's
+// prefix cache and a strict parser both see the bytes, not the parsed JSON,
+// so field order, null content and escaping are pinned here.
+
+std::string str(const wisp::os::LargeString& s) { return {s.data(), s.size()}; }
+
+const std::string kGoldenTools =
+    R"([{"type":"function","function":{"name":"a_b","parameters":{}}}])";
+
+// Every message shape build_chat_body writes. The arrays are static so that
+// the views in the messages outlive the call.
+std::vector<LlmMessage> every_shape() {
+    static LlmToolCall two[2];
+    static LlmToolCall one[1];
+    two[0].id = "c1";
+    two[0].name = "a_b";
+    two[0].arguments = "{\"x\":1}";
+    two[1].id = "c2";
+    two[1].name = "c_d";
+    two[1].arguments = "";
+    one[0].id = "c3";
+    one[0].name = "a_b";
+    one[0].arguments = "{}";
+    return {
+        {.role = LlmRole::System, .text = "S"},
+        {.role = LlmRole::User, .text = "q\"\n\xC3\xBC"},
+        {.role = LlmRole::Assistant, .text = "A"},
+        {.role = LlmRole::Assistant, .text = "", .tool_calls = two},
+        {.role = LlmRole::Assistant, .text = "T", .tool_calls = one},
+        {.role = LlmRole::Tool, .text = "{\"ok\":true}", .tool_call_id = "c1"},
+    };
+}
+
+TEST(LlmBodyGolden, EveryMessageShape) {
+    const std::vector<LlmMessage> msgs = every_shape();
+    EXPECT_EQ(
+        str(wisp::net::build_chat_body("m", msgs, kGoldenTools)),
+        R"({"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[)"
+        R"({"role":"system","content":"S"},{"role":"user","content":"q\"\nü"},)"
+        R"({"role":"assistant","content":"A"},)"
+        R"({"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"a_b","arguments":"{\"x\":1}"}},)"
+        R"({"id":"c2","type":"function","function":{"name":"c_d","arguments":""}}]},)"
+        R"({"role":"assistant","content":"T","tool_calls":[{"id":"c3","type":"function","function":{"name":"a_b","arguments":"{}"}}]},)"
+        R"({"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}],"tools":)" +
+            kGoldenTools + "}");
+}
+
+TEST(LlmBodyGolden, NoToolsLeavesTheKeyOut) {
+    LlmMessage msg{.role = LlmRole::User, .text = "hi"};
+    EXPECT_EQ(
+        str(wisp::net::build_chat_body("m", {&msg, 1}, "")),
+        R"({"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]})");
+}
+
+TEST(LlmBodyGolden, ClientSendsExactlyTheBuiltBody) {
+    Fixture f;
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    const std::vector<LlmMessage> msgs = every_shape();
+    LlmCall call;
+    call.messages = msgs;
+    call.tools_json = kGoldenTools;
+
+    f.run(call);
+
+    auto reqs = f.server.requests();
+    ASSERT_EQ(reqs.size(), 1u);
+    EXPECT_EQ(reqs[0].body, str(wisp::net::build_chat_body("m", msgs, kGoldenTools)));
+    EXPECT_EQ(reqs[0].url, std::string(kBase) + "/chat/completions");
+    using Headers = std::vector<std::pair<std::string, std::string>>;
+    EXPECT_EQ(reqs[0].headers, (Headers{{"Content-Type", "application/json"},
+                                        {"Accept", "text/event-stream"},
+                                        {"Authorization", std::string("Bearer ") + kKey}}));
+}
+
 }  // namespace
