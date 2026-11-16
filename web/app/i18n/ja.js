@@ -617,7 +617,7 @@ export default {
   'models.context_window_hint': '既定値は {default}。履歴をいつ圧縮するかの判断に使われます。',
   'models.err_context_window': '{min}～{max} の整数を入力してください。',
   'models.out_tokens': '出力トークン上限',
-  'models.out_tokens_hint': '空欄なら送信せず、提供元の既定値を使います。上限で切れた返答は一度だけ続きを生成します。',
+  'models.out_tokens_hint': '空欄なら送信せず、提供元の既定値を使います。上限で切れた返答は一度だけ続きを生成します。上限が低すぎると会話の要約や新しい会話への引き継ぎ要約も短くなるため、1024 以上を推奨します。',
   'models.err_out_tokens': '{min}～{max} の整数を入力してください。',
   'models.out_field': '上限フィールド名',
   'models.reasoning': '推論テキスト',

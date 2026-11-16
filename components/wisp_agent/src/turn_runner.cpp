@@ -61,7 +61,7 @@ Outcome TurnRunner::run(const TurnInput& in) {
 
 // Its usage neither counts in the turn's tokens nor calibrates: the turn
 // has not started, and the carry request is not one the estimate made
-// (plan decision 9).
+// (spec 3.8).
 std::optional<os::LargeString> TurnRunner::make_carry(const TurnInput& in,
                                                       std::span<const Message> history) {
     // request() takes the turn's limit from in_.
@@ -222,7 +222,7 @@ net::LlmResult TurnRunner::continue_reply(std::span<const net::LlmMessage> sent,
     net::LlmMessage partial;
     partial.role = net::LlmRole::Assistant;
     partial.text = sv(cut.text);
-    // A cut reasoning block is never echoed (plan decision 7).
+    // A cut reasoning block is never echoed (spec 3.3).
     if (cut.error == net::LlmError::None && dialect().reasoning == core::LlmReasoning::Echo)
         partial.reasoning = sv(cut.reasoning);
     msgs.push_back(partial);

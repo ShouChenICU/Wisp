@@ -618,7 +618,7 @@ export default {
   'models.context_window_hint': 'Default {default}; used to decide when to compress the history.',
   'models.err_context_window': 'Must be a whole number from {min} to {max}.',
   'models.out_tokens': 'Output token limit',
-  'models.out_tokens_hint': 'Empty: not sent, so the provider\'s default applies. A reply cut by the limit is continued once.',
+  'models.out_tokens_hint': 'Empty: not sent, so the provider\'s default applies. A reply cut by the limit is continued once. A low limit also shortens conversation summaries and the summary a new conversation starts from; keep it at 1024 or more.',
   'models.err_out_tokens': 'Must be a whole number from {min} to {max}.',
   'models.out_field': 'Limit field name',
   'models.reasoning': 'Reasoning text',

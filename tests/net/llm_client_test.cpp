@@ -909,7 +909,7 @@ TEST(LlmBodyGolden, ClientSendsExactlyTheBuiltBody) {
                                         {"Authorization", std::string("Bearer ") + kKey}}));
 }
 
-// LlmDialectBody: the body each dialect option writes (plan decisions 3-5).
+// LlmDialectBody: the body each dialect option writes (spec 3.2 and 3.4).
 
 using wisp::core::LlmDialect;
 using wisp::core::LlmOutField;

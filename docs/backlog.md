@@ -145,6 +145,7 @@ Source: `feat/agent-core` review records.
   - the setup wizard's step indicator marks "输入密码" done when a saved network was joined without one;
   - the firmware's app version string is fixed when CMake configures, so an incremental `app-flash` reports an older `git describe`.
 - Firmware builds with `-Werror=missing-field-initializers`, the host build does not, so `tools/ci.sh` misses designated initializers that omit fields until the firmware build in CI catches them; enable the warning on the host.
+- Models page: a profile that already holds unknown (foreign) option keys can exceed the 8-key limit when the page fills every dialect option; the server refuses the save with the "at most 8 keys" error.
 
 ## Glyph partition parked review findings
 

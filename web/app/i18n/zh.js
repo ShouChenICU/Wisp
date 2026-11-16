@@ -617,7 +617,7 @@ export default {
   'models.context_window_hint': '默认 {default}，用于判断何时压缩对话历史。',
   'models.err_context_window': '必须是 {min}–{max} 之间的整数。',
   'models.out_tokens': '输出 token 上限',
-  'models.out_tokens_hint': '留空则不发送，使用服务方的默认值。被上限截断的回复会自动续写一次。',
+  'models.out_tokens_hint': '留空则不发送，使用服务方的默认值。被上限截断的回复会自动续写一次。上限过低也会截短对话摘要和新对话的承接摘要，建议不低于 1024。',
   'models.err_out_tokens': '必须是 {min}–{max} 之间的整数。',
   'models.out_field': '上限字段名',
   'models.reasoning': '推理内容',

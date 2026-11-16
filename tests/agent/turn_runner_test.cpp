@@ -638,7 +638,7 @@ TEST_F(TurnRunner, ReasoningNotKeptUnderDrop) {
 }
 
 // The connection dropped after finish_reason: the calls run, but the
-// attempt was cut, so its reasoning is not echoed (plan decision 7).
+// attempt was cut, so its reasoning is not echoed (spec 3.3).
 TEST_F(TurnRunner, ReasoningOfACutAttemptIsNotKept) {
     r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
     r->add_tool("test.echo");
@@ -844,7 +844,7 @@ TEST_F(TurnRunner, ContinuationReasoningJoins) {
 
 // The first reply counts as whole only because its connection dropped
 // after finish_reason: its reasoning may be cut, so the joined reply echoes
-// none, not even the continuation's (plan decision 7).
+// none, not even the continuation's (spec 3.3).
 TEST_F(TurnRunner, ContinuationAfterACutAttemptEchoesNoReasoning) {
     r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
     r->add_tool("test.echo");
@@ -887,7 +887,7 @@ TEST_F(TurnRunner, AbortWhenTheCutReplyReturnsIsNotContinued) {
 }
 
 // The continuation's request is not the one estimated: its prompt usage
-// does not calibrate (plan decision 8).
+// does not calibrate (spec 3.7).
 TEST_F(TurnRunner, ContinuationUsageDoesNotCalibrate) {
     r->fake.push(cut_step("Hel"));
     FakeStep b = text_step("lo");

@@ -19,7 +19,7 @@
 - **Request JSON.** `build_chat_body()` (`llm_client.cpp:302-329`) writes `{"model","stream":true,"stream_options":{"include_usage":true},"messages":[...],"tools":...}` into an `os::LargeString`; nothing else from the profile reaches the body. Each message's `content` is one JSON string (`append_message()`, `:43-78`). The profile, key included, is read on every call (`:338`).
 - **Reply parsing.** `SseParser` splits events (`llm_client.hpp:133-150`); `StreamReader::read_delta()` reads only `delta.content` and `delta.tool_calls` (`llm_client.cpp:154-187`); every other delta field, `reasoning_content` included, is ignored, though its bytes still count for stall detection (`on_bytes`, `:391`).
 - **Request layout.** `context.cpp` builds the messages: system prompt first, the history (summaries as `system` messages at the place of the turns they cover, `context.cpp:151-152`), then the dynamic info as one trailing `system` message (`context.cpp:309-314`; `context.hpp:5-18`). The system prompt tells the model so in words: "The last system message begins with your memory notes" (`prompt.cpp:138`, `:178`).
-- **Memory.** The body, the reply text and tool arguments are `os::LargeString` (PSRAM) (`llm_client.hpp:29-30`); each SSE event is parsed on its own with `from_json` (`llm_client.cpp:115`), briefly a small default-heap tree (`docs/backlog.md:88`).
+- **Memory.** The body, the reply text and tool arguments are `os::LargeString` (PSRAM) (`llm_client.hpp:29-30`); each SSE event is parsed on its own with `from_json` (`llm_client.cpp:115`), briefly a small default-heap tree (a backlog entry on the per-event `from_json` tree).
 
 ### 1.2 Provider-specific behaviour
 
@@ -27,14 +27,14 @@
 |---|---|---|---|
 | P1 | Output token limit (`max_tokens` or `max_completion_tokens`) | never sent; the provider's default applies | `llm_client.cpp:313-327` |
 | P2 | Reasoning text (`reasoning_content`) | dropped while streaming; never sent back. Some providers are documented to require it to be echoed during a tool-call loop and others to refuse it (unverified) | `llm_client.cpp:154-187` |
-| P3 | Where non-leading system content goes | dynamic info is a trailing `system` message, summaries are mid-history `system` messages; a gateway that hoists system messages to the front (Anthropic's compatibility layer is documented to, unverified) moves the dynamic info ahead of the history and defeats the prefix cache; `docs/backlog.md:97` records the summary half | `context.cpp:151-152, 309-314` |
+| P3 | Where non-leading system content goes | dynamic info is a trailing `system` message, summaries are mid-history `system` messages; a gateway that hoists system messages to the front (Anthropic's compatibility layer is documented to, unverified) moves the dynamic info ahead of the history and defeats the prefix cache (the backlog recorded the summary half; closed by 3.4) | `context.cpp:151-152, 309-314` |
 | P4 | `parallel_tool_calls` | never sent; the loop runs whatever calls arrive one after another | `agent_service.cpp:830-846` |
 | P5 | Context window | profile option `context_window`, read once per turn | `model_profiles.hpp:108-111`, `agent_service.cpp:561-567` |
 | P6 | Vision | profile option `vision`, validated (`model_profiles.cpp:275-278`), probed from OpenRouter's model list (`model_probe.cpp:405-425`), edited on the web (`models.js:547, 680-684`), shown as a badge (`chat.js:526`, `agent_wiring.cpp:79`); **nothing reads it to change a request** | grep for `profile_vision` finds only `agent_wiring.cpp:79` |
 | P7 | Error recognition | `context_length` from `error.code` or the 400/413 message text | `llm_client.cpp:263-283` |
 | P8 | Presets | 13 rows of id, name, kinds, base URL, key required; no behaviour | `model_presets.cpp:19-35` |
 
-Profile options are a flat string map, at most 8 keys of at most 15 bytes, values at most 64 bytes (`model_profiles.hpp:97-102, 257-262`); unknown keys are kept as they are (`:101`); `check_options()` validates the known ones (`model_profiles.cpp:261-294`). A stored profile whose option fails validation is dropped at load, key included (`docs/backlog.md:85`).
+Profile options are a flat string map, at most 8 keys of at most 15 bytes, values at most 64 bytes (`model_profiles.hpp:97-102, 257-262`); unknown keys are kept as they are (`:101`); `check_options()` validates the known ones (`model_profiles.cpp:261-294`). A stored profile whose option fails validation is dropped at load, key included (the backlog entry on dropped stored options).
 
 ### 1.3 Tools today
 
@@ -164,7 +164,7 @@ Five new `llm` profile options. Each is absent by default, and absent means toda
 
 - Keys are at most 15 bytes (`model_profiles.hpp:261`). An `llm` profile can then hold 7 known options (`vision`, `context_window` and these five) under the 8-key limit (`:260`). The limit stays 8: an older firmware loading a profile with more options than it allows would drop the profile and its key (backlog `:85` behaviour), so raising it would make a downgrade lose profiles.
 - **Resolution** (`LlmDialect`, a plain struct of the five values): the profile's option, else the preset's default, else the table above. Preset defaults are a new optional span in `ModelPreset` (`model_profiles.hpp:81-91`) and in `GET /api/v1/ai/presets` as `"defaults": {...}` (additive). At HEAD every preset would ship with no defaults (today's behaviour); open decision 2 proposes two.
-- **Validation fix.** `load_models()` drops only the invalid option of a stored profile and logs one warning, instead of dropping the profile with its key (closes `docs/backlog.md:85`). This matters more once there are seven options.
+- **Validation fix.** `load_models()` drops only the invalid option of a stored profile and logs one warning, instead of dropping the profile with its key (closes the backlog entry on dropped stored options). This matters more once there are seven options.
 - **Admin web page.** The `llm` form on the Models page gains an "Advanced" group (the page already has one for `tts`, `models.js:551`): a number field for `out_tokens`, selects for the other four, each with an "(default: …)" choice that removes the key and shows the resolved default from the preset. The save code already merges options into the whole map (`models.js:680-684`); the new keys follow it. Labels in zh/ja/en (`web/app/i18n/*.js`).
 - **Device.** The settings-model shortcuts show name, model, test and activate only (settings-model shortcuts spec 3.1); they do not show these options, and this phase does not add them. The agent cannot change profiles (agent-core spec 1.4); unchanged.
 - **Migration.** None: stored profiles have none of the keys, so their requests do not change. Unknown keys are kept (`model_profiles.hpp:101`), so a downgrade keeps the options and ignores them.
@@ -280,7 +280,7 @@ public:
 ```
 
 - **TurnRunner owns** one turn's work: building each request (context, dialect-aware), compression and the overflow recovery (today's `loop()` and `compress()`), the provider call under the turn's controls (`request()`), the length continuation (3.7), tool dispatch and result recording (`run_tool()`, `skip_calls()`), the image slot (3.5), the reasoning keep (3.3), the carry request (3.8), `finish_abort()`'s mapping of an abort to a status and note.
-- **`AgentService::Impl` keeps** the task and the command queue, `start()`/`stop()`, `submit()`/`stop_turn()`, listeners and `emit()`, the status cell and `set_state()`, confirmation (`ask_user()`, `confirm_fn()`), the Wi-Fi subscription, the check timer and the abort atomics (`on_tick()`, `trigger()`, `aborted()`), turn framing (markers, `TurnBegin`/`TurnEnd`, wake locks, the done notice), archive, new conversation and clear, and `Calibration` (the estimate scale and its model, which outlive a turn, `agent_service.cpp:998-1007`; keyed by profile id and model instead of model alone, closing `docs/backlog.md:231`).
+- **`AgentService::Impl` keeps** the task and the command queue, `start()`/`stop()`, `submit()`/`stop_turn()`, listeners and `emit()`, the status cell and `set_state()`, confirmation (`ask_user()`, `confirm_fn()`), the Wi-Fi subscription, the check timer and the abort atomics (`on_tick()`, `trigger()`, `aborted()`), turn framing (markers, `TurnBegin`/`TurnEnd`, wake locks, the done notice), archive, new conversation and clear, and `Calibration` (the estimate scale and its model, which outlive a turn, `agent_service.cpp:998-1007`; keyed by profile id and model instead of model alone, closing the backlog entry on the calibration key).
 - A `TurnRunner` is constructed per turn on `wisp.agent`'s stack (a few pointers; its buffers are `Mem::Large`), so its state cannot leak into the next turn.
 - The public `AgentService` API and every `AgentEvent` are unchanged.
 
@@ -487,7 +487,7 @@ J4 can run in its own worktree in parallel with J1-J3; the only shared file is `
 | Roadmap (phase J) | This spec | Why |
 |---|---|---|
 | `complete(const LlmCall&) -> LlmResult` | the same, plus `active_model()`; `LlmResult::error` becomes an enum | the agent reads the window, model and vision from the provider instead of holding `ModelProfileService` (3.1) |
-| "where the dynamic info goes (trailing system message or merged into the last user message)" | one option `system_msgs` (`anywhere`/`first`) that moves every movable system message: dynamic info, summaries, the carry | the mid-history summaries have the same problem (`docs/backlog.md:97`); one rule keeps the request shape consistent (3.4) |
+| "where the dynamic info goes (trailing system message or merged into the last user message)" | one option `system_msgs` (`anywhere`/`first`) that moves every movable system message: dynamic info, summaries, the carry | the mid-history summaries have the same problem (the backlog entry on summaries, closed by 3.4); one rule keeps the request shape consistent (3.4) |
 | "the profile's vision option becomes real" | real through `ui.screenshot` (agent-core spec 5.4), `http.fetch` `as:"image"` and MCP image results | an image part needs a producer; the screenshot is the one the agent-core spec already designed |
 | `ToolProvider` (`search`, `describe`, `call`) | plus `id()`, `owns()`, `count()` | routing by name syntax and `tools.find`'s `total` need them (4.1) |
 | MCP "through `SceneHttp`'s agent principal" | the same, plus one `SceneHttp` flag (`stop_is_success`) | an SSE answer that is not closed would otherwise last until the deadline (4.4) |
