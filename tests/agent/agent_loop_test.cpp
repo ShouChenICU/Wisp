@@ -2409,3 +2409,81 @@ TEST_F(AgentLoop, StopDuringTheCarryKeepsTheConversation) {
     EXPECT_EQ(user->turn, 3u);
     EXPECT_EQ(h->server.requests().size(), 1u);
 }
+
+// During the carry request the turn shows as running (the old
+// conversation's next number), so a voice hold stops it and a web message
+// waits; after an archive the number starts over.
+TEST_F(AgentLoop, CarryRequestShowsTheTurnRunning) {
+    seed_old_conversation();
+    start();
+    std::mutex begin_mu;
+    std::vector<std::pair<uint32_t, std::optional<uint32_t>>> begins;
+    const uint32_t id = svc->add_listener([&](const AgentEvent& e) {
+        if (e.kind != Kind::TurnBegin) return;
+        const std::optional<uint32_t> shown = svc->view().running_turn;
+        std::lock_guard<std::mutex> lock(begin_mu);
+        begins.emplace_back(e.turn, shown);
+    });
+    h->server.push({.status = 200, .chunks = {FakeLlmServer::sse_text("C")}, .hold_after = 1});
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_until([&] { return h->server.held() == 1; }, 2000));
+    EXPECT_EQ(count(Kind::TurnBegin), 0u);
+    // What the web adapter and the voice controller read: a running turn.
+    EXPECT_EQ(svc->view().running_turn, std::optional<uint32_t>(3u));
+
+    // A voice hold: the running turn is stopped, the new text submitted.
+    svc->stop_turn();
+    h->server.push(text_reply("C"));
+    h->server.push(text_reply("ok"));
+    ASSERT_TRUE(svc->submit("again", Source::Voice));
+    ASSERT_TRUE(wait_turns(2));
+    const auto ev = snapshot();
+    std::vector<std::string> ends;
+    for (const AgentEvent& e : ev)
+        if (e.kind == Kind::TurnEnd) ends.push_back(e.status);
+    EXPECT_EQ(ends, (std::vector<std::string>{"stopped", "done"}));
+    svc->remove_listener(id);
+    {
+        std::lock_guard<std::mutex> lock(begin_mu);
+        ASSERT_EQ(begins.size(), 2u);
+        // The stopped turn, framed in the old conversation.
+        EXPECT_EQ(begins[0].first, 3u);
+        EXPECT_EQ(begins[0].second, std::optional<uint32_t>(3u));
+        // The next one rolled over and starts the new conversation.
+        EXPECT_EQ(begins[1].first, 1u);
+        EXPECT_EQ(begins[1].second, std::optional<uint32_t>(1u));
+    }
+    EXPECT_FALSE(svc->view().running_turn);
+    EXPECT_FALSE(h->store->needs_rollover());
+    EXPECT_EQ(history()[0].role, Role::Carry);
+}
+
+// Without a network there is no carry request: the rollover archives with
+// the plain note, and the turn is numbered in the new conversation.
+TEST_F(AgentLoop, RolloverWithoutNetworkNumbersTheNewConversation) {
+    seed_old_conversation();
+    h->network_up = false;
+    start();
+    std::mutex begin_mu;
+    std::optional<uint32_t> shown;
+    const uint32_t id = svc->add_listener([&](const AgentEvent& e) {
+        if (e.kind != Kind::TurnBegin) return;
+        std::lock_guard<std::mutex> lock(begin_mu);
+        shown = svc->view().running_turn;
+    });
+    ASSERT_TRUE(svc->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    svc->remove_listener(id);
+    EXPECT_EQ(last_status(), "error");
+    EXPECT_EQ(last_reason(), "network");
+    EXPECT_EQ(last_end().turn, 1u);
+    {
+        std::lock_guard<std::mutex> lock(begin_mu);
+        EXPECT_EQ(shown, std::optional<uint32_t>(1u));
+    }
+    EXPECT_FALSE(svc->view().running_turn);
+    EXPECT_TRUE(h->server.requests().empty());
+    const History all = history();
+    ASSERT_GE(all.size(), 1u);
+    EXPECT_EQ(str(all[0].text), wisp::ui::tr(wisp::ui::StrId::AgentRolledOver, wisp::ui::Lang::Zh));
+}

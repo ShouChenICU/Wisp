@@ -410,6 +410,14 @@ struct AgentService::Impl final : TurnEnv {
         // unarchived, and the turn, framed there, ends at once; the next
         // turn tries again. Archiving emits Cleared, which must reach the
         // listeners before TurnBegin, or the web chat wipes the new turn.
+        // Shown as running from here, so that during the carry request
+        // view() still tells a waiting message (or a voice hold) that a
+        // turn is under way. The number is the old conversation's next
+        // one, which an archive below changes before TurnBegin.
+        {
+            std::lock_guard<os::Mutex> lock(mu);
+            running_turn = deps.store.last_turn() + 1;
+        }
         bool rolled = false;
         std::optional<os::LargeString> carry;
         uint32_t archived = 0;
