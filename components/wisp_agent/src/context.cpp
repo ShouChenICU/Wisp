@@ -47,8 +47,6 @@ constexpr std::string_view kCarryPrompt =
     "out greetings and tool output that no longer matters. Write plain sentences in the language "
     "of the conversation, at most 300 words, without <say> tags or Markdown.";
 
-std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
-
 std::string cut_note(size_t total) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "\n[truncated, %zu bytes total]", total);

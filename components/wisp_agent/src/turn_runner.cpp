@@ -40,8 +40,6 @@ constexpr std::string_view kContinuePrompt =
 
 }  // namespace
 
-std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
-
 std::string summary(std::string_view s) {
     return std::string(s.substr(0, prefix_code_points(s, kSummaryChars)));
 }

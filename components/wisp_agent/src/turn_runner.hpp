@@ -140,7 +140,6 @@ private:
     ReasoningKeep keep_;
 };
 
-std::string_view sv(const os::LargeString& s);
 std::string summary(std::string_view s);  // at most kSummaryChars code points
 
 }  // namespace wisp::agent

@@ -1,9 +1,11 @@
 #pragma once
 
-// UTF-8 helpers shared inside wisp_agent.
+// String helpers shared inside wisp_agent.
 
 #include <cstddef>
 #include <string_view>
+
+#include "wisp/os/large.hpp"
 
 namespace wisp::agent {
 
@@ -15,5 +17,7 @@ inline size_t prefix_bytes(std::string_view s, size_t max_bytes) {
     while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
     return n;
 }
+
+inline std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
 
 }  // namespace wisp::agent

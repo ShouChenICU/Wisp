@@ -91,7 +91,6 @@ Source: `feat/agent-core` review records.
   - the `TurnBegin` text and serialized tool results are `std::string`, briefly in internal RAM; include them in the device `mem` measurement;
   - the done-notice id carries the reply's first line, so each turn adds a notice instead of replacing one.
 - Context assembly:
-  - `sv()` (`turn_runner.cpp`) and `prefix_bytes()` (`agent_service.cpp`) are duplicated in `context.cpp`; move them to one internal header;
   - the prompt takes the date from `wall_s` but the weekday name from `DeviceSnapshot::weekday`; derive the name from `weekday_of(wall_s, offset)` and keep `weekday == 0` only as the "clock unset" flag;
   - `compress()` appends while the loop still holds the history snapshot, which forces a full PSRAM copy; append after the snapshot scope closes;
   - a summary request that keeps timing out counts as a transport error, so the history never compresses and every request carries it whole;
