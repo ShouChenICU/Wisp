@@ -927,9 +927,10 @@ void SceneHttp::execute(Job& job, Lane& own) {
             result.error = "other";
             break;
         }
-        // Under stop_is_end a refusal comes back as transport None, so a
-        // refusal that was not the consumer's own stop (the scene was
-        // cancelled) is caught here too.
+        // Under stop_is_end a refusal comes back as transport None; one that
+        // was not the consumer's own stop (the scene was cancelled) is
+        // turned back into "other" here. Defensive only: a cancelled job's
+        // result is never handed to done() (the end of this function).
         if (res.transport == TransportError::Cancelled ||
             (res.transport == TransportError::None && req.stop_is_end && !consumer_stopped &&
              job.cancelled.load())) {

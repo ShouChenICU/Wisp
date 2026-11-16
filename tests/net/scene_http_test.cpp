@@ -1199,12 +1199,16 @@ TEST_F(SceneHttpStopTest, StopIsSuccessDoesNotHideACancel) {
     client.before_piece = nullptr;
 }
 
+// The deadline passes after the client's cancel poll, so SceneHttp's own
+// on_body refuses the piece and, under stop_is_end, the client reports
+// that as transport None: the timed_out flag must still win over success.
 TEST_F(SceneHttpStopTest, StopIsSuccessDoesNotHideTheDeadline) {
-    client.before_piece = [this] { now += 20000; };
+    client.after_cancel_poll = [this] { now += 20000; };
     auto req = stopping(agent_get("https://x.example.com/mcp"), true);
     req.timeout_ms = 10000;
     EXPECT_EQ(run(std::move(req)).error, "timeout");
-    client.before_piece = nullptr;
+    EXPECT_EQ(client.pieces.load(), 1);
+    client.after_cancel_poll = nullptr;
 }
 
 TEST(SceneHttpTask, ConfigOfBothLanes) {

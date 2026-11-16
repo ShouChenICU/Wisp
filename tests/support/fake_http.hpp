@@ -165,6 +165,7 @@ public:
                     return {.transport = net::TransportError::Cancelled};
                 }
                 ++pieces;
+                if (after_cancel_poll) after_cancel_poll();
                 const size_t n = std::min<size_t>(4096, deliver - at);
                 if (!req.on_body({p + at, n})) {
                     if (!req.stop_is_end) return {.transport = net::TransportError::Cancelled};
@@ -219,6 +220,10 @@ public:
     // Called before each 4 KB piece goes to on_body (a server that trickles
     // the body: a test advances its clock here). Set before the request.
     std::function<void()> before_piece;
+    // Called after the cancel poll and right before a piece goes to
+    // on_body, so whatever it changes is seen by on_body itself, not by
+    // req.cancelled() first. Set before the request.
+    std::function<void()> after_cancel_poll;
     std::atomic<int> pieces{0};
 
 private:
