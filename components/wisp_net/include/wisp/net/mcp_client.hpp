@@ -31,9 +31,10 @@
 // is not repaired later); schemas that are not valid UTF-8 are replaced.
 // A server message (McpFailure::message, and a tool result's text when
 // isError) that quotes any of that server's header values, whole or 8 or
-// more bytes of one, is replaced by "(message withheld: it quoted a
-// credential)" (spec 4.4 "Scrubbing"). All server text in a result is
-// valid UTF-8.
+// more bytes of one (of the part after an auth scheme such as "Bearer ",
+// when that part is 8 bytes or more), is replaced by "(message withheld:
+// it quoted a credential)" (spec 4.4 "Scrubbing"). All server text in a
+// result is valid UTF-8.
 
 #include <cstddef>
 #include <cstdint>
@@ -167,6 +168,12 @@ public:
     // server, without a request; the remembered failure, without a
     // request, within kMcpRetryAfterMs of it.
     McpListResult list_tools(std::string_view server_id, const McpWait& wait, bool refresh = false);
+    // list_tools() without the copy: runs `fn` on the server's tools when
+    // they could be had, under the client's lock, and returns the failure
+    // otherwise. `fn` does memory work only and never calls the client.
+    McpFailure visit_tools(std::string_view server_id, const McpWait& wait,
+                           const std::function<void(const os::LargeVector<McpTool>&)>& fn,
+                           bool refresh = false);
     // Calls `tool` (one of list_tools()'s, else NotFound without a request)
     // with `args_json` (a JSON object's text), waiting at most the server's
     // timeout_ms. The result's text is its content items joined with "\n"

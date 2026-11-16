@@ -17,4 +17,19 @@ bool holds_secret_piece(std::string_view text, std::string_view secret) {
     return false;
 }
 
+std::string_view credential_part(std::string_view value) {
+    constexpr size_t kMinPart = 8;
+    constexpr std::string_view kTokenPunct = "!#$%&'*+-.^_`|~";
+    auto token_char = [&](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               kTokenPunct.find(c) != std::string_view::npos;
+    };
+    size_t i = 0;
+    while (i < value.size() && token_char(value[i])) ++i;
+    if (i == 0 || i == value.size() || value[i] != ' ') return value;
+    while (i < value.size() && value[i] == ' ') ++i;
+    const std::string_view rest = value.substr(i);
+    return rest.size() >= kMinPart ? rest : value;
+}
+
 }  // namespace wisp::net::detail

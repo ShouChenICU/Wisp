@@ -119,10 +119,11 @@ void log_request(std::string_view server_id, std::string_view method, const McpF
 }
 
 // Whether `text` quotes any of the server's header values, whole or in
-// part (spec 4.4 "Scrubbing").
+// part (spec 4.4 "Scrubbing"); an auth scheme alone is not a quote.
 bool quotes_a_credential(std::string_view text, const core::McpServerTarget& target) {
     return std::any_of(target.headers.begin(), target.headers.end(), [&](const auto& h) {
-        return detail::holds_secret_piece(text, std::string_view(h.second));
+        return detail::holds_secret_piece(text,
+                                          detail::credential_part(std::string_view(h.second)));
     });
 }
 
@@ -497,16 +498,19 @@ McpClient::McpClient(SceneHttp& http, core::McpServerService& servers, McpClient
 
 McpListResult McpClient::list_tools(std::string_view server_id, const McpWait& wait, bool refresh) {
     McpListResult out;
+    out.failure = visit_tools(
+        server_id, wait, [&](const os::LargeVector<McpTool>& tools) { out.tools = tools; },
+        refresh);
+    return out;
+}
+
+McpFailure McpClient::visit_tools(std::string_view server_id, const McpWait& wait,
+                                  const std::function<void(const os::LargeVector<McpTool>&)>& fn,
+                                  bool refresh) {
     const auto info = servers_.get(server_id);
-    if (!info || !info->enabled) {
-        out.failure = failure(McpError::NotFound);
-        return out;
-    }
+    if (!info || !info->enabled) return failure(McpError::NotFound);
     const auto target = servers_.resolve_for_request(server_id);
-    if (!target) {
-        out.failure = failure(McpError::NotFound);
-        return out;
-    }
+    if (!target) return failure(McpError::NotFound);
 
     // State of servers removed or changed since the last call is dropped
     // (plan decision 21); the cell says whether anything changed at all.
@@ -540,33 +544,35 @@ McpListResult McpClient::list_tools(std::string_view server_id, const McpWait& w
             it = state_.end() - 1;
         }
         const uint64_t now = config_.now_ms();
-        if (it->failing && now - it->failed_at < kMcpRetryAfterMs) {
-            out.failure = it->failure;
-            return out;
-        }
+        if (it->failing && now - it->failed_at < kMcpRetryAfterMs) return it->failure;
         if (it->listed && !refresh && now - it->listed_at < kMcpListTtlMs) {
-            out.tools = it->tools;
-            return out;
+            fn(it->tools);
+            return {};
         }
         session = it->session;
     }
 
     const Link link{http_, *target, config_.client_version, config_.now_ms, wait};
-    out = list_all(link, session);
+    McpListResult out = list_all(link, session);
 
     std::lock_guard<os::Mutex> lock(mu_);
     auto it = std::find_if(state_.begin(), state_.end(), [&](const Server& s) {
         return std::string_view(s.id) == target->id && s.revision == target->revision;
     });
-    if (it == state_.end()) return out;
+    if (it == state_.end()) {
+        // The configuration changed during the request: nothing to keep.
+        if (out.failure.error == McpError::None) fn(out.tools);
+        return out.failure;
+    }
     it->session = std::move(session);
     const uint64_t now = config_.now_ms();
     if (out.failure.error == McpError::None) {
         it->listed = true;
         it->listed_at = now;
-        it->tools = out.tools;
+        it->tools = std::move(out.tools);
         it->failing = false;
         it->failure = {};
+        fn(it->tools);
     } else if (out.failure.error != McpError::Cancelled && out.failure.error != McpError::Timeout) {
         // The caller's own deadline or cancellation is not the server's
         // failure and starts no backoff.
@@ -574,23 +580,22 @@ McpListResult McpClient::list_tools(std::string_view server_id, const McpWait& w
         it->failed_at = now;
         it->failure = out.failure;
     }
-    return out;
+    return out.failure;
 }
 
 McpCallResult McpClient::call_tool(std::string_view server_id, std::string_view tool,
                                    std::string_view args_json, const McpWait& wait) {
     McpCallResult out;
-    McpListResult listed = list_tools(server_id, wait);
-    if (listed.failure.error != McpError::None) {
-        out.failure = std::move(listed.failure);
-        return out;
-    }
+    bool known = false;
+    out.failure = visit_tools(server_id, wait, [&](const os::LargeVector<McpTool>& tools) {
+        known = has_tool(tools, tool);
+    });
+    if (out.failure.error != McpError::None) return out;
     const auto target = servers_.resolve_for_request(server_id);
-    if (!has_tool(listed.tools, tool) || !target) {
+    if (!known || !target) {
         out.failure = failure(McpError::NotFound);
         return out;
     }
-    listed = {};
 
     auto find_state = [&] {
         return std::find_if(state_.begin(), state_.end(), [&](const Server& s) {
@@ -613,8 +618,12 @@ McpCallResult McpClient::call_tool(std::string_view server_id, std::string_view 
 
     if (ex.failure.error == McpError::RpcError && says_unknown_tool(ex.failure)) {
         // Plan decision 16: refresh once; the call itself is not retried.
-        const McpListResult fresh = list_tools(server_id, wait, /*refresh=*/true);
-        if (fresh.failure.error == McpError::None && !has_tool(fresh.tools, tool)) {
+        bool still_listed = false;
+        const McpFailure fresh = visit_tools(
+            server_id, wait,
+            [&](const os::LargeVector<McpTool>& tools) { still_listed = has_tool(tools, tool); },
+            /*refresh=*/true);
+        if (fresh.error == McpError::None && !still_listed) {
             out.failure = failure(McpError::NotFound);
             return out;
         }

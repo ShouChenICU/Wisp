@@ -713,6 +713,10 @@ TEST_F(McpClientCallTest, QuotedCredentialIsWithheld) {
     }
     fail(R"({"code":-32001,"message":"invalid"})");
     EXPECT_EQ(str(call().failure.message), "invalid");
+    // The auth scheme is not the credential: "Bearer t" is 8 bytes of the
+    // stored value, but a message naming the scheme quotes nothing secret.
+    fail(R"({"code":-32001,"message":"Bearer token expired"})");
+    EXPECT_EQ(str(call().failure.message), "Bearer token expired");
 
     // A tool's own error text is a server message too.
     answer(std::string(R"({"content":[{"type":"text","text":"rejected )") + kSecret +
@@ -857,6 +861,19 @@ TEST(SecretScrub, FindsWholeAndEightBytePieces) {
     EXPECT_FALSE(holds_secret_piece("invalid", "tok-SECRET-123456"));
     EXPECT_FALSE(holds_secret_piece("12345", "123456"));
     EXPECT_FALSE(holds_secret_piece("anything", ""));
+}
+
+TEST(SecretScrub, CredentialPartSkipsTheAuthScheme) {
+    using wisp::net::detail::credential_part;
+    EXPECT_EQ(credential_part("Bearer tok-SECRET-123456"), "tok-SECRET-123456");
+    EXPECT_EQ(credential_part("Basic  dXNlcjpwYXNz"), "dXNlcjpwYXNz");
+    EXPECT_EQ(credential_part("Token abcdefgh"), "abcdefgh");
+    // Under 8 bytes after the scheme: the whole value is what is looked for.
+    EXPECT_EQ(credential_part("Bearer short"), "Bearer short");
+    EXPECT_EQ(credential_part("plain-api-key-123"), "plain-api-key-123");
+    EXPECT_EQ(credential_part("Bearer "), "Bearer ");
+    // Not a scheme: the part before the space is not a token.
+    EXPECT_EQ(credential_part("a=b cdefghijkl"), "a=b cdefghijkl");
 }
 
 }  // namespace
