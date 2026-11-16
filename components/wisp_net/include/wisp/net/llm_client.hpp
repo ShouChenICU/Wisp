@@ -75,8 +75,17 @@ namespace wisp::net {
 // receives any becomes a content array of text parts: the movable messages
 // after it, then those before it, each as "<context>\n...\n</context>",
 // then its own text (spec 3.4).
+//
+// A user message with parts is a content array of them, in order (spec
+// 3.5): a text part as {"type":"text","text":...}, an image as
+// {"type":"image_url","image_url":{"url":"data:<mime>;base64,..."}}, the
+// base64 written straight into the body. Without `vision` each image is
+// the text part kImageOmittedNoVision instead. Under First the
+// "<context>" parts come first, then the message's parts. A message
+// without parts, and parts on any other role, are written as before.
 os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessage> msgs,
-                                std::string_view tools_json, const LlmDialect& dialect = {});
+                                std::string_view tools_json, const LlmDialect& dialect = {},
+                                bool vision = false);
 
 // Splits a server-sent event stream into events. Lines end with LF, CRLF
 // or CR; ':' lines are comments; only the "data" field is kept, one space

@@ -58,10 +58,28 @@ struct LlmToolCall {
     os::LargeString arguments{};  // the JSON text as the model wrote it
 };
 
+enum class LlmPartKind : uint8_t { Text, Image };
+
+// One piece of a message's content. Views only, like LlmMessage.
+struct LlmPart {
+    LlmPartKind kind = LlmPartKind::Text;
+    std::string_view text{};           // Text
+    std::string_view mime{};           // Image: "image/jpeg" | "image/png"
+    std::span<const uint8_t> bytes{};  // Image: the encoded file, not base64
+};
+
+// The text part an image becomes when the profile has no vision (spec 3.5).
+inline constexpr std::string_view kImageOmittedNoVision =
+    "[image omitted: the active model does not take images]";
+
 // Views only: everything must outlive complete().
 struct LlmMessage {
     LlmRole role = LlmRole::User;
     std::string_view text{};
+    // User only (spec 3.5): when set, the content is these parts and text
+    // is unused. Ignored on any other role, so a tool message never
+    // carries an image.
+    std::span<const LlmPart> parts{};
     std::span<const LlmToolCall> tool_calls{};  // Assistant only
     std::string_view tool_call_id{};            // Tool only
     // Assistant only: the reply's reasoning, sent only under

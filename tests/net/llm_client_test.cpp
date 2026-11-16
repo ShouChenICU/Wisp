@@ -17,6 +17,7 @@
 #include "support/fake_llm.hpp"
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
+#include "wisp/base/base64.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_registry.hpp"
@@ -1241,6 +1242,157 @@ TEST(LlmClient, ReasoningOverTheCapIsDropped) {
     EXPECT_EQ(r.error, LlmError::None);
     EXPECT_TRUE(r.reasoning.empty());
     EXPECT_EQ(str(r.text), "hi");
+}
+
+// LlmBodyParts: a user message with content parts (spec 3.5).
+
+using wisp::net::LlmPart;
+using wisp::net::LlmPartKind;
+
+const uint8_t kJpeg4[] = {0xFF, 0xD8, 0xFF, 0xD9};
+
+// "look:" and a four-byte JPEG; static so that the views outlive the call.
+std::span<const LlmPart> look_parts() {
+    static const LlmPart parts[] = {
+        {.kind = LlmPartKind::Text, .text = "look:"},
+        {.kind = LlmPartKind::Image, .mime = "image/jpeg", .bytes = kJpeg4},
+    };
+    return parts;
+}
+
+std::string parts_body(std::span<const LlmMessage> msgs, bool vision,
+                       const LlmDialect& d = LlmDialect{}) {
+    return str(wisp::net::build_chat_body("m", msgs, "", d, vision));
+}
+
+TEST(LlmBodyParts, UserMessageWithPartsIsAnArray) {
+    const LlmMessage msg{.role = LlmRole::User, .parts = look_parts()};
+    EXPECT_EQ(
+        parts_body({&msg, 1}, true),
+        kBodyHead +
+            R"({"role":"user","content":[{"type":"text","text":"look:"},)"
+            R"({"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/2Q=="}}]}]})");
+}
+
+TEST(LlmBodyParts, Base64IsWrittenWhole) {
+    std::vector<uint8_t> bytes(1000);
+    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = static_cast<uint8_t>(i % 251);
+    const LlmPart part{.kind = LlmPartKind::Image, .mime = "image/png", .bytes = bytes};
+    const LlmMessage msg{.role = LlmRole::User, .parts = {&part, 1}};
+    const std::string body = parts_body({&msg, 1}, true);
+    const std::string prefix = "data:image/png;base64,";
+    const size_t at = body.find(prefix);
+    ASSERT_NE(at, std::string::npos);
+    EXPECT_EQ(body.find(prefix, at + 1), std::string::npos);
+    const size_t from = at + prefix.size();
+    const size_t end = body.find('"', from);
+    ASSERT_NE(end, std::string::npos);
+    EXPECT_EQ(body.substr(from, end - from), wisp::base64_encode(bytes));
+    EXPECT_TRUE(wisp::from_json(body));
+}
+
+TEST(LlmBodyParts, TextPartsAreEscaped) {
+    const LlmPart part{.kind = LlmPartKind::Text, .text = "q\"\n"};
+    const LlmMessage msg{.role = LlmRole::User, .parts = {&part, 1}};
+    EXPECT_EQ(parts_body({&msg, 1}, true),
+              kBodyHead + R"({"role":"user","content":[{"type":"text","text":)" +
+                  wisp::to_json(Value("q\"\n")) + "}]}]}");
+}
+
+TEST(LlmBodyParts, NoVisionReplacesImagesWithText) {
+    const LlmMessage msg{.role = LlmRole::User, .parts = look_parts()};
+    const std::string expected =
+        kBodyHead +
+        R"({"role":"user","content":[{"type":"text","text":"look:"},)"
+        R"({"type":"text","text":"[image omitted: the active model does not take images]"}]}]})";
+    const std::string off = parts_body({&msg, 1}, false);
+    EXPECT_EQ(off, expected);
+    EXPECT_EQ(off.find("data:"), std::string::npos);
+    EXPECT_EQ(off.find("image_url"), std::string::npos);
+    EXPECT_EQ(str(wisp::net::build_chat_body("m", {&msg, 1}, "")), expected);
+    EXPECT_NE(expected.find(wisp::net::kImageOmittedNoVision), std::string::npos);
+}
+
+TEST(LlmBodyParts, MessagesWithoutPartsAreUnchanged) {
+    const std::vector<LlmMessage> msgs = every_shape();
+    const std::string golden =
+        R"({"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[)"
+        R"({"role":"system","content":"S"},{"role":"user","content":"q\"\nü"},)"
+        R"({"role":"assistant","content":"A"},)"
+        R"({"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"a_b","arguments":"{\"x\":1}"}},)"
+        R"({"id":"c2","type":"function","function":{"name":"c_d","arguments":""}}]},)"
+        R"({"role":"assistant","content":"T","tool_calls":[{"id":"c3","type":"function","function":{"name":"a_b","arguments":"{}"}}]},)"
+        R"({"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}],"tools":)" +
+        kGoldenTools + "}";
+    for (bool vision : {true, false}) {
+        const std::string body =
+            str(wisp::net::build_chat_body("m", msgs, kGoldenTools, LlmDialect{}, vision));
+        EXPECT_EQ(body, golden) << vision;
+        EXPECT_EQ(body.find("\"content\":[]"), std::string::npos);
+    }
+}
+
+TEST(LlmBodyParts, PartsOnOtherRolesAreIgnored) {
+    LlmMessage tool{.role = LlmRole::Tool, .text = "{}", .tool_call_id = "c1"};
+    const std::string plain = parts_body({&tool, 1}, true);
+    tool.parts = look_parts();
+    EXPECT_EQ(parts_body({&tool, 1}, true), plain);
+    EXPECT_EQ(plain, kBodyHead + R"({"role":"tool","tool_call_id":"c1","content":"{}"}]})");
+}
+
+TEST(LlmBodyParts, FirstDialectPutsContextBeforeTheParts) {
+    const std::vector<LlmMessage> shapes = every_shape();
+    static const LlmPart parts[] = {
+        {.kind = LlmPartKind::Text, .text = "Image from t (call c1):"},
+        {.kind = LlmPartKind::Image, .mime = "image/jpeg", .bytes = kJpeg4},
+    };
+    const std::vector<LlmMessage> msgs = {
+        {.role = LlmRole::System, .text = "S"},
+        {.role = LlmRole::User, .text = "q"},
+        shapes[4],
+        {.role = LlmRole::Tool, .text = "{}", .tool_call_id = "c3"},
+        {.role = LlmRole::User, .parts = parts},
+        {.role = LlmRole::System, .text = "D", .movable = true},
+    };
+    const std::string body = parts_body(msgs, true, {.system_msgs = LlmSystemMsgs::First});
+    EXPECT_EQ(
+        body,
+        kBodyHead +
+            R"({"role":"system","content":"S"},{"role":"user","content":"q"},)"
+            R"({"role":"assistant","content":"T","tool_calls":[{"id":"c3","type":"function","function":{"name":"a_b","arguments":"{}"}}]},)"
+            R"({"role":"tool","tool_call_id":"c3","content":"{}"},)"
+            R"({"role":"user","content":[{"type":"text","text":"<context>\nD\n</context>"},)"
+            R"({"type":"text","text":"Image from t (call c1):"},)"
+            R"({"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/2Q=="}}]}]})");
+    EXPECT_EQ(body.find(R"("role":"system")", body.find(R"("role":"user")")), std::string::npos);
+}
+
+// The image's view must outlive the call: built once per test.
+LlmResult run_with_image(Fixture& f) {
+    f.server.push({.status = 200, .chunks = {FakeLlmServer::sse_done()}});
+    const LlmMessage msg{.role = LlmRole::User, .parts = look_parts()};
+    LlmCall call;
+    call.messages = {&msg, 1};
+    return f.run(call);
+}
+
+TEST(LlmClient, ImagesDroppedWhenTheProfileHasNoVision) {
+    Fixture f;
+    EXPECT_EQ(run_with_image(f).error, LlmError::None);
+    const auto reqs = f.server.requests();
+    ASSERT_EQ(reqs.size(), 1u);
+    EXPECT_NE(reqs[0].body.find(wisp::net::kImageOmittedNoVision), std::string::npos);
+    EXPECT_EQ(reqs[0].body.find("data:"), std::string::npos);
+}
+
+TEST(LlmClient, ImagesSentWhenTheProfileHasVision) {
+    Fixture f;
+    set_options(f, {{"vision", "true"}});
+    EXPECT_EQ(run_with_image(f).error, LlmError::None);
+    const auto reqs = f.server.requests();
+    ASSERT_EQ(reqs.size(), 1u);
+    EXPECT_NE(reqs[0].body.find("data:image/jpeg;base64,"), std::string::npos);
+    EXPECT_EQ(reqs[0].body.find(wisp::net::kImageOmittedNoVision), std::string::npos);
 }
 
 }  // namespace

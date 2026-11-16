@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "wisp/base/base64.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
@@ -69,6 +70,28 @@ void append_text_part(os::LargeString& out, std::string_view text, bool context)
     out += '}';
 }
 
+// One part of a user message's content array (spec 3.5). The image's
+// base64 is encoded straight into the body, so no copy of it exists
+// outside the body.
+void append_part(os::LargeString& out, const LlmPart& p, bool vision) {
+    if (p.kind == LlmPartKind::Text) {
+        append_text_part(out, p.text, /*context=*/false);
+        return;
+    }
+    if (!vision) {
+        append_text_part(out, kImageOmittedNoVision, /*context=*/false);
+        return;
+    }
+    out += "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:";
+    UnquotedSink sink{out};
+    append_json_string(sink, p.mime);
+    out += ";base64,";
+    const size_t old = out.size();
+    out.resize(old + base64_encoded_size(p.bytes.size()));
+    base64_encode_into(p.bytes, out.data() + old);
+    out += "\"}}";
+}
+
 // A system, assistant or tool message; a user message goes through
 // append_user().
 void append_message(os::LargeString& out, const LlmMessage& m, bool echo_reasoning) {
@@ -115,14 +138,15 @@ void append_message(os::LargeString& out, const LlmMessage& m, bool echo_reasoni
 bool is_movable(const LlmMessage& m) { return m.role == LlmRole::System && m.movable; }
 
 // A user message: the only place that writes one's content, so that every
-// kind of part is added here. With no movable system message in `after` or
-// `before` (always so under Anywhere) the content is today's plain string.
-// Otherwise it is an array of text parts: the movable ones in `after`, then
-// those in `before`, so that the dynamic info, which follows the last user
-// message, is its first part (spec 3.4), then the message's own text.
+// kind of part is added here. With no parts and no movable system message
+// in `after` or `before` (always so under Anywhere) the content is today's
+// plain string. Otherwise it is an array: the movable ones in `after`, then
+// those in `before`, as text parts, so that the dynamic info, which follows
+// the last user message, is its first part (spec 3.4), then the message's
+// own parts (spec 3.5), or its text when it has none.
 void append_user(os::LargeString& out, const LlmMessage& m, std::span<const LlmMessage> after,
-                 std::span<const LlmMessage> before) {
-    if (std::none_of(before.begin(), before.end(), is_movable) &&
+                 std::span<const LlmMessage> before, bool vision) {
+    if (m.parts.empty() && std::none_of(before.begin(), before.end(), is_movable) &&
         std::none_of(after.begin(), after.end(), is_movable)) {
         out += "{\"role\":\"user\",\"content\":";
         append_json_string(out, m.text);
@@ -137,7 +161,14 @@ void append_user(os::LargeString& out, const LlmMessage& m, std::span<const LlmM
             out += ',';
         }
     }
-    append_text_part(out, m.text, /*context=*/false);
+    if (m.parts.empty()) {
+        append_text_part(out, m.text, /*context=*/false);
+    } else {
+        for (size_t i = 0; i < m.parts.size(); ++i) {
+            if (i != 0) out += ',';
+            append_part(out, m.parts[i], vision);
+        }
+    }
     out += "]}";
 }
 
@@ -378,7 +409,8 @@ std::optional<uint64_t> retry_after_ms(const HttpClientResponse& res) {
 }  // namespace
 
 os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessage> msgs,
-                                std::string_view tools_json, const LlmDialect& dialect) {
+                                std::string_view tools_json, const LlmDialect& dialect,
+                                bool vision) {
     const bool echo = dialect.reasoning == core::LlmReasoning::Echo;
     // Under First each movable system message goes into the first user
     // message after it, else the last one before it: so a user message takes
@@ -400,6 +432,12 @@ os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessa
     for (const LlmMessage& m : msgs) {
         estimate += 48 + m.text.size() + m.tool_call_id.size() + m.reasoning.size();
         if (m.movable) estimate += 40;
+        if (m.role == LlmRole::User) {
+            for (const LlmPart& p : m.parts)
+                estimate += p.kind == LlmPartKind::Text
+                                ? 48 + p.text.size()
+                                : 64 + p.mime.size() + base64_encoded_size(p.bytes.size());
+        }
         for (const LlmToolCall& c : m.tool_calls)
             estimate += 80 + c.id.size() + c.name.size() + c.arguments.size();
     }
@@ -423,7 +461,7 @@ os::LargeString build_chat_body(std::string_view model, std::span<const LlmMessa
                 if (i == last_user) after = msgs.subspan(i + 1);
                 since_user = i + 1;
             }
-            append_user(out, m, after, before);
+            append_user(out, m, after, before, vision);
             continue;
         }
         append_message(out, m, echo);
@@ -481,8 +519,8 @@ LlmResult LlmClient::complete(const LlmCall& call) {
 
     const LlmDialect dialect = core::resolve_llm_dialect(profile->options, profile->preset);
     const bool keep_reasoning = dialect.reasoning == core::LlmReasoning::Echo;
-    const os::LargeString body =
-        build_chat_body(profile->model, call.messages, call.tools_json, dialect);
+    const os::LargeString body = build_chat_body(profile->model, call.messages, call.tools_json,
+                                                 dialect, core::profile_vision(profile->options));
     HttpClientRequest req;
     req.method = Method::Post;
     // ModelProfileService strips trailing '/' from base_url.
