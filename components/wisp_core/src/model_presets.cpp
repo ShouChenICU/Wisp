@@ -16,22 +16,32 @@ constexpr uint8_t kLlm = bit(ModelKind::Llm);
 constexpr uint8_t kAsr = bit(ModelKind::Asr);
 constexpr uint8_t kTts = bit(ModelKind::Tts);
 
+// llm dialect defaults (llm-tool-providers spec 3.2, decision 12.2): taken
+// from the providers' documentation and not yet checked on a device; a
+// profile's own option overrides them. Every other preset has none.
+constexpr PresetOption kOpenAiDefaults[] = {{"out_field", "max_completion_tokens"}};
+constexpr PresetOption kAnthropicDefaults[] = {{"system_msgs", "first"}};
+
 constexpr std::array<ModelPreset, 13> kPresets = {{
-    {"custom", "OpenAI 兼容（自定义）", kLlm | kAsr | kTts, "", false},
-    {"openai", "OpenAI", kLlm | kAsr | kTts, "https://api.openai.com/v1", true},
-    {"anthropic", "Anthropic", kLlm, "https://api.anthropic.com/v1", true},
-    {"gemini", "Google Gemini", kLlm, "https://generativelanguage.googleapis.com/v1beta/openai",
-     true},
-    {"deepseek", "DeepSeek", kLlm, "https://api.deepseek.com/v1", true},
-    {"qwen", "通义千问", kLlm, "https://dashscope.aliyuncs.com/compatible-mode/v1", true},
-    {"moonshot", "Kimi", kLlm, "https://api.moonshot.cn/v1", true},
-    {"zhipu", "智谱 GLM", kLlm, "https://open.bigmodel.cn/api/paas/v4", true},
-    {"ark", "火山方舟", kLlm, "https://ark.cn-beijing.volces.com/api/v3", true},
-    {"siliconflow", "硅基流动", kLlm | kAsr | kTts, "https://api.siliconflow.cn/v1", true},
-    {"groq", "Groq", kLlm | kAsr, "https://api.groq.com/openai/v1", true},
-    {"openrouter", "OpenRouter", kLlm, "https://openrouter.ai/api/v1", true},
+    {"custom", "OpenAI 兼容（自定义）", kLlm | kAsr | kTts, "", false, {}},
+    {"openai", "OpenAI", kLlm | kAsr | kTts, "https://api.openai.com/v1", true, kOpenAiDefaults},
+    {"anthropic", "Anthropic", kLlm, "https://api.anthropic.com/v1", true, kAnthropicDefaults},
+    {"gemini",
+     "Google Gemini",
+     kLlm,
+     "https://generativelanguage.googleapis.com/v1beta/openai",
+     true,
+     {}},
+    {"deepseek", "DeepSeek", kLlm, "https://api.deepseek.com/v1", true, {}},
+    {"qwen", "通义千问", kLlm, "https://dashscope.aliyuncs.com/compatible-mode/v1", true, {}},
+    {"moonshot", "Kimi", kLlm, "https://api.moonshot.cn/v1", true, {}},
+    {"zhipu", "智谱 GLM", kLlm, "https://open.bigmodel.cn/api/paas/v4", true, {}},
+    {"ark", "火山方舟", kLlm, "https://ark.cn-beijing.volces.com/api/v3", true, {}},
+    {"siliconflow", "硅基流动", kLlm | kAsr | kTts, "https://api.siliconflow.cn/v1", true, {}},
+    {"groq", "Groq", kLlm | kAsr, "https://api.groq.com/openai/v1", true, {}},
+    {"openrouter", "OpenRouter", kLlm, "https://openrouter.ai/api/v1", true, {}},
     // A placeholder: the user has to put in the LAN host.
-    {"ollama", "Ollama（局域网）", kLlm, "http://<主机>:11434/v1", false},
+    {"ollama", "Ollama（局域网）", kLlm, "http://<主机>:11434/v1", false, {}},
 }};
 
 }  // namespace

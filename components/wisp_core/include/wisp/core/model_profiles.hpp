@@ -75,15 +75,24 @@ constexpr std::array<ModelKind, kModelKindCount> kModelKinds = {ModelKind::Llm, 
 const char* to_string(ModelKind kind);
 std::optional<ModelKind> parse_model_kind(std::string_view s);
 
+// One default option value a preset gives its llm profiles (spec 3.2).
+struct PresetOption {
+    std::string_view key{};
+    std::string_view value{};
+};
+
 // One row of the compiled-in platform table (spec 5.3). `name` is the
 // platform's brand name and is not translated. A base_url containing '<'
-// is a placeholder the user must replace before saving.
+// is a placeholder the user must replace before saving. `defaults` are
+// llm dialect options that apply when the profile does not set the key
+// (resolve_llm_dialect()); they must pass the same checks as a profile's.
 struct ModelPreset {
     std::string_view id;
     std::string_view name;
     uint8_t kinds;  // bit (1 << ModelKind)
     std::string_view base_url;
     bool key_required;
+    std::span<const PresetOption> defaults{};
 
     bool supports(ModelKind kind) const {
         return (kinds & (1u << static_cast<unsigned>(kind))) != 0;
@@ -95,10 +104,11 @@ std::span<const ModelPreset> model_presets();
 const ModelPreset* find_model_preset(std::string_view id);
 
 // Extra per-platform fields: flat, string values. Spec 5.3 defines tts
-// "voice"; the agent adds the two llm options below; the voice path (spec
-// 2) adds asr "language" and tts "sample_rate"/"speed". Each of these is
-// only valid on its own kind: on another kind create()/update() refuse it
-// with InvalidArgument. Unknown keys are kept as they are.
+// "voice"; the agent adds the two llm options below and the five llm
+// dialect options after them (llm spec 3.2); the voice path (spec 2) adds
+// asr "language" and tts "sample_rate"/"speed". Each kind-specific option
+// is only valid on its own kind: on another kind create()/update() refuse
+// it with InvalidArgument. Unknown keys are kept as they are.
 using ModelOptions = std::map<std::string, std::string>;
 
 // Whether the model takes images: "true" or "false" (absent: false).
@@ -109,6 +119,32 @@ inline constexpr const char* kOptContextWindow = "context_window";
 inline constexpr uint32_t kMinContextWindow = 4096;
 inline constexpr uint32_t kMaxContextWindow = 1048576;
 inline constexpr uint32_t kDefaultContextWindow = 65536;
+
+// llm dialect options (spec 3.2). Each is llm-only; absent = today's request.
+inline constexpr const char* kOptOutTokens = "out_tokens";  // decimal kMinOutTokens..kMaxOutTokens
+inline constexpr const char* kOptOutField = "out_field";   // "max_tokens" | "max_completion_tokens"
+inline constexpr const char* kOptReasoning = "reasoning";  // "drop" | "echo"
+inline constexpr const char* kOptSystemMsgs = "system_msgs";        // "anywhere" | "first"
+inline constexpr const char* kOptParallelTools = "parallel_tools";  // "true" | "false"
+inline constexpr uint32_t kMinOutTokens = 256;
+inline constexpr uint32_t kMaxOutTokens = 131072;
+
+enum class LlmOutField : uint8_t { MaxTokens, MaxCompletionTokens };
+enum class LlmReasoning : uint8_t { Drop, Echo };
+enum class LlmSystemMsgs : uint8_t { Anywhere, First };
+
+// The resolved dialect; LlmDialect{} is today's request.
+struct LlmDialect {
+    std::optional<uint32_t> out_tokens{};
+    LlmOutField out_field = LlmOutField::MaxTokens;
+    LlmReasoning reasoning = LlmReasoning::Drop;
+    LlmSystemMsgs system_msgs = LlmSystemMsgs::Anywhere;
+    std::optional<bool> parallel_tools{};
+    bool operator==(const LlmDialect&) const = default;
+};
+// The profile's option, else the preset's default, else LlmDialect{}. An unknown
+// preset id has no defaults. Options are trusted to be valid (check_option()).
+LlmDialect resolve_llm_dialect(const ModelOptions& options, std::string_view preset_id);
 
 // asr: the language hint sent with a transcription request, 1-8 bytes of
 // [A-Za-z-] (a BCP-47-style primary tag, e.g. "en", "zh-CN"); absent sends
@@ -241,7 +277,8 @@ struct ResolvedProfile {
     std::string base_url;
     std::string model;
     ModelOptions options;
-    std::string api_key;  // "" when none is set
+    std::string api_key;   // "" when none is set
+    std::string preset{};  // the profile's preset id (resolve_llm_dialect())
 };
 
 // Sends the connectivity test (GET {base_url}/models) for `target`; the
@@ -366,7 +403,8 @@ private:
 // The public JSON shapes (spec 5.3/6.1), with no key in them:
 // a profile is {id, kind, name, preset, base_url, model, options, has_key};
 // the state is {active:{llm,asr,tts}, profiles:[...]}; a preset is
-// {id, name, kinds:[...], base_url, key_required}.
+// {id, name, kinds:[...], base_url, key_required, defaults:{key: value, ...}}
+// (defaults {} when the preset has none).
 Value to_value(const ModelProfile& profile);
 Value to_value(const ProfilesState& state);
 Value to_value(const ModelPreset& preset);

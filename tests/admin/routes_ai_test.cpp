@@ -84,7 +84,8 @@ TEST(AdminAi, CrudActivateAndTestRoutes) {
                         {"name", Value("OpenAI")},
                         {"kinds", Value(List{Value("llm"), Value("asr"), Value("tts")})},
                         {"base_url", Value("https://api.openai.com/v1")},
-                        {"key_required", Value(true)}}));
+                        {"key_required", Value(true)},
+                        {"defaults", Value(Map{{"out_field", Value("max_completion_tokens")}})}}));
 
     // Create: 201 with the full profile, never the key.
     HttpResponse created = f.srv->handle(authed(

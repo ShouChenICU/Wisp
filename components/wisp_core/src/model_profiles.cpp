@@ -237,60 +237,113 @@ std::optional<double> parse_speed(std::string_view s) {
     return v;
 }
 
-// Options whose kind restriction check_options() enforces, and the error
-// each gets wrong-kind or malformed.
+// A decimal string in kMinOutTokens..kMaxOutTokens, digits only.
+std::optional<uint32_t> parse_out_tokens(std::string_view s) {
+    if (s.empty() || s.size() > 6) return std::nullopt;
+    uint32_t n = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return std::nullopt;
+        n = n * 10 + static_cast<uint32_t>(c - '0');
+    }
+    if (n < kMinOutTokens || n > kMaxOutTokens) return std::nullopt;
+    return n;
+}
+
+// Options whose kind restriction check_option() enforces, and the error
+// each gets wrong-kind or malformed (`invalid_message` nullptr: "<key> has
+// an invalid value").
 struct KindOption {
     const char* key;
     ModelKind kind;
     const char* wrong_kind_message;
     bool (*valid)(std::string_view);
+    const char* invalid_message;
 };
 
 bool valid_voice(std::string_view s) { return !s.empty() && s.size() <= 64 && !has_control(s); }
 bool valid_sample_rate_str(std::string_view s) { return parse_sample_rate(s).has_value(); }
 bool valid_speed_str(std::string_view s) { return parse_speed(s).has_value(); }
+bool valid_out_tokens(std::string_view s) { return parse_out_tokens(s).has_value(); }
+bool valid_out_field(std::string_view s) {
+    return s == "max_tokens" || s == "max_completion_tokens";
+}
+bool valid_reasoning(std::string_view s) { return s == "drop" || s == "echo"; }
+bool valid_system_msgs(std::string_view s) { return s == "anywhere" || s == "first"; }
+bool valid_bool(std::string_view s) { return s == "true" || s == "false"; }
 
 constexpr KindOption kKindOptions[] = {
-    {kOptLanguage, ModelKind::Asr, "language is only valid on an asr profile", valid_language},
-    {kOptVoice, ModelKind::Tts, "voice is only valid on a tts profile", valid_voice},
+    {kOptLanguage, ModelKind::Asr, "language is only valid on an asr profile", valid_language,
+     nullptr},
+    {kOptVoice, ModelKind::Tts, "voice is only valid on a tts profile", valid_voice, nullptr},
     {kOptSampleRate, ModelKind::Tts, "sample_rate is only valid on a tts profile",
-     valid_sample_rate_str},
-    {kOptSpeed, ModelKind::Tts, "speed is only valid on a tts profile", valid_speed_str},
+     valid_sample_rate_str, nullptr},
+    {kOptSpeed, ModelKind::Tts, "speed is only valid on a tts profile", valid_speed_str, nullptr},
+    {kOptOutTokens, ModelKind::Llm, "out_tokens is only valid on an llm profile", valid_out_tokens,
+     "out_tokens must be a whole number from 256 to 131072"},
+    {kOptOutField, ModelKind::Llm, "out_field is only valid on an llm profile", valid_out_field,
+     "out_field must be \"max_tokens\" or \"max_completion_tokens\""},
+    {kOptReasoning, ModelKind::Llm, "reasoning is only valid on an llm profile", valid_reasoning,
+     "reasoning must be \"drop\" or \"echo\""},
+    {kOptSystemMsgs, ModelKind::Llm, "system_msgs is only valid on an llm profile",
+     valid_system_msgs, "system_msgs must be \"anywhere\" or \"first\""},
+    {kOptParallelTools, ModelKind::Llm, "parallel_tools is only valid on an llm profile",
+     valid_bool, "parallel_tools must be \"true\" or \"false\""},
 };
+
+// One option alone: what check_options() checks per key, and what
+// load_models() uses to drop a bad stored option without its profile.
+Result<void> check_option(std::string_view k, std::string_view v, ModelKind kind) {
+    if (k.empty() || k.size() > ModelProfileService::kMaxOptionKeyBytes ||
+        has_control_or_space(k) || !valid_utf8(k)) {
+        return fail<void>(invalid("option keys must be 1-15 bytes without spaces"));
+    }
+    if (v.size() > ModelProfileService::kMaxOptionValueBytes || has_control(v) || !valid_utf8(v)) {
+        return fail<void>(invalid("option values must be at most 64 bytes of text"));
+    }
+    if (k == kOptVision) {
+        if (!valid_bool(v)) return fail<void>(invalid("vision must be \"true\" or \"false\""));
+        return Result<void>::ok();
+    }
+    if (k == kOptContextWindow) {
+        if (!parse_context_window(v)) {
+            return fail<void>(
+                invalid("context_window must be a whole number from 4096 to 1048576"));
+        }
+        return Result<void>::ok();
+    }
+    for (const KindOption& opt : kKindOptions) {
+        if (k != opt.key) continue;
+        if (kind != opt.kind) return fail<void>(invalid(opt.wrong_kind_message));
+        if (!opt.valid(v)) {
+            return fail<void>(invalid(opt.invalid_message != nullptr
+                                          ? std::string(opt.invalid_message)
+                                          : std::string(opt.key) + " has an invalid value"));
+        }
+        return Result<void>::ok();
+    }
+    return Result<void>::ok();
+}
 
 Result<void> check_options(const ModelOptions& options, ModelKind kind) {
     if (options.size() > ModelProfileService::kMaxOptions) {
         return fail<void>(invalid("options may have at most 8 keys"));
     }
     for (const auto& [k, v] : options) {
-        if (k.empty() || k.size() > ModelProfileService::kMaxOptionKeyBytes ||
-            has_control_or_space(k) || !valid_utf8(k)) {
-            return fail<void>(invalid("option keys must be 1-15 bytes without spaces"));
-        }
-        if (v.size() > ModelProfileService::kMaxOptionValueBytes || has_control(v) ||
-            !valid_utf8(v)) {
-            return fail<void>(invalid("option values must be at most 64 bytes of text"));
-        }
-    }
-    if (auto it = options.find(kOptVision); it != options.end()) {
-        if (it->second != "true" && it->second != "false")
-            return fail<void>(invalid("vision must be \"true\" or \"false\""));
-    }
-    if (auto it = options.find(kOptContextWindow); it != options.end()) {
-        if (!parse_context_window(it->second)) {
-            return fail<void>(
-                invalid("context_window must be a whole number from 4096 to 1048576"));
-        }
-    }
-    for (const KindOption& opt : kKindOptions) {
-        auto it = options.find(opt.key);
-        if (it == options.end()) continue;
-        if (kind != opt.kind) return fail<void>(invalid(opt.wrong_kind_message));
-        if (!opt.valid(it->second)) {
-            return fail<void>(invalid(std::string(opt.key) + " has an invalid value"));
-        }
+        if (auto r = check_option(k, v, kind); !r) return r;
     }
     return Result<void>::ok();
+}
+
+// The value of `key`: the profile's own, else the preset's default.
+std::optional<std::string_view> dialect_value(const ModelOptions& options,
+                                              const ModelPreset* preset, std::string_view key) {
+    if (auto it = options.find(std::string(key)); it != options.end()) return it->second;
+    if (preset != nullptr) {
+        for (const PresetOption& o : preset->defaults) {
+            if (o.key == key) return o.value;
+        }
+    }
+    return std::nullopt;
 }
 
 Result<std::string> check_base_url(std::string_view url) {
@@ -377,6 +430,25 @@ std::optional<double> profile_tts_speed(const ModelOptions& options) {
     return parse_speed(it->second);
 }
 
+LlmDialect resolve_llm_dialect(const ModelOptions& options, std::string_view preset_id) {
+    const ModelPreset* preset = find_model_preset(preset_id);
+    LlmDialect d;
+    if (auto v = dialect_value(options, preset, kOptOutTokens)) d.out_tokens = parse_out_tokens(*v);
+    if (auto v = dialect_value(options, preset, kOptOutField); v && *v == "max_completion_tokens") {
+        d.out_field = LlmOutField::MaxCompletionTokens;
+    }
+    if (auto v = dialect_value(options, preset, kOptReasoning); v && *v == "echo") {
+        d.reasoning = LlmReasoning::Echo;
+    }
+    if (auto v = dialect_value(options, preset, kOptSystemMsgs); v && *v == "first") {
+        d.system_msgs = LlmSystemMsgs::First;
+    }
+    if (auto v = dialect_value(options, preset, kOptParallelTools); v && valid_bool(*v)) {
+        d.parallel_tools = *v == "true";
+    }
+    return d;
+}
+
 const char* to_string(ModelKind kind) {
     switch (kind) {
         case ModelKind::Llm:
@@ -437,12 +509,17 @@ Value to_value(const ModelPreset& preset) {
     for (ModelKind k : kModelKinds) {
         if (preset.supports(k)) kinds.push_back(Value(to_string(k)));
     }
+    Map defaults;
+    for (const PresetOption& o : preset.defaults) {
+        defaults[std::string(o.key)] = Value(std::string(o.value));
+    }
     return Value(Map{
         {"id", Value(std::string(preset.id))},
         {"name", Value(std::string(preset.name))},
         {"kinds", Value(std::move(kinds))},
         {"base_url", Value(std::string(preset.base_url))},
         {"key_required", Value(preset.key_required)},
+        {"defaults", Value(std::move(defaults))},
     });
 }
 
@@ -552,22 +629,33 @@ Result<bool> ModelProfileService::load_models(const std::vector<uint8_t>& bytes)
             ok = static_cast<bool>(normalized);
             if (ok) p.base_url = std::move(normalized.value());
         }
-        if (ok) {
-            if (const Value* opts = e.find("options"); opts != nullptr) {
-                if (opts->type() != Value::Type::Map) ok = false;
-                for (const auto& [k, v] : ok ? opts->as_map() : Map{}) {
-                    if (v.type() != Value::Type::String) {
-                        ok = false;
-                        break;
-                    }
-                    p.options[k] = v.as_string();
-                }
-                ok = ok && check_options(p.options, *kind);
-            }
-        }
         if (!ok) {
             ++dropped;
             continue;
+        }
+        // A bad option costs only itself, never the profile and its key
+        // (spec 3.2 "Validation fix"): a hand edit, or options from a newer
+        // firmware after a downgrade, must not lose the profile. The map is
+        // in key order, so past kMaxOptions the first keys are kept.
+        if (const Value* opts = e.find("options"); opts != nullptr) {
+            size_t bad = 0;
+            if (opts->type() != Value::Type::Map) {
+                bad = 1;
+            } else {
+                for (const auto& [k, v] : opts->as_map()) {
+                    if (v.type() != Value::Type::String || !check_option(k, v.as_string(), *kind) ||
+                        p.options.size() >= kMaxOptions) {
+                        ++bad;
+                        continue;
+                    }
+                    p.options[k] = v.as_string();
+                }
+            }
+            // Names neither a key nor a value: either could be a secret
+            // someone pasted into the wrong field.
+            if (bad > 0) {
+                WLOG_W(kTag, "profile %s: dropped %u invalid options", p.id.c_str(), unsigned(bad));
+            }
         }
         p.kind = *kind;
         p.has_key = !s.api_key.empty();
@@ -879,8 +967,8 @@ Result<ModelProbe> ModelProfileService::test(std::string_view id) const {
                                            "no HTTP client on this platform");
         }
         prober = prober_;
-        target = ResolvedProfile{s->profile.id, s->profile.base_url, s->profile.model,
-                                 s->profile.options, s->api_key};
+        target = ResolvedProfile{s->profile.id,      s->profile.base_url, s->profile.model,
+                                 s->profile.options, s->api_key,          s->profile.preset};
     }
     // Up to the prober's timeout (10 s): never under the lock.
     return Result<ModelProbe>::ok(prober(target));
@@ -890,8 +978,8 @@ std::optional<ResolvedProfile> ModelProfileService::active_for_request(ModelKind
     std::lock_guard<os::Mutex> lock(mutex_);
     const Stored* s = find(state_, state_.active[static_cast<size_t>(kind)]);
     if (s == nullptr) return std::nullopt;
-    return ResolvedProfile{s->profile.id, s->profile.base_url, s->profile.model, s->profile.options,
-                           s->api_key};
+    return ResolvedProfile{s->profile.id,      s->profile.base_url, s->profile.model,
+                           s->profile.options, s->api_key,          s->profile.preset};
 }
 
 void ModelProfileService::clear() {

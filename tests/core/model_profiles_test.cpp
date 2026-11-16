@@ -10,6 +10,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "support/fake_devices.hpp"
@@ -883,4 +885,260 @@ TEST(ModelProfiles, ClearSupersedesAQueuedSave) {
     EXPECT_FALSE(std::filesystem::exists(fx.models_path()));
     fx.restart();
     EXPECT_TRUE(fx.svc->get().profiles.empty());
+}
+
+// The five llm dialect options (spec 3.2): their accepted values, and the
+// exact message each malformed value gets, on update and on create.
+TEST(ModelProfiles, DialectOptionsValidated) {
+    Fixture fx;
+    ModelProfile p = fx.make(llm("p"));
+    const std::vector<std::pair<std::string, std::string>> good = {
+        {"out_tokens", "256"},       {"out_tokens", "131072"},
+        {"out_field", "max_tokens"}, {"out_field", "max_completion_tokens"},
+        {"reasoning", "drop"},       {"reasoning", "echo"},
+        {"system_msgs", "anywhere"}, {"system_msgs", "first"},
+        {"parallel_tools", "true"},  {"parallel_tools", "false"}};
+    for (const auto& [k, v] : good) {
+        const wisp::core::ModelOptions o{{k, v}};
+        auto r = fx.svc->update(p.id, {.options = o});
+        ASSERT_TRUE(r) << k << "=" << v << ": " << r.error().message;
+        EXPECT_EQ(r.value().options, o);
+        auto c = fx.svc->create({.kind = ModelKind::Llm,
+                                 .name = "c",
+                                 .preset = "custom",
+                                 .base_url = "https://api.example.com/v1",
+                                 .options = o});
+        ASSERT_TRUE(c) << k << "=" << v;
+        ASSERT_TRUE(fx.svc->remove(c.value().id));
+    }
+
+    const std::string out_tokens = "out_tokens must be a whole number from 256 to 131072";
+    const std::vector<std::tuple<std::string, std::string, std::string>> bad = {
+        {"out_tokens", "255", out_tokens},
+        {"out_tokens", "131073", out_tokens},
+        {"out_tokens", "1e3", out_tokens},
+        {"out_tokens", "", out_tokens},
+        {"out_tokens", "-512", out_tokens},
+        {"out_tokens", "99999999999", out_tokens},
+        {"out_field", "max", "out_field must be \"max_tokens\" or \"max_completion_tokens\""},
+        {"reasoning", "keep", "reasoning must be \"drop\" or \"echo\""},
+        {"system_msgs", "last", "system_msgs must be \"anywhere\" or \"first\""},
+        {"parallel_tools", "yes", "parallel_tools must be \"true\" or \"false\""}};
+    for (const auto& [k, v, message] : bad) {
+        const wisp::core::ModelOptions o{{k, v}};
+        auto r = fx.svc->update(p.id, {.options = o});
+        ASSERT_FALSE(r) << k << "=" << v;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+        EXPECT_EQ(r.error().message, message);
+        auto c = fx.svc->create({.kind = ModelKind::Llm,
+                                 .name = "c",
+                                 .preset = "custom",
+                                 .base_url = "https://api.example.com/v1",
+                                 .options = o});
+        ASSERT_FALSE(c) << k << "=" << v;
+        EXPECT_EQ(c.error().code, ErrorCode::InvalidArgument);
+        EXPECT_EQ(c.error().message, message);
+    }
+}
+
+TEST(ModelProfiles, DialectOptionsAreLlmOnly) {
+    Fixture fx;
+    ModelProfile a = fx.make({.kind = ModelKind::Asr,
+                              .name = "asr",
+                              .preset = "custom",
+                              .base_url = "https://api.example.com/v1"});
+    ModelProfile t = fx.make({.kind = ModelKind::Tts,
+                              .name = "tts",
+                              .preset = "custom",
+                              .base_url = "https://api.example.com/v1"});
+    const std::vector<std::pair<std::string, std::string>> options = {{"out_tokens", "1024"},
+                                                                      {"out_field", "max_tokens"},
+                                                                      {"reasoning", "echo"},
+                                                                      {"system_msgs", "first"},
+                                                                      {"parallel_tools", "true"}};
+    for (const std::string& id : {a.id, t.id}) {
+        for (const auto& [k, v] : options) {
+            auto r = fx.svc->update(id, {.options = wisp::core::ModelOptions{{k, v}}});
+            ASSERT_FALSE(r) << k;
+            EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+            EXPECT_EQ(r.error().message, k + " is only valid on an llm profile");
+        }
+    }
+}
+
+namespace {
+
+const wisp::core::ModelOptions kSevenOptions = {
+    {"vision", "true"},         {"context_window", "131072"},
+    {"out_tokens", "4096"},     {"out_field", "max_completion_tokens"},
+    {"reasoning", "echo"},      {"system_msgs", "first"},
+    {"parallel_tools", "false"}};
+
+}  // namespace
+
+TEST(ModelProfiles, SevenOptionsFit) {
+    Fixture fx;
+    auto c = fx.svc->create({.kind = ModelKind::Llm,
+                             .name = "seven",
+                             .preset = "custom",
+                             .base_url = "https://api.example.com/v1",
+                             .options = kSevenOptions});
+    ASSERT_TRUE(c) << c.error().message;
+    const auto state = fx.svc->get();
+    const ModelProfile* p = find(state, c.value().id);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->options, kSevenOptions);
+}
+
+TEST(ModelProfiles, SevenOptionsSurviveAReload) {
+    Fixture fx;
+    auto c = fx.svc->create({.kind = ModelKind::Llm,
+                             .name = "seven",
+                             .preset = "custom",
+                             .base_url = "https://api.example.com/v1",
+                             .options = kSevenOptions,
+                             .api_key = "sk-7"});
+    ASSERT_TRUE(c) << c.error().message;
+    fx.restart();
+    const auto state = fx.svc->get();
+    const ModelProfile* p = find(state, c.value().id);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->options, kSevenOptions);
+    EXPECT_TRUE(p->has_key);
+}
+
+TEST(ModelProfiles, ResolveDialectOrder) {
+    using wisp::core::LlmDialect;
+    using wisp::core::LlmOutField;
+    using wisp::core::LlmReasoning;
+    using wisp::core::LlmSystemMsgs;
+    using wisp::core::resolve_llm_dialect;
+    EXPECT_EQ(resolve_llm_dialect({}, "custom"), LlmDialect{});
+
+    LlmDialect openai{};
+    openai.out_field = LlmOutField::MaxCompletionTokens;
+    EXPECT_EQ(resolve_llm_dialect({}, "openai"), openai);
+
+    LlmDialect anthropic{};
+    anthropic.system_msgs = LlmSystemMsgs::First;
+    EXPECT_EQ(resolve_llm_dialect({}, "anthropic"), anthropic);
+
+    EXPECT_EQ(resolve_llm_dialect({{"out_field", "max_tokens"}}, "openai").out_field,
+              LlmOutField::MaxTokens);
+    EXPECT_EQ(resolve_llm_dialect({{"system_msgs", "anywhere"}}, "anthropic").system_msgs,
+              LlmSystemMsgs::Anywhere);
+    EXPECT_EQ(
+        resolve_llm_dialect(
+            {{"out_tokens", "1024"}, {"parallel_tools", "false"}, {"reasoning", "echo"}}, "custom"),
+        (LlmDialect{1024, LlmOutField::MaxTokens, LlmReasoning::Echo, LlmSystemMsgs::Anywhere,
+                    false}));
+    EXPECT_EQ(resolve_llm_dialect({}, "nope"), LlmDialect{});
+}
+
+TEST(ModelProfiles, PresetDefaultsAreValidAndOnlyTwo) {
+    Fixture fx;
+    std::vector<std::string> with_defaults;
+    for (const wisp::core::ModelPreset& preset : wisp::core::model_presets()) {
+        if (preset.defaults.empty()) continue;
+        with_defaults.emplace_back(preset.id);
+        wisp::core::ModelOptions options;
+        for (const wisp::core::PresetOption& o : preset.defaults) {
+            options[std::string(o.key)] = std::string(o.value);
+        }
+        auto c = fx.svc->create({.kind = ModelKind::Llm,
+                                 .name = "p",
+                                 .preset = std::string(preset.id),
+                                 .base_url = "https://h.example/v1",
+                                 .options = options});
+        ASSERT_TRUE(c) << preset.id << ": " << c.error().message;
+        ASSERT_TRUE(fx.svc->remove(c.value().id));
+    }
+    EXPECT_EQ(with_defaults, (std::vector<std::string>{"openai", "anthropic"}));
+}
+
+TEST(ModelProfiles, PresetValueCarriesDefaults) {
+    const Value openai = wisp::core::to_value(*wisp::core::find_model_preset("openai"));
+    ASSERT_NE(openai.find("defaults"), nullptr);
+    EXPECT_EQ(*openai.find("defaults"), Value(Map{{"out_field", Value("max_completion_tokens")}}));
+    const Value custom = wisp::core::to_value(*wisp::core::find_model_preset("custom"));
+    ASSERT_NE(custom.find("defaults"), nullptr);
+    EXPECT_EQ(*custom.find("defaults"), Value(Map{}));
+}
+
+TEST(ModelProfiles, ActiveForRequestNamesThePreset) {
+    Fixture fx;
+    fx.make({.kind = ModelKind::Llm, .name = "ds", .preset = "deepseek"});
+    auto r = fx.svc->active_for_request(ModelKind::Llm);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->preset, "deepseek");
+}
+
+// Spec 3.2 "Validation fix": a bad stored option costs only itself, never
+// the profile and its key.
+TEST(ModelProfiles, LoadDropsOnlyTheBadOption) {
+    Fixture fx;
+    fx.svc.reset();
+    Fixture::write(fx.models_path(), R"({"version":2,"active":{"llm":"0000000a","asr":"","tts":""},
+      "profiles":[
+        {"id":"0000000a","kind":"llm","name":"ok","preset":"openai","base_url":"https://api.openai.com/v1","model":"",
+         "options":{"vision":"maybe","context_window":"8192","reasoning":"echo","bad key":"x","out_tokens":7},
+         "api_key":"sk-1"}
+      ]})");
+    fx.start();
+    auto s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    EXPECT_TRUE(s.profiles[0].has_key);
+    EXPECT_EQ(s.active_for(ModelKind::Llm), "0000000a");
+    EXPECT_EQ(s.profiles[0].options,
+              (wisp::core::ModelOptions{{"context_window", "8192"}, {"reasoning", "echo"}}));
+}
+
+TEST(ModelProfiles, LoadDropsAWrongKindOption) {
+    Fixture fx;
+    fx.svc.reset();
+    Fixture::write(fx.models_path(), R"({"version":2,"active":{"llm":"","asr":"","tts":"0000000a"},
+      "profiles":[
+        {"id":"0000000a","kind":"tts","name":"t","preset":"openai","base_url":"https://api.openai.com/v1","model":"",
+         "options":{"voice":"alloy","out_tokens":"512"},"api_key":""}
+      ]})");
+    fx.start();
+    auto s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    EXPECT_EQ(s.profiles[0].options, (wisp::core::ModelOptions{{"voice", "alloy"}}));
+}
+
+TEST(ModelProfiles, LoadKeepsAProfileWhoseOptionsAreNotAMap) {
+    Fixture fx;
+    fx.svc.reset();
+    Fixture::write(fx.models_path(), R"({"version":2,"active":{"llm":"0000000a","asr":"","tts":""},
+      "profiles":[
+        {"id":"0000000a","kind":"llm","name":"l","preset":"openai","base_url":"https://api.openai.com/v1","model":"",
+         "options":"x","api_key":"sk-1"}
+      ]})");
+    fx.start();
+    auto s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    EXPECT_TRUE(s.profiles[0].has_key);
+    EXPECT_TRUE(s.profiles[0].options.empty());
+}
+
+TEST(ModelProfiles, LoadKeepsAtMostEightOptions) {
+    Fixture fx;
+    fx.svc.reset();
+    std::string options;
+    for (int i = 9; i >= 0; --i) {
+        if (!options.empty()) options += ",";
+        options += "\"k" + std::to_string(i) + "\":\"v\"";
+    }
+    Fixture::write(fx.models_path(), R"({"version":2,"active":{"llm":"0000000a","asr":"","tts":""},
+      "profiles":[
+        {"id":"0000000a","kind":"llm","name":"l","preset":"openai","base_url":"https://api.openai.com/v1","model":"",
+         "options":{)" + options + R"(},"api_key":"sk-1"}
+      ]})");
+    fx.start();
+    auto s = fx.svc->get();
+    ASSERT_EQ(s.profiles.size(), 1u);
+    wisp::core::ModelOptions expected;
+    for (int i = 0; i < 8; ++i) expected["k" + std::to_string(i)] = "v";
+    EXPECT_EQ(s.profiles[0].options, expected);
 }
