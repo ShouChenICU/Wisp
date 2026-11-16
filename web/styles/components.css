@@ -2616,6 +2616,64 @@ textarea {
   margin-bottom: var(--gap-sm);
 }
 
+/* MCP servers (under the chat tab): standalone actions keep 8 px apart. */
+.mcp-row .row-actions {
+  gap: var(--gap-sm);
+}
+
+.mcp-id {
+  margin-left: 4px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 450;
+}
+
+.mcp-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-tools {
+  overflow-wrap: anywhere;
+}
+
+.mcp-timeout {
+  max-width: 10em;
+}
+
+.mcp-headers {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: var(--gap-sm);
+}
+
+.mcp-headers > legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.mcp-header-row .input-group {
+  flex-wrap: wrap;
+}
+
+.mcp-header-row .input-group .input {
+  flex: 1 1 10em;
+  min-width: 0;
+}
+
+.mcp-header-row .field-hint {
+  margin-top: 4px;
+}
+
+.mcp-headers-full {
+  margin-left: var(--gap-sm);
+}
+
 /* System page: a titled list card whose rows can grow a status line. */
 .maint-card .card-head {
   margin: 0;
