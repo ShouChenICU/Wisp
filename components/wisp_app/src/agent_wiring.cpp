@@ -409,10 +409,12 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     core::StorageWorker* worker = &deps_.worker;
     ui::UiRuntime* ui = &deps_.ui;
     auto on_worker = [worker](std::function<void()> fn) { return worker->submit(std::move(fn)); };
+    io_runner_ = std::make_unique<agent::IoRunner>();
+    agent::IoRunner* io = io_runner_.get();
     registry_ = std::make_unique<agent::ToolRegistry>(agent::ToolExecutors{
         .ui = [ui](std::function<void()> fn) { return ui->post(std::move(fn)); },
         .fs = on_worker,
-        .io = on_worker,
+        .io = [io](std::function<void()> fn) { return io->post(std::move(fn)); },
         .fs_interactive =
             [worker](std::function<void()> fn) {
                 return worker->submit(std::move(fn), core::IoLane::Interactive);
@@ -593,6 +595,8 @@ Result<void> AgentWiring::start() {
 
 void AgentWiring::stop() {
     service_->stop();
+    // Io calls the registry abandoned may still run; nothing calls tools now.
+    io_runner_->join_all();
     if (listening_) {
         service_->remove_listener(listener_);
         listening_ = false;

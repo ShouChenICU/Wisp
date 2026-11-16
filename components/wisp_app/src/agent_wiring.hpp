@@ -39,6 +39,7 @@
 #include "wisp/agent/confirm.hpp"
 #include "wisp/agent/context.hpp"
 #include "wisp/agent/conversation.hpp"
+#include "wisp/agent/io_runner.hpp"
 #include "wisp/agent/scene_workspace.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
@@ -315,6 +316,8 @@ private:
     std::unique_ptr<core::MemoryStore> memory_;
     agent::ToolIndex tool_index_;
     std::unique_ptr<SceneToolIndexObserver> tool_index_observer_;
+    // Before registry_, so it outlives the registry's io executor.
+    std::unique_ptr<agent::IoRunner> io_runner_;
     std::unique_ptr<agent::ToolRegistry> registry_;
     std::unique_ptr<scene::UiInspector> inspector_;
     std::unique_ptr<agent::ConfirmService> confirm_;

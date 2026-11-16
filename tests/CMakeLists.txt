@@ -511,6 +511,8 @@ wisp_test(NAME conversation_test SRCS agent/conversation_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME tool_registry_test SRCS agent/tool_registry_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME io_runner_test SRCS agent/io_runner_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME tool_index_test SRCS agent/tool_index_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME scene_tools_tools_test SRCS agent/scene_tools_tools_test.cpp

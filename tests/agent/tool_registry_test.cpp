@@ -604,6 +604,25 @@ TEST(ToolRegistry, VisionOnlyToolIsUnknownWithoutVision) {
     EXPECT_EQ(runs.load(), 1);
 }
 
+// Without vision the model must not be able to tell a vision-only tool from a
+// name that does not exist: the answer is the same, byte for byte.
+TEST(ToolRegistry, VisionOnlyToolWithoutVisionAnswersLikeAnUnknownName) {
+    ToolRegistry with(ToolExecutors{});
+    ASSERT_TRUE(with.add(tool("a.b")));
+    ASSERT_TRUE(with.add(vision_tool("v.shot")));
+    ToolRegistry without(ToolExecutors{});
+    ASSERT_TRUE(without.add(tool("a.b")));
+    ToolCtx c = ctx();
+    const ToolOutput hidden = with.call("v_shot", R"({"x":1})", c);
+    const ToolOutput unknown = without.call("v_shot", R"({"x":1})", c);
+    EXPECT_EQ(hidden.ok, unknown.ok);
+    EXPECT_EQ(wisp::to_json(hidden.result), wisp::to_json(unknown.result));
+    EXPECT_EQ(str(hidden.result_json), str(unknown.result_json));
+    EXPECT_EQ(hidden.note, unknown.note);
+    EXPECT_EQ(hidden.image, nullptr);
+    EXPECT_EQ(error_of(unknown), "unknown_tool");
+}
+
 TEST(ToolRegistry, ImageSurvivesTheThreadHop) {
     Worker ui;
     ToolRegistry reg(executors_on(ui));

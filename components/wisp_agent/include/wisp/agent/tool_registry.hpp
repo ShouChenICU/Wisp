@@ -94,8 +94,12 @@ struct ToolDef {
     // Where run() runs. The default, Agent, runs it on wisp.agent itself,
     // whose stack may be in PSRAM (flash_access = false): a tool that
     // touches flash in any way -- Settings/NVS, StorageManager files on
-    // LittleFS, anything that calls them -- must declare Fs (wisp.fs) or
-    // Io (a one-shot task with an internal stack) instead. FsInteractive
+    // LittleFS, anything that calls them -- must declare Fs or
+    // FsInteractive (wisp.fs). Io is a one-shot task per call
+    // (wisp.tool.io, IoRunner), with its stack in PSRAM on the device. It
+    // is for blocking work that cannot watch ctx.cancelled, such as an
+    // encoder, and it never touches flash (AGENTS.md section 5;
+    // WISP_ASSERT_FLASH_THREAD enforces this). Spec 3.9. FsInteractive
     // is wisp.fs too, on its Interactive lane (flash-thread spec 3.1): for
     // tools whose whole call is a small file write the user waits for (the
     // memory and todo tools), never for long work (scene installs,
