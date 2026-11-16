@@ -94,6 +94,11 @@ constexpr std::string_view kAgentMessagesPath = "/api/v1/agent/messages";
 // nullopt for every request but POST kAgentMessagesPath.
 std::optional<net::StreamStart> agent_stream(AdminDeps& deps, const net::HttpRequest& head);
 
+// Creating or updating an MCP server (routes_mcp.cpp), streamed so the
+// largest configuration the service accepts fits one request. nullopt for
+// every other request, and for one without a body.
+std::optional<net::StreamStart> mcp_stream(AdminDeps& deps, const net::HttpRequest& head);
+
 // The gate a streamed request passes before any of its body is read, the
 // same as AdminServer::handle() applies to every API call: Host (no
 // hotspot leniency for a POST), wisp_token, then X-Wisp. The refusal, or

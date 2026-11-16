@@ -153,6 +153,7 @@ TEST(McpServers, CreateValidatesEveryField) {
     bad.push_back(server("s", "https://mcp.example/mcp",
                          {{"tok-PASTED-987654", "a"}, {"TOK-pasted-987654", "b"}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", std::string(1025, 'v')}}));
+    bad.push_back(server("s", "https://mcp.example/mcp", {{std::string(65, 'k'), "v"}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", ""}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", std::nullopt}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", "a"}, {"x-key", "b"}}));
@@ -178,6 +179,7 @@ TEST(McpServers, CreateValidatesEveryField) {
     McpServerInput edges = server(std::string(32, 'n'));
     edges.timeout_ms = 1000;
     edges.headers.push_back({"X-Key", std::string(1024, 'v')});
+    edges.headers.push_back({std::string(64, 'k'), "v"});
     EXPECT_EQ(fx.make(edges).timeout_ms, 1000u);
     edges.timeout_ms = 120000;
     EXPECT_EQ(fx.make(edges).timeout_ms, 120000u);

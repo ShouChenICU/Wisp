@@ -3,8 +3,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <ostream>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -14,6 +18,7 @@
 #include "support/fake_http.hpp"
 #include "support/secret_pieces.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/net/http.hpp"
 
 namespace wisp {
@@ -49,6 +54,34 @@ HttpRequest authed(const std::string& token, Method m, const std::string& path,
     HttpRequest req = with_token(make_req(m, path, std::move(body)), token);
     if (m != Get) req = with_csrf(std::move(req));
     return req;
+}
+
+// A create or update the way the HTTP server sends it: streamed through
+// AdminServer::stream_handler(), as every POST and PUT with a body is.
+// nullopt when the stream handler did not take the request.
+std::optional<HttpResponse> streamed(AdminFixture& f, const std::string& token, Method m,
+                                     const std::string& path, const std::string& body) {
+    HttpRequest head = with_csrf(with_token(make_req(m, path), token));
+    head.content_length = body.size();
+    auto start = f.srv->stream_handler()(head);
+    if (!start) return std::nullopt;
+    if (!start->sink) return start->response;
+    std::span<const uint8_t> rest(reinterpret_cast<const uint8_t*>(body.data()), body.size());
+    while (!rest.empty()) {
+        const size_t n = std::min(rest.size(), wisp::net::kBodyChunkBytes);
+        if (auto early = start->sink->on_data(rest.first(n))) return *early;
+        rest = rest.subspan(n);
+    }
+    return start->sink->on_end();
+}
+
+// A JSON string whose content is `bytes` bytes, every one of them escaped
+// as a browser's JSON.stringify escapes a quote: the worst case per byte
+// the service accepts in a value.
+std::string escaped_string(size_t bytes) {
+    std::string s = "\"";
+    for (size_t i = 0; i < bytes; ++i) s += "\\\"";
+    return s + "\"";
 }
 
 std::string with_secret_body() {
@@ -271,6 +304,84 @@ TEST(AdminMcp, OriginChangeDropsValues) {
     auto target = f.mcp->resolve_for_request("files");
     ASSERT_TRUE(target);
     EXPECT_TRUE(target->headers.empty());
+
+    // Moving to another origin without a headers field at all drops the
+    // stored values too.
+    ASSERT_EQ(f.srv
+                  ->handle(authed(token, Put, "/api/v1/mcp/servers/files",
+                                  R"({"url":"https://files.example/mcp","headers":[)"
+                                  R"({"name":"Authorization","value":"Bearer )" +
+                                      std::string(kSecret) + R"("}]})"))
+                  .status,
+              200);
+    ASSERT_EQ(f.mcp->resolve_for_request("files")->headers.size(), 1u);
+    HttpResponse moved = f.srv->handle(
+        authed(token, Put, "/api/v1/mcp/servers/files", R"({"url":"https://evil.example/mcp"})"));
+    ASSERT_EQ(moved.status, 200) << body_text(moved);
+    EXPECT_EQ(*body_json(moved).find("headers"), Value(List{}));
+    target = f.mcp->resolve_for_request("files");
+    ASSERT_TRUE(target);
+    EXPECT_TRUE(target->headers.empty());
+}
+
+// The largest configuration the service accepts fits one request, on
+// create and on update, so the web card never has to split it; a body
+// past that is refused before any of it is read.
+TEST(AdminMcp, LargestConfigurationFitsOneRequest) {
+    using namespace wisp::core;
+    AdminFixture f;
+    const std::string token = f.token();
+    auto biggest = [](const std::string& host) {
+        std::string url = "https://" + host + "/";
+        url.append(kMcpMaxUrlBytes - url.size(), 'p');
+        std::string body = R"({ "name": )" + escaped_string(kMcpMaxNameBytes) + R"(, "url": ")" +
+                           url + R"(", "enabled": false, "timeout_ms": 120000, "headers": [)";
+        for (size_t i = 0; i < kMcpMaxHeaders; ++i) {
+            std::string name = "X-" + std::to_string(i) + "-";
+            name.append(kMcpMaxHeaderNameBytes - name.size(), 'h');
+            if (i > 0) body += ", ";
+            body += R"({ "name": ")" + name + R"(", "value": )" +
+                    escaped_string(kMcpMaxHeaderValueBytes) + " }";
+        }
+        return body + "] }";
+    };
+
+    const std::string create = biggest("files.example");
+    ASSERT_GT(create.size(), 8192u);  // the cap on a buffered API body
+    auto created = streamed(f, token, Post, "/api/v1/mcp/servers", create);
+    ASSERT_TRUE(created) << "not streamed";
+    ASSERT_EQ(created->status, 201) << body_text(*created);
+    const std::string id = body_json(*created).find("id")->as_string();
+    auto target = f.mcp->resolve_for_request(id);
+    ASSERT_TRUE(target);
+    ASSERT_EQ(target->headers.size(), kMcpMaxHeaders);
+    EXPECT_EQ(target->headers[7].second.size(), kMcpMaxHeaderValueBytes);
+
+    auto updated = streamed(f, token, Put, "/api/v1/mcp/servers/" + id, biggest("other.example"));
+    ASSERT_TRUE(updated) << "not streamed";
+    ASSERT_EQ(updated->status, 200) << body_text(*updated);
+    EXPECT_EQ(f.mcp->list()[0].headers.size(), kMcpMaxHeaders);
+
+    // Past the cap: 413 from the Content-Length alone, nothing changed.
+    auto too_big =
+        streamed(f, token, Post, "/api/v1/mcp/servers", create + std::string(64 * 1024, ' '));
+    ASSERT_TRUE(too_big);
+    EXPECT_EQ(too_big->status, 413);
+    EXPECT_EQ(error_code(*too_big), "payload_too_large");
+    EXPECT_EQ(f.mcp->list().size(), 1u);
+
+    // The stream path keeps the routes' checks: token, CSRF, shape.
+    HttpRequest head = with_token(make_req(Post, "/api/v1/mcp/servers"), token);
+    head.content_length = 2;
+    auto no_csrf = f.srv->stream_handler()(head);
+    ASSERT_TRUE(no_csrf);
+    EXPECT_EQ(no_csrf->response.status, 403);
+    auto bad = streamed(f, token, Put, "/api/v1/mcp/servers/" + id, R"({"bogus":1})");
+    ASSERT_TRUE(bad);
+    EXPECT_EQ(bad->status, 400);
+    auto missing = streamed(f, token, Put, "/api/v1/mcp/servers/nope", R"({"name":"x"})");
+    ASSERT_TRUE(missing);
+    EXPECT_EQ(missing->status, 404);
 }
 
 TEST(AdminMcp, TestRouteReportsTheProbe) {

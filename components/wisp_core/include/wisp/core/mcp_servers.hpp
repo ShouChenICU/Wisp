@@ -72,6 +72,10 @@ inline constexpr size_t kMcpMaxHeaders = 8;
 inline constexpr size_t kMcpMaxIdBytes = 16;
 inline constexpr size_t kMcpMaxNameBytes = 32;
 inline constexpr size_t kMcpMaxUrlBytes = 2048;
+// Spec 4.3 bounds only the value; a name bound makes the largest
+// configuration finite, so one admin request can always carry it
+// (routes_mcp.cpp). No standard or common vendor header comes near 64.
+inline constexpr size_t kMcpMaxHeaderNameBytes = 64;
 inline constexpr size_t kMcpMaxHeaderValueBytes = 1024;
 inline constexpr uint32_t kMcpMinTimeoutMs = 1000;
 // net::AgentHttpLimits::kMaxTimeoutMs, which wisp_core cannot include.
@@ -184,13 +188,13 @@ public:
     // url at most 2048 bytes, http(s) with a host, no whitespace or control
     // bytes, no user info ("put credentials in a header"), kept byte for
     // byte; timeout_ms 1000-120000; at most 8 headers with distinct names
-    // (case-insensitive), each an RFC 9110 token other than the ones the
-    // client sets or SceneHttp drops (Accept, Content-Type, Mcp-Session-Id,
-    // MCP-Protocol-Version, Host, Content-Length, Transfer-Encoding,
-    // Connection), with a value of 1-1024 bytes of UTF-8 without control
-    // bytes. InvalidArgument for all of these; no message repeats a header
-    // name or value. The ninth server is QuotaExceeded and sets *why to
-    // LimitReached.
+    // (case-insensitive), each an RFC 9110 token of at most 64 bytes other
+    // than the ones the client sets or SceneHttp drops (Accept,
+    // Content-Type, Mcp-Session-Id, MCP-Protocol-Version, Host,
+    // Content-Length, Transfer-Encoding, Connection), with a value of
+    // 1-1024 bytes of UTF-8 without control bytes. InvalidArgument for all
+    // of these; no message repeats a header name or value. The ninth server
+    // is QuotaExceeded and sets *why to LimitReached.
     Result<McpServerInfo> create(const McpServerInput& in, McpFailureKind* why = nullptr);
 
     // Same rules; NotFound for an unknown id. See McpServerUpdate and the

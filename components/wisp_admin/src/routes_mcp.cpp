@@ -8,20 +8,45 @@
 // latency, protocol and tool names, never anything the server sent beyond
 // them. No route logs a request body, and no refusal repeats a value.
 // Unknown fields are rejected so a typo does not silently do nothing.
+//
+// A create or update with a body is streamed (AdminServer::stream_handler())
+// into PSRAM, because the largest configuration the service accepts is
+// well past the 8 KiB every buffered API body is held to: eight 1024-byte
+// header values alone are 8 KiB. A short one sent to handle() takes the
+// same path.
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "admin_internal.hpp"
+#include "wisp/base/json.hpp"
 #include "wisp/core/mcp_servers.hpp"
+#include "wisp/os/large.hpp"
 
 namespace wisp::admin::detail {
 
 namespace {
+
+constexpr std::string_view kServersPath = "/api/v1/mcp/servers";
+
+// The largest create or update body: the service's bounds, with every byte
+// of a string counted twice (a quote or backslash arrives escaped), plus
+// generous allowances for the field names, punctuation and whitespace of
+// each header entry and of the request around them.
+constexpr size_t kHeaderEntryOverheadBytes = 64;
+constexpr size_t kRequestOverheadBytes = 512;
+constexpr uint64_t kMaxServerBodyBytes =
+    kRequestOverheadBytes + 2 * (core::kMcpMaxNameBytes + core::kMcpMaxUrlBytes) +
+    core::kMcpMaxHeaders * (kHeaderEntryOverheadBytes +
+                            2 * (core::kMcpMaxHeaderNameBytes + core::kMcpMaxHeaderValueBytes));
 
 net::HttpResponse unavailable() {
     return net::HttpResponse::error(503, "unavailable", "MCP servers are not available");
@@ -106,13 +131,13 @@ net::HttpResponse list_servers(AdminDeps& deps, const RequestContext&) {
 }
 
 // {name, url, enabled?, timeout_ms?, headers?:[{name, value}]}
-net::HttpResponse create_server(AdminDeps& deps, const RequestContext& ctx) {
+net::HttpResponse create_from(AdminDeps& deps, const Value& body) {
     if (deps.mcp == nullptr) return unavailable();
     constexpr std::string_view kShape =
         "body must be {name, url, enabled?, timeout_ms?, headers?:[{name, value}]}";
-    if (ctx.body.type() != Value::Type::Map) return bad_request(kShape);
+    if (body.type() != Value::Type::Map) return bad_request(kShape);
     core::McpServerUpdate fields;
-    for (const auto& [key, value] : ctx.body.as_map()) {
+    for (const auto& [key, value] : body.as_map()) {
         if (!take_field(key, value, fields)) return bad_request(kShape);
     }
     if (!fields.name || !fields.url) return bad_request(kShape);
@@ -129,23 +154,32 @@ net::HttpResponse create_server(AdminDeps& deps, const RequestContext& ctx) {
     return net::HttpResponse::json(201, core::to_value(r.value()));
 }
 
+net::HttpResponse create_server(AdminDeps& deps, const RequestContext& ctx) {
+    return create_from(deps, ctx.body);
+}
+
 // Any subset of the create fields. `headers` replaces the list; an entry
 // without a value keeps the stored one only while the origin stays the
 // same, so the answer's headers show the web card which were dropped.
-net::HttpResponse update_server(AdminDeps& deps, const RequestContext& ctx) {
+// `raw_id` is the path segment, still URL-encoded.
+net::HttpResponse update_from(AdminDeps& deps, std::string_view raw_id, const Value& body) {
     if (deps.mcp == nullptr) return unavailable();
     constexpr std::string_view kShape =
         "body must be {name?, url?, enabled?, timeout_ms?, headers?:[{name, value?}]}";
-    std::optional<std::string> id = server_id(ctx);
+    std::optional<std::string> id = percent_decode(raw_id);
     if (!id) return bad_request("malformed %-escape in server id");
-    if (ctx.body.type() != Value::Type::Map) return bad_request(kShape);
+    if (body.type() != Value::Type::Map) return bad_request(kShape);
     core::McpServerUpdate u;
-    for (const auto& [key, value] : ctx.body.as_map()) {
+    for (const auto& [key, value] : body.as_map()) {
         if (!take_field(key, value, u)) return bad_request(kShape);
     }
     auto r = deps.mcp->update(*id, u);
     if (!r) return service_error(r.error());
     return net::HttpResponse::json(200, core::to_value(r.value()));
+}
+
+net::HttpResponse update_server(AdminDeps& deps, const RequestContext& ctx) {
+    return update_from(deps, ctx.param, ctx.body);
 }
 
 net::HttpResponse delete_server(AdminDeps& deps, const RequestContext& ctx) {
@@ -185,7 +219,88 @@ net::HttpResponse test_server(AdminDeps& deps, const RequestContext& ctx) {
                                    }));
 }
 
+// Collects a create (no id) or update body (Content-Length bytes, at most
+// kMaxServerBodyBytes) in PSRAM, then hands it to the route's handler.
+class ServerSink final : public net::BodySink {
+public:
+    ServerSink(AdminDeps& deps, std::optional<std::string> raw_id, os::LargeBuffer buffer)
+        : deps_(deps), raw_id_(std::move(raw_id)), buffer_(std::move(buffer)) {}
+
+    std::optional<net::HttpResponse> on_data(std::span<const uint8_t> chunk) override {
+        if (chunk.size() > buffer_.size() - received_) {
+            buffer_ = os::LargeBuffer();
+            return with_no_store(bad_request("body longer than its Content-Length"));
+        }
+        std::memcpy(buffer_.data() + received_, chunk.data(), chunk.size());
+        received_ += chunk.size();
+        return std::nullopt;
+    }
+
+    net::HttpResponse on_end() override {
+        net::HttpResponse res = finish();
+        buffer_ = os::LargeBuffer();
+        return with_no_store(std::move(res));
+    }
+
+    void on_abort() override { buffer_ = os::LargeBuffer(); }
+
+private:
+    static net::HttpResponse with_no_store(net::HttpResponse res) {
+        res.headers.emplace_back("Cache-Control", "no-store");
+        return res;
+    }
+
+    net::HttpResponse finish() {
+        if (received_ != buffer_.size()) return bad_request("body shorter than its Content-Length");
+        auto parsed = from_json(
+            std::string_view(reinterpret_cast<const char*>(buffer_.data()), buffer_.size()));
+        // Free the copy that holds the header values before the service
+        // makes its own.
+        buffer_ = os::LargeBuffer();
+        if (!parsed) {
+            return net::HttpResponse::error(400, "bad_json", "request body is not valid JSON");
+        }
+        if (raw_id_) return update_from(deps_, *raw_id_, parsed.value());
+        return create_from(deps_, parsed.value());
+    }
+
+    AdminDeps& deps_;
+    std::optional<std::string> raw_id_;
+    os::LargeBuffer buffer_;
+    size_t received_ = 0;
+};
+
 }  // namespace
+
+std::optional<net::StreamStart> mcp_stream(AdminDeps& deps, const net::HttpRequest& head) {
+    std::optional<std::string> raw_id;
+    const std::string_view path = head.path;
+    if (head.method == net::Method::Post && path == kServersPath) {
+        // create
+    } else if (head.method == net::Method::Put && path.size() > kServersPath.size() + 1 &&
+               path.substr(0, kServersPath.size()) == kServersPath &&
+               path[kServersPath.size()] == '/' &&
+               path.find('/', kServersPath.size() + 1) == std::string_view::npos) {
+        raw_id = std::string(path.substr(kServersPath.size() + 1));
+    } else {
+        return std::nullopt;
+    }
+    // No body: handle() answers it with the route's shape error, as before.
+    if (head.content_length == 0) return std::nullopt;
+    if (auto refused = stream_refusal(deps, head)) return stream_answer(std::move(*refused));
+    if (deps.mcp == nullptr) return stream_answer(unavailable());
+    if (head.content_length > kMaxServerBodyBytes) {
+        return stream_answer(net::HttpResponse::error(
+            413, "payload_too_large", "request body over the largest MCP server configuration"));
+    }
+    os::LargeBuffer buffer = os::LargeBuffer::allocate(static_cast<size_t>(head.content_length));
+    if (!buffer.ok()) {
+        return stream_answer(
+            net::HttpResponse::error(503, "no_memory", "no memory for the request body"));
+    }
+    return net::StreamStart{
+        std::make_unique<ServerSink>(deps, std::move(raw_id), std::move(buffer)), {}};
+}
 
 void add_mcp_routes(std::vector<Route>& routes) {
     using net::Method;

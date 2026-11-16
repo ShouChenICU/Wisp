@@ -124,8 +124,8 @@ Result<void> check_headers(const std::vector<McpHeaderInput>& headers, bool valu
     if (headers.size() > kMcpMaxHeaders) return fail<void>(invalid("at most 8 headers"));
     for (size_t i = 0; i < headers.size(); ++i) {
         const McpHeaderInput& h = headers[i];
-        if (!http_header_syntax_ok(h.name, "")) {
-            return fail<void>(invalid("a header name must be an HTTP token"));
+        if (h.name.size() > kMcpMaxHeaderNameBytes || !http_header_syntax_ok(h.name, "")) {
+            return fail<void>(invalid("a header name must be an HTTP token of at most 64 bytes"));
         }
         for (std::string_view r : kReservedHeaders) {
             if (iequals(h.name, r)) {

@@ -351,6 +351,7 @@ net::StreamHandler AdminServer::stream_handler() {
     return [this](const net::HttpRequest& head) -> std::optional<net::StreamStart> {
         if (auto firmware = detail::firmware_stream(deps_, head)) return firmware;
         if (auto agent = detail::agent_stream(deps_, head)) return agent;
+        if (auto mcp = detail::mcp_stream(deps_, head)) return mcp;
         return detail::scene_stream(deps_, head);
     };
 }
