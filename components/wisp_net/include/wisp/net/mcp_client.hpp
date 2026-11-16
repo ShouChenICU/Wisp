@@ -34,7 +34,8 @@
 // isError) that quotes any of that server's header values, whole or 8 or
 // more bytes of one (for Authorization and Proxy-Authorization, of the
 // part after the auth scheme such as "Bearer ", when that part is 8 bytes
-// or more), is replaced by "(message withheld:
+// or more), within the part a caller keeps (McpClientConfig::
+// max_text_bytes for a tool's text), is replaced by "(message withheld:
 // it quoted a credential)" (spec 4.4 "Scrubbing"). All server text in a
 // result is valid UTF-8.
 
@@ -152,6 +153,10 @@ struct McpClientConfig {
     std::string client_version{};
     // Compared with McpWait::deadline_ms; os::now_ms in production.
     std::function<uint64_t()> now_ms = os::now_ms;
+    // How much of a server's text the caller keeps (the agent: its tool
+    // payload cap). Only that much is checked for a quoted credential, so
+    // the check stays bounded; what lies past it never reaches anyone.
+    size_t max_text_bytes = kMcpMaxCallResponse;
 };
 
 // Blocking; one caller at a time (wisp.agent). Never from wisp.shttp, whose

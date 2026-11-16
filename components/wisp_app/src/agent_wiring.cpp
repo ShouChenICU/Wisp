@@ -432,7 +432,8 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     if (deps_.mcp != nullptr && deps_.scene_http != nullptr) {
         mcp_client_ = std::make_unique<net::McpClient>(
             *deps_.scene_http, *deps_.mcp,
-            net::McpClientConfig{.client_version = deps_.firmware_version});
+            net::McpClientConfig{.client_version = deps_.firmware_version,
+                                 .max_text_bytes = agent::kHttpMaxMaxBytes});
         mcp_tools_ = std::make_unique<agent::McpToolProvider>(*mcp_client_, *deps_.mcp);
     }
     // DeviceSnapshot::memory and ::mcp come from here, not from

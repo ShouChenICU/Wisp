@@ -132,7 +132,9 @@ protected:
         ASSERT_TRUE(http->start());
         client = std::make_unique<McpClient>(
             *http, *servers,
-            wisp::net::McpClientConfig{.client_version = "1", .now_ms = [this] { return now(); }});
+            wisp::net::McpClientConfig{.client_version = "1",
+                                       .now_ms = [this] { return now(); },
+                                       .max_text_bytes = wisp::agent::kHttpMaxMaxBytes});
         fake.tools = {FakeMcpServer::tool("read", "Read a file", kReadSchema),
                       FakeMcpServer::tool("write", "Write a file")};
         start();

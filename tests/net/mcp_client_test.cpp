@@ -806,6 +806,44 @@ TEST_F(McpClientCallTest, SchemeSkipIsOnlyForAuthorizationHeaders) {
     EXPECT_EQ(str(call().failure.message), wisp::net::detail::kWithheldMessage);
 }
 
+// The credential check is one pass over the part of the text the agent
+// keeps, however long the text and the stored values are: eight 1000-byte
+// values whose 8-byte windows nearly match every window of a ~1 MB text
+// would take a search per window per value far beyond a second.
+TEST_F(McpClientCallTest, CredentialCheckIsLinearInTheText) {
+    std::vector<McpHeaderInput> headers;
+    std::string value;
+    for (int i = 0; i < 8; ++i) {
+        value.clear();
+        while (value.size() + 8 <= 1000) value += "aaaaaaa" + std::string(1, char('b' + i));
+        headers.push_back(McpHeaderInput{"X-Key-" + std::to_string(i), value});
+    }
+    McpServerUpdate u;
+    u.headers = headers;
+    ASSERT_TRUE(servers->update("files", u));
+    auto cfg = config();
+    cfg.max_text_bytes = 64 * 1024;
+    client = std::make_unique<McpClient>(*http, *servers, cfg);
+
+    const std::string plain(1000000, 'a');
+    answer(R"({"content":[{"type":"text","text":")" + plain + R"("}],"isError":true})");
+    const auto started = std::chrono::steady_clock::now();
+    McpCallResult r = call();
+    const auto took = std::chrono::steady_clock::now() - started;
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_TRUE(r.is_error);
+    EXPECT_EQ(r.text.size(), plain.size());
+    EXPECT_LT(took, std::chrono::seconds(1));
+
+    // A piece of a value inside the kept part is still found.
+    std::string quoting = plain;
+    quoting.replace(30000, 16, "aaaaaaadaaaaaaad");
+    answer(R"({"content":[{"type":"text","text":")" + quoting + R"("}],"isError":true})");
+    r = call();
+    EXPECT_TRUE(r.is_error);
+    EXPECT_EQ(str(r.text), wisp::net::detail::kWithheldMessage);
+}
+
 TEST_F(McpClientCallTest, UnknownToolRefreshesTheListAndIsNotRetried) {
     fail(R"({"code":-32602,"message":"Unknown tool: read"})");
     ASSERT_EQ(list().failure.error, McpError::None);

@@ -4,11 +4,18 @@
 // "Scrubbing"): an LLM provider's error code may quote its API key, an
 // MCP server's message one of its header values.
 
+#include <span>
 #include <string_view>
 
 namespace wisp::net::detail {
 
-// Whether `text` holds `secret` whole, or any run of 8 or more bytes of it.
+// Whether `text` holds any of `secrets` whole, or any run of 8 or more
+// bytes of one. One pass over `text` (a lookup per 8-byte window in a table
+// of the secrets' windows), so its cost does not grow with the secrets'
+// length times the text's.
+bool holds_any_secret_piece(std::string_view text, std::span<const std::string_view> secrets);
+
+// holds_any_secret_piece() for one secret.
 bool holds_secret_piece(std::string_view text, std::string_view secret);
 
 // The part of an Authorization or Proxy-Authorization value that is the

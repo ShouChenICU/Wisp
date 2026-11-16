@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "large_json.hpp"
 #include "mcp_wire.hpp"
@@ -125,17 +126,23 @@ bool same_ascii_nocase(std::string_view a, std::string_view b) {
 }
 
 // Whether `text` quotes any of the server's header values, whole or in
-// part (spec 4.4 "Scrubbing"). Only the authorization headers begin with
-// a public auth scheme (RFC 9110 11.6.2, 11.7.2), so only theirs is
-// skipped; any other value is secret from its first byte.
-bool quotes_a_credential(std::string_view text, const core::McpServerTarget& target) {
-    return std::any_of(target.headers.begin(), target.headers.end(), [&](const auto& h) {
-        const std::string_view name(h.first);
-        const std::string_view value(h.second);
-        const bool auth = same_ascii_nocase(name, "Authorization") ||
-                          same_ascii_nocase(name, "Proxy-Authorization");
-        return detail::holds_secret_piece(text, auth ? detail::credential_part(value) : value);
-    });
+// part (spec 4.4 "Scrubbing"), within its first `max_bytes`: the part a
+// caller keeps, so the check is bounded however long the text is. Only
+// the authorization headers begin with a public auth scheme (RFC 9110
+// 11.6.2, 11.7.2), so only theirs is skipped; any other value is secret
+// from its first byte.
+bool quotes_a_credential(std::string_view text, const core::McpServerTarget& target,
+                         size_t max_bytes) {
+    std::vector<std::string_view> secrets;
+    secrets.reserve(target.headers.size());
+    for (const auto& [name, value] : target.headers) {
+        const std::string_view n(name.data(), name.size());
+        const std::string_view v(value.data(), value.size());
+        const bool auth =
+            same_ascii_nocase(n, "Authorization") || same_ascii_nocase(n, "Proxy-Authorization");
+        secrets.push_back(auth ? detail::credential_part(v) : v);
+    }
+    return detail::holds_any_secret_piece(text.substr(0, max_bytes), secrets);
 }
 
 // A server's message as it may reach the model: kWithheldMessage when it
@@ -143,7 +150,7 @@ bool quotes_a_credential(std::string_view text, const core::McpServerTarget& tar
 void set_server_text(os::LargeString& out, std::string_view text,
                      const core::McpServerTarget& target, size_t max_bytes) {
     out.clear();
-    if (quotes_a_credential(text, target)) {
+    if (quotes_a_credential(text, target, max_bytes)) {
         out.assign(detail::kWithheldMessage.data(), detail::kWithheldMessage.size());
         return;
     }
@@ -660,7 +667,7 @@ McpCallResult McpClient::call_tool(std::string_view server_id, std::string_view 
     out.is_error = result.find("isError").boolean();
     out.text = call_text(result);
     // A tool's error text is a server message like a JSON-RPC error's.
-    if (out.is_error && quotes_a_credential(out.text, *target))
+    if (out.is_error && quotes_a_credential(out.text, *target, config_.max_text_bytes))
         out.text.assign(detail::kWithheldMessage.data(), detail::kWithheldMessage.size());
     return out;
 }
