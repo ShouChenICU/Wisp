@@ -461,6 +461,50 @@ TEST_F(HttpFetch, ImageTooLarge) {
     EXPECT_FALSE(truncated.image);
 }
 
+TEST_F(HttpFetch, TruncatedNonImageIsNotImage) {
+    ctx.vision = true;
+    // The head of a truncated body is intact, so its kind is still known:
+    // a page cut at the response cap is not_image, not too_large.
+    std::string page = "<html><body>";
+    page.resize(AgentHttpLimits::kMaxResponse + 1, 'x');
+    client.next = {.status = 200, .body = page, .headers = {{"content-type", "text/html"}}};
+    auto out = call(R"({"url":"https://e.example.com/","as":"image"})");
+    EXPECT_EQ(str(out.result, "error"), "not_image") << wisp::to_json(out.result);
+    EXPECT_FALSE(out.image);
+}
+
+TEST_F(HttpFetch, ImageWithErrorStatus) {
+    ctx.vision = true;
+    // As for raw and text reads, a non-2xx status is reported, not an
+    // error: the image a server sends with it is still shown.
+    const std::string png = tiny_png();
+    client.next = {.status = 404, .body = png, .headers = {{"content-type", "image/png"}}};
+    auto out = call(R"({"url":"https://e.example.com/missing.png","as":"image"})");
+    ASSERT_TRUE(ok_of(out)) << wisp::to_json(out.result);
+    EXPECT_EQ(integer(out.result, "status"), 404);
+    ASSERT_TRUE(out.image);
+    EXPECT_EQ(out.image->bytes.size(), png.size());
+
+    client.next = {.status = 500, .body = "oops", .headers = {{"content-type", "text/plain"}}};
+    auto page = call(R"({"url":"https://e.example.com/err.png","as":"image"})");
+    EXPECT_EQ(str(page.result, "error"), "not_image");
+    EXPECT_FALSE(page.image);
+}
+
+TEST_F(HttpFetch, ImageIgnoresOffsetAndMaxBytes) {
+    ctx.vision = true;
+    // An image is never paged: offset and max_bytes do not apply to it.
+    const std::string png = tiny_png();
+    client.next = {.status = 200, .body = png, .headers = {{"content-type", "image/png"}}};
+    auto out =
+        call(R"({"url":"https://e.example.com/a.png","as":"image","offset":5,"max_bytes":4})");
+    ASSERT_TRUE(ok_of(out)) << wisp::to_json(out.result);
+    ASSERT_TRUE(out.image);
+    EXPECT_EQ(out.image->bytes.size(), png.size());
+    EXPECT_EQ(integer(*out.result.find("image"), "bytes"), static_cast<int64_t>(png.size()));
+    EXPECT_EQ(out.result.find("offset"), nullptr);
+}
+
 TEST_F(HttpFetch, ImageFromRef) {
     ctx.vision = true;
     const std::string png = tiny_png();

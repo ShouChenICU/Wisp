@@ -790,8 +790,8 @@ response retains the first 1 MiB with `body_truncated: true`. With `as: "image"`
 (vision models only, otherwise `unsupported` before any request) a JPEG or PNG,
 recognised by its bytes, of at most 128 KiB is shown to the model as an image;
 the result has `image` (`mime`, `bytes`, `width`, `height`) in place of `offset`,
-`returned_bytes`, `more` and `body`; other bytes are `not_image`, a larger or
-truncated response `too_large`. Response headers
+`returned_bytes`, `more` and `body`, and `offset`/`max_bytes` do not apply; other
+bytes are `not_image`, a larger or truncated image `too_large`. Response headers
 are one string of lowercase `name: value` lines and, like body, are wrapped in
 `<data source="http:<host>">...</data>`. Embedded closing data tags are escaped
 case insensitively for every external source, including `scene:<id>`.

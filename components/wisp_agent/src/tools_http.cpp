@@ -251,15 +251,19 @@ void append_head(os::LargeString& out, const CacheEntry& e, const std::string& s
 }
 
 // The as:"image" result for `e` (spec 3.5), without touching the network.
-// A truncated body is never a whole image, so it is too_large like one
-// over kImageMaxBytes. The bytes are copied: the cache keeps its own for
-// later refs, and the image outlives the cache (dropped at turn end).
+// The bytes are sniffed first: the head of a truncated body is intact, so
+// a page cut at the response cap is not_image rather than too_large. A
+// truncated image is never whole, so it is too_large like one over
+// kImageMaxBytes. Like raw and text reads, a non-2xx status is reported,
+// not an error, and offset/max_bytes do not apply: an image is never
+// paged. The bytes are copied: the cache keeps its own for later refs,
+// and the image outlives the cache (dropped at turn end).
 ToolOutput image_of(const CacheEntry& e) {
+    const auto info = sniff_image(std::span<const uint8_t>(e.raw.data(), e.raw.size()));
+    if (!info) return tool_error("not_image", "the response is not a JPEG or PNG image");
     if (e.body_truncated) {
         return tool_error("too_large", "the response was cut at the size limit");
     }
-    const auto info = sniff_image(std::span<const uint8_t>(e.raw.data(), e.raw.size()));
-    if (!info) return tool_error("not_image", "the response is not a JPEG or PNG image");
     if (e.raw.size() > kImageMaxBytes) {
         return tool_error("too_large",
                           "the image is over " + std::to_string(kImageMaxBytes) + " bytes");
@@ -506,7 +510,8 @@ Result<void> add_http_tools(ToolRegistry& reg, HttpToolDeps deps) {
         "bytes or, with as:\"text\", HTML stripped to plain text; a large response pages "
         "with offset/max_bytes, or re-read with ref without a new request. Binary responses "
         "report their size and content type but not their body. With as:\"image\" (models that "
-        "take images only), a JPEG or PNG response up to 128 KiB is shown to you as an image.";
+        "take images only), a JPEG or PNG response up to 128 KiB is shown to you as an image, "
+        "whole (offset/max_bytes do not apply).";
     def.schema_json.assign(schema.data(), schema.size());
     def.risk = ToolRisk::Note;
     def.thread = ToolThread::Agent;
