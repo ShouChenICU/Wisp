@@ -169,10 +169,10 @@ public:
     McpServerService& operator=(const McpServerService&) = delete;
 
     // Loads secrets/mcp.json. A missing file means no servers. A corrupt
-    // file logs a warning and is treated as empty (the next change
-    // rewrites it); entries a hand edit made invalid are dropped. A storage
-    // read failure is returned, leaving the service empty. Flash: on the
-    // flash thread or before it starts.
+    // file, or one of another version, logs a warning and is treated as
+    // empty (the next change rewrites it); entries a hand edit made invalid
+    // are dropped. A storage read failure is returned, leaving the service
+    // empty. Flash: on the flash thread or before it starts.
     Result<void> init();
 
     // In configuration order.
@@ -187,9 +187,10 @@ public:
     // (case-insensitive), each an RFC 9110 token other than the ones the
     // client sets or SceneHttp drops (Accept, Content-Type, Mcp-Session-Id,
     // MCP-Protocol-Version, Host, Content-Length, Transfer-Encoding,
-    // Connection), with a value of 1-1024 bytes of UTF-8 without CR, LF or
-    // NUL. InvalidArgument for all of these. The ninth server is
-    // QuotaExceeded and sets *why to LimitReached.
+    // Connection), with a value of 1-1024 bytes of UTF-8 without control
+    // bytes. InvalidArgument for all of these; no message repeats a header
+    // name or value. The ninth server is QuotaExceeded and sets *why to
+    // LimitReached.
     Result<McpServerInfo> create(const McpServerInput& in, McpFailureKind* why = nullptr);
 
     // Same rules; NotFound for an unknown id. See McpServerUpdate and the

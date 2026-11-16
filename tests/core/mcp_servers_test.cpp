@@ -141,6 +141,17 @@ TEST(McpServers, CreateValidatesEveryField) {
     }
     bad.push_back(server("s", "https://mcp.example/mcp", {{"a b", "v"}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", "a\r\nb"}}));
+    for (const char* ctl : {"a\x01"
+                            "b",
+                            "a\tb",
+                            "a\x1f"
+                            "b",
+                            "a\x7f"})
+        bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", ctl}}));
+    // A token pasted into the name field: refused, and never echoed back.
+    bad.push_back(server("s", "https://mcp.example/mcp", {{"tok-PASTED-987654", std::nullopt}}));
+    bad.push_back(server("s", "https://mcp.example/mcp",
+                         {{"tok-PASTED-987654", "a"}, {"TOK-pasted-987654", "b"}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", std::string(1025, 'v')}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", ""}}));
     bad.push_back(server("s", "https://mcp.example/mcp", {{"X-Key", std::nullopt}}));
@@ -153,6 +164,8 @@ TEST(McpServers, CreateValidatesEveryField) {
         auto r = fx.svc->create(in);
         ASSERT_FALSE(r) << in.name << " " << in.url;
         EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument) << in.url;
+        EXPECT_FALSE(holds_secret_piece(r.error().message, "tok-PASTED-987654"))
+            << r.error().message;
     }
     EXPECT_TRUE(fx.svc->list().empty());
     EXPECT_EQ(fx.svc->cell().get(), McpServersState{});
@@ -418,6 +431,97 @@ TEST(McpServers, ABadStoredEntryIsDroppedAlone) {
         if (line.find("dropped") != std::string::npos) ++warnings;
     }
     EXPECT_EQ(warnings, 1u);
+}
+
+// Each damaged entry is dropped alone; the valid ones around it stay.
+TEST(McpServers, DamagedEntriesAreDroppedAlone) {
+    const std::string good =
+        R"({"id":"good","name":"Good","url":"https://g.example/mcp","enabled":true,)"
+        R"("timeout_ms":60000,"headers":[{"name":"X-Key","value":"v1"}]})";
+    auto entry = [](const std::string& id, const std::string& rest) {
+        return R"({"id":")" + id + R"(","name":"N","url":"https://h.example/mcp",)" + rest + "}";
+    };
+    const std::string ok_rest = R"("enabled":true,"timeout_ms":60000,"headers":[])";
+    std::string nine_headers;
+    for (int i = 0; i < 9; ++i) {
+        nine_headers +=
+            std::string(i ? "," : "") + R"({"name":"X-)" + std::to_string(i) + R"(","value":"v"})";
+    }
+    struct Case {
+        const char* what;
+        std::string bad;
+    };
+    const std::vector<Case> cases = {
+        {"nine headers",
+         entry("b", R"("enabled":true,"timeout_ms":60000,"headers":[)" + nine_headers + "]")},
+        {"enabled not a bool", entry("b", R"("enabled":"yes","timeout_ms":60000,"headers":[])")},
+        {"timeout a string", entry("b", R"("enabled":true,"timeout_ms":"60000","headers":[])")},
+        {"timeout out of range", entry("b", R"("enabled":true,"timeout_ms":500,"headers":[])")},
+        {"headers not a list", entry("b", R"("enabled":true,"timeout_ms":60000,"headers":{})")},
+        {"header value a number",
+         entry("b", R"("enabled":true,"timeout_ms":60000,"headers":[{"name":"K","value":1}])")},
+        {"header without a value",
+         entry("b", R"("enabled":true,"timeout_ms":60000,"headers":[{"name":"K"}])")},
+        {"duplicate header names",
+         entry("b", R"("enabled":true,"timeout_ms":60000,"headers":[{"name":"K","value":"1"},)"
+                    R"({"name":"k","value":"2"}])")},
+        {"reserved header",
+         entry("b",
+               R"("enabled":true,"timeout_ms":60000,"headers":[{"name":"Host","value":"1"}])")},
+        {"name a number", R"({"id":"b","name":7,"url":"https://h.example/mcp",)" + ok_rest + "}"},
+        {"id with upper case", entry("Bad", ok_rest)},
+        {"id too long", entry("abcdefghijklmnopq", ok_rest)},
+        {"duplicate id", entry("good", ok_rest)},
+        {"not an object", R"("good-too")"},
+        {"user info in url",
+         R"({"id":"b","name":"N","url":"https://u:p@h.example/mcp",)" + ok_rest + "}"},
+    };
+    for (const Case& c : cases) {
+        Fixture fx;
+        fx.svc.reset();
+        Fixture::write(fx.path(), R"({"version":1,"servers":[)" + good + "," + c.bad + "," +
+                                      entry("last", ok_rest) + "]}");
+        fx.start();
+        const auto list = fx.svc->list();
+        ASSERT_EQ(list.size(), 2u) << c.what;
+        EXPECT_EQ(list[0].id, "good") << c.what;
+        EXPECT_EQ(list[1].id, "last") << c.what;
+        EXPECT_EQ(str(fx.svc->resolve_for_request("good")->headers.at(0).second), "v1") << c.what;
+    }
+    // Past the eighth valid entry, the rest are dropped.
+    Fixture fx;
+    fx.svc.reset();
+    std::string all;
+    for (int i = 0; i < 10; ++i) {
+        all += std::string(i ? "," : "") + entry("s" + std::to_string(i), ok_rest);
+    }
+    Fixture::write(fx.path(), R"({"version":1,"servers":[)" + all + "]}");
+    fx.start();
+    const auto list = fx.svc->list();
+    ASSERT_EQ(list.size(), 8u);
+    EXPECT_EQ(list.back().id, "s7");
+}
+
+TEST(McpServers, AnotherVersionStartsEmpty) {
+    const std::string server_json =
+        R"({"id":"a","name":"A","url":"https://a.example/mcp","enabled":true,)"
+        R"("timeout_ms":60000,"headers":[]})";
+    for (const std::string& version :
+         {std::string(R"("version":2,)"), std::string(), std::string(R"("version":"1",)")}) {
+        Fixture fx;
+        fx.svc.reset();
+        Fixture::write(fx.path(), "{" + version + R"("servers":[)" + server_json + "]}");
+        CaptureSink sink;
+        wisp::log::add_sink(&sink);
+        fx.start();
+        wisp::log::remove_sink(&sink);
+        EXPECT_TRUE(fx.svc->list().empty()) << version;
+        size_t warnings = 0;
+        for (const std::string& line : sink.lines) {
+            if (line.find("unknown version") != std::string::npos) ++warnings;
+        }
+        EXPECT_EQ(warnings, 1u) << version;
+    }
 }
 
 TEST(McpServers, CorruptFileStartsEmpty) {

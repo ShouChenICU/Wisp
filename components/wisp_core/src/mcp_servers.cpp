@@ -104,20 +104,22 @@ Result<void> check_timeout(uint32_t ms) {
     return Result<void>::ok();
 }
 
-// The value is held to UTF-8 as well, so the file (JSON) keeps it byte for
-// byte. No message names the value.
+// No control byte at all (RFC 9110 field values exclude them; a stray one
+// is a paste error, never part of a token), and UTF-8, so the file (JSON)
+// keeps the value byte for byte. No message names the value.
 Result<void> check_value(std::string_view value) {
     if (value.empty()) {
         return fail<void>(invalid("a header value must not be empty; leave the header out"));
     }
-    if (value.size() > kMcpMaxHeaderValueBytes || !http_header_syntax_ok("x", value) ||
-        !valid_utf8(value)) {
+    if (value.size() > kMcpMaxHeaderValueBytes || has_control(value) || !valid_utf8(value)) {
         return fail<void>(
-            invalid("a header value must be at most 1024 bytes of text without CR, LF or NUL"));
+            invalid("a header value must be at most 1024 bytes of text without control bytes"));
     }
     return Result<void>::ok();
 }
 
+// The messages never repeat a header name: a token pasted into the name
+// field would be echoed back by the REST error.
 Result<void> check_headers(const std::vector<McpHeaderInput>& headers, bool values_required) {
     if (headers.size() > kMcpMaxHeaders) return fail<void>(invalid("at most 8 headers"));
     for (size_t i = 0; i < headers.size(); ++i) {
@@ -127,18 +129,18 @@ Result<void> check_headers(const std::vector<McpHeaderInput>& headers, bool valu
         }
         for (std::string_view r : kReservedHeaders) {
             if (iequals(h.name, r)) {
-                return fail<void>(invalid("header " + h.name + " is set by the MCP client"));
+                return fail<void>(invalid("a header name is one the MCP client sets itself"));
             }
         }
         for (size_t k = 0; k < i; ++k) {
             if (iequals(h.name, headers[k].name)) {
-                return fail<void>(invalid("header " + h.name + " is given twice"));
+                return fail<void>(invalid("a header name is given twice"));
             }
         }
         if (h.value) {
             WISP_TRY(check_value(*h.value));
         } else if (values_required) {
-            return fail<void>(invalid("header " + h.name + " needs a value"));
+            return fail<void>(invalid("every header needs a value"));
         }
     }
     return Result<void>::ok();
@@ -231,11 +233,18 @@ McpServerInfo McpServerService::info_of(const Stored& s) {
 
 bool McpServerService::load(std::string_view text) {
     auto doc = parse_json_large(text, large_alloc());
-    const JsonView list = doc ? doc.value().root().find("servers") : JsonView{};
+    const JsonView root = doc ? doc.value().root() : JsonView{};
+    const JsonView list = root.find("servers");
     if (!doc || list.type() != JsonView::Type::Array) {
         // The parse error could quote part of the file (values included),
         // so only say that it failed.
         WLOG_W(kTag, "secrets/mcp.json is corrupt; starting without MCP servers");
+        return false;
+    }
+    // Another version's layout is not guessed at: start empty, as for a
+    // corrupt file; the next change writes this version.
+    if (root.find("version").integer() != std::optional<int64_t>(kFileVersion)) {
+        WLOG_W(kTag, "secrets/mcp.json has an unknown version; starting without MCP servers");
         return false;
     }
     // Re-validate everything so a hand-edited file cannot smuggle in what
@@ -297,7 +306,9 @@ Result<void> McpServerService::init() {
         publish(state_);
         return Result<void>::err(ErrorCode::StorageUnavailable, "system storage unavailable");
     }
-    auto bytes = storage_.read_file(root.value() + kFile);
+    // Up to tens of KB of secrets: PSRAM, never internal RAM (AGENTS.md
+    // section 8).
+    auto bytes = storage_.read_file_large(root.value() + kFile);
     if (!bytes) {
         publish(state_);
         if (bytes.error().code == ErrorCode::NotFound) return Result<void>::ok();

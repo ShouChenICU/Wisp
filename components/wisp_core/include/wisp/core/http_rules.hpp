@@ -12,6 +12,10 @@
 
 namespace wisp::core {
 
+// Whether `s` holds a space, a control byte (0x00-0x1f) or DEL: none of
+// these belong in a URL or a header name.
+bool has_control_or_space(std::string_view s);
+
 // An http:// or https:// URL without whitespace or control bytes, with a
 // host left once user info and the port are taken off. Accepts the URL as
 // it is: no trailing '/' is stripped, no placeholder is checked for.

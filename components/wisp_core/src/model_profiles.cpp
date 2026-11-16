@@ -37,14 +37,6 @@ Result<T> fail(const Error& e) {
     return Result<T>::err(e.code, e.message);
 }
 
-bool has_control_or_space(std::string_view s) {
-    for (char c : s) {
-        auto u = static_cast<unsigned char>(c);
-        if (u <= 0x20 || u == 0x7f) return true;
-    }
-    return false;
-}
-
 bool has_control(std::string_view s) {
     for (char c : s) {
         auto u = static_cast<unsigned char>(c);

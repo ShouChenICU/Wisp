@@ -6,14 +6,6 @@ namespace wisp::core {
 
 namespace {
 
-bool has_control_or_space(std::string_view s) {
-    for (char c : s) {
-        auto u = static_cast<unsigned char>(c);
-        if (u <= 0x20 || u == 0x7f) return true;
-    }
-    return false;
-}
-
 bool is_tchar(char c) {
     if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
     return c != '\0' && std::strchr("!#$%&'*+-.^_`|~", c) != nullptr;
@@ -34,6 +26,14 @@ std::string_view authority_of(std::string_view url) {
 }
 
 }  // namespace
+
+bool has_control_or_space(std::string_view s) {
+    for (char c : s) {
+        auto u = static_cast<unsigned char>(c);
+        if (u <= 0x20 || u == 0x7f) return true;
+    }
+    return false;
+}
 
 bool valid_http_url(std::string_view url) {
     std::string_view rest;
