@@ -116,8 +116,15 @@
 // wisp.http.download) streams its body to on_body instead (only a 2xx
 // body; others are dropped), without that cap, under a deadline of
 // kDownloadTimeoutMs; it takes the download worker for as long as it
-// runs, so later downloads wait behind it. Transport failures come back
-// as "dns", "connect", "tls", "timeout" or "other".
+// runs, so later downloads wait behind it. on_body returning false stops
+// the transfer as "other", unless an Agent request set
+// SceneHttpRequest::stop_is_success: then it ends with error "", the
+// status and the headers, because a reader that has what it needs (an
+// MCP answer read off an SSE stream the server keeps open, tool-providers
+// spec 4.4) is not an error. A cancel, the deadline or a cap still fail
+// it as usual.
+// Transport failures come back as "dns", "connect", "tls", "timeout" or
+// "other".
 //
 // done: every submit() gets exactly one done() call -- immediate
 // rejections from inside submit(), the rest from either worker task --
@@ -231,16 +238,21 @@ struct SceneHttpRequest {
     // Set: the response body is streamed to it piece by piece on the
     // worker task (which must not touch flash) instead of being collected,
     // so no max_response applies and SceneHttpResult::body stays empty.
-    // false stops the transfer ("other"). Only a 2xx answer's body reaches
-    // it: any other body is read and dropped (at most max_response bytes
-    // of it; past that the transfer stops, and the result carries just
-    // the status, without headers).
+    // false stops the transfer ("other", but see stop_is_success). Only a
+    // 2xx answer's body reaches it: any other body is read and dropped (at
+    // most max_response bytes of it; past that the transfer stops, and the
+    // result carries just the status, without headers).
     std::function<bool(std::span<const uint8_t>)> on_body;
     // With on_body: a body over this many bytes fails with "too_large";
     // 0 is kMaxDownloadBody.
     uint64_t max_body = 0;
     // The request's deadline is kDownloadTimeoutMs.
     bool download = false;
+    // Agent principal with on_body only; ignored otherwise. on_body
+    // returning false ends the request with error "", the status and the
+    // headers: a streamed answer (SSE) that the caller has finished
+    // reading is not an error (tool-providers spec 4.4).
+    bool stop_is_success = false;
 };
 
 struct SceneHttpResult {

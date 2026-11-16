@@ -97,7 +97,8 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 // It behaves like the real clients towards the streaming fields: a body
 // over max_response_bytes is TooLarge (unless `ignore_limit`), on_status
 // gets next.status before the body, on_body
-// gets it in 4 KB pieces (false: Cancelled) and `next.body` is then not
+// gets it in 4 KB pieces (false: Cancelled, or with stop_is_end a success
+// that keeps the status and headers) and `next.body` is then not
 // returned; req.cancelled() is asked before each piece.
 //
 // With `hold` set, request() blocks like a library call stuck in one read
@@ -165,7 +166,12 @@ public:
                 }
                 ++pieces;
                 const size_t n = std::min<size_t>(4096, deliver - at);
-                if (!req.on_body({p + at, n})) return {.transport = net::TransportError::Cancelled};
+                if (!req.on_body({p + at, n})) {
+                    if (!req.stop_is_end) return {.transport = net::TransportError::Cancelled};
+                    return {.transport = net::TransportError::None,
+                            .status = res.status,
+                            .headers = std::move(res.headers)};
+                }
             }
             res.body.clear();
         } else if (truncate) {

@@ -309,6 +309,7 @@ struct SceneHttp::Job {
     std::function<bool(std::span<const uint8_t>)> on_body;
     uint64_t max_body = 0;
     bool download = false;
+    bool stop_is_success = false;
     size_t max_response = 0;
     uint32_t timeout_ms = 0;
     uint8_t max_redirects = 0;
@@ -525,6 +526,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
     job->on_body = std::move(req.on_body);
     job->max_body = req.max_body;
     job->download = req.download;
+    job->stop_is_success = req.stop_is_success;
     job->max_response = req.max_response;
     job->timeout_ms = req.timeout_ms;
     job->max_redirects = req.max_redirects;
@@ -842,6 +844,10 @@ void SceneHttp::execute(Job& job, Lane& own) {
             // failing the request.
             req.truncate_at_limit = true;
         }
+        // The caller's own stop ends the transfer as a success (file header,
+        // SceneHttpRequest::stop_is_success); every other refusal below
+        // still fails it, through the flags checked after request().
+        req.stop_is_end = is_agent && job.stop_is_success && streamed;
         req.watch = own.watch.get();
 
         body.reset();
@@ -855,6 +861,7 @@ void SceneHttp::execute(Job& job, Lane& own) {
         bool too_large = false;
         bool no_memory = false;
         bool timed_out = false;
+        bool consumer_stopped = false;
         req.on_status = [&status](int st) { status = st; };
         req.on_body = [&](std::span<const uint8_t> chunk) {
             if (job.cancelled.load()) return false;
@@ -876,7 +883,9 @@ void SceneHttp::execute(Job& job, Lane& own) {
                     return false;
                 }
                 streamed_bytes += chunk.size();
-                return job.on_body(chunk);
+                if (job.on_body(chunk)) return true;
+                consumer_stopped = true;
+                return false;
             }
             if (chunk.size() > body.remaining()) {
                 too_large = true;
@@ -918,7 +927,12 @@ void SceneHttp::execute(Job& job, Lane& own) {
             result.error = "other";
             break;
         }
-        if (res.transport == TransportError::Cancelled) {
+        // Under stop_is_end a refusal comes back as transport None, so a
+        // refusal that was not the consumer's own stop (the scene was
+        // cancelled) is caught here too.
+        if (res.transport == TransportError::Cancelled ||
+            (res.transport == TransportError::None && req.stop_is_end && !consumer_stopped &&
+             job.cancelled.load())) {
             // The scene was cancelled (nothing is delivered below) or a
             // piece was refused for a reason handled above.
             result.error = "other";
