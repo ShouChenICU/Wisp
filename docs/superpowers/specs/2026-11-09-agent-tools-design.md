@@ -239,7 +239,7 @@
 - 系统说明行：`调用 <场景名> · <工具名>`；
 - 注册的超时为 125000 ms，实际以声明的 `timeout_ms` 为准。
 
-**Providers（由 `2026-11-15-llm-tool-providers-design.md` 4.1 修订）**：`tools.find`/`tools.call` 按注册顺序（先场景，再 MCP 服务器）在各个 `agent::ToolProvider` 上查询并路由调用。场景工具名仍是 `<场景 id>.<工具名>`，MCP 工具名是 `<服务器 id>:<工具名>`；数量上限等限制由各提供者共用。MCP 工具的详细条目用 `server_name`/`available` 字段，其后可跟一个 `unavailable` 列表。MCP 服务器由 `mcp.servers`、`mcp.add`、`mcp.remove`、`mcp.enable` 四个工具管理，它们的系统说明行与动态信息行（已连接的服务器数）见 MCP 客户端的计划与 `2026-11-15-llm-tool-providers-design.md` 4.3；`mcp.add` 不接受 `headers`（密钥只能在网页上填写）。
+**Providers（由 `2026-11-15-llm-tool-providers-design.md` 4.1 修订）**：`tools.find`/`tools.call` 按注册顺序（先场景，再 MCP 服务器）在各个 `agent::ToolProvider` 上查询并路由调用。场景工具名仍是 `<场景 id>.<工具名>`，MCP 工具名是 `<服务器 id>:<工具名>`；数量上限等限制由各提供者共用。MCP 工具的详细条目用 `server_name`/`available` 字段，其后可跟一个 `unavailable` 列表。MCP 服务器由 `mcp.servers`、`mcp.add`、`mcp.remove`、`mcp.enable` 四个工具管理，它们的系统说明行与动态信息行（已连接的服务器数）见 MCP 客户端的计划与 `2026-11-15-llm-tool-providers-design.md` 4.3；`mcp.add` 不读取 `headers`：传入的 `headers` 参数被忽略、不保存，调用照常成功（密钥只能在网页上填写）。
 
 **`ToolIndex`**：
 

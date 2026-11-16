@@ -79,7 +79,7 @@ TEST_F(SceneToolsGolden, CallNotFoundBytes)
 TEST_F(SceneToolsGolden, CallNameWithoutADot)
 // tools_call {"name":"weather","args":{}} -> not_found, message "no scene tool named weather"
 TEST_F(SceneToolsGolden, UnknownToolWithNonObjectArgsIsBadArgs)
-// tools_call {"name":"missing.tool","args":7}  -> error "not_found" (not bad_args)
+// tools_call {"name":"missing.tool","args":7}  -> bad_args, field "args"
 TEST_F(SceneToolsGolden, CallArgsNotAnObjectBytes)
 // install_weather(); tools_call {"name":"weather.lookup","args":[1]} -> bad_args, field "", exact JSON
 TEST_F(SceneToolsGolden, CallSchemaFailureBytes)
