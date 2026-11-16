@@ -841,6 +841,63 @@ TEST_F(TurnRunner, ContinuationReasoningJoins) {
         << calls[2].body;
 }
 
+// The first reply counts as whole only because its connection dropped
+// after finish_reason: its reasoning may be cut, so the joined reply echoes
+// none, not even the continuation's (plan decision 7).
+TEST_F(TurnRunner, ContinuationAfterACutAttemptEchoesNoReasoning) {
+    r->fake.set_model(with_dialect({.reasoning = wisp::core::LlmReasoning::Echo}));
+    r->add_tool("test.echo");
+    FakeStep a = cut_step("Hel");
+    a.result.error = net::LlmError::Transport;
+    a.result.reasoning.assign("r1");
+    r->fake.push(std::move(a));
+    FakeStep b;
+    b.calls.push_back({.id = "c1", .name = "test_echo", .arguments = "{}"});
+    b.result.finish = net::LlmFinish::ToolCalls;
+    b.result.reasoning.assign("r2");
+    r->fake.push(std::move(b));
+    r->fake.push(text_step("ok"));
+    EXPECT_STREQ(r->run().status, "done");
+    const auto calls = r->fake.calls();
+    ASSERT_EQ(calls.size(), 3u);
+    EXPECT_EQ(calls[1].body.find("reasoning_content"), std::string::npos) << calls[1].body;
+    EXPECT_NE(calls[2].body.find("\"tool_call_id\":\"c1\""), std::string::npos) << calls[2].body;
+    EXPECT_EQ(calls[2].body.find("reasoning_content"), std::string::npos) << calls[2].body;
+}
+
+// A stop already set when the cut reply returns: no continuation request,
+// the text is stored and the turn ends stopped, without the cut note.
+TEST_F(TurnRunner, AbortWhenTheCutReplyReturnsIsNotContinued) {
+    FakeStep a = cut_step("Hel");
+    a.during = [this](const net::LlmCall&) {
+        r->env.reason = Abort::Stop;
+        r->env.aborted_flag = true;
+    };
+    r->fake.push(std::move(a));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "stopped");
+    EXPECT_EQ(r->fake.calls().size(), 1u);
+    const auto replies = stored(*r, Role::Assistant);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(str(replies[0].text), "Hel");
+    const auto notes = stored(*r, Role::Note);
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(str(notes[0].text), zh(StrId::AgentStopped));
+}
+
+// The continuation's request is not the one estimated: its prompt usage
+// does not calibrate (plan decision 8).
+TEST_F(TurnRunner, ContinuationUsageDoesNotCalibrate) {
+    r->fake.push(cut_step("Hel"));
+    FakeStep b = text_step("lo");
+    b.result.usage = net::LlmUsage{.prompt = 100000000, .completion = 1, .total = 100000001};
+    r->fake.push(std::move(b));
+    const Outcome out = r->run();
+    EXPECT_STREQ(out.status, "done");
+    EXPECT_EQ(out.tokens, 100000001u);
+    EXPECT_EQ(r->cal.pct(), 100u);
+}
+
 TEST_F(TurnRunner, StopDuringTheContinuationKeepsTheText) {
     r->fake.push(cut_step("Hel"));
     FakeStep b;

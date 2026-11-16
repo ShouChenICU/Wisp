@@ -351,18 +351,16 @@ const char* TurnRunner::loop(uint32_t window, Outcome& out) {
             // continuation, so far as it got. Only a whole continuation
             // brings its calls and its finish: a failed one leaves the
             // reply cut (finish Length), which the note below reports.
+            // The joined reasoning is echoed only when the first part was
+            // whole: the continuation's alone would echo half a block.
             res.text.append(cont->text.data(), cont->text.size());
-            os::LargeString reasoning;
-            if (echo_reasoning) reasoning = std::move(res.reasoning);
+            if (!echo_reasoning) res.reasoning.clear();
             if (whole(*cont)) {
-                if (cont->error == net::LlmError::None)
-                    reasoning.append(cont->reasoning.data(), cont->reasoning.size());
+                if (echo_reasoning && cont->error == net::LlmError::None)
+                    res.reasoning.append(cont->reasoning.data(), cont->reasoning.size());
                 res.tool_calls = std::move(cont->tool_calls);
                 res.finish = cont->finish;
             }
-            res.reasoning = std::move(reasoning);
-            echo_reasoning = true;
-            cont.reset();
         }
 
         if (!whole(res)) {
