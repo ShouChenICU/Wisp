@@ -392,6 +392,41 @@ TEST_F(McpClientTest, TransportFailuresAreUnavailable) {
     http->set_deferring(false);
 }
 
+// A stored header value belongs to the origin it was saved for (spec 4.3),
+// and SceneHttp drops only the authorization headers across origins: a
+// server with stored headers is never followed through a redirect.
+TEST_F(McpClientTest, ServerWithHeadersDoesNotFollowRedirects) {
+    McpServerUpdate u;
+    u.headers = std::vector<McpHeaderInput>{McpHeaderInput{"X-Api-Key", kSecret}};
+    ASSERT_TRUE(servers->update("files", u));
+    fake.redirect_for = [](std::string_view url) {
+        return url.starts_with("http://mcp.local/") ? std::string("http://other.local/mcp")
+                                                    : std::string();
+    };
+    McpListResult r = list();
+    EXPECT_EQ(r.failure.error, McpError::Unavailable);
+    EXPECT_EQ(r.failure.category, "http");
+    EXPECT_EQ(r.failure.http_status, 302);
+    for (const auto& req : fake.requests()) EXPECT_EQ(req.url, "http://mcp.local/mcp");
+    EXPECT_EQ(fake.calls(), 1u);
+}
+
+TEST_F(McpClientTest, ServerWithoutHeadersFollowsARedirect) {
+    McpServerUpdate u;
+    u.headers = std::vector<McpHeaderInput>{};
+    ASSERT_TRUE(servers->update("files", u));
+    fake.redirect_for = [](std::string_view url) {
+        return url.starts_with("http://mcp.local/") ? std::string("http://other.local/mcp")
+                                                    : std::string();
+    };
+    McpListResult r = list();
+    ASSERT_EQ(r.failure.error, McpError::None);
+    EXPECT_EQ(names(r), (std::vector<std::string>{"read", "write"}));
+    bool reached_other = false;
+    for (const auto& req : fake.requests()) reached_other |= req.url == "http://other.local/mcp";
+    EXPECT_TRUE(reached_other);
+}
+
 TEST_F(McpClientTest, FailureIsRememberedForAMinute) {
     fake.transport = TransportError::Connect;
     EXPECT_EQ(list().failure.error, McpError::Unavailable);

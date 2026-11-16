@@ -183,7 +183,10 @@ Exchange send(const Link& l, const McpSession& s, std::string_view method, int64
         req.headers.emplace_back("MCP-Protocol-Version", s.protocol);
     }
     req.timeout_ms = timeout_ms;
-    req.max_redirects = 2;
+    // SceneHttp drops only the authorization headers when a hop leaves the
+    // origin, but every stored value belongs to the origin it was saved for
+    // (spec 4.3): such a server's 3xx is its answer ("http 3xx").
+    req.max_redirects = l.target.headers.empty() ? 2 : 0;
     req.body = std::move(body);
     req.max_body = cap;
     req.stop_is_success = true;

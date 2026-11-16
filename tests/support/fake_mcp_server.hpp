@@ -129,6 +129,15 @@ public:
                 return {.transport = t};
         }
 
+        if (redirect_for) {
+            if (std::string location = redirect_for(rec.url); !location.empty()) {
+                net::HttpClientResponse moved;
+                moved.status = 302;
+                moved.headers.emplace_back("location", std::move(location));
+                return deliver(req, std::move(moved), false);
+            }
+        }
+
         net::HttpClientResponse res;
         res.status = 200;
         const bool carries_session = rec.header("Mcp-Session-Id").has_value();
@@ -210,6 +219,9 @@ public:
     // Per URL, after `transport`: None lets the request through (one of
     // several servers failing).
     std::function<net::TransportError(std::string_view url)> transport_for;
+    // Per URL, after the transport knobs: a non-empty Location answers 302
+    // with it and an empty body.
+    std::function<std::string(std::string_view url)> redirect_for;
     std::atomic<bool> hold{false};
     std::atomic<int> held{0};
     std::atomic<bool> saw_cancel{false};

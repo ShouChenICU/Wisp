@@ -4,7 +4,8 @@
 // (spec 4.2-4.4 of docs/superpowers/specs/2026-11-15-llm-tool-providers-design.md).
 //
 // Every message is one JSON-RPC 2.0 POST through SceneHttp's Agent
-// principal (scene id kAgentHttpId, at most 2 redirects), with
+// principal (scene id kAgentHttpId; at most 2 redirects, none for a server
+// with stored headers, whose 3xx is then Unavailable "http"), with
 // "Accept: application/json, text/event-stream", "Content-Type:
 // application/json" and the server's stored headers; after initialize also
 // Mcp-Session-Id (when the server gave one) and MCP-Protocol-Version. The
