@@ -245,8 +245,9 @@ TEST(AppAgent, EveryRegisteredToolHasAnActivityLabel) {
     const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
     ASSERT_NE(tools, nullptr);
     ASSERT_NE(tools->find_wire("device_list"), nullptr);
-    auto parsed =
-        wisp::from_json(std::string_view(tools->tools_json().data(), tools->tools_json().size()));
+    // The vision array: every tool, the vision-only ones included.
+    const auto& all = tools->tools_json(true);
+    auto parsed = wisp::from_json(std::string_view(all.data(), all.size()));
     ASSERT_TRUE(parsed);
     size_t checked = 0;
     for (const Value& t : parsed.value().as_list()) {
@@ -263,6 +264,26 @@ TEST(AppAgent, EveryRegisteredToolHasAnActivityLabel) {
         ++checked;
     }
     EXPECT_GT(checked, 30u);
+}
+
+// The wired App offers ui.screenshot to a vision model only, last in its array.
+TEST(AppAgent, ScreenshotOnlyForVisionModels) {
+    ManualClock clock;
+    UiNetHarness h(with_haptic(clock));
+    ASSERT_TRUE(h.start());
+    const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
+    ASSERT_NE(tools, nullptr);
+    const wisp::agent::ToolDef* def = tools->find("ui.screenshot");
+    ASSERT_NE(def, nullptr);
+    EXPECT_TRUE(def->vision_only);
+    const std::string without(tools->tools_json(false).data(), tools->tools_json(false).size());
+    EXPECT_EQ(without.find("ui_screenshot"), std::string::npos);
+    auto parsed = wisp::from_json(
+        std::string_view(tools->tools_json(true).data(), tools->tools_json(true).size()));
+    ASSERT_TRUE(parsed);
+    const auto& list = parsed.value().as_list();
+    ASSERT_FALSE(list.empty());
+    EXPECT_EQ(list.back().find("function")->find("name")->as_string(), "ui_screenshot");
 }
 
 // Device model spec 5: a device no core service knows, added by one board

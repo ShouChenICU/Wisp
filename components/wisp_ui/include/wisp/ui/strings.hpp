@@ -557,6 +557,7 @@ enum class StrId : uint16_t {
     ActDeviceCall,
     ActDocsRead,
     ActUiTree,
+    ActUiScreenshot,
     ActHttpFetch,
     ActLuaRun,
     ActToolsFind,

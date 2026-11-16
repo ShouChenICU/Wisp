@@ -795,6 +795,8 @@ const char* strings_zh(StrId id) {
             return "调用场景工具";
         case StrId::ActUiTree:
             return "查看界面";
+        case StrId::ActUiScreenshot:
+            return "截取屏幕";
         case StrId::Count:
             break;
     }

@@ -15,7 +15,7 @@ wisp_component(
          src/tools_ui.cpp src/tools_scene_ops.cpp src/tools_device.cpp src/tools_device_call.cpp
          src/tools_memory.cpp
          src/tools_todo.cpp src/html_text.cpp src/tools_http.cpp src/tools_lua.cpp
-         src/docs.cpp src/docs_data.cpp src/confirm.cpp src/io_runner.cpp
+         src/docs.cpp src/docs_data.cpp src/confirm.cpp src/io_runner.cpp src/screenshot.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_admin wisp_ui wisp_scene
 )

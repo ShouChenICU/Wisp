@@ -59,6 +59,7 @@ constexpr ToolLabel kLabels[] = {
     {"device.call", StrId::ActDeviceCall, false},
     {"docs.read", StrId::ActDocsRead, false},
     {"ui.tree", StrId::ActUiTree, false},
+    {"ui.screenshot", StrId::ActUiScreenshot, false},
     {"http.fetch", StrId::ActHttpFetch, false},
     {"lua.run", StrId::ActLuaRun, false},
     {"tools.find", StrId::ActToolsFind, false},

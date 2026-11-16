@@ -20,9 +20,11 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
+#include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/ui_inspector.hpp"
+#include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::agent {
 
@@ -32,6 +34,17 @@ Result<void> add_scene_authoring_tools(ToolRegistry& reg, SceneWorkspace& ws);
 
 // ui.tree (spec 5.2).
 Result<void> add_ui_tools(ToolRegistry& reg, scene::UiInspector& inspector);
+
+struct ScreenshotToolDeps {
+    ui::UiRuntime& ui;
+    hal::ScreenShape shape{};  // the main panel's; the snapshot must match it
+};
+
+// ui.screenshot (spec 3.6): no arguments, ToolThread::Io, kScreenshotToolMs,
+// Normal, vision_only. Result {"ok":true,"image":{"mime":"image/jpeg","bytes":N,
+// "width":W,"height":H}} plus the image. Errors: busy / timeout (the UI did not
+// take the snapshot), snapshot_failed, no_memory, too_large.
+Result<void> add_screenshot_tool(ToolRegistry& reg, ScreenshotToolDeps deps);
 
 struct SceneOpsDeps {
     scene::SceneRuntime& runtime;

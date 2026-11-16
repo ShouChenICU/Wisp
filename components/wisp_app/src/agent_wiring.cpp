@@ -497,6 +497,11 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
     };
     check("scene authoring", agent::add_scene_authoring_tools(*registry_, *workspace_));
     check("ui", agent::add_ui_tools(*registry_, *inspector_));
+    // Without a panel's shape there is no screen to picture.
+    if (deps_.shape.width > 0) {
+        check("screenshot",
+              agent::add_screenshot_tool(*registry_, {.ui = deps_.ui, .shape = deps_.shape}));
+    }
     check("scene ops",
           agent::add_scene_ops_tools(*registry_, agent::SceneOpsDeps{
                                                      .runtime = deps_.runtime,

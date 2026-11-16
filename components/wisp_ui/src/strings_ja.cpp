@@ -803,6 +803,8 @@ const char* strings_ja(StrId id) {
             return "シーンツールを呼び出す";
         case StrId::ActUiTree:
             return "画面を確認";
+        case StrId::ActUiScreenshot:
+            return "画面を撮影";
         case StrId::Count:
             break;
     }

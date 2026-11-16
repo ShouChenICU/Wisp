@@ -801,6 +801,8 @@ const char* strings_en(StrId id) {
             return "Call scene tool";
         case StrId::ActUiTree:
             return "Inspect the screen";
+        case StrId::ActUiScreenshot:
+            return "Take a screenshot";
         case StrId::Count:
             break;
     }

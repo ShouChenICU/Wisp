@@ -62,6 +62,14 @@ inline constexpr size_t kImageMaxBytes = 128 * 1024;
 // What one image counts toward the request estimate (plan decision 6).
 inline constexpr size_t kImageEstTokens = 1024;
 
+// ui.screenshot (spec 3.6): the image's width (a narrower panel keeps its own,
+// plan decision 10), the JPEG quality, the registered tool timeout, and how
+// long it waits for the UI thread to take the snapshot.
+inline constexpr uint32_t kScreenshotWidth = 240;
+inline constexpr int kScreenshotQuality = 70;
+inline constexpr uint32_t kScreenshotToolMs = 10000;
+inline constexpr uint32_t kSnapshotWaitMs = 2000;
+
 // Conversation files: archives kept, and the size of current.jsonl past
 // which the next user message starts a new conversation.
 inline constexpr uint32_t kArchivesKept = 5;
