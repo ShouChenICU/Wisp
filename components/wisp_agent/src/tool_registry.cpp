@@ -186,6 +186,12 @@ const ToolRegistry::Entry* ToolRegistry::find_entry(std::string_view key, bool w
     return &entries_[*it];
 }
 
+void ToolRegistry::add_provider(ToolProvider& provider) { providers_.push_back(&provider); }
+
+std::span<ToolProvider* const> ToolRegistry::providers() const {
+    return {providers_.data(), providers_.size()};
+}
+
 const ToolDef* ToolRegistry::find(std::string_view dotted) const {
     const Entry* e = find_entry(dotted, /*wire=*/false);
     return e == nullptr ? nullptr : &e->def;

@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,8 @@
 #include "wisp/os/os.hpp"
 
 namespace wisp::agent {
+
+class ToolProvider;
 
 enum class ToolRisk : uint8_t { Normal, Note, Confirm };
 enum class ToolThread : uint8_t { Agent, Ui, Fs, Io, FsInteractive };
@@ -121,6 +124,12 @@ public:
     // call its tools.
     ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) const;
 
+    // Not thread-safe, like add(): register every provider before the first
+    // call(). Not owned; must outlive the registry's last call(). Searched and
+    // routed in registration order (add_find_tools()).
+    void add_provider(ToolProvider& provider);
+    std::span<ToolProvider* const> providers() const;
+
 private:
     struct Entry {
         ToolDef def;
@@ -137,6 +146,7 @@ private:
     os::LargeVector<uint16_t> by_name_;
     os::LargeVector<uint16_t> by_wire_;
     os::LargeString json_;
+    os::LargeVector<ToolProvider*> providers_;
 };
 
 std::string wire_name(std::string_view dotted);

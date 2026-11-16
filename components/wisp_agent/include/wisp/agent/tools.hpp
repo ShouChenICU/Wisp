@@ -135,6 +135,11 @@ struct SceneToolDeps {
 // installed scene tools without changing the model's fixed tool array.
 Result<void> add_scene_tool_tools(ToolRegistry& reg, SceneToolDeps deps);
 
+// tools.find and tools.call (agent-tools spec 5.3, llm-tool-providers spec
+// 4.1) over reg.providers(): ToolThread::Agent, ToolRisk::Note, tools.call's
+// registration timeout 125000 ms.
+Result<void> add_find_tools(ToolRegistry& reg);
+
 struct TodoToolDeps {
     core::ReminderScheduler& scheduler;
 };

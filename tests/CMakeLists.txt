@@ -514,6 +514,8 @@ wisp_test(NAME tool_index_test SRCS agent/tool_index_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME scene_tools_tools_test SRCS agent/scene_tools_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
+wisp_test(NAME tool_find_test SRCS agent/tool_find_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 # Its own binary: it replaces the global operator new to see what stays on
 # the default heap (internal RAM on the device).
 wisp_test(NAME tool_registry_heap_test SRCS agent/tool_registry_heap_test.cpp
