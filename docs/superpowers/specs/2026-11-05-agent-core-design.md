@@ -63,6 +63,7 @@
 - **连接 spec 5.3 模型配置**：`options` 新增两项，都对 `llm` 配置有效：
   - `vision`：布尔，是否支持图片输入。"测试连接"时自动探测一次，用户也可以手动改；
   - `context_window`：整数，单位 token，默认 65536。
+- `llm` 配置另有五项方言选项（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.2）：`out_tokens`、`out_field`、`reasoning`、`system_msgs`、`parallel_tools`，取值与默认见该 spec，优先级为配置、预设 `defaults`、内置值。
 - **系统设置**：新增 `agent` 命名空间：
   - `day_tokens`：每天最多消耗的 token 数，0 表示不限，默认 0。
 
@@ -123,6 +124,7 @@
 ### 3.3 上下文长度
 
 - 用"字节数 ÷ 3"粗估 token，再乘以按模型校准的系数 `est_scale_pct`（百分比，默认 100，限定在 50–300）：每次请求成功后，取回复 `usage.prompt` 与这次请求粗估值之比更新它，跨轮保留；一轮开始时激活的配置（id）或模型名与上次校准的不同（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.10），就回到 100。超过激活配置 `context_window` 的 75%（`kCompressPercent`）时，额外请求一次，把最早的若干轮压成一段摘要，替换原文，压到 40%（`kCompressTargetPercent`）以下。原文仍保存在对话记录里。
+- 新对话的衔接（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.8）：对话超过 `kRolloverBytes` 归档前，先请求一次摘要，作为 `carry` 保留在新对话开头；失败则照旧不带摘要。回复因 `finish_reason: length` 被截断（且没有工具调用）时，续写一次（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.7）。
 - 工具结果分两种（2026-11-14 修订）：
   - **正在进行的一轮**的工具结果整段发给模型，最多 `kLiveToolResultBytes`（96 KB：最大的工具载荷 64 KB，即 `kReadMaxBytes` / `kHttpMaxMaxBytes`，加上 JSON 转义和元数据）。模型这一轮刚读的文件要能完整看到，否则它会基于截断的内容改写场景；
   - **更早各轮**的工具结果最多保留 `kToolResultKeepBytes`（4 KB），超出部分截断并注明总长度。网页上可以展开查看完整内容。
@@ -151,6 +153,7 @@
 - 位置：System 区 `/int/system/agent/`。当前对话 `current.jsonl`，每行一条消息；最多保留 5 个归档 `archive-<n>.jsonl`，超出时删除最旧的。归档是 Agent 自己的对话记录，不是场景文件，不受 3b-1 "不自动删除场景文件"的约束。
 - 写入：每条消息在 `wisp.fs` 上追加写入。一轮开始时写一条"轮次开始"标记，结束时写"轮次结束"，开机时据此识别中断的轮次。
 - 内存里的副本放在 PSRAM。
+- `carry` 行（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.8）：`{"seq","ts","role":"carry","turn":0,"text","from":<归档编号>}`，只出现在新对话开头；旧固件读到会丢弃这一行，其余照常加载。
 - "清空全部对话"需要设备确认（第 6.1 节）。恢复出厂时一并清除。
 
 ### 3.6 `net::LlmClient`
@@ -161,6 +164,7 @@
   - 汇总文字增量；
   - 按 `index` 拼接 `tool_calls` 的分片（`id`、`function.name`、`function.arguments`）；
   - 读取 `finish_reason` 和 `usage`（请求时带 `stream_options.include_usage`）。
+- 方言字段（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.2–3.4）：请求体按配置的方言写输出上限（`out_tokens` 与 `out_field`）、`parallel_tool_calls`；`reasoning=echo` 时读取流里的 `delta.reasoning_content`，并在本轮的 assistant 消息上原样回传（只在内存里保留，不写入对话记录）；`system_msgs=first` 时，摘要、`carry` 和动态信息等可移动的 system 内容合并进 user 消息，包在 `<context>…</context>` 里。
 - 请求体支持图片内容片段：`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`。
 - API Key 只在这里经 `ModelProfileService::active_for_request(llm)` 取得，加到请求头。Key 不进对话、日志、工具结果或界面。
 - TLS 握手经已有的 `TlsGate`，同一时间只有一次握手。

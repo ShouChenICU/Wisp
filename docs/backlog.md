@@ -82,7 +82,6 @@ The full list is the 30-row device acceptance checklist kept with the `feat/scen
 Source: `feat/agent-core` review records.
 
 - `net::LlmClient`:
-  - a stored profile whose free-form `vision`/`context_window` option fails the new check is dropped at load, key included; drop only the bad option there;
   - an abort on an old ticket between retry attempts is a no-op, so callers must also make `cancelled()` true;
   - a transport error after `finish_reason` but before `[DONE]` fails a complete reply;
   - per-event `from_json` strings under 16 KB land in internal RAM briefly; measure with `mem` once `wisp.agent` exists.
@@ -94,7 +93,6 @@ Source: `feat/agent-core` review records.
 - Context assembly:
   - `sv()` (`turn_runner.cpp`) and `prefix_bytes()` (`agent_service.cpp`) are duplicated in `context.cpp`; move them to one internal header;
   - the prompt takes the date from `wall_s` but the weekday name from `DeviceSnapshot::weekday`; derive the name from `weekday_of(wall_s, offset)` and keep `weekday == 0` only as the "clock unset" flag;
-  - the compaction summary is a mid-history `system` message; gateways that hoist system messages would move it and break the cached prefix; consider a `user` message;
   - `compress()` appends while the loop still holds the history snapshot, which forces a full PSRAM copy; append after the snapshot scope closes;
   - a summary request that keeps timing out counts as a transport error, so the history never compresses and every request carries it whole;
   - the four new `AgentLoop` tests sit outside the test namespace.
@@ -175,7 +173,6 @@ Source: glyph partition review records.
 ## Voice clients (MVP spec 2)
 
 - `AsrClient`: the 15 s timeout applies to each attempt, so with one retry the worst case is 15 + 1 + 15 = 31 s. `LlmClient` keeps one overall deadline across its retries. Decide whether ASR should do the same.
-- `ModelProfileService` load: when a stored profile's options fail the newer per-kind checks (e.g. `language` on an llm profile), the whole profile is dropped, key included, without a word. Strip the bad options and keep the profile instead.
 
 ## Conversation controller (MVP shell)
 
@@ -441,3 +438,4 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 - The web page's "More settings" card shows an Enum key's raw codes as its choices, and gives an Int key that has choices a number field. No such key exists today.
 - `tools/check_settings.py` works line by line: a default or range restated two lines away from the key's name passes. Likely future false positives: unit conversions by 60 next to a seconds or minutes setting, and 255 (an 8-bit maximum) next to brightness; give such a line the `settings-literal-ok:` marker with its reason.
 - `SceneBackground.ErrorInBackgroundStopsAndNotifies` failed once under a loaded full run and passes 20 times alone; the same load-sensitive area as `SceneBackground.ExitClosesFromAnyState` (see the `close_slot()` finding under "State cells beside the events parked review findings").
+- `NetWiring.NetworkExpectedFollowsEnabledAndSavedNetworks` and `AppScenes.SelfCheckTakesTheImuBackWhenAFaultedPanelCloses` each failed once in a full suite run while two worktrees ran CI at the same time, and passed repeatedly alone; load-sensitive timing, find the wait that is too tight.

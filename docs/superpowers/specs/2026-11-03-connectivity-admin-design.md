@@ -223,7 +223,7 @@ Result<void> activate(std::string_view id);             // 设为其所属类型
 Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {base_url}/models
 ```
 
-- **配置项**：`id` 由服务生成（8 位小写十六进制随机数，创建后不变）；`kind` 创建后不可改；`name` 1–32 字节 UTF-8，可重名；`preset` 为预设 id，且该预设必须支持此 `kind`；`base_url`；`model`（可空，使用方在各自子项目要求非空）；`options` 为扩展字段（扁平对象，值为字符串，最多 8 个键，键不超过 15 字节，值不超过 64 字节），本子项目只定义 `tts` 的 `voice`（音色），其余键由子项目 5 按平台定义，未知键原样保存。全部类型合计最多 16 套，超出返回 409 `limit_reached`。
+- **配置项**：`id` 由服务生成（8 位小写十六进制随机数，创建后不变）；`kind` 创建后不可改；`name` 1–32 字节 UTF-8，可重名；`preset` 为预设 id，且该预设必须支持此 `kind`；`base_url`；`model`（可空，使用方在各自子项目要求非空）；`options` 为扩展字段（扁平对象，值为字符串，最多 8 个键，键不超过 15 字节，值不超过 64 字节），本子项目只定义 `tts` 的 `voice`（音色），其余键由子项目 5 按平台定义，未知键原样保存。`llm` 另有五项方言选项（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.2）：`out_tokens`、`out_field`、`reasoning`、`system_msgs`、`parallel_tools`，只对 `llm` 有效；取值优先级为配置自己的选项、预设的 `defaults`（`openai`：`out_field=max_completion_tokens`；`anthropic`：`system_msgs=first`）、内置值。读取存储的配置时，无效的选项单独丢弃，配置和 Key 保留。全部类型合计最多 16 套，超出返回 409 `limit_reached`。
 - **协议**：`llm` 只用 OpenAI 兼容协议（1.3 已定）。`asr`/`tts` **不限定协议**：本子项目只提供 OpenAI 兼容语音接口（`/audio/transcriptions`、`/audio/speech`）的预设；通义、火山、讯飞等私有流式协议的客户端、预设与专属字段（经 `options` 承载）在子项目 5 设计时加入，存储格式不变。
 - **预设表**：编译进 `wisp_core` 的常量表，每项 `{id, name, kinds, base_url, key_required}`。`name` 是平台品牌名，不翻译。新建时 `base_url` 未给出就取预设值；之后地址、模型都可自由修改，`preset` 只用于显示和默认值。不预填模型名（各平台更新太快），模型从"测试连接"返回的列表里选，也可以手动输入。以后增加平台只需在表中加一行。首批预设：
 
@@ -306,7 +306,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | | `POST /wifi/networks {ssid \| ssid_hex, password?}`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络；`ssid` 与 `ssid_hex` 必须且只能给一个，`ssid_hex` 不是偶数位十六进制时返回 400；`DELETE` 的路径段按 `%XX` 解码成原始字节 |
 | | `POST /wifi/networks/{ssid}/connect` | 是 | 用设备保存的密码连接这个已保存的网络，返回 202（与添加网络相同，连接在 net 任务上进行）；没有保存时返回 404 `not_found`。路径段与 `DELETE` 相同，按 `%XX` 解码成原始字节。与添加网络一样立即直接尝试它（不扫描、退避重置），即使它被标记为 `auth_failed` 也尝试一次，但不清除标记（只有重新输入密码才清除，见 4.2），也不写入任何东西；经配网热点调用时与添加网络一样算作这次配网的结果（见 4.3） |
 | 模型 | `GET /ai/profiles` | 是 | `{active, profiles}`，见 5.3 |
-| | `GET /ai/presets` | 是 | 预设表 |
+| | `GET /ai/presets` | 是 | 预设表；每行带 `defaults`（该预设的方言默认值，可为空对象） |
 | | `POST /ai/profiles {kind, name, preset, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 201，返回新配置（不含 Key） |
 | | `PUT /ai/profiles/{id} {name?, preset?, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 部分更新，未知字段 400；返回更新后的配置 |
 | | `DELETE /ai/profiles/{id}` | 是 | 见 5.3 的删除规则 |
