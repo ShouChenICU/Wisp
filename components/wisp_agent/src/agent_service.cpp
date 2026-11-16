@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "calibration.hpp"
+#include "turn_runner.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
@@ -27,27 +28,10 @@ constexpr const char* kTag = "agent";
 constexpr const char* kHolder = "system.agent";
 constexpr const char* kLockReason = "agent_turn";
 
-// Why a turn is being cut short; the first reason wins.
-enum class Abort : uint8_t { None, Stop, Network, Stall, Time };
-
-std::string_view sv(const os::LargeString& s) { return {s.data(), s.size()}; }
-
 size_t code_points(std::string_view s) {
     size_t n = 0;
     for (char c : s) n += (static_cast<unsigned char>(c) & 0xC0) != 0x80 ? 1 : 0;
     return n;
-}
-
-// Bytes in the longest prefix of `s` with at most `max_cp` code points.
-size_t prefix_code_points(std::string_view s, size_t max_cp) {
-    size_t cp = 0;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) {
-            if (cp == max_cp) return i;
-            ++cp;
-        }
-    }
-    return s.size();
 }
 
 // Bytes in the longest prefix of `s` of at most `max_bytes` bytes that
@@ -58,20 +42,6 @@ size_t prefix_bytes(std::string_view s, size_t max_bytes) {
     while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
     return n;
 }
-
-std::string summary(std::string_view s) {
-    return std::string(s.substr(0, prefix_code_points(s, kSummaryChars)));
-}
-
-struct Outcome {
-    const char* status = "done";
-    // AgentEvent::reason, set where the note that explains it is written.
-    const char* reason = "";
-    uint32_t steps = 0;
-    uint32_t tokens = 0;
-    // The turn's last reply or note: the done notice's text.
-    os::LargeString last_text;
-};
 
 static_assert(std::is_trivially_copyable_v<AgentStatus>,
               "the cell copies the status under its lock without allocating");
@@ -104,7 +74,7 @@ const char* to_string(AgentState s) {
     return "idle";
 }
 
-struct AgentService::Impl {
+struct AgentService::Impl final : TurnEnv {
     struct Done {
         os::Semaphore sem{1, 0};
         Result<void> result = Result<void>::ok();
@@ -145,6 +115,7 @@ struct AgentService::Impl {
     // A start() that failed leaves nothing running, so it may be retried.
     void reset_start() {
         timer.reset();
+        ctl.watch = nullptr;
         watch.reset();
         std::lock_guard<os::Mutex> lock(mu);
         started = false;
@@ -153,47 +124,53 @@ struct AgentService::Impl {
     // --- any thread ----------------------------------------------------
 
     uint64_t now() const { return deps.now_ms ? deps.now_ms() : os::now_ms(); }
+    uint64_t now_ms() const override { return now(); }
 
     void trigger(Abort why) {
         uint8_t none = static_cast<uint8_t>(Abort::None);
         abort.compare_exchange_strong(none, static_cast<uint8_t>(why));
         // A ticket from an earlier request is a no-op; on_armed covers a
         // request armed after this.
-        if (watch) watch->abort(ticket.load());
+        if (ctl.watch) ctl.watch->abort(ctl.ticket.load());
     }
 
     // Also the turn's time limit: every check of it counts.
-    bool aborted() {
+    bool aborted() override {
         if (in_turn.load() && now() - turn_start.load() > turn_ms.load()) trigger(Abort::Time);
         return abort.load() != static_cast<uint8_t>(Abort::None);
     }
+
+    Abort abort_reason() const override { return static_cast<Abort>(abort.load()); }
+
+    TurnControls& controls() override { return ctl; }
 
     // The check timer: short, no locks but the watch's own, no flash.
     void on_tick() {
         if (!in_turn.load()) return;
         aborted();
-        if (in_request.load() && now() - last_byte.load() > cfg.stall_ms) trigger(Abort::Stall);
+        if (ctl.in_request.load() && now() - ctl.last_byte.load() > cfg.stall_ms)
+            trigger(Abort::Stall);
     }
 
     // The Wi-Fi cell's callback, on wisp.bus: atomics and the watch only.
     // The first delivery (at start(), nothing in flight) does nothing.
     void on_wifi(const net::WifiSnapshot& w) {
-        if (w.state != net::WifiState::Connected && in_request.load()) trigger(Abort::Network);
+        if (w.state != net::WifiState::Connected && ctl.in_request.load()) trigger(Abort::Network);
     }
 
     // The cell itself, not a copy fed from its callback, which could only
     // lag behind it.
-    bool network_up() const {
+    bool network_up() const override {
         if (wifi != nullptr) return wifi->get().state == net::WifiState::Connected;
         return deps.network_up ? deps.network_up() : true;
     }
 
-    ui::Lang lang() const {
+    ui::Lang lang() const override {
         if (!deps.lang) return ui::Lang::Zh;
         return ui::parse_lang(deps.lang()).value_or(ui::Lang::Zh);
     }
 
-    void emit(const AgentEvent& e) {
+    void emit(const AgentEvent& e) override {
         std::vector<std::shared_ptr<Listener>> copy;
         {
             std::lock_guard<os::Mutex> lock(lmu);
@@ -227,7 +204,7 @@ struct AgentService::Impl {
 
     // --- wisp.agent (and start()) -------------------------------------
 
-    uint64_t append(Message m) {
+    uint64_t append(Message m) override {
         m.ts = deps.wall_s ? deps.wall_s() : 0;
         const Role role = m.role;
         Result<uint64_t> r = Result<uint64_t>::err(ErrorCode::Busy, "storage worker refused");
@@ -243,21 +220,19 @@ struct AgentService::Impl {
         return r.value();
     }
 
-    void note(ui::StrId id, uint32_t turn, Outcome* out = nullptr) {
-        note_text(ui::tr(id, lang()), turn, out);
-    }
+    void note(ui::StrId id, uint32_t turn) { note_text(ui::tr(id, lang()), turn); }
 
-    void note_text(std::string_view text, uint32_t turn, Outcome* out = nullptr) {
+    void note_text(std::string_view text, uint32_t turn) {
         Message m;
         m.role = Role::Note;
         m.turn = turn;
         m.text.assign(text);
-        if (out != nullptr) out->last_text = m.text;
         append(std::move(m));
     }
 
-    // A time limit in whole minutes for the note, at least 1.
-    static uint64_t minutes(uint64_t ms) { return std::max<uint64_t>(1, (ms + 30000) / 60000); }
+    // The running turn's notes (TurnEnv).
+    void note(ui::StrId id) override { note(id, turn_no); }
+    void note_text(std::string_view text) override { note_text(text, turn_no); }
 
     void marker(uint32_t turn, const char* kind, const char* status) {
         Message m;
@@ -268,7 +243,7 @@ struct AgentService::Impl {
         append(std::move(m));
     }
 
-    void set_state(AgentState s, std::string_view tool_name = {}) {
+    void set_state(AgentState s, std::string_view tool_name = {}) override {
         // Cut before any lock is taken, so that the work under the cell's
         // lock is memory work only.
         decltype(AgentStatus::tool) shown;
@@ -433,7 +408,7 @@ struct AgentService::Impl {
         turn_ms = next_turn_ms.load();
         const uint64_t start = now();
         turn_start = start;
-        last_byte = start;
+        ctl.last_byte = start;
         in_turn = true;
         if (timer) timer->start();
         core::WakeLock cpu_lock, net_lock;
@@ -461,10 +436,9 @@ struct AgentService::Impl {
         append(std::move(user));
         set_state(AgentState::Thinking);
 
-        Outcome out;
-        const ActiveLlm llm = active_llm();
-        cal.begin_turn(llm.profile_id, llm.model);
-        out.status = loop(turn, c.source, llm.window, out);
+        turn_no = turn;
+        Outcome out = TurnRunner(deps.llm, deps.tools, deps.store, deps.context, cal, *this)
+                          .run({turn, turn_serial, max_steps, start, turn_ms.load(), c.source});
 
         if (timer) timer->stop();
         in_turn = false;
@@ -509,430 +483,6 @@ struct AgentService::Impl {
         deps.notes->post_system(core::notice::kAgentDone, std::string(line));
     }
 
-    const char* finish_abort(uint32_t turn, Outcome& out) {
-        switch (static_cast<Abort>(abort.load())) {
-            case Abort::Time:
-                note_text(ui::tr_fill(ui::StrId::AgentTimeLimit, lang(),
-                                      std::to_string(minutes(turn_ms.load()))),
-                          turn, &out);
-                out.reason = "time_limit";
-                return "time_limit";
-            case Abort::Network:
-            case Abort::Stall:
-                set_state(AgentState::Error);
-                note(ui::StrId::AgentErrNetworkLost, turn, &out);
-                out.reason = "network_lost";
-                return "error";
-            case Abort::Stop:
-            case Abort::None:
-                break;
-        }
-        note(ui::StrId::AgentStopped, turn, &out);
-        out.reason = "stopped";
-        return "stopped";
-    }
-
-    // Answers the calls from `from` on without running them, so the next
-    // request still pairs every call with a result.
-    void skip_calls(uint32_t turn, std::span<const net::LlmToolCall> calls, std::string_view why) {
-        for (const net::LlmToolCall& c : calls) {
-            Message m;
-            m.role = Role::Tool;
-            m.turn = turn;
-            m.call_id.assign(c.id);
-            const ToolDef* def = deps.tools.find_wire(c.name);
-            m.tool.assign(def != nullptr ? std::string_view(def->name) : std::string_view(c.name));
-            m.ok = false;
-            m.text.assign(to_json(tool_error("cancelled", why).result));
-            append(std::move(m));
-        }
-    }
-
-    struct ActiveLlm {
-        uint32_t window = kDefaultContextWindow;
-        std::string model{};
-        std::string profile_id{};
-    };
-
-    // The provider's active model's context window, model and profile,
-    // read once per turn.
-    ActiveLlm active_llm() const {
-        const std::optional<net::LlmModelInfo> m = deps.llm.active_model();
-        if (!m) return {kDefaultContextWindow, "", ""};
-        return {m->context_window, m->model, m->profile_id};
-    }
-
-    BuiltRequest build(std::span<const Message> h, Source source, BuildOptions opts = {}) const {
-        if (!deps.context) return build_history(h, opts);
-        DeviceSnapshot d = deps.context(source);
-        d.source = source;
-        return build_request(h, d, opts);
-    }
-
-    // One model request under the turn's controls: the user's stop, the
-    // network, the stall check and the time limit.
-    net::LlmResult request(std::span<const net::LlmMessage> messages, std::string_view tools_json,
-                           std::function<void(std::string_view)> on_text) {
-        const uint64_t spent = now() - turn_start.load();
-        const uint64_t limit = turn_ms.load();
-        const uint64_t left = spent >= limit ? 1 : limit - spent;
-        net::LlmCall call;
-        call.messages = messages;
-        call.tools_json = tools_json;
-        // Past the turn's deadline by a margin, so the time limit (checked
-        // every kCheckMs) ends the request, not its own deadline, which
-        // would read as a transport error.
-        call.timeout_ms =
-            static_cast<uint32_t>(std::min<uint64_t>(left + kDeadlineMarginMs, kRequestMs));
-        call.watch = watch.get();
-        call.on_armed = [this](uint32_t t) {
-            ticket = t;
-            if (abort.load() != static_cast<uint8_t>(Abort::None)) watch->abort(t);
-        };
-        call.on_text = std::move(on_text);
-        call.on_bytes = [this] { last_byte = now(); };
-        call.cancelled = [this] { return aborted(); };
-        call.on_tool = [this](const net::LlmToolProgress& p) {
-            const ToolDef* def = deps.tools.find_wire(p.name);
-            AgentEvent e;
-            e.kind = AgentEvent::Kind::ToolPrep;
-            e.tool.assign(def != nullptr ? std::string_view(def->name) : p.name);
-            e.bytes = static_cast<uint32_t>(std::min<size_t>(p.arg_bytes, UINT32_MAX));
-            emit(e);
-        };
-        last_byte = now();
-        in_request = true;
-        net::LlmResult res = deps.llm.complete(call);
-        in_request = false;
-        return res;
-    }
-
-    // A connection dropped after finish_reason but before [DONE] still
-    // delivered the whole reply.
-    static bool whole(const net::LlmResult& res) {
-        const bool finished = res.finish == net::LlmFinish::Stop ||
-                              res.finish == net::LlmFinish::ToolCalls ||
-                              res.finish == net::LlmFinish::Length;
-        return res.error == net::LlmError::None ||
-               (res.error == net::LlmError::Transport && finished);
-    }
-
-    // Summarizes history[first..last] and stores the summary, or, when the
-    // model fails to give one, stores an empty one (the turns are dropped
-    // from the context; the file keeps them) and says so. Without a model,
-    // with a refused key or without a connection nothing is stored: the
-    // request that follows fails the same way and explains it, and the
-    // turns stay for a later attempt (Kept).
-    enum class Compressed : uint8_t { Stored, Kept, Aborted };
-    Compressed compress(uint32_t turn, std::span<const Message> h,
-                        std::pair<uint64_t, uint64_t> range, Outcome& out) {
-        net::LlmResult res;
-        {
-            const BuiltRequest req = build_summary_request(h, range.first, range.second);
-            res = request({req.messages.data(), req.messages.size()}, {}, nullptr);
-        }
-        if (res.usage) out.tokens += res.usage->total;
-        if (aborted()) return Compressed::Aborted;
-        const bool ok = whole(res) && !res.text.empty();
-        if (!ok &&
-            (res.error == net::LlmError::NoModel || res.error == net::LlmError::Unauthorized ||
-             res.error == net::LlmError::Transport)) {
-            WLOG_W(kTag, "context not compressed: %s", net::to_string(res.error));
-            return Compressed::Kept;
-        }
-        WLOG_I(kTag, "context %s seq %llu-%llu", ok ? "summarized" : "dropped",
-               static_cast<unsigned long long>(range.first),
-               static_cast<unsigned long long>(range.second));
-        Message m;
-        m.role = Role::Summary;
-        m.turn = turn;
-        m.covers_first = range.first;
-        m.covers_last = range.second;
-        if (ok) m.text = std::move(res.text);
-        append(std::move(m));
-        if (!ok) note(ui::StrId::AgentContextDropped, turn);
-        return Compressed::Stored;
-    }
-
-    const char* loop(uint32_t turn, Source source, uint32_t window, Outcome& out) {
-        uint32_t generated = 0;
-        // Set once the context has been compressed for the coming request
-        // (first sparing the last kKeepRecentTurns turns, then only the
-        // running one), so a history still too long after that is sent as
-        // it is, with the running turn's results cut.
-        bool compressed = false;
-        bool compressed_deep = false;
-        // The model refused the last request as too long: the next one is
-        // treated as over the window whatever the estimate says. Once per
-        // turn.
-        bool overflow = false;
-        bool overflow_retried = false;
-        // The refused request's estimate while its retry is being
-        // prepared: a retry that did not shrink is the same request.
-        std::optional<size_t> refused_tokens;
-        const std::string_view tools_json = sv(deps.tools.tools_json());
-        const size_t tools_tokens = tools_json.size() / 3;
-        for (;;) {
-            if (aborted()) return finish_abort(turn, out);
-            if (!network_up()) {
-                set_state(AgentState::Error);
-                note(ui::StrId::AgentErrNetwork, turn, &out);
-                out.reason = "network";
-                return "error";
-            }
-            set_state(AgentState::Thinking);
-
-            net::LlmResult res;
-            size_t sent_tokens = 0;
-            {
-                const std::shared_ptr<const History> hist = deps.store.history();
-                BuiltRequest req = build(*hist, source);
-                const bool over =
-                    overflow ||
-                    needs_compression(cal.scaled(req.est_tokens + tools_tokens), window);
-                if (over && !compressed_deep) {
-                    // pick_compression() counts bytes / 3: the window it
-                    // fills is the real one unscaled.
-                    const uint32_t est_window = cal.unscaled_window(window);
-                    const size_t fixed = req.fixed_tokens + tools_tokens;
-                    std::optional<std::pair<uint64_t, uint64_t>> range;
-                    if (!compressed) range = pick_compression(*hist, est_window, fixed);
-                    compressed = true;
-                    if (!range) {
-                        compressed_deep = true;
-                        range = pick_compression(*hist, est_window, fixed, 1);
-                    }
-                    if (range) {
-                        const Compressed c = compress(turn, *hist, *range, out);
-                        if (c == Compressed::Aborted) return finish_abort(turn, out);
-                        // A summary request that failed this way fails the
-                        // same way again: go on without summarizing.
-                        if (c == Compressed::Kept) compressed_deep = true;
-                        // Rebuilt with the summary in place, and judged by
-                        // the estimate again.
-                        if (c == Compressed::Stored) overflow = false;
-                        continue;
-                    }
-                }
-                if (overflow ||
-                    uint64_t{cal.scaled(req.est_tokens + tools_tokens)} > uint64_t{window}) {
-                    // Nothing more to summarize: the running turn's own
-                    // results are what does not fit.
-                    WLOG_W(kTag, "context over the window: cutting this turn's tool results");
-                    req = build(*hist, source, {.live_tool_bytes = kToolResultKeepBytes});
-                }
-                compressed = false;
-                compressed_deep = false;
-                overflow = false;
-                sent_tokens = req.est_tokens + tools_tokens;
-                if (refused_tokens && sent_tokens >= *refused_tokens) {
-                    // Nothing was summarized or cut: the model would refuse
-                    // it again.
-                    set_state(AgentState::Error);
-                    note(ui::StrId::AgentErrContext, turn, &out);
-                    out.reason = "context";
-                    return "error";
-                }
-                refused_tokens.reset();
-                bool output = false;
-                res = request({req.messages.data(), req.messages.size()}, tools_json,
-                              [&](std::string_view d) {
-                                  if (!output) {
-                                      output = true;
-                                      set_state(AgentState::Output);
-                                  }
-                                  AgentEvent e;
-                                  e.kind = AgentEvent::Kind::Delta;
-                                  e.text.assign(d);
-                                  emit(e);
-                              });
-            }
-            if (res.usage) out.tokens += res.usage->total;
-            if (whole(res) && res.usage && res.usage->prompt > 0) {
-                cal.observe(res.profile_id, res.model, res.usage->prompt, sent_tokens);
-            }
-
-            if (!whole(res)) {
-                if (!res.text.empty()) {
-                    Message m;
-                    m.role = Role::Assistant;
-                    m.turn = turn;
-                    m.text = res.text;
-                    append(std::move(m));
-                }
-                // aborted() also checks the time limit: a request that ran
-                // into it ends as time_limit, not as an error.
-                if (aborted()) return finish_abort(turn, out);
-                if (res.error == net::LlmError::ContextLength && !overflow_retried) {
-                    // Our estimate was short of the model's count: trust it
-                    // less from now on, compress harder and try once more.
-                    overflow_retried = true;
-                    overflow = true;
-                    refused_tokens = sent_tokens;
-                    cal.overflow(res.profile_id, res.model);
-                    WLOG_W(kTag, "context too long for the model: compressing and retrying");
-                    continue;
-                }
-                struct Why {
-                    ui::StrId id;
-                    const char* reason;
-                };
-                Why why{ui::StrId::AgentErrServer, "server"};
-                if (res.error == net::LlmError::ContextLength)
-                    why = {ui::StrId::AgentErrContext, "context"};
-                if (res.error == net::LlmError::NoModel)
-                    why = {ui::StrId::AgentErrNoModel, "no_model"};
-                if (res.error == net::LlmError::Unauthorized)
-                    why = {ui::StrId::AgentErrUnauthorized, "unauthorized"};
-                if (res.error == net::LlmError::Transport)
-                    why = res.any_body ? Why{ui::StrId::AgentErrNetworkLost, "network_lost"}
-                                       : Why{ui::StrId::AgentErrNetwork, "network"};
-                set_state(AgentState::Error);
-                note(why.id, turn, &out);
-                out.reason = why.reason;
-                return "error";
-            }
-
-            Message reply;
-            reply.role = Role::Assistant;
-            reply.turn = turn;
-            reply.text = res.text;
-            for (net::LlmToolCall& c : res.tool_calls) {
-                // Every call needs an id for its result to refer to.
-                // The turn keeps the id unique in the whole conversation,
-                // where the request builder pairs calls with results.
-                if (c.id.empty())
-                    c.id = "call_" + std::to_string(turn) + "_" + std::to_string(++generated);
-                const ToolDef* def = deps.tools.find_wire(c.name);
-                ToolCallRec rec;
-                rec.id.assign(c.id);
-                rec.name.assign(def != nullptr ? std::string_view(def->name)
-                                               : std::string_view(c.name));
-                rec.args = c.arguments;
-                reply.calls.push_back(std::move(rec));
-            }
-            if (!res.text.empty()) out.last_text = res.text;
-            if (!reply.text.empty() || !reply.calls.empty()) append(std::move(reply));
-            if (res.tool_calls.empty()) {
-                if (aborted()) return finish_abort(turn, out);
-                return "done";
-            }
-
-            const std::span<const net::LlmToolCall> calls(res.tool_calls);
-            for (size_t i = 0; i < calls.size(); ++i) {
-                if (aborted()) {
-                    skip_calls(turn, calls.subspan(i), "the turn was stopped");
-                    return finish_abort(turn, out);
-                }
-                if (out.steps >= max_steps) {
-                    skip_calls(turn, calls.subspan(i), "the turn reached its step limit");
-                    note(ui::StrId::AgentStepLimit, turn, &out);
-                    out.reason = "step_limit";
-                    return "step_limit";
-                }
-                // With finish_reason "length" the last call's arguments
-                // may be cut anywhere: never hand them to the tool.
-                const bool cut = res.finish == net::LlmFinish::Length && i + 1 == calls.size();
-                run_tool(turn, calls[i], cut, out);
-            }
-        }
-    }
-
-    void run_tool(uint32_t turn, const net::LlmToolCall& c, bool cut, Outcome& out) {
-        const ToolDef* def = deps.tools.find_wire(c.name);
-        const std::string dotted = def != nullptr ? std::string(sv(def->name)) : c.name;
-        set_state(AgentState::Tool, dotted);
-        AgentEvent start;
-        start.kind = AgentEvent::Kind::ToolStart;
-        start.tool = dotted;
-        start.args = summary(sv(c.arguments));
-        emit(start);
-
-        const uint64_t t0 = now();
-        ToolOutput o;
-        if (cut) {
-            o = tool_error("bad_args", "the arguments were cut off (finish_reason length)",
-                           Map{{"field", ""}});
-        } else {
-            const uint64_t spent = now() - turn_start.load();
-            const uint64_t limit = turn_ms.load();
-            const uint64_t left = spent >= limit ? 0 : limit - spent;
-            ToolCtx ctx;
-            ctx.cancelled = [this] { return aborted(); };
-            ctx.deadline_ms = os::now_ms() + left;
-            ctx.lang = ui::lang_code(lang());
-            ctx.turn = turn_serial;
-            o = deps.tools.call(c.name, sv(c.arguments), ctx);
-        }
-        ++out.steps;
-        const auto ms = static_cast<unsigned>(now() - t0);
-
-        // A successful step the system tells the user about (spec 6.2):
-        // the model learns it was told from the result itself, so the
-        // history gains no extra system or user message.
-        const bool noted = o.ok && !o.note.empty();
-        if (noted && !o.result_json.empty()) {
-            os::LargeString fields;
-            fields.reserve(o.result_json.size() + o.note.size() + 32);
-            const std::string_view json(o.result_json.data(), o.result_json.size());
-            if (json.size() >= 2 && json.front() == '{' && json.back() == '}') {
-                fields.append(json.data(), json.size() - 1);
-                if (fields.size() > 1) fields.push_back(',');
-                append_json_string(fields, "system_note");
-                fields.push_back(':');
-                append_json_string(fields, o.note);
-                fields.push_back('}');
-                o.result_json = std::move(fields);
-            }
-        } else if (noted && o.result.type() == Value::Type::Map) {
-            Map fields = o.result.as_map();
-            fields["system_note"] = Value(o.note);
-            o.result = Value(std::move(fields));
-        }
-
-        Message m;
-        m.role = Role::Tool;
-        m.turn = turn;
-        m.call_id.assign(c.id);
-        m.tool.assign(dotted);
-        m.ok = o.ok;
-        {
-            if (!o.result_json.empty()) {
-                m.text.assign(o.result_json.data(), o.result_json.size());
-            } else {
-                const std::string json = to_json(o.result);
-                m.text.assign(json);
-            }
-        }
-        std::string code;
-        if (!o.ok) {
-            const Value* err = o.result.find("error");
-            code =
-                err != nullptr && err->type() == Value::Type::String ? err->as_string() : "failed";
-        }
-        // The model chose the name: only registered names go into the log.
-        const char* logged = def != nullptr ? def->name.c_str() : "unknown";
-        if (o.ok) {
-            WLOG_I(kTag, "tool %s ok %u ms", logged, ms);
-        } else {
-            WLOG_I(kTag, "tool %s error:%s %u ms", logged, code.c_str(), ms);
-        }
-        AgentEvent end;
-        end.kind = AgentEvent::Kind::ToolEnd;
-        end.tool = dotted;
-        end.ok = o.ok;
-        end.result = summary(sv(m.text));
-        append(std::move(m));
-        if (noted) {
-            Message n;
-            n.role = Role::Note;
-            n.turn = turn;
-            n.text.assign(o.note);
-            append(std::move(n));
-        }
-        emit(end);
-    }
-
     AgentDeps deps;
     AgentConfig cfg;
 
@@ -960,6 +510,8 @@ struct AgentService::Impl {
     // (SceneWorkspace's sessions) get this serial instead; it is never
     // reset. Only the agent task reads or writes it.
     uint32_t turn_serial = 0;
+    // The running turn's number, for TurnEnv's notes (wisp.agent only).
+    uint32_t turn_no = 0;
 
     std::atomic<ConfirmService*> confirm{nullptr};
 
@@ -973,8 +525,6 @@ struct AgentService::Impl {
     // Turn control, read by the check timer and the Wi-Fi callback.
     std::atomic<uint8_t> abort{static_cast<uint8_t>(Abort::None)};
     std::atomic<bool> in_turn{false};
-    std::atomic<bool> in_request{false};
-    std::atomic<uint32_t> ticket{0};
     std::atomic<uint64_t> turn_start{0};
     // set_turn_limits()'s values, taken at each turn's start into
     // max_steps (wisp.agent only) and turn_ms (also read by the timer).
@@ -982,8 +532,9 @@ struct AgentService::Impl {
     std::atomic<uint32_t> next_turn_ms;
     uint32_t max_steps = 0;
     std::atomic<uint32_t> turn_ms{0};
-    std::atomic<uint64_t> last_byte{0};
     os::LargeUnique<net::RequestWatch> watch;
+    // The request in flight; ctl.watch is watch.get() from start() on.
+    TurnControls ctl;
     std::unique_ptr<os::Timer> timer;
 
     // The estimate in the model's own tokens: bytes / 3, scaled by what
@@ -1021,6 +572,7 @@ Result<void> AgentService::start() {
         s.started = true;
     }
     s.watch = net::RequestWatch::create();
+    s.ctl.watch = s.watch.get();
     if (!s.watch) WLOG_W(kTag, "no request watch: a stop waits for the stream's next bytes");
     s.timer = os::Timer::create("wisp.agent", kCheckMs, /*periodic=*/true, [&s] { s.on_tick(); });
     if (!s.timer) WLOG_W(kTag, "no check timer: stalled streams end at their deadline only");

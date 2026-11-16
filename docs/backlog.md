@@ -92,7 +92,7 @@ Source: `feat/agent-core` review records.
   - the `TurnBegin` text and serialized tool results are `std::string`, briefly in internal RAM; include them in the device `mem` measurement;
   - the done-notice id carries the reply's first line, so each turn adds a notice instead of replacing one.
 - Context assembly:
-  - `sv()` and `prefix_bytes()` are duplicated between `context.cpp` and `agent_service.cpp`; move them to one internal header;
+  - `sv()` (`turn_runner.cpp`) and `prefix_bytes()` (`agent_service.cpp`) are duplicated in `context.cpp`; move them to one internal header;
   - the prompt takes the date from `wall_s` but the weekday name from `DeviceSnapshot::weekday`; derive the name from `weekday_of(wall_s, offset)` and keep `weekday == 0` only as the "clock unset" flag;
   - the compaction summary is a mid-history `system` message; gateways that hoist system messages would move it and break the cached prefix; consider a `user` message;
   - `compress()` appends while the loop still holds the history snapshot, which forces a full PSRAM copy; append after the snapshot scope closes;
@@ -126,7 +126,7 @@ Source: `feat/agent-core` review records.
   - with no `net.wifi` device (simulator) the context reports the network as up.
 - Device confirm and chat page:
   - `AgentService::stop()` clears pending commands, so a queued Clear never answers `cleared` and the web page waits on the device;
-  - the comment at `agent_service.cpp` "history gains no extra system or user message" reads as if no message is added, but a `Note` is (not sent to the model);
+  - the comment at `turn_runner.cpp` (`run_tool()`) "history gains no extra system or user message" reads as if no message is added, but a `Note` is (not sent to the model);
   - a confirm close dropped on a full UI queue leaves the dialog up, and auto screen-off can blank the screen during the 30 s confirm; hold a wake lock while asking;
   - the chat page hides messages by role rather than the `hidden` field;
   - the `ws.js` typedef comment does not list the `agent` kind;
