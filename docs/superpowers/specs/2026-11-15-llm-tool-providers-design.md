@@ -1,7 +1,7 @@
 # LLM and Tool Provider Interfaces — Design
 
 - Date: 2026-11-15
-- Status: draft — awaiting the owner's approval
+- Status: approved by the owner on 2026-11-16 (all proposals of section 12 accepted)
 - Scope: phase J of `docs/superpowers/plans/2026-11-14-architecture-optimization-roadmap.md`. The agent talks to the model through an internal `net::LlmProvider` seam, with `LlmClient` as its chat-completions implementation; per-profile dialect options cover the known differences between OpenAI-compatible providers; messages carry content parts and the profile's `vision` option gets a producer (`ui.screenshot`); a reply cut by `finish_reason: "length"` is continued once; tools outside the fixed `tools` array come from `agent::ToolProvider`s (scene tools, and an MCP client over streamable HTTP); `ToolThread::Io` becomes a one-shot task; the 1 MiB rollover carries a summary into the new conversation; `TurnRunner` leaves `AgentService::Impl`. The wire protocol stays OpenAI chat completions (AGENTS.md section 1): the provider interface is a seam inside the firmware, not a plan for other protocols.
 - Builds on: the agent-core spec (`2026-11-05-agent-core-design.md`: 3.2 context layout, 3.3 context length, 3.5 persistence, 3.6 `LlmClient`, 5.4 screenshots, 6.3 untrusted content), the agent-tools spec (`2026-11-09-agent-tools-design.md`: 3.2 `SceneHttp`'s agent principal, 5 scene tools), the MVP spec (`2026-11-06-mvp-design.md`: screenshots deferred, `vision` kept), the connectivity spec 5.3 (model profiles, write-only keys), the settings-model shortcuts spec (`2026-11-13-settings-model-shortcuts-design.md`: what the device shows of profiles), the flash-thread design (only `wisp.fs` touches flash), and the agent turn reliability plan (`2026-11-14-agent-turn-reliability.md`: retries, overflow recovery, live tool results; it left the rollover summary to this phase).
 - Serves: phase K (voice protocol interfaces follow the same "interface plus one adapter for today's request shape" pattern), phase L (the provider interfaces are what the composition root wires; `AgentDeps` loses its `ModelProfileService`), phase M (`SceneToolHost` behind `SlotHost` is the scene tool provider's back end).
@@ -495,7 +495,9 @@ J4 can run in its own worktree in parallel with J1-J3; the only shared file is `
 | "rollover carries a summary" | a `carry` role written before the archive's new conversation starts; a failed carry still rolls over | a rollover must not be blocked by the network (3.8) |
 | (not listed) | invalid stored options dropped one by one | seven options make the old "drop the profile" rule costlier (3.2) |
 
-## 12. Open decisions for the owner
+## 12. Decisions
+
+Approved by the owner on 2026-11-16: every proposal below is adopted as written. The alternatives stay recorded for a later change.
 
 1. **Dialect option set.** *Proposal: the five options of 3.2, with `system_msgs` covering all movable system content.* If wrong: an option is one table row and one branch in the body builder; renaming one later needs a load-time alias for stored profiles.
 2. **Preset defaults.** *Proposal: ship the mechanism; set `out_field = max_completion_tokens` on `openai` and `system_msgs = first` on `anthropic`; every other preset keeps the built-in defaults until a device check (section 8, items 3-5) shows otherwise.* Both are from provider documentation, unverified. If wrong: a provider refuses or mis-orders requests for profiles on that preset that do not set the option themselves; the fix is one preset row, and a profile can override it at once.
