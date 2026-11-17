@@ -14,6 +14,7 @@
 #include <limits>
 #include <system_error>
 
+#include "wisp/base/number_text.hpp"
 #include "wisp/scene/vm.hpp"
 
 namespace wisp::scene {
@@ -154,27 +155,21 @@ bool put_string(Enc& e, const char* s, size_t n) {
 }
 
 bool put_number(Enc& e, int idx) {
-    char buf[40];
-    std::to_chars_result r;
     if (lua_isinteger(e.L, idx)) {
-        r = std::to_chars(buf, buf + sizeof(buf), static_cast<int64_t>(lua_tointeger(e.L, idx)));
-    } else {
-        const double d = static_cast<double>(lua_tonumber(e.L, idx));
-        if (!std::isfinite(d)) return fail(e, kJsonNotSerializable);
-        // Shortest text that reads back as the same double.
-        r = std::to_chars(buf, buf + sizeof(buf) - 2, d);
-        if (r.ec != std::errc()) return fail(e, kJsonNotSerializable);
-        // "3" would come back as an integer.
-        bool plain = true;
-        for (const char* p = buf; p < r.ptr; ++p)
-            if (*p == '.' || *p == 'e') plain = false;
-        if (plain) {
-            *r.ptr++ = '.';
-            *r.ptr++ = '0';
-        }
+        char buf[24];
+        const auto r =
+            std::to_chars(buf, buf + sizeof(buf), static_cast<int64_t>(lua_tointeger(e.L, idx)));
+        return put(e, buf, static_cast<size_t>(r.ptr - buf));
     }
-    if (r.ec != std::errc()) return fail(e, kJsonNotSerializable);
-    return put(e, buf, static_cast<size_t>(r.ptr - buf));
+    const double d = static_cast<double>(lua_tonumber(e.L, idx));
+    if (!std::isfinite(d)) return fail(e, kJsonNotSerializable);
+    // Shortest text that reads back as the same double.
+    char text[kDoubleTextMax];
+    const size_t n = format_double(d, text);
+    if (!put(e, text, n)) return false;
+    // "3" would come back as an integer.
+    const bool plain = std::memchr(text, '.', n) == nullptr && std::memchr(text, 'e', n) == nullptr;
+    return !plain || put(e, ".0", 2);
 }
 
 bool encode(Enc& e, int idx);
@@ -475,8 +470,7 @@ void decode_number(Dec& d) {
         // Past int64: a float, like Lua's own reader.
     }
     double v = 0;
-    auto r = std::from_chars(s, q, v);
-    if (r.ec != std::errc() || r.ptr != q) {
+    if (!parse_double(std::string_view(s, static_cast<size_t>(q - s)), v)) {
         d.p = s;
         bad(d);
     }

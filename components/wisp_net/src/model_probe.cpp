@@ -1,15 +1,14 @@
 #include "wisp/net/model_probe.hpp"
 
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
+#include "wisp/base/number_text.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/large.hpp"
 
@@ -98,11 +97,10 @@ public:
             if (pos_ < s_.size() && (s_[pos_] == '+' || s_[pos_] == '-')) ++pos_;
             if (!digits()) return std::nullopt;
         }
+        // Out of range (or leading zeros, which JSON does not allow)
+        // parses as a number that is never used.
         double v = 0;
-        const auto [end, ec] = std::from_chars(s_.data() + start, s_.data() + pos_, v);
-        // Out of range parses as a number that is never used.
-        if (end != s_.data() + pos_) return 0.0;
-        return ec == std::errc() ? v : 0.0;
+        return parse_double(s_.substr(start, pos_ - start), v) ? v : 0.0;
     }
 
     // Any value.
