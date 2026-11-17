@@ -2,9 +2,15 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
-## Unreleased
+## 0.6.0 — 2026-11-16
 
 ### Features
+
+- Vision for models that take images (the profile's "Vision" option): the agent can look at the screen with `ui.screenshot` (the visible part of the panel, cropped, at most 240 px wide, JPEG) and fetch an image with `http.fetch` `as:"image"` (JPEG or PNG, at most 128 KiB). Only the newest image of a turn is sent whole; images are never stored in the conversation. Models without vision are not offered `ui.screenshot`, and `http.fetch` refuses images for them.
+- MCP servers (the Model Context Protocol, over streamable HTTP): the agent finds and calls their tools through `tools.find` and `tools.call`, beside the scenes' tools, and manages the servers with `mcp.servers`, `mcp.add`, `mcp.remove` and `mcp.enable` (no confirmation, a note in the conversation). The web Models page has an MCP servers card to add, edit, enable, test and delete servers; header values (such as a bearer token) are write-only and never read back, server messages are scrubbed of them, and a server with stored headers is never followed through a redirect. A factory reset removes the servers.
+- Advanced dialect options for a chat model profile, on the web Models page: the output token limit (`out_tokens`) and the field that carries it (`max_tokens` or `max_completion_tokens`), whether the model's reasoning is sent back (`reasoning` `echo`, for providers that require it), whether system messages may only come first (`system_msgs` `first`) and parallel tool calls (`parallel_tools`). A preset can supply its own defaults; an invalid stored option is dropped on its own, with a warning naming the profile.
+- A reply cut by the output limit (`finish_reason` `length`) is continued once with a second request; a second cut keeps the text with a note.
+- A conversation that rolls over into the archive carries a short summary of itself into the new one, so the agent keeps the thread; the turn shows as running while the summary is written.
 
 - The serial `mem` command prints a line `bus dropped=<n> cell_subs=<n>` (events the bus dropped on overflow and live state-cell subscriptions), then one line per edge inbox, `inbox <name> overflows=<n>` (`scene_lifecycle`, `power_key`, `talk_key`): key presses and scene lifecycle steps dropped because their consumer fell behind.
 - Add a Stop button right of the wisp on the home screen while a turn runs, with a 48 px touch target on every screen shape.
@@ -52,6 +58,9 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - Internal: every system setting is declared in `wisp/core/settings_schema.hpp`; the settings service, the REST routes, the agent tools, `wisp.device.info()`, the device's settings page and the web System page take keys, ranges, defaults, choices and labels from it. `tools/check_settings.py` (run by `tools/ci.sh`) fails when code outside the schema restates a setting's default or range on the line that names it (tests exempt).
 - Internal: host builds now fail on an aggregate member left without a default (`-Werror=missing-field-initializers`), as the firmware build does; the firmware builds for both boards with ESP-IDF v6.0.3.
 - Internal: the hardware diagnostics' performance overlay toggle saves through the settings service, so it also publishes `system.settings` (the payload is unchanged; the overlay is not in it).
+- The token estimate's calibration is kept per model profile and model, and resets when either changes.
+- Internal: the agent reaches its model through `net::LlmProvider` and runs each turn in `TurnRunner`; scene tools and MCP servers are tool providers behind `tools.find`/`tools.call`. Blocking tools such as `ui.screenshot` run on a one-shot task, `wisp.tool.io`. The JPEG encoder is the vendored `stb_image_write` (public domain / MIT).
+- A smaller firmware image (about 230 KB less on both boards; 78.6 % of the 2.16 board's app slot): JSON numbers are written and read without libstdc++'s floating-point `to_chars`/`from_chars`, the `docs.read` texts are stored compressed and inflated per read, the codec drivers neither board has are left out (it takes a regenerated `sdkconfig`), and the web UI's scripts and styles are minified when packed.
 
 ### Fixes
 
@@ -71,7 +80,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - The device's settings page shows changes made by voice or on the web page while it is open, and puts a row back when its change was not saved.
 - A brightness left in storage by a failed settings save reaches the screen.
 
-Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, the storage worker lanes, the state subscriber changes, the key and scene edge changes and the settings schema (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run", "Storage worker lanes: device checks not run", "State cell subscribers: device checks not run", "State cell edges and cleanup: device checks not run" and "Settings schema: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run".
+Device checks are pending for the turn reliability, the voice and wake, the scene scheduling and install safety, the storage worker lanes, the state subscriber changes, the key and scene edge changes and the settings schema (listed in `docs/backlog.md`, "Agent turn reliability: device checks not run", "Voice and wake responsiveness: device checks not run", "Scene scheduling: device checks not run", "Storage worker lanes: device checks not run", "State cell subscribers: device checks not run", "State cell edges and cleanup: device checks not run" and "Settings schema: device checks not run"); these changes are verified in the simulator and unit tests only. The device-model changes (devices found by role, self-describing devices) are likewise verified in the simulator and unit tests only; their device checks are listed in `docs/backlog.md`, "Device model: device checks not run". The LLM provider changes (dialect options, length continuation, rollover carry, vision, MCP servers) and the firmware size trim are verified in the simulator, unit tests and firmware builds only; their device checks are in `docs/backlog.md` ("MCP client: device checks not run", "Firmware size trim: device checks not run") and at the end of the plans `docs/superpowers/plans/2026-11-16-llm-provider-seam.md`, `2026-11-16-llm-dialects.md` and `2026-11-16-llm-vision.md`.
 
 ## 0.5.2 — 2026-11-14
 
