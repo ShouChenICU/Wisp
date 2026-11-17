@@ -453,7 +453,8 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 ## MCP client: deferred
 
 - A probe (`POST /mcp/servers/{id}/test`) runs on the admin httpd thread and can block it for up to 30 s; other admin requests wait. Move it to a deferred answer if that is felt in practice.
-- MCP image results arrive as a text note ("[image omitted: ...]") until the image slot of J3 is connected; then pass them into the turn's image slot.
+- MCP image results are still sent to the model as a text note ("[image omitted: ...]"); connecting them to the turn's image slot (the vision input added with screenshots) is the remaining work.
+- The prompt's two "rebuilt for every request" sentences (`components/wisp_agent/src/prompt.cpp`, the `anywhere` and `first` variants) do not name MCP servers, although `dynamic_info()` carries an `MCP:` line. Adding ", MCP servers" changes the prompt bytes (and the J1 golden and `kFirstRebuiltLine` in `tests/agent/context_test.cpp`), so it waits for the owner.
 - OAuth for MCP servers (only static headers today).
 - The `GET` event stream and `tools/list_changed` (the tool list refreshes only on the next `tools.find` after its cache time-to-live).
 - MCP resources and prompts.
