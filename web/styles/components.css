@@ -2621,7 +2621,19 @@ textarea {
   margin-top: var(--gap);
 }
 
-/* MCP servers (under the chat tab): standalone actions keep 8 px apart. */
+/* MCP servers page (#/mcp). Its subtitle is long: let it take the width
+   so the count and Add button stay at the right instead of wrapping under
+   it. Standalone actions keep 8 px apart. */
+.mcp-head > div:first-child {
+  flex: 1 1 22em;
+  min-width: 0;
+}
+
+.mcp-count {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
 .mcp-row .row-actions {
   gap: var(--gap-sm);
 }

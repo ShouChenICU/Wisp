@@ -44,9 +44,20 @@ import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
 import { confirmDialog } from '../components/dialog.js';
 import { toast } from '../components/toast.js';
-import { IconAlert, IconCheck, IconKey, IconMic, IconModel, IconPlus, IconRefresh, IconSpeaker, IconTrash } from '../icons.js';
+import {
+  IconAlert,
+  IconCheck,
+  IconChevronRight,
+  IconKey,
+  IconLink,
+  IconMic,
+  IconModel,
+  IconPlus,
+  IconRefresh,
+  IconSpeaker,
+  IconTrash,
+} from '../icons.js';
 import { formatCount } from '../util.js';
-import { McpServersCard } from './mcp_servers.js';
 
 /** @typedef {'llm'|'asr'|'tts'} Kind */
 
@@ -325,7 +336,22 @@ export function ModelsPage() {
       onReload=${load}
       onTest=${runTest}
     />
-    ${kind === 'llm' ? html`<${McpServersCard} />` : null}
+    ${kind === 'llm'
+      ? html`<${Card} class="list-card">
+          <ul class="link-list">
+            <li>
+              <a class="link-row" href="#/mcp">
+                <span class="dev-icon tone-accent"><${IconLink} size=${18} /></span>
+                <span class="dev-main">
+                  <span class="row-title">${t('nav.mcp')}</span>
+                  <span class="row-sub">${t('models.mcp_desc')}</span>
+                </span>
+                <${IconChevronRight} size=${18} />
+              </a>
+            </li>
+          </ul>
+        </${Card}>`
+      : null}
   </div>`;
 }
 

@@ -1,7 +1,7 @@
 // MCP servers (spec 4.3 of docs/superpowers/specs/2026-11-15-llm-tool-providers-design.md):
-// the servers whose tools the Agent finds with tools.find, under the chat
-// tab of the Models page. Lists, creates, edits, enables, tests and deletes
-// them through /mcp/servers.
+// the servers whose tools the Agent finds with tools.find, on their own page
+// (#/mcp) under the Models tab. Lists, creates, edits, enables, tests and
+// deletes them through /mcp/servers.
 //
 // Header values are write-only, as the profiles' API keys are (models.js):
 // the device only says whether a header has one (has_value). A value is
@@ -98,7 +98,7 @@ function rowsOf(server) {
   return (server?.headers || []).map((h) => ({ key: nextRowKey++, name: h.name, stored: h.has_value ? h.name : '', value: '' }));
 }
 
-export function McpServersCard() {
+export function McpServersPage() {
   const [list, setList] = useState(/** @type {{servers: McpServer[], max: number}|null} */ (null));
   const [loadError, setLoadError] = useState(null);
   // null, 'new' or the id of the server being edited.
@@ -251,23 +251,28 @@ export function McpServersCard() {
     `;
   }
 
-  return html`<${Card}
-    title=${list
-      ? html`${t('mcp.title')} <span class="muted">${t('mcp.count', { count: formatCount(servers.length), max: formatCount(max) })}</span>`
-      : t('mcp.title')}
-    icon=${IconLink}
-    actions=${html`<button
-      type="button"
-      class="btn btn-primary btn-sm"
-      onClick=${() => setEditing('new')}
-      disabled=${!list || full || editing === 'new'}
-    >
-      <${IconPlus} size=${16} />${t('mcp.add')}
-    </button>`}
-  >
-    <p class="muted model-desc">${t('mcp.desc')}</p>
-    ${body}
-  </${Card}>`;
+  return html`<div class="page">
+    <header class="page-head mcp-head">
+      <div>
+        <h1 class="page-title" tabindex="-1">${t('nav.mcp')}</h1>
+        <p class="page-sub">${t('mcp.desc')}</p>
+      </div>
+      <div class="page-head-actions">
+        ${list
+          ? html`<span class="muted mcp-count">${t('mcp.count', { count: formatCount(servers.length), max: formatCount(max) })}</span>`
+          : null}
+        <button
+          type="button"
+          class="btn btn-primary btn-sm"
+          onClick=${() => setEditing('new')}
+          disabled=${!list || full || editing === 'new'}
+        >
+          <${IconPlus} size=${16} />${t('mcp.add')}
+        </button>
+      </div>
+    </header>
+    <${Card}>${body}</${Card}>
+  </div>`;
 }
 
 function ServerRow({ server: s, busy, test, dropped, editing, form, onEnable, onTest, onEdit, onDelete }) {

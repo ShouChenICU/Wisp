@@ -96,7 +96,7 @@ Result<void> add_mcp_tools(ToolRegistry& reg, McpToolDeps deps) {
         .description = "Adds an MCP server (streamable HTTP) by name and http(s) URL, enabled; "
                        "its tools are then reached through tools_find and tools_call. Headers "
                        "such as an API token cannot be set here: the owner adds them on the web "
-                       "Models page.",
+                       "admin's MCP servers page.",
         .schema_json = kAddSchema,
         .risk = ToolRisk::Note,
         .thread = ToolThread::Agent,

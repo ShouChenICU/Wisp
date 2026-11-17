@@ -1,9 +1,11 @@
 // Entry point of the admin UI: registers the pages and renders the shell.
 //
 // Layout (spec 7.2): below 768 px a top bar plus a bottom tab bar with
-// five tabs, the scene and log pages being reached from the system page;
-// from 768 px a left sidebar that lists those two on their own. Both are rendered and
-// CSS shows the one that fits, so resizing never remounts the page.
+// six tabs, the sub-pages (PARENT) being reached from their tab's page: the
+// scene, memory and log pages from the system page, the MCP servers page
+// from the models page; from 768 px a left sidebar that lists them on
+// their own. Both are rendered and CSS shows the one that fits, so
+// resizing never remounts the page.
 
 import { html, render, useEffect, useRef, useState } from '../vendor/htm-preact-3.1.1.mjs';
 import { getInfo } from './api.js';
@@ -15,6 +17,7 @@ import {
   IconChat,
   IconChevronLeft,
   IconChip,
+  IconLink,
   IconLogout,
   IconLogs,
   IconModel,
@@ -32,6 +35,7 @@ import { DevicesPage } from './pages/devices.js';
 import { LogsPage } from './pages/logs.js';
 import { NetworkPage } from './pages/network.js';
 import { ModelsPage } from './pages/models.js';
+import { McpServersPage } from './pages/mcp_servers.js';
 import { SystemPage, confirmLogout } from './pages/system.js';
 import { ScenesPage } from './pages/scenes.js';
 import { MemoryPage } from './pages/memory.js';
@@ -42,6 +46,7 @@ route('/overview', OverviewPage);
 route('/devices', DevicesPage);
 route('/network', NetworkPage);
 route('/models', ModelsPage);
+route('/mcp', McpServersPage);
 route('/system', SystemPage);
 route('/logs', LogsPage);
 route('/scenes', ScenesPage);
@@ -57,6 +62,7 @@ const NAV = [
   { path: '/devices', label: 'nav.devices', icon: IconChip },
   { path: '/network', label: 'nav.network', icon: IconWifi },
   { path: '/models', href: '/models/llm', label: 'nav.model', icon: IconModel },
+  { path: '/mcp', label: 'nav.mcp', icon: IconLink, wide: true },
   { path: '/system', label: 'nav.system', icon: IconSystem },
   { path: '/scenes', label: 'nav.scenes', icon: IconPackage, wide: true },
   { path: '/memory', label: 'nav.memory', icon: IconNote, wide: true },
@@ -65,7 +71,8 @@ const NAV = [
 const TITLE_KEYS = Object.fromEntries(NAV.map((n) => [n.path, n.label]));
 const title = (path) => (TITLE_KEYS[path] ? t(TITLE_KEYS[path]) : 'Wisp');
 // Pages the tab bar does not list, and the tab they live under.
-const PARENT = { '/logs': '/system', '/scenes': '/system', '/memory': '/system' };
+const PARENT = { '/logs': '/system', '/scenes': '/system', '/memory': '/system', '/mcp': '/models' };
+const hrefOf = (path) => '#' + (NAV.find((n) => n.path === path)?.href || path);
 
 function App() {
   const path = useRoute();
@@ -157,7 +164,7 @@ function Shell({ path, children }) {
 
     <header class="topbar">
       ${PARENT[path]
-        ? html`<a class="topbar-back" href=${'#' + PARENT[path]} aria-label=${t('app.back', { page: title(PARENT[path]) })}>
+        ? html`<a class="topbar-back" href=${hrefOf(PARENT[path])} aria-label=${t('app.back', { page: title(PARENT[path]) })}>
             <${IconChevronLeft} size=${22} />
           </a>`
         : html`<span class="topbar-glyph"><${WispGlyph} size=${26} /></span>`}
