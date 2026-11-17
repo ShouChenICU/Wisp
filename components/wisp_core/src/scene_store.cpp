@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "wisp/base/json.hpp"
+#include "wisp/base/number_text.hpp"
 #include "wisp/core/log.hpp"
 
 namespace wisp::core {
@@ -558,7 +559,7 @@ bool is_number(std::string_view v) { return !v.empty() && (v[0] == '-' || is_dig
 
 double to_double(std::string_view v) {
     double d = 0;
-    std::from_chars(v.data(), v.data() + v.size(), d);
+    parse_double(v, d);
     return d;
 }
 

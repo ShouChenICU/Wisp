@@ -458,3 +458,14 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 - OAuth for MCP servers (only static headers today).
 - The `GET` event stream and `tools/list_changed` (the tool list refreshes only on the next `tools.find` after its cache time-to-live).
 - MCP resources and prompts.
+
+## Firmware size trim: device checks not run
+
+Source: branch `perf/firmware-size` (2026-11-16). `wisp/base/number_text.hpp` replaced floating `std::to_chars`/`from_chars` with `snprintf("%.*e")`/`strtod`; `number_text_test` compares it with the host's libstdc++ only, while the device runs picolibc's printf and strtod.
+
+- Compare `format_double`/`parse_double` on the device with host-generated vectors: about 60 values (the `LuaJson.FloatTextIsShortest` list, some powers of two, integral values from 1.8e19 to 1e20) formatted, and the `NumberText.ParsesLikeFromChars` strings parsed. Watch the rounding of `%.*e` to fewer digits than the shortest form, `strtod` with more than 19 significant digits or a very long exponent (`1e0000000000000000000005`), and zero padding of integral values from 2^64 up (allowed: same length, reads back).
+- Time 10,000 `format_double` calls (each takes about 10 libc conversions): a `wisp.store` record with thousands of floats is encoded on the scene's thread.
+- `docs.read` of `lua`, `example/weather-round` and an unknown topic: each inflates about 45–55 KB into PSRAM per call; check the time per call and that `mem` shows no internal RAM taken.
+- The admin web page, now served minified: every page loads and works as before.
+- The `wisp.agent` stack high-water mark in `mem` after a `docs.read`: `inflate_raw()` now runs there and takes about 2 KB of stack (its decoder and code-length tables); before, only the zip reader ran it.
+- Playback and recording on both boards after the codec trim: after a full flash built from a regenerated `sdkconfig`, play speech and record from the microphone, and check that the boot report shows `audio_out` and `audio_in` initialised. An existing build directory keeps its old `sdkconfig`, and with it all the codecs (about 32 KB more image), until that file is deleted or `idf.py fullclean` runs.

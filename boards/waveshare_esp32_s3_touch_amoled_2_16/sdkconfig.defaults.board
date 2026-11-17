@@ -42,3 +42,15 @@ CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 # board -- see docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md).
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# esp_codec_dev builds every codec driver it knows by default; this board
+# has only an ES8311 (playback) and an ES7210 (capture), see
+# board_devices.yaml. Leaving the others out saves about 29 KB of flash.
+# CONFIG_CODEC_ES7243_SUPPORT is not set
+# CONFIG_CODEC_ES7243E_SUPPORT is not set
+# CONFIG_CODEC_ES8156_SUPPORT is not set
+# CONFIG_CODEC_AW88298_SUPPORT is not set
+# CONFIG_CODEC_ES8389_SUPPORT is not set
+# CONFIG_CODEC_ES8388_SUPPORT is not set
+# CONFIG_CODEC_TAS5805M_SUPPORT is not set
+# CONFIG_CODEC_CJC8910_SUPPORT is not set

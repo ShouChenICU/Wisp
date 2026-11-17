@@ -281,6 +281,28 @@ TEST(ModelProbe, OpenRouterContextAndVision) {
     EXPECT_EQ(detail(p, "bad/numbers"), nullptr);
 }
 
+// A count written as a float or with an exponent is still a whole number;
+// one out of double's range is skipped like any other bad count, leaving
+// nothing to say about that model.
+TEST(ModelProbe, CountsReadFloatText) {
+    ModelProbe p;
+    ASSERT_TRUE(parse_model_list(R"({"data":[{"id":"a","context_length":1.28e5},)"
+                                 R"({"id":"b","context_length":65536.0},)"
+                                 R"({"id":"c","context_length":2E+3,"name":"C"},)"
+                                 R"({"id":"d","context_length":1e400,"name":"D"},)"
+                                 R"({"id":"e","context_length":0128,"name":"E"}]})",
+                                 "", p));
+    ASSERT_NE(detail(p, "a"), nullptr);
+    EXPECT_EQ(detail(p, "a")->context_window, 128000u);
+    ASSERT_NE(detail(p, "b"), nullptr);
+    EXPECT_EQ(detail(p, "b")->context_window, 65536u);
+    ASSERT_NE(detail(p, "c"), nullptr);
+    EXPECT_EQ(detail(p, "c")->context_window, 2000u);
+    EXPECT_EQ(detail(p, "d"), nullptr);
+    // Leading zeros are not JSON: the count is skipped, not read as 128.
+    EXPECT_EQ(detail(p, "e"), nullptr);
+}
+
 TEST(ModelProbe, MalformedListsAreRefused) {
     for (std::string_view body :
          {std::string_view(""), std::string_view("null"), std::string_view("[]"),

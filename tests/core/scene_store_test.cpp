@@ -248,6 +248,31 @@ TEST(SceneStore, IdsStayMonotonicAcrossCompaction) {
     EXPECT_EQ(ids(again->find("todos", all()).value()), (std::vector<int64_t>{1, 4}));
 }
 
+// Numbers in stored records, as lua_json writes them (exponents, fractions
+// that are not exact in binary), compare and sort by their double value.
+TEST(SceneStore, FindComparesFloatText) {
+    Harness h;
+    auto s = h.open();
+    ASSERT_TRUE(s->insert("m", R"({"v":1e+05})"));                 // 1
+    ASSERT_TRUE(s->insert("m", R"({"v":0.1})"));                   // 2
+    ASSERT_TRUE(s->insert("m", R"({"v":2.5e-3})"));                // 3
+    ASSERT_TRUE(s->insert("m", R"({"v":-0.30000000000000004})"));  // 4
+    ASSERT_TRUE(s->insert("m", R"({"v":99999})"));                 // 5
+
+    FindQuery q;
+    q.sort = "v";
+    EXPECT_EQ(ids(s->find("m", q).value()), (std::vector<int64_t>{4, 3, 2, 5, 1}));
+    FindQuery tenth;
+    tenth.equals.emplace_back("v", Value(0.1));
+    EXPECT_EQ(ids(s->find("m", tenth).value()), (std::vector<int64_t>{2}));
+    FindQuery big;
+    big.equals.emplace_back("v", Value(int64_t{100000}));
+    EXPECT_EQ(ids(s->find("m", big).value()), (std::vector<int64_t>{1}));
+    FindQuery neg;
+    neg.equals.emplace_back("v", Value(-(0.1 + 0.2)));
+    EXPECT_EQ(ids(s->find("m", neg).value()), (std::vector<int64_t>{4}));
+}
+
 TEST(SceneStore, FindFilterSortLimitOffset) {
     Harness h;
     auto s = h.open();

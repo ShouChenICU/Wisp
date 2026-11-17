@@ -28,6 +28,7 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 - Image size (ESP-IDF v6.0.3, release build, 2026-11-08): `wisp.bin` 3,516,656 B (0x35A8F0), 56% of one OTA slot (0x5F0000); `glyphs.bin` 1,122,585 B, `fonts.bin` 2,431,464 B. The budget is 80% of one OTA slot.
 - Interrupt-first verification build (2026-11-12, ESP-IDF v6.0.3, source base `505b6f9` plus documentation): `wisp.bin` 3,599,664 B (0x36ED30), 57.82% of the 0x5F0000 OTA slot, below the 80% budget. Build-only evidence; GPIO3 remains disabled and no new device RAM/wake measurements are implied.
 - Vision build (2026-11-16, ESP-IDF v6.0.3, branch `feat/llm-providers` with LLM providers J1-J3): `wisp.bin` 3,872,016 B (0x3B1510), 62.19% of the 0x5F0000 OTA slot (38% free), below the 80% budget; `libstb_image_write.a` 8,500 B. Build-only evidence.
+- Code size trim (2026-11-16, ESP-IDF v6.0.3, base `06279ef`): `wisp.bin` 3,834,992 B (0x3A8070, 61.60% of the 0x5F0000 OTA slot) before, 3,651,712 B (0x37B880, 58.65%) after the first two trims (−183,280 B), and 3,533,584 B (0x35EB10, 56.76%) after the compressed docs, the unused codec drivers and the minified web UI (−118,128 B; see the 2.16 board's document for the breakdown). Build-only evidence.
 
 ## Peripherals and pins
 

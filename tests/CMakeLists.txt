@@ -44,6 +44,7 @@ wisp_test(NAME sha256_test SRCS base/sha256_test.cpp LIBS wisp_base)
 wisp_test(NAME base64_test SRCS base/base64_test.cpp LIBS wisp_base)
 wisp_test(NAME image_test SRCS base/image_test.cpp LIBS wisp_base)
 wisp_test(NAME crc32_test SRCS base/crc32_test.cpp LIBS wisp_base)
+wisp_test(NAME number_text_test SRCS base/number_text_test.cpp LIBS wisp_base)
 wisp_test(NAME fixed_string_test SRCS base/fixed_string_test.cpp LIBS wisp_base)
 # zlib only produces the reference streams; wisp_base itself never links it.
 wisp_test(NAME inflate_test SRCS base/inflate_test.cpp LIBS wisp_base ZLIB::ZLIB)
@@ -597,6 +598,8 @@ wisp_test(NAME memory_tools_test SRCS agent/memory_tools_test.cpp
 wisp_test(NAME todo_tools_test SRCS agent/todo_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME docs_test SRCS agent/docs_test.cpp LIBS wisp_agent wisp_port_sim_os)
+# docs_test reaches the compiled-in text and unpack_text() in docs_data.hpp.
+target_include_directories(docs_test PRIVATE ${WISP_ROOT}/components/wisp_agent/src)
 # http.fetch (agent-tools spec 3): the "as":"text" HTML conversion, and the
 # tool itself over a real SceneHttp with a fake HttpClient.
 wisp_test(NAME html_text_test SRCS agent/html_text_test.cpp LIBS wisp_agent wisp_port_sim_os)

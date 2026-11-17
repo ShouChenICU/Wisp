@@ -1,19 +1,25 @@
-// docs.read (agent-core spec 4.4): the scene API by topic, the widgets
+// docs.read (agent-core spec 4.4): the scene API by topic, widget/<name>
 // from the schema and the rest from docs/scene-api.md and the examples,
-// compiled in.
+// compiled in compressed.
 
 #include "wisp/agent/docs.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
+#include "docs_data.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/os/os.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/schema.hpp"
 
 namespace {
@@ -74,6 +80,98 @@ TEST(Docs, TopicsCoverEveryModuleAndWidget) {
     EXPECT_EQ(topics.front(), "widgets");
     EXPECT_FALSE(wisp::agent::read_doc("nope").has_value());
     EXPECT_FALSE(wisp::agent::read_doc("widget/nope").has_value());
+}
+
+// The lua, lua/<module> and screen topics are docs/scene-api.md, which is
+// schema_markdown(), cut at its "## " headings: "## wisp.<m>..." goes to
+// lua/<m>, "## Screen shape" to screen, the rest (the intro included) to
+// lua; the HTML comment is left out and each topic is trimmed and ends in
+// one newline. Each is exactly that text, and the topics come in the
+// order widgets, widget/<name>..., lua, lua/<module>... (by name), screen,
+// examples, example/<id>....
+TEST(Docs, SceneApiTopicsAreTheSchemaDocCutAtItsHeadings) {
+    std::string md = wisp::scene::schema_markdown();
+    const size_t c0 = md.find("<!--");
+    const size_t c1 = md.find("-->");
+    ASSERT_NE(c0, std::string::npos);
+    ASSERT_NE(c1, std::string::npos);
+    size_t after = c1 + 3;
+    while (after < md.size() && md[after] == '\n') ++after;
+    md.erase(c0, after - c0);
+
+    std::map<std::string, std::string> want{{"lua", ""}};
+    std::string topic = "lua";
+    size_t pos = 0;
+    while (pos < md.size()) {
+        size_t nl = md.find('\n', pos);
+        nl = nl == std::string::npos ? md.size() : nl + 1;
+        const std::string line = md.substr(pos, nl - pos);
+        pos = nl;
+        if (line.rfind("## ", 0) == 0) {
+            const std::string title = line.substr(3);
+            if (title.rfind("wisp.", 0) == 0) {
+                size_t end = 5;
+                while (end < title.size() &&
+                       ((title[end] >= 'a' && title[end] <= 'z') || title[end] == '_')) {
+                    ++end;
+                }
+                topic = "lua/" + title.substr(5, end - 5);
+            } else if (title == "Screen shape\n") {
+                topic = "screen";
+            } else {
+                topic = "lua";
+            }
+        }
+        want[topic] += line;
+    }
+    ASSERT_GT(want.size(), 10u);
+    ASSERT_TRUE(want.count("screen"));
+
+    std::vector<std::string> order;
+    for (size_t i = 0; i < wisp::scene::kWidgetCount; ++i) {
+        order.push_back(
+            "widget/" +
+            std::string(wisp::scene::widget_spec(static_cast<wisp::scene::Widget>(i)).name));
+    }
+    order.insert(order.begin(), "widgets");
+    order.push_back("lua");
+    for (auto& [t, text] : want) {
+        size_t b = text.find_first_not_of(" \t\r\n");
+        size_t e = text.find_last_not_of(" \t\r\n");
+        text = b == std::string::npos ? "\n" : text.substr(b, e - b + 1) + "\n";
+        if (t.rfind("lua/", 0) == 0) order.push_back(t);
+    }
+    order.push_back("screen");
+
+    for (const auto& [t, text] : want) {
+        const auto doc = wisp::agent::read_doc(t);
+        ASSERT_TRUE(doc.has_value()) << t;
+        EXPECT_EQ(*doc, text) << t;
+    }
+    const std::vector<std::string> topics = wisp::agent::doc_topics();
+    ASSERT_GT(topics.size(), order.size());
+    EXPECT_EQ(std::vector<std::string>(topics.begin(), topics.begin() + order.size()), order);
+    EXPECT_EQ(topics[order.size()], "examples");
+    for (size_t i = order.size() + 1; i < topics.size(); ++i) {
+        EXPECT_EQ(topics[i].rfind("example/", 0), 0u) << topics[i];
+        if (i > order.size() + 1) EXPECT_LT(topics[i - 1], topics[i]);
+    }
+}
+
+// widgets is the schema doc from "## Value types" up to "## Screen shape",
+// and widget/<name> the schema's own text for that widget.
+TEST(Docs, WidgetTopicsAreTheSchemaText) {
+    const std::string md = wisp::scene::schema_markdown();
+    const size_t from = md.find("## Value types");
+    const size_t to = md.find("## Screen shape");
+    ASSERT_NE(from, std::string::npos);
+    ASSERT_NE(to, std::string::npos);
+    EXPECT_EQ(*wisp::agent::read_doc("widgets"), md.substr(from, to - from));
+    for (size_t i = 0; i < wisp::scene::kWidgetCount; ++i) {
+        const std::string name(wisp::scene::widget_spec(static_cast<wisp::scene::Widget>(i)).name);
+        EXPECT_EQ(*wisp::agent::read_doc("widget/" + name), wisp::scene::widget_markdown(name))
+            << name;
+    }
 }
 
 TEST(Docs, UnknownTopicListsTopics) {
@@ -150,4 +248,45 @@ TEST(Docs, OffsetThatIsNotAnIntegerIsAnError) {
         ASSERT_NE(err, nullptr) << wisp::to_json(out.result);
         EXPECT_EQ(err->as_string(), "bad_offset") << wisp::to_json(out.result);
     }
+}
+
+// The compiled-in text inflates; a stream that is corrupt, truncated or
+// of another size than the table says is bad data, not missing memory.
+TEST(Docs, UnpackTellsBadDataFromNoMemory) {
+    using wisp::ErrorCode;
+    using wisp::agent::PackedText;
+    using wisp::agent::unpack_text;
+    const PackedText good = wisp::agent::examples_text();
+    auto ok = unpack_text(good);
+    ASSERT_TRUE(ok) << ok.error().message;
+    EXPECT_EQ(ok.value().size(), good.size);
+
+    // BTYPE 11 is reserved.
+    const uint8_t reserved[] = {0x07, 0x00};
+    auto bad = unpack_text(PackedText{reserved, 16});
+    ASSERT_FALSE(bad);
+    EXPECT_EQ(bad.error().code, ErrorCode::InvalidArgument);
+
+    auto cut = unpack_text(PackedText{good.deflated.first(good.deflated.size() / 2), good.size});
+    ASSERT_FALSE(cut);
+    EXPECT_EQ(cut.error().code, ErrorCode::InvalidArgument);
+
+    auto longer = unpack_text(PackedText{good.deflated, good.size + 1});
+    ASSERT_FALSE(longer);
+    EXPECT_EQ(longer.error().code, ErrorCode::InvalidArgument);
+
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+    auto none = unpack_text(good);
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
+    ASSERT_FALSE(none);
+    EXPECT_EQ(none.error().code, ErrorCode::NoMemory);
+}
+
+// Without the memory to inflate it, a topic reads as missing rather than
+// crashing (docs.read itself says no_memory).
+TEST(Docs, ReadWithoutMemoryFindsNothing) {
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+    const bool found = wisp::agent::read_doc("example/counter").has_value();
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
+    EXPECT_FALSE(found);
 }
