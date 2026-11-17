@@ -944,7 +944,8 @@ TEST(Schema, DocIsUpToDate) {
         std::filesystem::path out = std::filesystem::path(WISP_BUILD_DIR) / "scene-api.md";
         std::ofstream(out, std::ios::binary) << want;
         FAIL() << doc << " is out of date with the schema. The expected text is in " << out
-               << "; to accept it:\n  cp " << out << " " << doc;
+               << "; to accept it:\n  cp " << out << " " << doc
+               << "\n  python3 tools/gen_agent_docs.py  # docs.read carries it compressed";
     }
 }
 

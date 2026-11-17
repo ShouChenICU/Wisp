@@ -22,7 +22,7 @@ TESTS = {
     "gen_vector_font_test": (*FONT_INPUTS, "tools/gen_cjk_font*"),
     "pack_font_image_test": ("components/wisp_ui/fonts/*", "tools/gen_vector_font*"),
     "pack_glyph_image_test": ("components/wisp_ui/fonts/*", "tools/gen_cjk_font*"),
-    "gen_agent_docs_test": ("scenes/examples/*",),
+    "gen_agent_docs_test": ("scenes/examples/*", "docs/scene-api.md"),
     "gen_icon_font_test": ("components/wisp_ui/include/wisp/ui/symbols.hpp", "docs/scene-api.md"),
 }
 

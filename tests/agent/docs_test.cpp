@@ -1,6 +1,6 @@
-// docs.read (agent-core spec 4.4): the scene API by topic, the widgets
+// docs.read (agent-core spec 4.4): the scene API by topic, widget/<name>
 // from the schema and the rest from docs/scene-api.md and the examples,
-// compiled in.
+// compiled in compressed.
 
 #include "wisp/agent/docs.hpp"
 
@@ -150,6 +150,22 @@ TEST(Docs, SceneApiTopicsAreTheSchemaDocCutAtItsHeadings) {
     for (size_t i = order.size() + 1; i < topics.size(); ++i) {
         EXPECT_EQ(topics[i].rfind("example/", 0), 0u) << topics[i];
         if (i > order.size() + 1) EXPECT_LT(topics[i - 1], topics[i]);
+    }
+}
+
+// widgets is the schema doc from "## Value types" up to "## Screen shape",
+// and widget/<name> the schema's own text for that widget.
+TEST(Docs, WidgetTopicsAreTheSchemaText) {
+    const std::string md = wisp::scene::schema_markdown();
+    const size_t from = md.find("## Value types");
+    const size_t to = md.find("## Screen shape");
+    ASSERT_NE(from, std::string::npos);
+    ASSERT_NE(to, std::string::npos);
+    EXPECT_EQ(*wisp::agent::read_doc("widgets"), md.substr(from, to - from));
+    for (size_t i = 0; i < wisp::scene::kWidgetCount; ++i) {
+        const std::string name(wisp::scene::widget_spec(static_cast<wisp::scene::Widget>(i)).name);
+        EXPECT_EQ(*wisp::agent::read_doc("widget/" + name), wisp::scene::widget_markdown(name))
+            << name;
     }
 }
 

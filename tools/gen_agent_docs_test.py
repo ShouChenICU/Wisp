@@ -7,14 +7,18 @@ Run directly: python3 tools/gen_agent_docs_test.py
 """
 
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 ROOT = TOOLS.parent
 SCRIPT = TOOLS / "gen_agent_docs.py"
+sys.path.insert(0, str(TOOLS))
+import gen_agent_docs  # noqa: E402
 
 def run(*args):
     return subprocess.run(
@@ -42,35 +46,33 @@ class GenAgentDocsTest(unittest.TestCase):
             encoding="utf-8",
         )
         (clock / "main.lua").write_text("return ui.screen { ui.label {} }\n", encoding="utf-8")
+        self.scene_api = self.dir / "scene-api.md"
+        self.scene_api.write_text("# Scene API\n\n## wisp.store\n\nKeys. 键\n", encoding="utf-8")
         self.out = self.dir / "docs_data.cpp"
 
     def tearDown(self):
         self._tmp.cleanup()
 
+    def args(self, *extra):
+        return (*extra, "--examples", self.examples, "--scene-api", self.scene_api,
+                "--output", self.out)
+
     def generate(self):
-        r = run("--examples", self.examples, "--output", self.out)
+        r = run(*self.args())
         self.assertEqual(r.returncode, 0, r.stderr)
         return self.out.read_text(encoding="utf-8")
 
     def topics(self, text):
-        """The {topic, text} table as a dict, read back from the C++ file."""
+        """The example topics as a dict, inflated and cut by the table."""
+        _, examples = gen_agent_docs.read_streams(text)
+        data = examples.encode("utf-8")
         out = {}
-        marker = '{"'
-        pos = 0
-        while True:
-            start = text.find(marker, pos)
-            if start < 0:
-                return out
-            end = text.find('"', start + 2)
-            topic = text[start + 2 : end]
-            body_start = text.find('R"wispdoc(', end) + len('R"wispdoc(')
-            body_end = text.find(')wispdoc"', body_start)
-            out[topic] = text[body_start:body_end]
-            pos = body_end
+        for topic, offset, size in re.findall(r'\{"([^"]+)", (\d+), (\d+)\}', text):
+            out[topic] = data[int(offset):int(offset) + int(size)].decode("utf-8")
+        return out
 
     def test_one_topic_per_example(self):
         topics = self.topics(self.generate())
-        # The scene API topics come from the schema at run time, not from here.
         self.assertEqual(list(topics), ["examples", "example/clock", "example/counter"])
         self.assertIn("`clock`: 时钟", topics["examples"])
         self.assertIn("`counter`: 计数器", topics["examples"])
@@ -80,18 +82,49 @@ class GenAgentDocsTest(unittest.TestCase):
         self.assertIn("### lib/util.lua", counter)
         self.assertLess(counter.index("scene.json"), counter.index("lib/util.lua"))
 
+    def test_scene_api_is_stored_whole(self):
+        text = self.generate()
+        scene_api, _ = gen_agent_docs.read_streams(text)
+        self.assertEqual(scene_api, self.scene_api.read_text(encoding="utf-8"))
+        size = len(scene_api.encode("utf-8"))
+        self.assertIn(f"return {{kSceneApi, {size}}};", text)
+
     def test_check_mode_detects_stale_output(self):
         self.generate()
-        ok = run("--check", "--examples", self.examples, "--output", self.out)
+        ok = run(*self.args("--check"))
         self.assertEqual(ok.returncode, 0, ok.stderr)
         (self.examples / "clock" / "main.lua").write_text("return ui.screen {}\n", encoding="utf-8")
-        stale = run("--check", "--examples", self.examples, "--output", self.out)
+        stale = run(*self.args("--check"))
         self.assertNotEqual(stale.returncode, 0)
         self.assertIn("gen_agent_docs.py", stale.stderr)
+        self.generate()
+        self.scene_api.write_text("# Scene API\n", encoding="utf-8")
+        self.assertNotEqual(run(*self.args("--check")).returncode, 0)
+        self.generate()
+        # A size in the table that does not match the text.
+        text = self.out.read_text(encoding="utf-8")
+        self.out.write_text(text.replace('{"examples", 0, ', '{"examples", 0, 1'), encoding="utf-8")
+        self.assertNotEqual(run(*self.args("--check")).returncode, 0)
         missing = self.dir / "none.cpp"
-        absent = run("--check", "--examples", self.examples, "--output", missing)
+        absent = run("--check", "--examples", self.examples, "--scene-api", self.scene_api,
+                     "--output", missing)
         self.assertNotEqual(absent.returncode, 0)
         self.assertFalse(missing.exists())
+
+    def test_check_reads_the_text_not_the_compressed_bytes(self):
+        # Another zlib (here: a stored block) gives other bytes for the same text; that
+        # is not stale.
+        text = self.generate()
+        api = self.scene_api.read_text(encoding="utf-8").encode("utf-8")
+        c = zlib.compressobj(0, zlib.DEFLATED, -15)
+        other = c.compress(api) + c.flush()
+        self.assertNotEqual(other, gen_agent_docs.read_array(text, "kSceneApi"))
+        entries = gen_agent_docs.example_topics(self.examples)
+        examples = gen_agent_docs.read_array(text, "kExamples")
+        self.out.write_text(
+            gen_agent_docs.render(api.decode("utf-8"), entries, other, examples), encoding="utf-8")
+        ok = run(*self.args("--check"))
+        self.assertEqual(ok.returncode, 0, ok.stderr)
 
     def test_output_is_deterministic(self):
         first = self.generate()
@@ -102,11 +135,6 @@ class GenAgentDocsTest(unittest.TestCase):
             "return ui.screen {}\n", encoding="utf-8"
         )
         self.assertEqual(first, self.generate())
-
-    def test_refuses_text_that_would_end_the_raw_string(self):
-        (self.examples / "clock" / "main.lua").write_text('x = ")wispdoc" y\n', encoding="utf-8")
-        r = run("--examples", self.examples, "--output", self.out)
-        self.assertNotEqual(r.returncode, 0)
 
     def test_committed_output_is_current(self):
         r = run("--check")
