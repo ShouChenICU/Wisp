@@ -785,19 +785,27 @@ TEST_F(SimHttpServerTest, WebSocketCloseFromAnotherThreadReportsOnce) {
 // WebSocket callbacks take; close() must not wait for the connection
 // thread, even while that thread is blocked inside a callback.
 TEST_F(SimHttpServerTest, CloseNeverWaitsForTheConnectionThread) {
-    std::mutex app;
-    std::atomic<bool> in_callback{false};
+    // The callbacks share this state by ownership, not by reference to
+    // test locals: on_close still holds the mutex after it has reported
+    // the close, so the test body can return (and its locals die) before
+    // the connection thread unlocks; the server joins that thread only in
+    // the fixture's destructor.
+    struct App {
+        std::mutex mutex;
+        std::atomic<bool> in_callback{false};
+    };
+    auto app = std::make_shared<App>();
     WsHandlers ws = rec.ws();
     auto inner_message = ws.on_message;
-    ws.on_message = [&, inner_message](int id, std::string_view text) {
-        in_callback = true;
+    ws.on_message = [this, app, inner_message](int id, std::string_view text) {
+        app->in_callback = true;
         rec.notify();
-        std::lock_guard<std::mutex> lock(app);
+        std::lock_guard<std::mutex> lock(app->mutex);
         inner_message(id, text);
     };
     auto inner_close = ws.on_close;
-    ws.on_close = [&, inner_close](int id) {
-        std::lock_guard<std::mutex> lock(app);
+    ws.on_close = [app, inner_close](int id) {
+        std::lock_guard<std::mutex> lock(app->mutex);
         inner_close(id);
     };
     start(std::move(ws));
@@ -805,9 +813,9 @@ TEST_F(SimHttpServerTest, CloseNeverWaitsForTheConnectionThread) {
     ASSERT_TRUE(open_ws(c, rec, 1));
     auto conn = rec.conn(0);
     {
-        std::lock_guard<std::mutex> lock(app);
+        std::lock_guard<std::mutex> lock(app->mutex);
         ASSERT_TRUE(c.send(text_frame("block")));
-        ASSERT_TRUE(rec.wait([&] { return in_callback.load(); }));
+        ASSERT_TRUE(rec.wait([&] { return app->in_callback.load(); }));
         const auto t0 = Clock::now();
         conn->close();
         EXPECT_LT(Clock::now() - t0, 500ms);
