@@ -23,7 +23,7 @@ Wisp is your personal handheld agent. It can chat with you, has a memory of its 
 - **Create apps on demand**: Turn a request into a Lua scene you can use and refine immediately.
 - **Control the device**: Tools for scenes, networking, scripts and settings, with progress on screen.
 - **Remember and remind**: Persistent preferences, to-dos and reminders that wake the screen.
-- **Choose your models**: OpenAI-compatible chat, ASR and TTS, with switchable profiles.
+- **Choose your models**: OpenAI-compatible chat, ASR and TTS, with switchable profiles, vision for models that see, and MCP servers for more tools.
 - **Manage locally**: LAN admin console, write-only API keys and on-device confirmation for sensitive actions.
 - **Build across boards**: Pluggable hardware and a PC simulator for everyday development.
 
@@ -117,12 +117,13 @@ The on-device UI supports Chinese, Japanese and English. These screenshots show 
 
 | Action | What it does |
 | --- | --- |
-| Hold <kbd>BOOT</kbd>, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it |
+| Hold <kbd>BOOT</kbd>, or long-press the wisp | Talk; release to send. Hold again while it speaks to interrupt it. <kbd>BOOT</kbd> also works from a dark screen |
+| Tap Stop, right of the wisp | Stop a running turn |
 | Swipe right / left / down | Settings / scene list / conversation history. Pages follow your finger |
 | Hold <kbd>BOOT</kbd> inside a scene | A listening bar slides up at the bottom, so you stay in the scene |
 | Settings → About → Hardware diagnostics | Self-test results for every peripheral |
 
-Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp.
+Replies come in two layers. The sentence to be spoken is shown in large type, and the details appear below in small type. While the agent calls tools or writes files, the steps it is taking are listed under the wisp. When it cannot talk yet, Home says what is missing (Wi-Fi, a model) with the admin address, and after a turn that did not finish it says why in one line.
 
 ## 🏠 Self-hosting the AI services
 
@@ -145,21 +146,21 @@ The first run downloads the models. Then, on the admin console's Models page:
 > [!WARNING]
 > speech.cpp has no authentication and no TLS. Listen on `0.0.0.0` only on a network you trust, or put it behind a proxy that adds them.
 
-**Chat:** any OpenAI-compatible server works, such as [Ollama](https://ollama.com) (it has its own preset) or llama.cpp's `llama-server`. The agent drives the device through tool calling, so choose a model that handles tool calls well; small models often do not.
+**Chat:** any OpenAI-compatible server works, such as [Ollama](https://ollama.com) (it has its own preset) or llama.cpp's `llama-server`. The agent drives the device through tool calling, so choose a model that handles tool calls well; small models often do not. For a provider with its own rules, a profile's Advanced options set the output token limit and the field that carries it, whether reasoning is sent back, whether system messages must come first, and parallel tool calls. Turn on "Sees images" for a model that takes images.
 
 ## 🧩 Core modules
 
 | Module | Description |
 | --- | --- |
 | 🔥 **Shell** | A native home screen that no broken scene can take away. The wisp is drawn live in code and has its own expressions for idle, listening, thinking and speaking. Swipe to Settings, scenes or history, and the pages follow your finger. During a turn, the spoken sentence shows in large type with the agent's steps underneath. |
-| 🎭 **Scenes** | Every feature is a scene: one folder with one `main.lua`. The UI is declared as a Lua table bound to state. Each scene runs in its own Lua 5.5 sandbox with memory and time limits, and it can reach only the HTTPS hosts it declares. Scenes can run in the background, post notifications and register tools for the agent. |
-| 🤖 **Agent** | Works with any OpenAI-compatible model, with the whole device as its toolbox. It creates, edits, installs, opens and deletes scenes, fetches web content and APIs, runs Lua scripts, calls tools exported by scenes, manages memory and to-dos, and changes settings. Long conversations are compacted to fit the context. |
-| 🎙️ **Voice** | Hold <kbd>BOOT</kbd> or long-press the wisp to talk, and release to send. The sentence marked `<say>` is spoken while the rest streams to the screen. Hold again to interrupt; alarms take the speaker first. Recognition and synthesis can each use their own provider, and SiliconFlow works well. |
+| 🎭 **Scenes** | Every feature is a scene: one folder with one `main.lua`. The UI is declared as a Lua table bound to state. Each scene runs in its own Lua 5.5 sandbox with memory and time limits, and it can reach only the HTTPS hosts it declares. Scenes can run in the background, post notifications, register tools for the agent and use peripherals that describe themselves (`wisp.device.*`). |
+| 🤖 **Agent** | Works with any OpenAI-compatible model, with the whole device as its toolbox. It creates, edits, installs, opens and deletes scenes, fetches web content and APIs, runs Lua scripts, calls tools exported by scenes and MCP servers, manages memory and to-dos, and changes settings. A vision model can also look at the screen and at fetched images. Long conversations are compacted to fit the context, and one that rolls over into the archive carries a short summary into the next; a reply cut by the output limit is continued once. |
+| 🎙️ **Voice** | Hold <kbd>BOOT</kbd> or long-press the wisp to talk, and release to send. The sentence marked `<say>` is spoken while the rest streams to the screen. The microphone keeps the half second before the hold starts, so first words are not lost, and talking works from a dark screen and right after deep standby while Wi-Fi reconnects. Hold again to interrupt; alarms take the speaker first. Recognition and synthesis can each use their own provider, and SiliconFlow works well. |
 | 🧠 **Memory & reminders** | Short notes about your preferences, plus to-dos with due times. When a to-do comes due, the screen lights up and it rings. You can review both in the admin console. |
-| 🌐 **Admin console** | Open `http://wisp.local:8900` on your LAN and sign in with the 6-digit code on the screen. From there you can chat, manage Wi-Fi, models, memory and scenes, watch the logs and upload firmware. It is about 100 KB of plain JavaScript inside the firmware, in Chinese, Japanese and English. |
+| 🌐 **Admin console** | Open `http://wisp.local:8900` on your LAN and sign in with the 6-digit code on the screen. From there you can chat, manage Wi-Fi, models, MCP servers, memory and scenes, change settings, watch the logs and upload firmware. The System page offers the same settings, ranges and choices as the device. It is about 150 KB of plain JavaScript inside the firmware, in Chinese, Japanese and English. |
 
 > [!IMPORTANT]
-> Tool results are treated as data, never as instructions. API keys are write-only. Deleting a scene, a factory reset and a firmware update must all be confirmed on the device.
+> Tool results are treated as data, never as instructions. API keys and MCP header values are write-only. Deleting a scene, a factory reset and a firmware update must all be confirmed on the device.
 
 ## 🤖 What the agent can do
 
@@ -167,7 +168,7 @@ The model reasons through your configured OpenAI-compatible service; Wisp execut
 
 | Group | Tools | What they enable |
 | --- | --- | --- |
-| Scene development & runtime | `scene.*`, `ui.tree`, `ui.screenshot`, `docs.read`, `tools.find`, `tools.call` | Read the built-in API reference, create and edit scenes, install or roll back versions, manage their lifecycle, data and files, and inspect widgets and logs for debugging, and, with a vision model, look at the screen. Discover and call tools exported by installed scenes to add reusable capabilities without changing the firmware. |
+| Scene development & runtime | `scene.*`, `ui.tree`, `ui.screenshot`, `docs.read`, `tools.find`, `tools.call`, `mcp.*` | Read the built-in API reference, create and edit scenes, install or roll back versions, manage their lifecycle, data and files, and inspect widgets and logs for debugging, and, with a vision model, look at the screen. Discover and call tools exported by installed scenes and by MCP servers to add reusable capabilities without changing the firmware, and add, remove or enable MCP servers. |
 | Web & scripting | `http.fetch`, `lua.run` | Access websites, APIs and LAN services over HTTP/HTTPS, extract text from HTML, read long responses in pages, or hand an image to a vision model. Run sandboxed Lua 5.5 scripts to calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for results; memory and execution time are bounded. |
 | Memory & to-dos | `memory.*`, `todo.*` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
 | Device & notifications | `device.status`, `device.list`, `device.call`, `settings.*`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; read and control peripherals that describe themselves, such as a vibration motor (when the board has such a device); adjust brightness, volume, screen timeout, deep standby, language, time zone and clock format, or mute spoken replies; review or dismiss notifications. |
@@ -179,7 +180,9 @@ These tools can be combined in a conversation. For example:
 - **“Use my weather scene to check tomorrow's forecast.”** If that scene exports a forecast tool, discover and call it. A stopped scene can run without a UI for the call, leaving the current screen in place; it closes after 60 seconds idle.
 - **“Remember that I prefer tea, and remind me tomorrow at nine to buy some.”** Save a preference and create a timed to-do; the device lights up and rings when it is due.
 
-Core tools are available directly; scene tools are discovered when needed rather than all being added to every model request. This lets the agent grow its capabilities by creating and reusing scenes. See the [scene API reference](docs/scene-api.md) for scene development and tool exports.
+Core tools are available directly; scene and MCP tools are discovered when needed rather than all being added to every model request. This lets the agent grow its capabilities by creating and reusing scenes. See the [scene API reference](docs/scene-api.md) for scene development and tool exports.
+
+MCP servers (the Model Context Protocol over streamable HTTP; tools only) are set up on the admin console's MCP servers page, under Models, where header values such as a bearer token are written and never read back. The agent can add, remove and enable servers itself, but never sets their headers.
 
 ## 🔧 Porting to a new board
 
@@ -189,7 +192,7 @@ Wisp is not tied to one board. Everything board-specific lives in `boards/<board
 | --- | --- |
 | 1. Describe the hardware | Write the board, buses and pins in esp_board_manager YAML; the display, touch, audio and SD card are declared here |
 | 2. Add drivers | For chips esp_board_manager does not support (IMU, PMU, RTC, …), write a C component under `drivers/<chip>/` |
-| 3. Write `board.cpp` | Wrap each device as a `hal::Device`, register it with `DeviceRegistry`, and declare its capabilities as caps: screen shape, safe area, whether there is a microphone, and so on |
+| 3. Write `board.cpp` | Wrap each device as a `hal::Device`, register it with `DeviceRegistry`, and declare its role and capabilities as caps: screen shape, safe area, whether there is a microphone, and so on. A peripheral no service knows, such as a vibration motor, describes its properties and commands, and the agent and scenes can then use it |
 | 4. Partitions and config | Write `partitions.csv` to the conventions (OTA, `fonts`, `glyphs`, storage) and the board's sdkconfig |
 | 5. Build and verify | Build with `-DWISP_BOARD=<board>`, then check the boot report, the device manifest and the diagnostics page item by item |
 
@@ -210,7 +213,7 @@ One C++20 code base builds two targets: the ESP32-S3 firmware and an SDL2 simula
  wisp_ui      LVGL, wisp renderer, system layer, i18n          portable layers
  wisp_admin   admin console REST / WebSocket                   (each depends only
  wisp_voice   capture, ASR, TTS, playback                       on the ones below)
- wisp_net     Wi-Fi, pairing, HTTP
+ wisp_net     Wi-Fi, pairing, HTTP, model and MCP clients
  wisp_core    event bus, device registry, storage, memory, reminders
  wisp_hal · wisp_os · wisp_base
  ───────────────────────────────────────────────
@@ -234,11 +237,11 @@ More in the [architecture notes](docs/architecture.md), the [scene API](docs/sce
 | 🧱 | Foundation | Device abstraction, storage, power and standby | ✅ |
 | 🌐 | Admin console | Wi-Fi and QR setup, LAN console, model profiles, OTA from the browser | ✅ |
 | 🎭 | Scene runtime | Lua sandbox, declarative UI, background scenes, notifications, scene files | ✅ |
-| 🤖 | Agent | Scene editing and control, HTTP requests, Lua scripts, scene tool discovery, context compaction, live step display | ✅ |
+| 🤖 | Agent | Scene editing and control, HTTP requests, Lua scripts, scene tool discovery, context compaction, live step display, vision | ✅ |
 | 🎙️ | Voice | Hold to talk, recognition, `<say>` speech, interruption | ✅ |
 | 🧠 | Memory & reminders | Preference notes, to-dos with due times, reminders | ✅ |
 | 🔥 | Shell | Wisp home screen, finger-following navigation, settings, scene list, history | ✅ |
-| 🔌 | MCP client | Connect to remote MCP servers, giving the agent outside tools and data sources | 📋 |
+| 🔌 | MCP client | Connect to remote MCP servers over streamable HTTP, giving the agent outside tools | ✅ |
 | 🗣️ | More natural voice | Wake word, streaming recognition with live captions, streaming providers such as Bailian, Volcano and iFlytek | 📋 |
 | 🐾 | Wisp interaction | Touch play such as patting its head, more expressions, colour presets, a mini wisp inside scenes | 📋 |
 | ⏰ | Scheduling & automation | Timed jobs and event rules that the agent runs on its own | 📋 |
