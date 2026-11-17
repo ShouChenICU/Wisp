@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for tools/gen_agent_docs.py: runs the script as a subprocess, as
-tools/ci.sh does, on a scratch scene-api.md and examples tree, and checks
-the committed output against the real ones.
+tools/ci.sh does, on a scratch examples tree, and checks the committed
+output against the real one.
 
 Run directly: python3 tools/gen_agent_docs_test.py
 """
@@ -16,42 +16,6 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 ROOT = TOOLS.parent
 SCRIPT = TOOLS / "gen_agent_docs.py"
 
-DOC = """# Scene API
-
-<!-- Generated; do not edit. -->
-
-Intro text.
-
-## Widgets
-
-The widget table.
-
-### list, canvas
-
-Notes on lists.
-
-## Screen shape
-
-Use row_span.
-
-## wisp.store
-
-Store text.
-
-## wisp.http
-
-Get things.
-
-## Hooks
-
-Hook text.
-
-## wisp.http.download and deep standby
-
-Download text.
-"""
-
-
 def run(*args):
     return subprocess.run(
         [sys.executable, str(SCRIPT), *map(str, args)], capture_output=True, text=True
@@ -62,8 +26,6 @@ class GenAgentDocsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = pathlib.Path(self._tmp.name)
-        self.doc = self.dir / "scene-api.md"
-        self.doc.write_text(DOC, encoding="utf-8")
         self.examples = self.dir / "examples"
         counter = self.examples / "counter"
         (counter / "lib").mkdir(parents=True)
@@ -86,7 +48,7 @@ class GenAgentDocsTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def generate(self):
-        r = run("--doc", self.doc, "--examples", self.examples, "--output", self.out)
+        r = run("--examples", self.examples, "--output", self.out)
         self.assertEqual(r.returncode, 0, r.stderr)
         return self.out.read_text(encoding="utf-8")
 
@@ -106,25 +68,10 @@ class GenAgentDocsTest(unittest.TestCase):
             out[topic] = text[body_start:body_end]
             pos = body_end
 
-    def test_splits_modules_by_heading(self):
+    def test_one_topic_per_example(self):
         topics = self.topics(self.generate())
-        self.assertEqual(
-            list(topics),
-            ["lua", "lua/http", "lua/store", "screen", "examples", "example/clock",
-             "example/counter"],
-        )
-        self.assertIn("Intro text.", topics["lua"])
-        self.assertIn("## Widgets", topics["lua"])
-        self.assertIn("### list, canvas", topics["lua"])
-        self.assertIn("## Hooks", topics["lua"])
-        self.assertNotIn("Generated", topics["lua"])
-        self.assertNotIn("Store text", topics["lua"])
-        self.assertIn("Store text.", topics["lua/store"])
-        # Both wisp.http sections, in document order.
-        http = topics["lua/http"]
-        self.assertLess(http.index("Get things."), http.index("Download text."))
-        self.assertIn("row_span", topics["screen"])
-        self.assertNotIn("row_span", topics["lua"])
+        # The scene API topics come from the schema at run time, not from here.
+        self.assertEqual(list(topics), ["examples", "example/clock", "example/counter"])
         self.assertIn("`clock`: 时钟", topics["examples"])
         self.assertIn("`counter`: 计数器", topics["examples"])
         counter = topics["example/counter"]
@@ -135,14 +82,14 @@ class GenAgentDocsTest(unittest.TestCase):
 
     def test_check_mode_detects_stale_output(self):
         self.generate()
-        ok = run("--check", "--doc", self.doc, "--examples", self.examples, "--output", self.out)
+        ok = run("--check", "--examples", self.examples, "--output", self.out)
         self.assertEqual(ok.returncode, 0, ok.stderr)
-        self.doc.write_text(DOC + "\n## wisp.timer\n\nTimers.\n", encoding="utf-8")
-        stale = run("--check", "--doc", self.doc, "--examples", self.examples, "--output", self.out)
+        (self.examples / "clock" / "main.lua").write_text("return ui.screen {}\n", encoding="utf-8")
+        stale = run("--check", "--examples", self.examples, "--output", self.out)
         self.assertNotEqual(stale.returncode, 0)
         self.assertIn("gen_agent_docs.py", stale.stderr)
         missing = self.dir / "none.cpp"
-        absent = run("--check", "--doc", self.doc, "--examples", self.examples, "--output", missing)
+        absent = run("--check", "--examples", self.examples, "--output", missing)
         self.assertNotEqual(absent.returncode, 0)
         self.assertFalse(missing.exists())
 
@@ -157,8 +104,8 @@ class GenAgentDocsTest(unittest.TestCase):
         self.assertEqual(first, self.generate())
 
     def test_refuses_text_that_would_end_the_raw_string(self):
-        self.doc.write_text(DOC + '\n## wisp.log\n\nx )wispdoc" y\n', encoding="utf-8")
-        r = run("--doc", self.doc, "--examples", self.examples, "--output", self.out)
+        (self.examples / "clock" / "main.lua").write_text('x = ")wispdoc" y\n', encoding="utf-8")
+        r = run("--examples", self.examples, "--output", self.out)
         self.assertNotEqual(r.returncode, 0)
 
     def test_committed_output_is_current(self):

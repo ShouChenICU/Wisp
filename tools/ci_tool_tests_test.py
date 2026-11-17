@@ -27,7 +27,7 @@ class SelectionTest(unittest.TestCase):
         selected = select_tests(["components/wisp_ui/src/strings_zh.cpp"])
         self.assertIn("gen_cjk_font_test", selected)
         self.assertIn("gen_vector_font_test", selected)
-        self.assertIn("gen_agent_docs_test", select_tests(["docs/scene-api.md"]))
+        self.assertIn("gen_agent_docs_test", select_tests(["scenes/examples/clock/main.lua"]))
         self.assertEqual(select_tests(["README.md"]), [])
         self.assertEqual(select_tests(["components/wisp_ui/src/system_layer.cpp"]), [])
 
