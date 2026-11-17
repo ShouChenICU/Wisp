@@ -306,6 +306,7 @@ Result<ModelProbe> test(std::string_view id);           // 请求该配置的 {b
 | | `POST /wifi/networks {ssid \| ssid_hex, password?}`、`DELETE /wifi/networks/{ssid}` | 是 | 添加 / 删除网络；`ssid` 与 `ssid_hex` 必须且只能给一个，`ssid_hex` 不是偶数位十六进制时返回 400；`DELETE` 的路径段按 `%XX` 解码成原始字节 |
 | | `POST /wifi/networks/{ssid}/connect` | 是 | 用设备保存的密码连接这个已保存的网络，返回 202（与添加网络相同，连接在 net 任务上进行）；没有保存时返回 404 `not_found`。路径段与 `DELETE` 相同，按 `%XX` 解码成原始字节。与添加网络一样立即直接尝试它（不扫描、退避重置），即使它被标记为 `auth_failed` 也尝试一次，但不清除标记（只有重新输入密码才清除，见 4.2），也不写入任何东西；经配网热点调用时与添加网络一样算作这次配网的结果（见 4.3） |
 | 模型 | `GET /ai/profiles` | 是 | `{active, profiles}`，见 5.3 |
+| MCP 服务器 | 模型标签下的子页面（`#/mcp`，侧栏中排在「模型」之后；手机上从模型页「对话」标签底部的链接进入，顶栏有返回模型页的箭头）：列出、添加、编辑、启用/停用、测试和删除 MCP 服务器，标题旁显示「已用 / 上限」数量；请求头的值只写不读（`2026-11-15-llm-tool-providers-design.md` 4.3） |
 | | `GET /ai/presets` | 是 | 预设表；每行带 `defaults`（该预设的方言默认值，可为空对象） |
 | | `POST /ai/profiles {kind, name, preset, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 201，返回新配置（不含 Key） |
 | | `PUT /ai/profiles/{id} {name?, preset?, base_url?, model?, options?, api_key? \| api_key_from?}` | 是 | 部分更新，未知字段 400；返回更新后的配置 |

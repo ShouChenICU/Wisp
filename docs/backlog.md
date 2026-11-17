@@ -446,8 +446,8 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 - An MCP server that keeps its SSE response stream open after the answer: a call returns at once instead of after `timeout_ms`, and `EspHttpClient`'s stop path (`stop_is_end`) leaves no connection or task behind.
 - The `wisp.shttp` stack high-water mark (`mem`) after parsing a large SSE JSON page (the page cap is 512 KiB, parsed in place on that task).
 - `mem` at idle, and during an MCP call while TTS speaks: internal free and largest block against `wisp/app/ram_budget.hpp`, plus the `wisp.agent` and `wisp.shttp` high-water marks. Record the numbers in `docs/hardware/<board>.md`.
-- Two real servers end to end, one on the LAN over `http://` and one over `https://` with a bearer header: `Test` on the web card, `tools.find` then `tools.call` by voice, a `401` (the card shows the category, the agent sees the failure), and a session expiry (restart the server between two calls: one `404`, one re-initialize, `mcp: <id> initialize ok` in the log).
-- "Connect the MCP server at <url>" by voice goes through `mcp.add` with no dialog and the note on screen; the next turn's `tools.find` sees it. After a factory reset `secrets/mcp.json` is gone and the card is empty.
+- Two real servers end to end, one on the LAN over `http://` and one over `https://` with a bearer header: `Test` on the web MCP servers page, `tools.find` then `tools.call` by voice, a `401` (the page shows the category, the agent sees the failure), and a session expiry (restart the server between two calls: one `404`, one re-initialize, `mcp: <id> initialize ok` in the log).
+- "Connect the MCP server at <url>" by voice goes through `mcp.add` with no dialog and the note on screen; the next turn's `tools.find` sees it. After a factory reset `secrets/mcp.json` is gone and the MCP servers page is empty.
 - If the CJK font was regenerated for the new notes, run `idf.py fonts-flash` and check zh and ja render.
 
 ## MCP client: deferred
