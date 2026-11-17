@@ -704,6 +704,7 @@ TEST(Prompt, SystemMsgsFirstNamesTheContextBlock) {
     EXPECT_TRUE(has(first, kFirstMemoryLine)) << first;
     EXPECT_TRUE(has(first, kFirstRebuiltLine)) << first;
     EXPECT_FALSE(has(first, "The last system message"));
+    EXPECT_TRUE(has(first, "Scenes and connected MCP servers may export tools")) << first;
     EXPECT_EQ(first, system_prompt(d, LlmSystemMsgs::First));
 }
 
