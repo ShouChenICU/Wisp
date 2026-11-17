@@ -17,6 +17,8 @@ import unittest
 TOOLS = pathlib.Path(__file__).resolve().parent
 ROOT = TOOLS.parent
 SCRIPT = TOOLS / "pack_assets.py"
+sys.path.insert(0, str(TOOLS))
+import pack_assets  # noqa: E402
 FIXTURES = ROOT / "tests" / "net" / "fixtures" / "web"
 
 HEADER = struct.Struct("<4sHHII")
@@ -88,13 +90,115 @@ class PackAssetsTest(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(data).digest(), digest)
                 source = (FIXTURES / path.lstrip("/")).read_bytes()
                 if flags & 1:
-                    self.assertEqual(gzip.decompress(data), source)
+                    self.assertEqual(gzip.decompress(data), pack_assets.minify(path, source))
                 else:
                     self.assertEqual(data, source)
         self.assertEqual(by_path["/index.html"][1], "text/html; charset=utf-8")
         self.assertEqual(by_path["/index.html"][2] & 1, 1)
         self.assertEqual(by_path["/logo.png"][1], "image/png")
         self.assertEqual(by_path["/logo.png"][2] & 1, 0)
+
+    def test_js_loses_indentation_blank_lines_and_comment_lines(self):
+        src = (
+            "// leading comment\n"
+            "import { a } from './a.js';\n"
+            "\n"
+            "export function f(x) {\n"
+            "    // inside\n"
+            "    const u = 'http://x'; // trailing comment stays\n"
+            "\t  return x / 2;\n"
+            "}\n"
+            "/** block comments\n"
+            "    stay as they are */\n"
+        )
+        self.assertEqual(
+            pack_assets.minify_js(src),
+            "import { a } from './a.js';\n"
+            "export function f(x) {\n"
+            "const u = 'http://x'; // trailing comment stays\n"
+            "return x / 2;\n"
+            "}\n"
+            "/** block comments\n"
+            "    stay as they are */",
+        )
+
+    def test_js_template_literals_keep_every_line(self):
+        src = (
+            "const t = html`\n"
+            "  <pre>\n"
+            "    // not a comment\n"
+            "\n"
+            "  ${items.map((i) => html`\n"
+            "      <li>${i}</li>`)}\n"
+            "  ${x ? `\n"
+            "    a` : y}\n"
+            "  </pre>`;\n"
+            "  // after\n"
+            "  done();\n"
+        )
+        self.assertEqual(
+            pack_assets.minify_js(src),
+            "const t = html`\n"
+            "  <pre>\n"
+            "    // not a comment\n"
+            "\n"
+            "  ${items.map((i) => html`\n"
+            "      <li>${i}</li>`)}\n"
+            "  ${x ? `\n"
+            "    a` : y}\n"
+            "  </pre>`;\n"
+            "done();",
+        )
+
+    def test_js_strings_regexes_and_comments_do_not_open_templates(self):
+        src = (
+            "const a = '`'; const b = \"`\"; /* ` */ // `\n"
+            "  const r = /[`/]`/g; const d = n / 2 / 1;\n"
+            "  const k = s.replace(/\\//g, '');\n"
+            "  if (ok) return /`/.test(s);\n"
+            "  next();\n"
+        )
+        self.assertEqual(
+            pack_assets.minify_js(src),
+            "const a = '`'; const b = \"`\"; /* ` */ // `\n"
+            "const r = /[`/]`/g; const d = n / 2 / 1;\n"
+            "const k = s.replace(/\\//g, '');\n"
+            "if (ok) return /`/.test(s);\n"
+            "next();",
+        )
+
+    def test_js_string_continued_over_a_line_keeps_that_line(self):
+        src = "const s = 'a\\\n    b';\n    x();\n"
+        self.assertEqual(pack_assets.minify_js(src), "const s = 'a\\\n    b';\nx();")
+
+    def test_css_loses_comments_indentation_and_blank_lines(self):
+        # A comment between two tokens that would otherwise touch stays, empty.
+        src = (
+            "/* tokens */\n"
+            ".a {\n"
+            "  color: red; /* why */\n"
+            "\n"
+            "  content: \"/* kept */\";\n"
+            "  background: url('a/*b*/c.png');\n"
+            "}\n"
+            ".b/* between */.c { margin: 0 }\n"
+        )
+        self.assertEqual(
+            pack_assets.minify_css(src),
+            ".a {\n"
+            "color: red;\n"
+            "content: \"/* kept */\";\n"
+            "background: url('a/*b*/c.png');\n"
+            "}\n"
+            ".b/**/.c { margin: 0 }",
+        )
+
+    def test_only_js_and_css_are_minified(self):
+        html = b"<p>\n  <b>x</b>\n</p>\n"
+        self.assertEqual(pack_assets.minify("/index.html", html), html)
+        self.assertEqual(pack_assets.minify("/a.json", b'{\n  "a": 1\n}\n'), b'{\n  "a": 1\n}\n')
+        self.assertEqual(pack_assets.minify("/a.mjs", b"  x();\n"), b"x();")
+        self.assertEqual(pack_assets.minify("/a.css", b"  a{}\n"), b"a{}")
 
     def test_reproducible(self):
         first = self.pack_fixtures("a.wpak")

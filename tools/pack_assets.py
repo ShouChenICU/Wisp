@@ -20,6 +20,13 @@ Text formats are gzipped with mtime=0 and a fixed level so the same input
 always produces byte-identical output (firmware images stay reproducible);
 already-compressed formats are stored as-is. Files are ordered by path.
 
+Before that, .js/.mjs and .css files lose what only their readers need
+(minify()): leading indentation, blank lines and whole-line // comments in
+JavaScript, comments, indentation and blank lines in CSS. Lines inside
+template literals, strings and block comments are kept as they are, and no
+two lines are joined, so automatic semicolon insertion sees the same code.
+HTML is stored as written.
+
 Checks, each failing with a non-zero exit and a message on stderr:
   - every relative/absolute module specifier in a .js/.mjs file
     (`import ... from '...'`, `export ... from '...'`, `import '...'`,
@@ -161,12 +168,212 @@ def check_html_refs(files):
         raise PackError("\n".join(sorted(set(problems))))
 
 
+# Characters after which a '/' in JavaScript starts a regular expression
+# rather than dividing, and the keywords that do the same. A '}' is taken
+# as the end of a block; dividing an object literal is not something the
+# web UI does.
+REGEX_AFTER_CHARS = set("(,=:[!&|?{};+-*%<>~^")
+REGEX_AFTER_WORDS = {"return", "typeof", "case", "do", "else", "in", "of", "new", "delete",
+                     "void", "throw", "yield", "await", "instanceof"}
+
+
+def is_word_char(c):
+    return c.isalnum() or c in "_$"
+
+
+def js_code_lines(text):
+    """For each line of `text` (split on "\n"), whether it starts in plain
+    code: not inside a string, template literal, comment or regex."""
+    starts = [True]
+    mode = "code"  # code, sq, dq, tpl, line, block, regex, class
+    subs = []  # open ${...} in templates: the brace depth inside each
+    last = ""  # the last code token: a punctuator, a word, or "x" for a value
+    i = 0
+    n = len(text)
+
+    def skip_escape(i):
+        # The escaped character may be a newline: a line that starts inside
+        # the string or template.
+        if i + 1 < n and text[i + 1] == "\n":
+            starts.append(False)
+        return i + 2
+
+    while i < n:
+        c = text[i]
+        if c == "\n" and mode not in ("sq", "dq"):
+            if mode == "line":
+                mode = "code"
+            starts.append(mode == "code")
+            i += 1
+            continue
+        if mode == "code":
+            if c in "'\"":
+                mode = "sq" if c == "'" else "dq"
+            elif c == "`":
+                mode = "tpl"
+            elif text.startswith("//", i):
+                mode = "line"
+                i += 1
+            elif text.startswith("/*", i):
+                mode = "block"
+                i += 1
+            elif c == "/":
+                if last == "" or last in REGEX_AFTER_CHARS or last in REGEX_AFTER_WORDS:
+                    mode = "regex"
+                else:
+                    last = "/"
+            elif c == "{":
+                if subs:
+                    subs[-1] += 1
+                last = c
+            elif c == "}":
+                if subs and subs[-1] == 0:
+                    subs.pop()
+                    mode = "tpl"
+                else:
+                    if subs:
+                        subs[-1] -= 1
+                    last = c
+            elif is_word_char(c):
+                j = i
+                while j < n and is_word_char(text[j]):
+                    j += 1
+                word = text[i:j]
+                last = word if word in REGEX_AFTER_WORDS else "x"
+                i = j
+                continue
+            elif not c.isspace():
+                last = "x" if c in ")]" else c
+            i += 1
+        elif mode in ("sq", "dq"):
+            if c == "\\":
+                i = skip_escape(i)
+                continue
+            if c == "\n":
+                # An unterminated string: JavaScript ends it here anyway.
+                mode = "code"
+                starts.append(True)
+            elif c == ("'" if mode == "sq" else '"'):
+                mode = "code"
+                last = "x"
+            i += 1
+        elif mode == "tpl":
+            if c == "\\":
+                i = skip_escape(i)
+                continue
+            if c == "`":
+                mode = "code"
+                last = "x"
+            elif text.startswith("${", i):
+                subs.append(0)
+                mode = "code"
+                last = "{"
+                i += 1
+            i += 1
+        elif mode == "block":
+            if text.startswith("*/", i):
+                mode = "code"
+                i += 1
+            i += 1
+        elif mode in ("regex", "class"):
+            if c == "\\":
+                i = skip_escape(i)
+                continue
+            if mode == "class" and c == "]":
+                mode = "regex"
+            elif mode == "regex" and c == "[":
+                mode = "class"
+            elif mode == "regex" and c == "/":
+                mode = "code"
+                last = "x"
+            i += 1
+        else:  # line comment
+            i += 1
+    return starts
+
+
+def minify_js(text):
+    lines = text.split("\n")
+    out = []
+    for line, code in zip(lines, js_code_lines(text)):
+        if code:
+            line = line.lstrip(" \t")
+            if not line or line.startswith("//"):
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+# A removed CSS comment between two of these would join the tokens on
+# either side of it (".a/**/.b" is not ".a.b"), so there it stays, empty.
+CSS_SEPARATORS = set(" \t\n{};:,>+~()")
+
+
+def minify_css(text):
+    out = []
+    starts = [True]
+    quote = ""
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                if text[i + 1] == "\n":
+                    starts.append(False)
+                i += 2
+                continue
+            if c == quote or c == "\n":
+                quote = ""
+                if c == "\n":
+                    starts.append(True)
+            i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            before = out[-1] if out else "\n"
+            after = text[end] if end < n else "\n"
+            if before not in CSS_SEPARATORS and after not in CSS_SEPARATORS:
+                out.append("/**/")
+            i = end
+        else:
+            if c in "'\"":
+                quote = c
+            elif c == "\n":
+                starts.append(True)
+            out.append(c)
+            i += 1
+    lines = []
+    for line, code in zip("".join(out).split("\n"), starts):
+        if code:
+            line = line.strip(" \t")
+            if not line:
+                continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def minify(path, data):
+    """The bytes of `path` as they are stored: see the module docstring."""
+    suffix = suffix_of(path)
+    if suffix not in ("js", "mjs", "css"):
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    text = minify_css(text) if suffix == "css" else minify_js(text)
+    return text.encode("utf-8")
+
+
 def encode(path, data):
     """Returns (mime, flags, stored_bytes) for one file."""
     suffix = suffix_of(path)
     mime = MIME_TYPES.get(suffix, DEFAULT_MIME)
     if suffix in GZIP_SUFFIXES:
-        return mime, FLAG_GZIP, gzip.compress(data, compresslevel=9, mtime=0)
+        return mime, FLAG_GZIP, gzip.compress(minify(path, data), compresslevel=9, mtime=0)
     return mime, 0, data
 
 
