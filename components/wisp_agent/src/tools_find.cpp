@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "tools_json.hpp"
+#include "utf8.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_provider.hpp"
 #include "wisp/agent/tools.hpp"
@@ -23,8 +24,6 @@ constexpr const char* kCallSchema =
     R"({"type":"object","properties":{"name":{"type":"string"},"args":{"type":"object"}},"required":["name","args"]})";
 constexpr uint32_t kToolCallRegistryTimeoutMs = 125000;
 
-std::string_view view(const os::LargeString& s) { return {s.data(), s.size()}; }
-
 std::string_view arg_string(const Value& args, const char* key) {
     const Value* value = args.find(key);
     return value != nullptr && value->type() == Value::Type::String
@@ -35,9 +34,9 @@ std::string_view arg_string(const Value& args, const char* key) {
 void append_entry(os::LargeString& out, const ToolInfo& tool, bool details,
                   const ToolFindFields& fields) {
     out.append("{\"name\":");
-    append_json_string(out, view(tool.name));
+    append_json_string(out, sv(tool.name));
     out.append(",\"description\":");
-    append_json_string(out, view(tool.description));
+    append_json_string(out, sv(tool.description));
     if (details) {
         // Schemas were validated when the provider took them in; streaming
         // the text avoids a default-heap Value tree per entry.
@@ -46,7 +45,7 @@ void append_entry(os::LargeString& out, const ToolInfo& tool, bool details,
         out.push_back(',');
         append_json_string(out, fields.origin);
         out.push_back(':');
-        append_json_string(out, view(tool.origin));
+        append_json_string(out, sv(tool.origin));
         out.push_back(',');
         append_json_string(out, fields.available);
         out.append(tool.available ? ":true" : ":false");
@@ -98,9 +97,9 @@ ToolOutput find(const ToolRegistry& reg, const Value& args, ToolCtx& ctx) {
         for (size_t i = 0; i < found.unavailable.size(); ++i) {
             if (i != 0) out.result_json.push_back(',');
             out.result_json.append("{\"server\":");
-            append_json_string(out.result_json, view(found.unavailable[i].source));
+            append_json_string(out.result_json, sv(found.unavailable[i].source));
             out.result_json.append(",\"error\":");
-            append_json_string(out.result_json, view(found.unavailable[i].error));
+            append_json_string(out.result_json, sv(found.unavailable[i].error));
             out.result_json.push_back('}');
         }
         out.result_json.push_back(']');

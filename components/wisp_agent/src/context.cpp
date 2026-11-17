@@ -47,12 +47,6 @@ constexpr std::string_view kCarryPrompt =
     "out greetings and tool output that no longer matters. Write plain sentences in the language "
     "of the conversation, at most 300 words, without <say> tags or Markdown.";
 
-std::string cut_note(size_t total) {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "\n[truncated, %zu bytes total]", total);
-    return buf;
-}
-
 // The running turn's results are cut only when they do not fit; the model
 // is still working from them, so the note says how to get the rest.
 std::string live_cut_note(size_t total) {

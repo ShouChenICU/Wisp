@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "tools_json.hpp"
+#include "utf8.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/base/json.hpp"
@@ -19,8 +20,6 @@ namespace {
 using net::McpError;
 using net::McpFailure;
 using net::McpTool;
-
-std::string_view view(const os::LargeString& s) { return {s.data(), s.size()}; }
 
 ui::Lang lang_of(const ToolCtx& ctx) { return ui::parse_lang(ctx.lang).value_or(ui::Lang::Zh); }
 
@@ -44,9 +43,8 @@ os::LargeString full_name_of(std::string_view server_id, std::string_view tool) 
 ToolInfo to_info(std::string_view server_id, std::string_view server_name, const McpTool& tool,
                  bool details) {
     ToolInfo info;
-    info.name = full_name_of(server_id, view(tool.name));
-    info.description =
-        detail::external_data_large(view(source_of(server_id)), view(tool.description));
+    info.name = full_name_of(server_id, sv(tool.name));
+    info.description = detail::external_data_large(sv(source_of(server_id)), sv(tool.description));
     if (details) info.parameters = tool.input_schema;
     info.origin.assign(server_name.data(), server_name.size());
     info.available = true;
@@ -73,21 +71,17 @@ std::string_view search_error(const McpFailure& f) {
 
 // The server's text as the tool result keeps it: at most kHttpMaxMaxBytes,
 // the largest payload any other tool returns, cut where no character is
-// split and marked with the context's cut wording (context.cpp). The client
+// split and marked with the context's cut note (cut_note(), utf8.hpp). The client
 // takes up to 1 MiB, but the result is stored whole in the conversation,
 // and one call must not append that much to it or force a rollover alone.
 void append_server_text(os::LargeString& out, std::string_view server_id, std::string_view text) {
     if (text.size() <= kHttpMaxMaxBytes) {
-        detail::append_external(out, view(source_of(server_id)), text);
+        detail::append_external(out, sv(source_of(server_id)), text);
         return;
     }
-    size_t n = kHttpMaxMaxBytes;
-    while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;
-    os::LargeString cut(text.substr(0, n));
-    cut += "\n[truncated, ";
-    cut += std::to_string(text.size());
-    cut += " bytes total]";
-    detail::append_external(out, view(source_of(server_id)), view(cut));
+    os::LargeString cut(text.substr(0, prefix_bytes(text, kHttpMaxMaxBytes)));
+    cut += cut_note(text.size());
+    detail::append_external(out, sv(source_of(server_id)), sv(cut));
 }
 
 // {"ok":false,"error":code,"message":<wrapped text>}, built in PSRAM.
@@ -111,8 +105,7 @@ ToolOutput failure_output(const McpFailure& f, std::string_view server_id) {
             return tool_error("mcp_unavailable", message);
         }
         case McpError::RpcError:
-            return tool_error("mcp_error",
-                              external_data(view(source_of(server_id)), view(f.message)),
+            return tool_error("mcp_error", external_data(sv(source_of(server_id)), sv(f.message)),
                               Map{{"code", Value(f.rpc_code)}});
         case McpError::NotFound:
             return tool_error("not_found", "no such tool on MCP server " + id);
@@ -188,9 +181,9 @@ void McpToolProvider::search(std::string_view query, std::string_view scope, siz
             client_.visit_tools(server.id, wait, [&](const os::LargeVector<McpTool>& tools) {
                 for (const McpTool& tool : tools) {
                     if (got >= max) break;
-                    const os::LargeString name = full_name_of(server.id, view(tool.name));
-                    if (!match_query(query, view(name), view(tool.description))) continue;
-                    out.tools.push_back(to_info(server.id, view(server.name), tool, details));
+                    const os::LargeString name = full_name_of(server.id, sv(tool.name));
+                    if (!match_query(query, sv(name), sv(tool.description))) continue;
+                    out.tools.push_back(to_info(server.id, sv(server.name), tool, details));
                     ++got;
                 }
             });
@@ -229,8 +222,8 @@ std::optional<ToolInfo> McpToolProvider::describe(std::string_view full_name, To
     std::optional<ToolInfo> info;
     client_.visit_tools(server_id, wait_for(ctx, 0), [&](const os::LargeVector<McpTool>& tools) {
         for (const McpTool& tool : tools) {
-            if (view(tool.name) != tool_name) continue;
-            info = to_info(server_id, view(server->name), tool, true);
+            if (sv(tool.name) != tool_name) continue;
+            info = to_info(server_id, sv(server->name), tool, true);
             return;
         }
     });
@@ -256,7 +249,7 @@ ToolOutput McpToolProvider::call(std::string_view full_name, const Value& args, 
     const McpFailure listed =
         client_.visit_tools(server_id, wait, [&](const os::LargeVector<McpTool>& tools) {
             for (const McpTool& tool : tools) {
-                if (view(tool.name) != tool_name) continue;
+                if (sv(tool.name) != tool_name) continue;
                 found = true;
                 schema = tool.input_schema;
                 return;
@@ -269,7 +262,7 @@ ToolOutput McpToolProvider::call(std::string_view full_name, const Value& args, 
     }
     // Spec 4.2 "Arguments": checked here when the schema is in the subset
     // validate_args() knows; otherwise the server judges them.
-    if (auto parsed = from_json(view(schema))) {
+    if (auto parsed = from_json(sv(schema))) {
         std::string why;
         if (schema_supported(parsed.value(), &why)) {
             if (const auto field = validate_args(parsed.value(), args, &why))
@@ -279,14 +272,14 @@ ToolOutput McpToolProvider::call(std::string_view full_name, const Value& args, 
 
     const net::McpCallResult r = client_.call_tool(server_id, tool_name, to_json(args), wait);
     if (r.failure.error != McpError::None) return failure_output(r.failure, server_id);
-    if (r.is_error) return wrapped_error("tool_error", server_id, view(r.text));
+    if (r.is_error) return wrapped_error("tool_error", server_id, sv(r.text));
 
     ToolOutput out;
     out.result_json = R"({"ok":true,"result":)";
-    append_server_text(out.result_json, server_id, view(r.text));
+    append_server_text(out.result_json, server_id, sv(r.text));
     out.result_json.push_back('}');
     out.note =
-        ui::tr_fill_n(ui::StrId::AgentNoteToolCall, lang_of(ctx), {view(server->name), tool_name});
+        ui::tr_fill_n(ui::StrId::AgentNoteToolCall, lang_of(ctx), {sv(server->name), tool_name});
     return out;
 }
 

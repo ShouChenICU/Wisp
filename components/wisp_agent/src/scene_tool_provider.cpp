@@ -9,6 +9,7 @@
 
 #include "tool_io.hpp"
 #include "tools_json.hpp"
+#include "utf8.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/ui/strings.hpp"
 
@@ -18,12 +19,10 @@ namespace {
 
 using detail::fail;
 
-std::string_view view(const os::LargeString& s) { return {s.data(), s.size()}; }
-
 os::LargeString scene_data_large(std::string_view scene_id, std::string_view content) {
     os::LargeString source = "scene:";
     source.append(scene_id.data(), scene_id.size());
-    return detail::external_data_large(view(source), content);
+    return detail::external_data_large(sv(source), content);
 }
 
 ui::Lang lang_of(const ToolCtx& ctx) { return ui::parse_lang(ctx.lang).value_or(ui::Lang::Zh); }
@@ -40,7 +39,7 @@ bool scene_running(const scene::SceneRuntime& runtime, const os::LargeString& sc
 // 200-entry listing then copies no text on its way to tools.find.
 ToolInfo to_info(IndexedTool& tool, bool details, const scene::SceneRuntime& runtime) {
     ToolInfo info;
-    info.description = scene_data_large(view(tool.scene_id), view(tool.description));
+    info.description = scene_data_large(sv(tool.scene_id), sv(tool.description));
     info.name = std::move(tool.full_name);
     info.origin = std::move(tool.scene_name);
     if (details) {
@@ -87,7 +86,7 @@ ToolOutput SceneToolProvider::call(std::string_view full_name, const Value& args
     if (args.type() != Value::Type::Map) {
         return tool_error("bad_args", "arguments must be a JSON object", Map{{"field", ""}});
     }
-    auto schema = from_json(view(tool->parameters));
+    auto schema = from_json(sv(tool->parameters));
     if (!schema) return tool_error("internal", "the installed tool schema is invalid");
     std::string why;
     if (const std::optional<std::string> field = validate_args(schema.value(), args, &why)) {
@@ -104,12 +103,11 @@ ToolOutput SceneToolProvider::call(std::string_view full_name, const Value& args
     }
     ToolOutput out;
     out.result_json = R"({"ok":true,"result":)";
-    const os::LargeString wrapped =
-        scene_data_large(view(tool->scene_id), view(result.value().json));
-    append_json_string(out.result_json, view(wrapped));
+    const os::LargeString wrapped = scene_data_large(sv(tool->scene_id), sv(result.value().json));
+    append_json_string(out.result_json, sv(wrapped));
     out.result_json.push_back('}');
     out.note = ui::tr_fill_n(ui::StrId::AgentNoteToolCall, lang_of(ctx),
-                             {view(tool->scene_name), tool_name});
+                             {sv(tool->scene_name), tool_name});
     return out;
 }
 
