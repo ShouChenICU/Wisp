@@ -451,3 +451,5 @@ Source: branch `perf/firmware-size` (2026-11-16). `wisp/base/number_text.hpp` re
 - Time 10,000 `format_double` calls (each takes about 10 libc conversions): a `wisp.store` record with thousands of floats is encoded on the scene's thread.
 - `docs.read` of `lua`, `example/weather-round` and an unknown topic: each inflates about 45–55 KB into PSRAM per call; check the time per call and that `mem` shows no internal RAM taken.
 - The admin web page, now served minified: every page loads and works as before.
+- The `wisp.agent` stack high-water mark in `mem` after a `docs.read`: `inflate_raw()` now runs there and takes about 2 KB of stack (its decoder and code-length tables); before, only the zip reader ran it.
+- Playback and recording on both boards after the codec trim: after a full flash built from a regenerated `sdkconfig`, play speech and record from the microphone, and check that the boot report shows `audio_out` and `audio_in` initialised. An existing build directory keeps its old `sdkconfig`, and with it all the codecs (about 32 KB more image), until that file is deleted or `idf.py fullclean` runs.
