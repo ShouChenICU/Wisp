@@ -569,6 +569,8 @@ wisp_test(NAME memory_tools_test SRCS agent/memory_tools_test.cpp
 wisp_test(NAME todo_tools_test SRCS agent/todo_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME docs_test SRCS agent/docs_test.cpp LIBS wisp_agent wisp_port_sim_os)
+# docs_test reaches the compiled-in text and unpack_text() in docs_data.hpp.
+target_include_directories(docs_test PRIVATE ${WISP_ROOT}/components/wisp_agent/src)
 # http.fetch (agent-tools spec 3): the "as":"text" HTML conversion, and the
 # tool itself over a real SceneHttp with a fake HttpClient.
 wisp_test(NAME html_text_test SRCS agent/html_text_test.cpp LIBS wisp_agent wisp_port_sim_os)

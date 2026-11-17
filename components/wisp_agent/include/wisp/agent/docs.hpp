@@ -19,7 +19,7 @@ namespace wisp::agent {
 std::vector<std::string> doc_topics();
 
 // nullopt for a topic not in doc_topics(), or when there is not the
-// memory to inflate it.
+// memory to inflate it (or, a build defect, its compressed text is corrupt).
 std::optional<std::string> read_doc(std::string_view topic);
 
 }  // namespace wisp::agent

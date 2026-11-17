@@ -7,14 +7,19 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "docs_data.hpp"
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/json.hpp"
+#include "wisp/os/os.hpp"
+#include "wisp/port/sim/sim_os.hpp"
 #include "wisp/scene/schema.hpp"
 
 namespace {
@@ -243,4 +248,45 @@ TEST(Docs, OffsetThatIsNotAnIntegerIsAnError) {
         ASSERT_NE(err, nullptr) << wisp::to_json(out.result);
         EXPECT_EQ(err->as_string(), "bad_offset") << wisp::to_json(out.result);
     }
+}
+
+// The compiled-in text inflates; a stream that is corrupt, truncated or
+// of another size than the table says is bad data, not missing memory.
+TEST(Docs, UnpackTellsBadDataFromNoMemory) {
+    using wisp::ErrorCode;
+    using wisp::agent::PackedText;
+    using wisp::agent::unpack_text;
+    const PackedText good = wisp::agent::examples_text();
+    auto ok = unpack_text(good);
+    ASSERT_TRUE(ok) << ok.error().message;
+    EXPECT_EQ(ok.value().size(), good.size);
+
+    // BTYPE 11 is reserved.
+    const uint8_t reserved[] = {0x07, 0x00};
+    auto bad = unpack_text(PackedText{reserved, 16});
+    ASSERT_FALSE(bad);
+    EXPECT_EQ(bad.error().code, ErrorCode::InvalidArgument);
+
+    auto cut = unpack_text(PackedText{good.deflated.first(good.deflated.size() / 2), good.size});
+    ASSERT_FALSE(cut);
+    EXPECT_EQ(cut.error().code, ErrorCode::InvalidArgument);
+
+    auto longer = unpack_text(PackedText{good.deflated, good.size + 1});
+    ASSERT_FALSE(longer);
+    EXPECT_EQ(longer.error().code, ErrorCode::InvalidArgument);
+
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+    auto none = unpack_text(good);
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
+    ASSERT_FALSE(none);
+    EXPECT_EQ(none.error().code, ErrorCode::NoMemory);
+}
+
+// Without the memory to inflate it, a topic reads as missing rather than
+// crashing (docs.read itself says no_memory).
+TEST(Docs, ReadWithoutMemoryFindsNothing) {
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, true);
+    const bool found = wisp::agent::read_doc("example/counter").has_value();
+    wisp::port::sim::set_alloc_failure(wisp::os::Mem::Large, false);
+    EXPECT_FALSE(found);
 }

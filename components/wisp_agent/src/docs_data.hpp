@@ -9,6 +9,9 @@
 #include <span>
 #include <string_view>
 
+#include "wisp/base/result.hpp"
+#include "wisp/os/large.hpp"
+
 namespace wisp::agent {
 
 // A raw DEFLATE stream and the size of the text it inflates to.
@@ -32,5 +35,10 @@ struct DocEntry {
 
 // examples, then example/<id>... by id.
 std::span<const DocEntry> doc_entries();
+
+// `p`'s text inflated into Mem::Large (docs.cpp). NoMemory when it does
+// not fit; InvalidArgument when the stream is corrupt or inflates to
+// another size than `p.size`.
+Result<os::LargeBuffer> unpack_text(const PackedText& p);
 
 }  // namespace wisp::agent

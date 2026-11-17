@@ -14,25 +14,48 @@
 #include "wisp/agent/limits.hpp"
 #include "wisp/agent/tools.hpp"
 #include "wisp/base/inflate.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/scene/schema.hpp"
 
 namespace wisp::agent {
 
+// Compiled-in text is inflated for the one read that needs it and dropped
+// after: the docs are read rarely, and 100 KB held for good is not worth
+// a few milliseconds.
+Result<os::LargeBuffer> unpack_text(const PackedText& p) {
+    using R = Result<os::LargeBuffer>;
+    os::LargeBuffer out = os::LargeBuffer::allocate(p.size);
+    if (!out.ok()) {
+        return R::err(ErrorCode::NoMemory, "docs: " + std::to_string(p.size) + " bytes");
+    }
+    const Result<size_t> n = inflate_raw(p.deflated, out.span());
+    if (!n || n.value() != p.size) {
+        return R::err(ErrorCode::InvalidArgument, "docs: corrupt compressed text");
+    }
+    return R::ok(std::move(out));
+}
+
 namespace {
 
+constexpr const char* kTag = "docs";
 constexpr std::string_view kWidgetPrefix = "widget/";
 
-// Compiled-in text, inflated for the one read that needs it and dropped
-// after: the docs are read rarely, and 100 KB held for good is not worth
-// a few milliseconds. Empty (!ok()) when it does not fit in memory or the
-// stream is corrupt.
-os::LargeBuffer unpack(const PackedText& p) {
-    os::LargeBuffer out = os::LargeBuffer::allocate(p.size);
-    if (!out.ok()) return out;
-    const Result<size_t> n = inflate_raw(p.deflated, out.span());
-    if (!n || n.value() != p.size) return {};
-    return out;
+// What a read could not get: the memory, or (never while
+// tools/gen_agent_docs.py --check passes) intact compressed text.
+enum class Find { Found, NotFound, NoMemory, BadData };
+
+// unpack_text(), with a corrupt stream logged: it is a build defect.
+Result<os::LargeBuffer> unpack(const PackedText& p) {
+    Result<os::LargeBuffer> r = unpack_text(p);
+    if (!r && r.error().code != ErrorCode::NoMemory) {
+        WLOG_E(kTag, "%s", r.error().message.c_str());
+    }
+    return r;
+}
+
+Find failure(const Error& e) {
+    return e.code == ErrorCode::NoMemory ? Find::NoMemory : Find::BadData;
 }
 
 std::string_view view_of(const os::LargeBuffer& b) {
@@ -175,8 +198,6 @@ private:
     bool is_built_ = false;
 };
 
-enum class Find { Found, NotFound, NoMemory };
-
 struct Found {
     Find status = Find::NotFound;
     std::optional<DocText> doc;
@@ -189,22 +210,22 @@ Found find_doc(std::string_view topic) {
         return {Find::Found, DocText(os::LargeString(text.begin(), text.end()))};
     }
     if (topic == "widgets" || is_scene_api_topic(topic)) {
-        os::LargeBuffer md = unpack(scene_api_text());
-        if (!md.ok()) return {Find::NoMemory, std::nullopt};
+        Result<os::LargeBuffer> md = unpack(scene_api_text());
+        if (!md) return {failure(md.error()), std::nullopt};
         if (topic == "widgets") {
-            const std::string_view part = widgets_overview(view_of(md));
-            return {Find::Found, DocText(std::move(md), part)};
+            const std::string_view part = widgets_overview(view_of(md.value()));
+            return {Find::Found, DocText(std::move(md.value()), part)};
         }
-        std::optional<os::LargeString> text = scene_api_topic(view_of(md), topic);
+        std::optional<os::LargeString> text = scene_api_topic(view_of(md.value()), topic);
         if (!text) return {};
         return {Find::Found, DocText(std::move(*text))};
     }
     for (const DocEntry& e : doc_entries()) {
         if (e.topic != topic) continue;
-        os::LargeBuffer all = unpack(examples_text());
-        if (!all.ok()) return {Find::NoMemory, std::nullopt};
-        const std::string_view part = view_of(all).substr(e.offset, e.size);
-        return {Find::Found, DocText(std::move(all), part)};
+        Result<os::LargeBuffer> all = unpack(examples_text());
+        if (!all) return {failure(all.error()), std::nullopt};
+        const std::string_view part = view_of(all.value()).substr(e.offset, e.size);
+        return {Find::Found, DocText(std::move(all.value()), part)};
     }
     return {};
 }
@@ -217,11 +238,11 @@ std::vector<std::string> doc_topics() {
         out.push_back(std::string(kWidgetPrefix) +
                       std::string(scene::widget_spec(static_cast<scene::Widget>(i)).name));
     }
-    // Without the memory to inflate the scene API, its topics go unlisted
+    // Without the scene API text (no memory to inflate it), its topics go unlisted
     // rather than the whole list failing.
-    const os::LargeBuffer md = unpack(scene_api_text());
-    if (md.ok()) {
-        for (std::string& t : scene_api_topics(view_of(md))) out.push_back(std::move(t));
+    const Result<os::LargeBuffer> md = unpack(scene_api_text());
+    if (md) {
+        for (std::string& t : scene_api_topics(view_of(md.value()))) out.push_back(std::move(t));
     }
     for (const DocEntry& e : doc_entries()) out.emplace_back(e.topic);
     return out;
@@ -253,6 +274,9 @@ Result<void> add_docs_tools(ToolRegistry& reg) {
                 const Found found = find_doc(topic);
                 if (found.status == Find::NoMemory) {
                     return tool_error("no_memory", "not enough memory to read " + topic);
+                }
+                if (found.status == Find::BadData) {
+                    return tool_error("internal", "the built-in text of " + topic + " is corrupt");
                 }
                 const std::optional<DocText>& doc = found.doc;
                 if (!doc) {
