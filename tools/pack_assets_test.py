@@ -171,6 +171,37 @@ class PackAssetsTest(unittest.TestCase):
         src = "const s = 'a\\\n    b';\n    x();\n"
         self.assertEqual(pack_assets.minify_js(src), "const s = 'a\\\n    b';\nx();")
 
+    def test_js_regex_after_a_paren_does_not_unpin_templates(self):
+        # The scanner reads this regex as a division and its backtick as the
+        # start of a template; it must not then rewrite the real template.
+        src = (
+            "if (ok) /`/.test(s);\n"
+            "const t = html`\n"
+            "  <pre>\n"
+            "    // x\n"
+            "  </pre>`;\n"
+            "  done();\n"
+        )
+        out = pack_assets.minify_js(src)
+        start = src.index("html`")
+        self.assertIn(src[start:src.index("`;", start) + 2], out)
+        self.assertEqual(out, src)
+
+    def test_js_division_after_postfix_increment(self):
+        src = "a = b++ / 2;\n  c = --d;\n  e();\n"
+        self.assertEqual(pack_assets.minify_js(src), "a = b++ / 2;\nc = --d;\ne();")
+
+    def test_js_division_read_as_a_regex_leaves_the_file_as_is(self):
+        # A '/' after '}' is taken for a regex; at the newline the scanner
+        # knows it lost track.
+        src = "x = {}\n/ 2;\n  y();\n"
+        self.assertEqual(pack_assets.minify_js(src), src)
+
+    def test_js_that_ends_inside_a_string_or_template_is_left_as_is(self):
+        for src in ("  a();\nconst s = 'open \\\n", "  a();\nconst t = `\n  x\n"):
+            with self.subTest(src=src):
+                self.assertEqual(pack_assets.minify_js(src), src)
+
     def test_css_loses_comments_indentation_and_blank_lines(self):
         # A comment between two tokens that would otherwise touch stays, empty.
         src = (

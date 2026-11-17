@@ -25,6 +25,7 @@ Before that, .js/.mjs and .css files lose what only their readers need
 JavaScript, comments, indentation and blank lines in CSS. Lines inside
 template literals, strings and block comments are kept as they are, and no
 two lines are joined, so automatic semicolon insertion sees the same code.
+A script whose scan does not end in plain code is stored as written.
 HTML is stored as written.
 
 Checks, each failing with a non-zero exit and a message on stderr:
@@ -183,11 +184,16 @@ def is_word_char(c):
 
 def js_code_lines(text):
     """For each line of `text` (split on "\n"), whether it starts in plain
-    code: not inside a string, template literal, comment or regex."""
+    code: not inside a string, template literal, comment or regex; and
+    whether the scan ended in plain code. It did not when the file ends
+    inside a string, template or comment, or when the scanner lost track
+    (a regex it took for a division, whose backtick then pairs every later
+    one the wrong way round)."""
     starts = [True]
     mode = "code"  # code, sq, dq, tpl, line, block, regex, class
     subs = []  # open ${...} in templates: the brace depth inside each
     last = ""  # the last code token: a punctuator, a word, or "x" for a value
+    lost = False
     i = 0
     n = len(text)
 
@@ -201,7 +207,11 @@ def js_code_lines(text):
     while i < n:
         c = text[i]
         if c == "\n" and mode not in ("sq", "dq"):
-            if mode == "line":
+            # A regex literal cannot hold a newline: the scanner took a
+            # division for one, or a regex for a division before it.
+            if mode in ("regex", "class"):
+                lost = True
+            if mode in ("line", "regex", "class"):
                 mode = "code"
             starts.append(mode == "code")
             i += 1
@@ -217,6 +227,12 @@ def js_code_lines(text):
             elif text.startswith("/*", i):
                 mode = "block"
                 i += 1
+            elif text.startswith("++", i) or text.startswith("--", i):
+                # Postfix after a value ("i++ / 2" divides); prefix before one.
+                if last != "x":
+                    last = c
+                i += 2
+                continue
             elif c == "/":
                 if last == "" or last in REGEX_AFTER_CHARS or last in REGEX_AFTER_WORDS:
                     mode = "regex"
@@ -289,13 +305,16 @@ def js_code_lines(text):
             i += 1
         else:  # line comment
             i += 1
-    return starts
+    return starts, not lost and mode in ("code", "line") and not subs
 
 
 def minify_js(text):
+    starts, in_sync = js_code_lines(text)
+    if not in_sync:
+        return text
     lines = text.split("\n")
     out = []
-    for line, code in zip(lines, js_code_lines(text)):
+    for line, code in zip(lines, starts):
         if code:
             line = line.lstrip(" \t")
             if not line or line.startswith("//"):
