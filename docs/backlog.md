@@ -26,6 +26,8 @@ Deferred work, collected in fast mode from 2026-11-06: Minor review findings, it
 - Volume on a hardware key once BOOT becomes the talk key (MVP spec 7.3).
 - A monospace font for code blocks (MVP plan, ruling M13).
 
+- Screenshots (J3): `UiRuntime::snapshot_rgb888()` returns a `std::vector<uint8_t>` with the default allocator (a pre-existing interface); it reaches PSRAM only because it is over 16 KB. Move it to `os::Large*` when the interface is next touched.
+
 ## 3b-1 parked review findings
 
 Source: `feat/scene-device` review records.

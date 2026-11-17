@@ -165,7 +165,7 @@
   - 按 `index` 拼接 `tool_calls` 的分片（`id`、`function.name`、`function.arguments`）；
   - 读取 `finish_reason` 和 `usage`（请求时带 `stream_options.include_usage`）。
 - 方言字段（2026-11-16 修订，见 `2026-11-15-llm-tool-providers-design.md` 3.2–3.4）：请求体按配置的方言写输出上限（`out_tokens` 与 `out_field`）、`parallel_tool_calls`；`reasoning=echo` 时读取流里的 `delta.reasoning_content`，并在本轮的 assistant 消息上原样回传（只在内存里保留，不写入对话记录）；`system_msgs=first` 时，摘要、`carry` 和动态信息等可移动的 system 内容合并进 user 消息，包在 `<context>…</context>` 里。
-- 请求体支持图片内容片段：`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`。
+- 请求体支持图片内容片段：`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`（2026-11-16 修订：图片放在工具消息之后的一条 user 消息里；无视觉的配置替换为文字，见 `2026-11-15-llm-tool-providers-design.md` 3.5）。
 - API Key 只在这里经 `ModelProfileService::active_for_request(llm)` 取得，加到请求头。Key 不进对话、日志、工具结果或界面。
 - TLS 握手经已有的 `TlsGate`，同一时间只有一次握手。
 - 日志只记元信息：模型名、token 用量、耗时、状态码，不记录请求和回复的内容。

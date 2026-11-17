@@ -212,7 +212,8 @@ Prefix-cache cost of `first`: the latest user message changes with every request
 ### 3.6 `ui.screenshot`
 
 - Arguments: none. Thread: `ToolThread::Io` (3.9). Timeout 10 s (agent-core spec 4 table). Risk `Normal`. `vision_only`.
-- Steps: `UiRuntime::snapshot_rgb888()` (posts to the UI thread and waits, `ui_runtime.hpp:214-226`); on the Io task: black out what lies outside `hal::safe_rect()` and each row's `row_span()` (agent-core spec 5.4), crop to the safe rectangle, scale to 240 px wide (area average), encode JPEG quality 70; put the bytes in the image slot.
+- Steps: `UiRuntime::snapshot_rgb888()` (posts to the UI thread and waits, `ui_runtime.hpp:214-226`); on the Io task: black out what lies outside each row's `row_span()` (agent-core spec 5.4), crop to the bounding box of the visible pixels, scale to 240 px wide (area average), encode JPEG quality 70; put the bytes in the image slot.
+  - （2026-11-16 修订：原写「裁剪到 `safe_rect()`」。圆屏的 `safe_rect()` 会切掉约 40% 的可见面积，所以只涂黑看不见的像素，裁剪到可见像素的外接矩形；实施前已告知负责人。）
 - Encoder: open decision 4. Proposal: `stb_image_write` (public domain or MIT), vendored unmodified under `third_party/`, one portable `base::encode_jpeg(rgb, w, h, quality, out)` in `wisp_base`, the same on the device and in the simulator; registered in `docs/references.md` and `THIRD_PARTY_NOTICES.md` (AGENTS.md section 6).
 - Memory, all PSRAM: the snapshot (a `std::vector<uint8_t>` of width × height × 3: 651 KiB for a 466 × 466 panel; over 16 KB, so `malloc` places it in PSRAM, AGENTS.md section 8), the scaled image (240 × 240 × 3 = 169 KiB, `Mem::Large`), the JPEG (typically 15-25 KB per agent-core spec 5.4, not measured on this panel). The snapshot is freed before encoding.
 - Result: `{"ok":true,"image":{"mime":"image/jpeg","bytes":N,"width":240,"height":H}}`.
@@ -430,7 +431,7 @@ GoogleTest in the simulator, failing test first (AGENTS.md section 5).
 - **`McpServerService`:** validation, write-only values never in any getter, route or event, the origin rule, persistence through a fake worker, factory reset.
 - **Admin routes:** no header value in any response; the test route's categories.
 - **`ToolThread::Io`:** one task per call, flash assertion on a flash call from it, abandoned task joined later, the two-task limit answers `busy`.
-- **`ui.screenshot`:** on the simulator, a known screen gives a JPEG with SOI/EOI markers, the expected dimensions per shape (rect, rounded, circle), black outside the safe area (decoded back with the simulator's JPEG decoder), and fails `too_large` past the cap.
+- **`ui.screenshot`:** on the simulator, a known screen gives a JPEG with SOI/EOI markers, the expected dimensions per shape (rect, rounded, circle), black outside what the panel cannot show (2026-11-16 修订：不再按 `safe_rect()`，见 3.6; decoded back with the simulator's JPEG decoder), and fails `too_large` past the cap.
 - **Logs:** no test log line contains a header value, an API key, reasoning or tool content.
 
 The web page's new controls are checked by hand in the simulator (frontend tests are out of the roadmap's scope).
