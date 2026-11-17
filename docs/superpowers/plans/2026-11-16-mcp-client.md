@@ -73,7 +73,7 @@ These are the five failures most likely to reach a user that no single feature t
 17. **Disabled or unknown server in `tools.call`:** `not_found` ("MCP server <id> is disabled" / "no MCP server <id>").
 18. **Dynamic info line** (spec decision 11): `MCP: <id> (<n> tools), <id> (not connected yet), <id> (unavailable: <category>)`, enabled servers only, in configuration order. It is placed after the `Network:` line, and absent when no server is enabled.
 19. **The `mcp.*` tools** are registered, and the MCP provider added, only when the platform has `SceneHttp` (the same condition as `http.fetch`).
-20. **Web placement.** The "MCP servers" card renders below the chat tab's panel (`#/models/llm`), in its own module `web/app/pages/mcp_servers.js` (the Models page is already 1252 lines).
+20. **Web placement.** (Revised 2026-11-17: at the owner's request the card became its own page, `#/mcp`, a sub-page of Models; see the providers spec 4.3.) The "MCP servers" card renders below the chat tab's panel (`#/models/llm`), in its own module `web/app/pages/mcp_servers.js` (the Models page is already 1252 lines).
 21. **Session state is per server and in memory**, keyed by id and the server's `revision`. A configuration change of that server (any `revision` change) drops its session and cache before the next use. The service's cell (`{count, enabled, revision}`) is read with `get()` on each use; no subscription is needed.
 
 ---
