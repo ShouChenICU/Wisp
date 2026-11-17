@@ -15,7 +15,9 @@ Usage: python3 tools/gen_agent_docs.py [--check] [--examples D]
                                        [--scene-api F] [--output F]
 --check compares instead of writing and fails when the output is stale. It
 inflates the committed streams and compares their text, so it does not
-depend on the zlib build that compressed them.
+depend on the zlib build that compressed them. Another zlib (zlib-ng, say)
+gives other bytes for the same text: do not commit a regeneration that
+changes only the bytes.
 """
 
 import argparse
