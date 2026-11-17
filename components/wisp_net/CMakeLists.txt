@@ -7,7 +7,8 @@ wisp_component(
     SRCS src/http.cpp src/asset_pack.cpp src/wifi_service.cpp src/wifi_snapshot.cpp
          src/pairing_service.cpp src/model_probe.cpp src/scene_http.cpp
          src/tls_gate.cpp src/request_watch.cpp src/time_sync.cpp src/network_window.cpp
-         src/llm_client.cpp src/llm_provider.cpp src/sse_parser.cpp
+         src/llm_client.cpp src/llm_provider.cpp src/sse_parser.cpp src/mcp_wire.cpp src/mcp_client.cpp
+         src/secret_scrub.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core
 )

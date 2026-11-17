@@ -8,11 +8,11 @@
 #include <string>
 
 #include "wisp/agent/scene_workspace.hpp"
-#include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_service.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/reminders.hpp"
@@ -27,6 +27,8 @@
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::agent {
+
+class McpToolProvider;
 
 // scene.list, list_files, read_file, write_file, edit_file, delete_file,
 // install, discard_draft and rollback over `ws` (spec 4.1).
@@ -139,14 +141,23 @@ struct LuaToolDeps {
 // scene task (SceneRuntime::run_lua()), waiting on ToolThread::Agent.
 Result<void> add_lua_tools(ToolRegistry& reg, LuaToolDeps deps);
 
-struct SceneToolDeps {
-    ToolIndex& index;
-    scene::SceneRuntime& runtime;
+// tools.find and tools.call (agent-tools spec 5.3, llm-tool-providers spec
+// 4.1) over reg.providers(): ToolThread::Agent, ToolRisk::Note, tools.call's
+// registration timeout 125000 ms.
+Result<void> add_find_tools(ToolRegistry& reg);
+
+struct McpToolDeps {
+    // Both must outlive the registry.
+    core::McpServerService& servers;
+    McpToolProvider& provider;
 };
 
-// tools.find and tools.call (agent-tools spec 5.3): discover and invoke
-// installed scene tools without changing the model's fixed tool array.
-Result<void> add_scene_tool_tools(ToolRegistry& reg, SceneToolDeps deps);
+// mcp.servers, mcp.add, mcp.remove and mcp.enable (llm-tool-providers spec
+// 4.3, decision 7): ToolThread::Agent, no confirmation. Header values are
+// never read or set here: mcp.servers names the headers only, and mcp.add
+// takes no headers (an extra "headers" argument is ignored), so a token
+// only ever comes from the owner on the web page.
+Result<void> add_mcp_tools(ToolRegistry& reg, McpToolDeps deps);
 
 struct TodoToolDeps {
     core::ReminderScheduler& scheduler;

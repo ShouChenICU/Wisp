@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -44,6 +45,8 @@
 #include "wisp/os/os.hpp"
 
 namespace wisp::agent {
+
+class ToolProvider;
 
 enum class ToolRisk : uint8_t { Normal, Note, Confirm };
 enum class ToolThread : uint8_t { Agent, Ui, Fs, Io, FsInteractive };
@@ -153,6 +156,12 @@ public:
     // as any name missing from the array the model got.
     ToolOutput call(std::string_view wire, std::string_view args_json, ToolCtx& ctx) const;
 
+    // Not thread-safe, like add(): register every provider before the first
+    // call(). Not owned; must outlive the registry's last call(). Searched and
+    // routed in registration order (add_find_tools()).
+    void add_provider(ToolProvider& provider);
+    std::span<ToolProvider* const> providers() const;
+
 private:
     struct Entry {
         ToolDef def;
@@ -174,6 +183,7 @@ private:
     os::LargeString vision_tail_;
     mutable os::LargeString vision_json_;
     mutable std::once_flag vision_once_;
+    os::LargeVector<ToolProvider*> providers_;
 };
 
 // A ToolImage in Mem::Large whose bytes hold `size` bytes; null only when the

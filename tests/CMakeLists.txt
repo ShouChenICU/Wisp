@@ -38,6 +38,7 @@ wisp_test(NAME device_identity_test SRCS hal/device_identity_test.cpp LIBS wisp_
 wisp_test(NAME device_schema_test SRCS hal/device_schema_test.cpp LIBS wisp_hal wisp_base)
 wisp_test(NAME imu_axis_map_test SRCS hal/imu_axis_map_test.cpp LIBS wisp_hal)
 wisp_test(NAME value_json_test SRCS base/value_json_test.cpp LIBS wisp_base)
+wisp_test(NAME json_large_test SRCS base/json_large_test.cpp LIBS wisp_base)
 wisp_test(NAME value_test SRCS base/value_test.cpp LIBS wisp_base)
 wisp_test(NAME sha256_test SRCS base/sha256_test.cpp LIBS wisp_base)
 wisp_test(NAME base64_test SRCS base/base64_test.cpp LIBS wisp_base)
@@ -60,6 +61,7 @@ wisp_test(NAME button_service_test SRCS core/button_service_test.cpp LIBS wisp_c
 wisp_test(NAME settings_test SRCS core/settings_test.cpp LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
 wisp_test(NAME model_profiles_test SRCS core/model_profiles_test.cpp LIBS wisp_core wisp_port_sim_os
           TIMEOUT 20)
+wisp_test(NAME mcp_servers_test SRCS core/mcp_servers_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME system_settings_test SRCS core/system_settings_test.cpp
           LIBS wisp_core wisp_port_sim_os wisp_port_sim_settings)
 wisp_test(NAME settings_schema_test SRCS core/settings_schema_test.cpp LIBS wisp_core wisp_port_sim_os)
@@ -349,6 +351,13 @@ wisp_test(NAME network_window_test SRCS net/network_window_test.cpp LIBS wisp_ne
 wisp_test(NAME tls_gate_test SRCS net/tls_gate_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME request_watch_test SRCS net/request_watch_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME time_sync_test SRCS net/time_sync_test.cpp LIBS wisp_net wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME mcp_client_test SRCS net/mcp_client_test.cpp
+          LIBS wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
+# secret_scrub.hpp is wisp_net's internal header.
+target_include_directories(mcp_client_test PRIVATE ${WISP_ROOT}/components/wisp_net/src)
+# Replaces the global operator new/delete to count the default heap.
+wisp_test(NAME mcp_client_heap_test SRCS net/mcp_client_heap_test.cpp
+          LIBS wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
 
 # wisp_voice: the pure voice algorithms.
 wisp_test(NAME say_parser_test SRCS voice/say_parser_test.cpp LIBS wisp_voice)
@@ -394,7 +403,8 @@ wisp_test(NAME shell_talk_overlay_test SRCS shell/talk_overlay_test.cpp
 
 # wisp_admin: the router is driven with in-memory requests
 # (support/fake_http.hpp) over real services and the fixture WispPack.
-foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_firmware_test
+foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test routes_mcp_test
+                   routes_firmware_test
                    routes_scenes_test routes_power_test routes_scene_files_test routes_memory_test
                    ws_hub_test)
     wisp_test(NAME ${admin_test} SRCS admin/${admin_test}.cpp
@@ -520,10 +530,18 @@ wisp_test(NAME tool_index_test SRCS agent/tool_index_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME scene_tools_tools_test SRCS agent/scene_tools_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)
+wisp_test(NAME tool_find_test SRCS agent/tool_find_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 # Its own binary: it replaces the global operator new to see what stays on
 # the default heap (internal RAM on the device).
 wisp_test(NAME tool_registry_heap_test SRCS agent/tool_registry_heap_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
+# The MCP provider against FakeMcpServer behind a real SceneHttp.
+wisp_test(NAME mcp_tool_provider_test SRCS agent/mcp_tool_provider_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
+# The mcp.* tools over a real McpServerService and McpToolProvider.
+wisp_test(NAME mcp_tools_test SRCS agent/mcp_tools_test.cpp
+          LIBS wisp_agent wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME context_test SRCS agent/context_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME agent_loop_test SRCS agent/agent_loop_test.cpp

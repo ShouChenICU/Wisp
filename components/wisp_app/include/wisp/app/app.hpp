@@ -102,6 +102,7 @@ namespace wisp::core {
 template <class T>
 class StateCell;
 class ButtonService;
+class McpServerService;
 class ModelProfileService;
 class SceneRepository;
 class SystemSettings;
@@ -365,6 +366,9 @@ public:
     net::TimeSyncService* time_sync();
     // Always available; loaded from storage by start() (step 3).
     core::ModelProfileService& models();
+    // The MCP servers (llm-tool-providers spec 4.3). Always available;
+    // loaded from storage by start(), as models() is.
+    core::McpServerService& mcp();
     // PowerManager follows its cell's brightness only when started with a
     // UI (otherwise the stored value takes effect at the next boot).
     core::SystemSettings& system_settings();

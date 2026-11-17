@@ -220,11 +220,12 @@
 | 字段 | 说明 |
 |---|---|
 | `query` | 可省略。按空白分词，所有词都出现在"全名 + 描述"里（仅 ASCII 字母不分大小写，非 ASCII 按精确字节匹配）才算匹配 |
-| `scene` | 可省略，只看这个场景的工具 |
+| `scene` | 可省略，只看这个场景或这个 MCP 服务器（按 id）的工具 |
 
 - 有 `query` 或 `scene` 时：最多 20 条，每条 `{name, description, parameters, scene_name, running}`；
 - 两者都没有时：列出全部工具的 `{name, description}`（不含 `parameters`），最多 200 条，结果带 `total`；
-- 结果按场景名、工具名排序；描述来自场景，按不可信内容包装（4a spec 6.3）。
+- 结果按提供者的注册顺序（先场景，再 MCP 服务器）合并，每个提供者内部场景按场景名、工具名排序，MCP 按服务器、服务器给出的顺序；描述来自场景或服务器，按不可信内容包装（4a spec 6.3）；
+- `unavailable` 列表（`{server, error}`）只在有服务器出错或处于退避期时出现，位于 `tools` 与 `total` 之后；即使合并列表已满，已知失败的服务器仍会列出。
 
 **`tools.call`**：
 
@@ -238,13 +239,15 @@
 - 系统说明行：`调用 <场景名> · <工具名>`；
 - 注册的超时为 125000 ms，实际以声明的 `timeout_ms` 为准。
 
+**Providers（由 `2026-11-15-llm-tool-providers-design.md` 4.1 修订）**：`tools.find`/`tools.call` 按注册顺序（先场景，再 MCP 服务器）在各个 `agent::ToolProvider` 上查询并路由调用。场景工具名仍是 `<场景 id>.<工具名>`，MCP 工具名是 `<服务器 id>:<工具名>`；数量上限等限制由各提供者共用。MCP 工具的详细条目用 `server_name`/`available` 字段，其后可跟一个 `unavailable` 列表。MCP 服务器由 `mcp.servers`、`mcp.add`、`mcp.remove`、`mcp.enable` 四个工具管理，它们的系统说明行与动态信息行（已连接的服务器数）见 MCP 客户端的计划与 `2026-11-15-llm-tool-providers-design.md` 4.3；`mcp.add` 不读取 `headers`：传入的 `headers` 参数被忽略、不保存，调用照常成功（密钥只能在网页上填写）。
+
 **`ToolIndex`**：
 
 - 启动时（在 `wisp.fs` 上）读一遍所有已安装场景的 scene.json，之后在 `scene.install`、`scene.rollback`、`scene.delete` 以及管理后台安装、删除场景后重建；
 - 内容全部放在 PSRAM；
 - 只登记已安装（非草稿）场景的工具。
 
-**提示词**：固定提示词加一段话，说明场景可能导出工具、用 `tools.find` 查询、用 `tools.call` 调用，用户的需求可能有场景能做到时先查。固定提示词与 `tools` 数组都不含场景工具的任何信息，保证前缀缓存（prompt.cpp 文件头）。`docs.read` 的写场景文档增加 `tools` 声明与 `wisp.tools.register` 的说明和示例。
+**提示词**：固定提示词加一段话，说明场景和已连接的 MCP 服务器可能导出工具、用 `tools.find` 查询、用 `tools.call` 调用，用户的需求可能有场景或服务器能做到时先查。固定提示词与 `tools` 数组都不含场景工具的任何信息，保证前缀缓存（prompt.cpp 文件头）。`docs.read` 的写场景文档增加 `tools` 声明与 `wisp.tools.register` 的说明和示例。
 
 ### 5.4 headless 执行
 

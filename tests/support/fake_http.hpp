@@ -97,7 +97,8 @@ inline std::string set_cookie(const net::HttpResponse& res) {
 // It behaves like the real clients towards the streaming fields: a body
 // over max_response_bytes is TooLarge (unless `ignore_limit`), on_status
 // gets next.status before the body, on_body
-// gets it in 4 KB pieces (false: Cancelled) and `next.body` is then not
+// gets it in 4 KB pieces (false: Cancelled, or with stop_is_end a success
+// that keeps the status and headers) and `next.body` is then not
 // returned; req.cancelled() is asked before each piece.
 //
 // With `hold` set, request() blocks like a library call stuck in one read
@@ -164,8 +165,14 @@ public:
                     return {.transport = net::TransportError::Cancelled};
                 }
                 ++pieces;
+                if (after_cancel_poll) after_cancel_poll();
                 const size_t n = std::min<size_t>(4096, deliver - at);
-                if (!req.on_body({p + at, n})) return {.transport = net::TransportError::Cancelled};
+                if (!req.on_body({p + at, n})) {
+                    if (!req.stop_is_end) return {.transport = net::TransportError::Cancelled};
+                    return {.transport = net::TransportError::None,
+                            .status = res.status,
+                            .headers = std::move(res.headers)};
+                }
             }
             res.body.clear();
         } else if (truncate) {
@@ -213,6 +220,10 @@ public:
     // Called before each 4 KB piece goes to on_body (a server that trickles
     // the body: a test advances its clock here). Set before the request.
     std::function<void()> before_piece;
+    // Called after the cancel poll and right before a piece goes to
+    // on_body, so whatever it changes is seen by on_body itself, not by
+    // req.cancelled() first. Set before the request.
+    std::function<void()> after_cancel_poll;
     std::atomic<int> pieces{0};
 
 private:

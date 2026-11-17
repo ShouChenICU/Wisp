@@ -287,6 +287,50 @@ TEST(SimHttpClient, StreamsBodyHeadersAndCancels) {
     EXPECT_EQ(res.body, ref);
 }
 
+// stop_is_end: a reader that has what it needs (an MCP answer read off an
+// SSE stream the server keeps open) ends the transfer as a success, with
+// the status and headers kept; without it a refusal stays Cancelled.
+TEST(SimHttpClient, StopIsEndKeepsStatusAndHeaders) {
+    static const std::vector<uint8_t> body(64 * 1024, 'e');
+    SimHttpServer server;
+    ASSERT_TRUE(server.start(0,
+                             [](const HttpRequest&) {
+                                 HttpResponse res;
+                                 res.status = 200;
+                                 res.content_type = "text/event-stream";
+                                 res.headers = {{"Mcp-Session-Id", "s-1"}};
+                                 res.static_body = std::span<const uint8_t>(body);
+                                 return res;
+                             },
+                             {}));
+    SimHttpClient client;
+
+    HttpClientRequest req;
+    req.method = Method::Post;
+    req.url = url(server.port(), "/mcp");
+    size_t pieces = 0;
+    req.on_body = [&](std::span<const uint8_t>) {
+        ++pieces;
+        return false;
+    };
+    req.stop_is_end = true;
+    auto res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::None);
+    EXPECT_EQ(res.status, 200);
+    EXPECT_TRUE(res.body.empty());
+    EXPECT_FALSE(res.truncated);
+    EXPECT_EQ(pieces, 1u);
+    std::string session = "(missing)";
+    for (const auto& [n, v] : res.headers)
+        if (n == "mcp-session-id") session = v;
+    EXPECT_EQ(session, "s-1");
+
+    req.stop_is_end = false;
+    res = client.request(req);
+    EXPECT_EQ(res.transport, TransportError::Cancelled);
+    EXPECT_TRUE(res.headers.empty());
+}
+
 TEST(SimHttpClient, MapsCurlErrors) {
     EXPECT_EQ(SimHttpClient::transport_error_for(CURLE_OK), TransportError::None);
     EXPECT_EQ(SimHttpClient::transport_error_for(CURLE_COULDNT_RESOLVE_HOST), TransportError::Dns);

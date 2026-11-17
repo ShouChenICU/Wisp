@@ -60,6 +60,7 @@
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/occupancy.hpp"
@@ -92,6 +93,11 @@ struct AdminDeps {
     // Its connectivity test needs the prober App sets on it (without one,
     // POST /ai/profiles/{id}/test answers 503).
     core::ModelProfileService& models;
+    // The MCP servers (spec 4.3 of
+    // docs/superpowers/specs/2026-11-15-llm-tool-providers-design.md); its
+    // test route needs the prober App sets on it. Null: every /mcp route
+    // answers 503 unavailable.
+    core::McpServerService* mcp = nullptr;
     core::SystemSettings& settings;
     const net::AssetPack* assets;  // may be null: API only, every static path is 404
     std::string board;

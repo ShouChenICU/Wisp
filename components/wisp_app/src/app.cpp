@@ -35,6 +35,7 @@
 #include "wisp/hal/power.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/hal/touch.hpp"
+#include "wisp/net/mcp_client.hpp"
 #include "wisp/net/model_probe.hpp"
 #include "wisp/net/wifi_service.hpp"
 #include "wisp/os/os.hpp"
@@ -359,6 +360,14 @@ Result<void> App::start() {
         if (!loaded) {
             WLOG_W("app", "model profiles unavailable: %s", loaded.error().message.c_str());
         }
+        impl_->mcp.set_on_persist_failed([impl] { impl->report_persist_failed(); });
+        Result<void> mcp_loaded = Result<void>::ok();
+        if (auto r = impl_->run_io([&] { mcp_loaded = impl_->mcp.init(); }, os::kForever); !r) {
+            mcp_loaded = r;
+        }
+        if (!mcp_loaded) {
+            WLOG_W("app", "MCP servers unavailable: %s", mcp_loaded.error().message.c_str());
+        }
     }
     if (impl_->platform.http_client) {
         impl_->models.set_prober(
@@ -634,6 +643,14 @@ Result<void> App::start() {
         if (!impl_->voice) WLOG_E("app", "no memory for the voice; voice is off");
     }
 
+    // The MCP test route's prober sends through the scenes' SceneHttp, so
+    // it exists only with one; App::stop() clears it once networking (the
+    // route) is gone and before the scenes (the proxy) go.
+    if (scenes != nullptr && scenes->http() != nullptr) {
+        impl_->mcp.set_prober(
+            net::make_mcp_prober(*scenes->http(), impl_->platform.firmware_version));
+    }
+
     // Step 4b: networking (connectivity spec 4.1), before the self-check
     // screen so that screen can show the network state. Never waits for
     // Wi-Fi -- see net_wiring.hpp.
@@ -644,6 +661,7 @@ Result<void> App::start() {
         .bus = impl_->bus,
         .storage = impl_->storage,
         .models = impl_->models,
+        .mcp = &impl_->mcp,
         .system_settings = impl_->system_settings,
         .power_monitor = impl_->power_monitor.get(),
         .power_manager = impl_->power_manager.get(),
@@ -1004,6 +1022,8 @@ void App::stop() {
         impl_->net->stop();
         impl_->net.reset();
     }
+    // Its prober holds the scenes' SceneHttp, which goes below.
+    impl_->mcp.set_prober(nullptr);
     // The reset status outlives this run (it lives on Impl), and the next
     // start's duties would show a request still in it: with the duties
     // gone, the reset task joined and no route left to ask, it goes back
@@ -1249,6 +1269,8 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .repo = *scenes.repository(),
         .files = scenes.files(),
         .scene_http = scenes.http(),
+        .mcp = &impl->mcp,
+        .firmware_version = impl->platform.firmware_version,
         .conversation_dir = system.value() + "/agent",
         .memory_path = system.value() + "/memory/notes.json",
         .drafts_root = scenes.data_root() + "/.drafts",
@@ -1403,6 +1425,7 @@ net::WifiService* App::wifi() { return impl_->net ? impl_->net->wifi() : nullptr
 net::PairingService* App::pairing() { return impl_->net ? impl_->net->pairing() : nullptr; }
 net::TimeSyncService* App::time_sync() { return impl_->net ? impl_->net->time_sync() : nullptr; }
 core::ModelProfileService& App::models() { return impl_->models; }
+core::McpServerService& App::mcp() { return impl_->mcp; }
 core::SystemSettings& App::system_settings() { return impl_->system_settings; }
 const Platform& App::platform() const { return impl_->platform; }
 

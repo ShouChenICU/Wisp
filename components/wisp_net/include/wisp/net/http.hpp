@@ -226,8 +226,13 @@ struct HttpClientRequest {
     bool truncate_at_limit = false;
     // When set, the body is handed over in pieces as it arrives and
     // HttpClientResponse::body stays empty; returning false stops the
-    // transfer (Cancelled).
+    // transfer (Cancelled, unless stop_is_end).
     std::function<bool(std::span<const uint8_t>)> on_body;
+    // With on_body: a false return from on_body ends the transfer as a
+    // success -- transport None, status and headers kept, body empty -- the
+    // way truncate_at_limit does. Without it, false is Cancelled. SceneHttp
+    // sets it for SceneHttpRequest::stop_is_success only.
+    bool stop_is_end = false;
     // When set, called once with the final response's status code after
     // its headers and before the first on_body() piece (an interim 1xx
     // answer is not reported). Not called when the transfer fails first.
@@ -251,7 +256,8 @@ struct HttpClientResponse {
     int status = 0;
     std::string body;
     // The final response's headers, under keep_response_header()'s limits.
-    // Empty when the transfer failed.
+    // Empty when the transfer failed (a stop under stop_is_end is not a
+    // failure).
     std::vector<std::pair<std::string, std::string>> headers;
     // Set (transport None) when truncate_at_limit cut the body off at
     // max_response_bytes instead of failing it.

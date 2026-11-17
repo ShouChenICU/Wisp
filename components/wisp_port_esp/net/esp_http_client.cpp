@@ -320,6 +320,9 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
     char buf[512];
     size_t received = 0;
     bool truncated = false;
+    // on_body returned false under stop_is_end: the reader is done, so the
+    // transfer ends here as a success, status and headers kept.
+    bool stopped = false;
     for (;;) {
         if (cancelled()) return failed(net::TransportError::Cancelled, "body", ESP_OK);
         if (!arm()) return failed(net::TransportError::Timeout, "body", ESP_ERR_TIMEOUT);
@@ -347,7 +350,11 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         if (take != 0) {
             if (req.on_body) {
                 if (!req.on_body({reinterpret_cast<const uint8_t*>(buf), take})) {
-                    return failed(net::TransportError::Cancelled, "body", ESP_OK);
+                    if (!req.stop_is_end) {
+                        return failed(net::TransportError::Cancelled, "body", ESP_OK);
+                    }
+                    stopped = true;
+                    break;
                 }
             } else {
                 res.body.append(buf, take);
@@ -360,9 +367,9 @@ net::HttpClientResponse EspHttpClient::request(const net::HttpClientRequest& req
         return failed(net::TransportError::Other, "body", ESP_FAIL);
     }
     // A body delimited by the connection closing has nothing to check; a
-    // truncated one was deliberately not read to completion, so the
-    // "more was promised" check below does not apply to it either.
-    if (!truncated) {
+    // truncated or stopped one was deliberately not read to completion, so
+    // the "more was promised" check below does not apply to it either.
+    if (!truncated && !stopped) {
         const bool delimited = length > 0 || esp_http_client_is_chunked_response(client.get());
         if (delimited && !esp_http_client_is_complete_data_received(client.get())) {
             return failed(net::TransportError::Other, "body (incomplete)",

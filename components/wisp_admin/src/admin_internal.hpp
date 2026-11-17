@@ -65,6 +65,7 @@ void add_pair_routes(std::vector<Route>& routes);
 void add_device_routes(std::vector<Route>& routes);  // /device, /devices, /settings
 void add_wifi_routes(std::vector<Route>& routes);
 void add_ai_routes(std::vector<Route>& routes);          // /ai/*
+void add_mcp_routes(std::vector<Route>& routes);         // /mcp/*
 void add_system_routes(std::vector<Route>& routes);      // /clients, /system/*
 void add_firmware_routes(std::vector<Route>& routes);    // /system/firmware
 void add_scene_routes(std::vector<Route>& routes);       // /scenes
@@ -92,6 +93,11 @@ std::optional<net::StreamStart> scene_stream(AdminDeps& deps, const net::HttpReq
 constexpr std::string_view kAgentMessagesPath = "/api/v1/agent/messages";
 // nullopt for every request but POST kAgentMessagesPath.
 std::optional<net::StreamStart> agent_stream(AdminDeps& deps, const net::HttpRequest& head);
+
+// Creating or updating an MCP server (routes_mcp.cpp), streamed so the
+// largest configuration the service accepts fits one request. nullopt for
+// every other request, and for one without a body.
+std::optional<net::StreamStart> mcp_stream(AdminDeps& deps, const net::HttpRequest& head);
 
 // The gate a streamed request passes before any of its body is read, the
 // same as AdminServer::handle() applies to every API call: Host (no

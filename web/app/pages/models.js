@@ -46,6 +46,7 @@ import { confirmDialog } from '../components/dialog.js';
 import { toast } from '../components/toast.js';
 import { IconAlert, IconCheck, IconKey, IconMic, IconModel, IconPlus, IconRefresh, IconSpeaker, IconTrash } from '../icons.js';
 import { formatCount } from '../util.js';
+import { McpServersCard } from './mcp_servers.js';
 
 /** @typedef {'llm'|'asr'|'tts'} Kind */
 
@@ -324,6 +325,7 @@ export function ModelsPage() {
       onReload=${load}
       onTest=${runTest}
     />
+    ${kind === 'llm' ? html`<${McpServersCard} />` : null}
   </div>`;
 }
 

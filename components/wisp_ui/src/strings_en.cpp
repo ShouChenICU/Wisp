@@ -313,6 +313,14 @@ const char* strings_en(StrId id) {
             return "Ran a Lua script";
         case StrId::AgentNoteToolCall:
             return "Call {} · {}";
+        case StrId::AgentNoteMcpAdded:
+            return "Added MCP server \"{}\"";
+        case StrId::AgentNoteMcpRemoved:
+            return "Removed MCP server \"{}\"";
+        case StrId::AgentNoteMcpEnabled:
+            return "Enabled MCP server \"{}\"";
+        case StrId::AgentNoteMcpDisabled:
+            return "Disabled MCP server \"{}\"";
         case StrId::AgentConfirmDelete:
             return "The agent wants to delete the scene \"{}\"";
         case StrId::AgentConfirmWithData:
@@ -796,9 +804,17 @@ const char* strings_en(StrId id) {
         case StrId::ActLuaRun:
             return "Run Lua script";
         case StrId::ActToolsFind:
-            return "Find scene tools";
+            return "Find tools";
         case StrId::ActToolsCall:
-            return "Call scene tool";
+            return "Call a tool";
+        case StrId::ActMcpServers:
+            return "Check MCP servers";
+        case StrId::ActMcpAdd:
+            return "Add MCP server";
+        case StrId::ActMcpRemove:
+            return "Remove MCP server";
+        case StrId::ActMcpEnable:
+            return "Turn MCP server on/off";
         case StrId::ActUiTree:
             return "Inspect the screen";
         case StrId::ActUiScreenshot:

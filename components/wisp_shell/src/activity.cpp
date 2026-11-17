@@ -64,6 +64,11 @@ constexpr ToolLabel kLabels[] = {
     {"lua.run", StrId::ActLuaRun, false},
     {"tools.find", StrId::ActToolsFind, false},
     {"tools.call", StrId::ActToolsCall, false},
+    // The server's name (mcp.add) or id; never its URL.
+    {"mcp.servers", StrId::ActMcpServers, false},
+    {"mcp.add", StrId::ActMcpAdd, true},
+    {"mcp.remove", StrId::ActMcpRemove, true},
+    {"mcp.enable", StrId::ActMcpEnable, true},
 };
 
 const ToolLabel* find_label(std::string_view tool) {

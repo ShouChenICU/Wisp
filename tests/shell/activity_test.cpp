@@ -35,6 +35,12 @@ TEST(Activity, KnownToolsGetTheirLabelAndTarget) {
     EXPECT_EQ(s(activity_label("scene.list", "{}", Lang::Ja)), "シーン一覧を確認");
     // A number works as a target too.
     EXPECT_EQ(s(activity_label("todo.done", R"({"id":12})", Lang::Zh)), "完成待办 12");
+    // An MCP server by its name or id, never its URL.
+    EXPECT_EQ(
+        s(activity_label("mcp.add", R"({"name":"Docs","url":"https://x/mcp?k=v"})", Lang::En)),
+        "Add MCP server Docs");
+    EXPECT_EQ(s(activity_label("mcp.enable", R"({"id":"docs","enabled":true})", Lang::Zh)),
+              "开关 MCP 服务器 docs");
     // No target in the arguments: the label alone.
     EXPECT_EQ(s(activity_label("scene.write_file", "", Lang::Zh)), "写入文件");
 }
@@ -51,7 +57,8 @@ TEST(Activity, EveryLanguageHasALabelForEveryTool) {
           "todo.remove",      "settings.get",      "settings.set",     "device.status",
           "notify.list",      "notify.dismiss",    "docs.read",        "ui.tree",
           "http.fetch",       "lua.run",           "tools.find",       "tools.call",
-          "device.list",      "device.call"}) {
+          "device.list",      "device.call",       "mcp.servers",      "mcp.add",
+          "mcp.remove",       "mcp.enable"}) {
         for (Lang lang : wisp::ui::kAllLangs) {
             const std::string label = s(activity_label(tool, "", lang));
             EXPECT_FALSE(label.empty()) << tool;

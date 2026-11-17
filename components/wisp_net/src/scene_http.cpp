@@ -4,6 +4,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "wisp/core/http_rules.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/net/request_watch.hpp"
 
@@ -26,12 +27,6 @@ bool iequals(std::string_view a, std::string_view b) {
 
 bool istarts_with(std::string_view s, std::string_view prefix) {
     return s.size() >= prefix.size() && iequals(s.substr(0, prefix.size()), prefix);
-}
-
-// RFC 9110 tchar.
-bool is_tchar(char c) {
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
-    return std::strchr("!#$%&'*+-.^_`|~", c) != nullptr && c != '\0';
 }
 
 // The URL's host for logs: lowercase, only host characters, cut short.
@@ -309,6 +304,7 @@ struct SceneHttp::Job {
     std::function<bool(std::span<const uint8_t>)> on_body;
     uint64_t max_body = 0;
     bool download = false;
+    bool stop_is_success = false;
     size_t max_response = 0;
     uint32_t timeout_ms = 0;
     uint8_t max_redirects = 0;
@@ -525,6 +521,7 @@ void SceneHttp::submit(SceneHttpRequest req, std::function<void(SceneHttpResult)
     job->on_body = std::move(req.on_body);
     job->max_body = req.max_body;
     job->download = req.download;
+    job->stop_is_success = req.stop_is_success;
     job->max_response = req.max_response;
     job->timeout_ms = req.timeout_ms;
     job->max_redirects = req.max_redirects;
@@ -842,6 +839,10 @@ void SceneHttp::execute(Job& job, Lane& own) {
             // failing the request.
             req.truncate_at_limit = true;
         }
+        // The caller's own stop ends the transfer as a success (file header,
+        // SceneHttpRequest::stop_is_success); every other refusal below
+        // still fails it, through the flags checked after request().
+        req.stop_is_end = is_agent && job.stop_is_success && streamed;
         req.watch = own.watch.get();
 
         body.reset();
@@ -855,6 +856,7 @@ void SceneHttp::execute(Job& job, Lane& own) {
         bool too_large = false;
         bool no_memory = false;
         bool timed_out = false;
+        bool consumer_stopped = false;
         req.on_status = [&status](int st) { status = st; };
         req.on_body = [&](std::span<const uint8_t> chunk) {
             if (job.cancelled.load()) return false;
@@ -876,7 +878,9 @@ void SceneHttp::execute(Job& job, Lane& own) {
                     return false;
                 }
                 streamed_bytes += chunk.size();
-                return job.on_body(chunk);
+                if (job.on_body(chunk)) return true;
+                consumer_stopped = true;
+                return false;
             }
             if (chunk.size() > body.remaining()) {
                 too_large = true;
@@ -918,7 +922,13 @@ void SceneHttp::execute(Job& job, Lane& own) {
             result.error = "other";
             break;
         }
-        if (res.transport == TransportError::Cancelled) {
+        // Under stop_is_end a refusal comes back as transport None; one that
+        // was not the consumer's own stop (the scene was cancelled) is
+        // turned back into "other" here. Defensive only: a cancelled job's
+        // result is never handed to done() (the end of this function).
+        if (res.transport == TransportError::Cancelled ||
+            (res.transport == TransportError::None && req.stop_is_end && !consumer_stopped &&
+             job.cancelled.load())) {
             // The scene was cancelled (nothing is delivered below) or a
             // piece was refused for a reason handled above.
             result.error = "other";
@@ -1037,12 +1047,7 @@ std::string SceneHttp::check_url(std::string_view url, const std::vector<std::st
 }
 
 bool SceneHttp::header_syntax_ok(std::string_view name, std::string_view value) {
-    if (name.empty()) return false;
-    for (char c : name)
-        if (!is_tchar(c)) return false;
-    for (char c : value)
-        if (c == '\r' || c == '\n' || c == '\0') return false;
-    return true;
+    return core::http_header_syntax_ok(name, value);
 }
 
 bool SceneHttp::header_allowed(std::string_view name, std::string_view value) {

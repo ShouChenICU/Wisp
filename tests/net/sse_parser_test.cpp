@@ -80,4 +80,22 @@ TEST(SseParser, EventJustUnderTheLimitPasses) {
     EXPECT_FALSE(f.parser.overflowed());
 }
 
+// A parser made with its own limit holds an event up to that size, past
+// the default (an MCP tools/list page).
+TEST(SseParser, LimitIsConfigurable) {
+    const size_t limit = SseParser::kMaxEventBytes + 4096;
+    SseParser parser(limit);
+    std::vector<std::string> events;
+    auto on = [&](std::string_view d) { events.emplace_back(d); };
+    const std::string payload(SseParser::kMaxEventBytes + 100, 'c');
+    const std::string text = "data: " + payload + "\n\n";
+    parser.feed({reinterpret_cast<const uint8_t*>(text.data()), text.size()}, on);
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].size(), payload.size());
+
+    const std::string over = "data: " + std::string(limit + 1, 'd');
+    parser.feed({reinterpret_cast<const uint8_t*>(over.data()), over.size()}, on);
+    EXPECT_TRUE(parser.overflowed());
+}
+
 }  // namespace

@@ -191,6 +191,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_device_routes(routes_);
     detail::add_wifi_routes(routes_);
     detail::add_ai_routes(routes_);
+    detail::add_mcp_routes(routes_);
     detail::add_system_routes(routes_);
     detail::add_firmware_routes(routes_);
     detail::add_scene_routes(routes_);
@@ -350,6 +351,7 @@ net::StreamHandler AdminServer::stream_handler() {
     return [this](const net::HttpRequest& head) -> std::optional<net::StreamStart> {
         if (auto firmware = detail::firmware_stream(deps_, head)) return firmware;
         if (auto agent = detail::agent_stream(deps_, head)) return agent;
+        if (auto mcp = detail::mcp_stream(deps_, head)) return mcp;
         return detail::scene_stream(deps_, head);
     };
 }

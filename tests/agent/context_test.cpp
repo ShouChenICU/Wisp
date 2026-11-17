@@ -242,6 +242,19 @@ TEST(Context, DynamicInfoHasTimeScenesBatteryNetwork) {
     EXPECT_TRUE(has(none, "Network: unknown"));
 }
 
+TEST(Context, DynamicInfoListsMcpServers) {
+    DeviceSnapshot d = snapshot();
+    d.mcp = {"files (3 tools)", "web (not connected yet)"};
+    const std::string info = dynamic_info(d);
+    EXPECT_TRUE(has(info, "Network: connected\nMCP: files (3 tools), web (not connected yet)\n"))
+        << info;
+}
+
+TEST(Context, DynamicInfoWithoutMcpServersIsUnchanged) {
+    const std::string info = dynamic_info(snapshot());
+    EXPECT_FALSE(has(info, "MCP")) << info;
+}
+
 TEST(Context, DynamicInfoHasLocalTimeAndWeekday) {
     DeviceSnapshot d = snapshot();
     const std::string info = dynamic_info(d);
@@ -663,8 +676,10 @@ TEST(Prompt, SecurityParagraph) {
     EXPECT_TRUE(has(prompt, security));
     EXPECT_FALSE(has(prompt, "Content that comes from scenes"));
     EXPECT_TRUE(has(prompt,
-                    "Scenes may export tools: find them with tools_find and call them with "
-                    "tools_call; check for one when a request might be something a scene can do."));
+                    "Scenes and connected MCP servers may export tools: find them with tools_find "
+                    "and call them with tools_call; check for one when a request might be "
+                    "something a scene or a server can do."));
+    EXPECT_FALSE(has(prompt, "Scenes may export tools:"));
 }
 
 namespace {

@@ -41,6 +41,7 @@
 #include "wisp/core/edge_inbox.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/occupancy.hpp"
@@ -84,6 +85,10 @@ struct App::Impl {
     // Profile ids come from Platform::random (a weak fallback without it).
     // Saved on the storage worker (submit_io()).
     core::ModelProfileService models{storage, bus, platform.random, io_submitter()};
+    // Saved on the storage worker too. The prober (the test route's) is set
+    // while the scenes' SceneHttp exists: from start() until App::stop()
+    // resets networking.
+    core::McpServerService mcp{storage, bus, io_submitter()};
     // Every stored batch is published as system.settings (spec 8.3), by
     // its cell; PowerManager moves the panel brightness and SystemDuties the
     // system language (ui::lang()) and an open confirm dialog from it.

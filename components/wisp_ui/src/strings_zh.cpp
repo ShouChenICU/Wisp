@@ -309,6 +309,14 @@ const char* strings_zh(StrId id) {
             return "运行 Lua 脚本";
         case StrId::AgentNoteToolCall:
             return "调用 {} · {}";
+        case StrId::AgentNoteMcpAdded:
+            return "添加了 MCP 服务器「{}」";
+        case StrId::AgentNoteMcpRemoved:
+            return "删除了 MCP 服务器「{}」";
+        case StrId::AgentNoteMcpEnabled:
+            return "启用了 MCP 服务器「{}」";
+        case StrId::AgentNoteMcpDisabled:
+            return "停用了 MCP 服务器「{}」";
         case StrId::AgentConfirmDelete:
             return "Agent 要删除场景「{}」";
         case StrId::AgentConfirmWithData:
@@ -790,9 +798,17 @@ const char* strings_zh(StrId id) {
         case StrId::ActLuaRun:
             return "运行 Lua 脚本";
         case StrId::ActToolsFind:
-            return "查找场景工具";
+            return "查找工具";
         case StrId::ActToolsCall:
-            return "调用场景工具";
+            return "调用工具";
+        case StrId::ActMcpServers:
+            return "查看 MCP 服务器";
+        case StrId::ActMcpAdd:
+            return "添加 MCP 服务器";
+        case StrId::ActMcpRemove:
+            return "删除 MCP 服务器";
+        case StrId::ActMcpEnable:
+            return "开关 MCP 服务器";
         case StrId::ActUiTree:
             return "查看界面";
         case StrId::ActUiScreenshot:

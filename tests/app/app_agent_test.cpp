@@ -15,12 +15,15 @@
 #include "support/bus_flood.hpp"
 #include "support/cell_barrier.hpp"
 #include "support/fake_http.hpp"
+#include "support/fake_llm.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/core/mcp_servers.hpp"
+#include "wisp/core/model_profiles.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/sim/sim_haptic.hpp"
@@ -102,6 +105,18 @@ UiNetOptions with_haptic(ManualClock& clock) {
     o.extra_devices = {
         std::make_shared<wisp::port::sim::SimHaptic>("haptic.main", "main", clock.fn())};
     o.device_clock = clock.fn();
+    return o;
+}
+
+// `o` with Platform::http_client a FakeLlmServer that `*server` points at
+// (owned by the platform), so the App has a SceneHttp: http.fetch, the
+// mcp.* tools and the MCP provider are wired.
+UiNetOptions with_http(UiNetOptions o, wisp::test::FakeLlmServer** server) {
+    o.http_client = [server] {
+        auto s = std::make_unique<wisp::test::FakeLlmServer>();
+        *server = s.get();
+        return std::unique_ptr<wisp::net::HttpClient>(std::move(s));
+    };
     return o;
 }
 
@@ -237,14 +252,18 @@ TEST(AppAgent, DeviceToolsAreAbsentWithoutADescribedDevice) {
 
 // Every tool the wired agent registers has an activity label of its own in
 // every language, so a new tool cannot show "Call <tool>" to the user. The
-// App has a described device, so the device tools are covered too.
+// App has a described device and an HTTP client, so the device tools,
+// http.fetch and the mcp.* tools are covered too.
 TEST(AppAgent, EveryRegisteredToolHasAnActivityLabel) {
     ManualClock clock;
-    UiNetHarness h(with_haptic(clock));
+    wisp::test::FakeLlmServer* server = nullptr;
+    UiNetHarness h(with_http(with_haptic(clock), &server));
     ASSERT_TRUE(h.start());
     const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
     ASSERT_NE(tools, nullptr);
     ASSERT_NE(tools->find_wire("device_list"), nullptr);
+    ASSERT_NE(tools->find_wire("http_fetch"), nullptr);
+    ASSERT_NE(tools->find_wire("mcp_servers"), nullptr);
     // The vision array: every tool, the vision-only ones included.
     const auto& all = tools->tools_json(true);
     auto parsed = wisp::from_json(std::string_view(all.data(), all.size()));
@@ -284,6 +303,77 @@ TEST(AppAgent, ScreenshotOnlyForVisionModels) {
     const auto& list = parsed.value().as_list();
     ASSERT_FALSE(list.empty());
     EXPECT_EQ(list.back().find("function")->find("name")->as_string(), "ui_screenshot");
+}
+
+// The mcp.* tools come with the platform's HTTP client (as http.fetch
+// does), and not without one.
+TEST(AppAgent, McpToolsAreRegistered) {
+    {
+        wisp::test::FakeLlmServer* server = nullptr;
+        UiNetHarness h(with_http(with_server(true), &server));
+        ASSERT_TRUE(h.start());
+        const wisp::agent::ToolRegistry* tools = h.app->agent_tools();
+        ASSERT_NE(tools, nullptr);
+        for (const char* wire : {"mcp_servers", "mcp_add", "mcp_remove", "mcp_enable"}) {
+            EXPECT_NE(tools->find_wire(wire), nullptr) << wire;
+        }
+    }
+    // One App at a time: the flash thread is process-wide.
+    UiNetHarness bare(with_server(true));
+    ASSERT_TRUE(bare.start());
+    ASSERT_NE(bare.app->agent_tools(), nullptr);
+    EXPECT_EQ(bare.app->agent_tools()->find_wire("mcp_servers"), nullptr);
+}
+
+// An enabled MCP server is named in the turn's dynamic info, and saying so
+// contacts no server: the provider connects lazily, at the first search.
+TEST(AppAgent, McpServersReachTheDynamicInfo) {
+    wisp::test::FakeLlmServer* server = nullptr;
+    UiNetOptions opts = with_http(with_server(true), &server);
+    opts.saved = {{"Home", "password1"}};
+    UiNetHarness h(opts);
+    ASSERT_TRUE(h.start());
+    ASSERT_NE(server, nullptr);
+    ASSERT_NE(h.app->agent(), nullptr);
+    ASSERT_TRUE(h.app->models().create({.kind = wisp::core::ModelKind::Llm,
+                                        .name = "llm",
+                                        .preset = "custom",
+                                        .base_url = std::string("https://llm.example.com/v1"),
+                                        .model = std::string("m"),
+                                        .api_key = std::string("sk-llm")}));
+    ASSERT_TRUE(h.app->mcp().create({.name = "files", .url = "http://mcp.local/mcp"}));
+    // The MCP line of request i's dynamic info (its last message).
+    auto mcp_line = [&](size_t i) {
+        const Value body = server->body_json(i);
+        const Value* messages = body.find("messages");
+        if (messages == nullptr || messages->as_list().empty()) return std::string();
+        const std::string last = wisp::to_json(messages->as_list().back());
+        const size_t at = last.find("MCP: ");
+        return at == std::string::npos ? std::string() : last.substr(at, last.find("\\n", at) - at);
+    };
+    auto turn = [&](size_t messages) {
+        server->push({.status = 200,
+                      .chunks = {wisp::test::FakeLlmServer::sse_text("ok"),
+                                 wisp::test::FakeLlmServer::sse_finish("stop"),
+                                 wisp::test::FakeLlmServer::sse_done()}});
+        if (!h.app->agent()->submit("hi", wisp::agent::Source::DeviceText)) return false;
+        return wait_until(
+            [&] {
+                auto view = h.app->agent()->view();
+                return !view.running_turn && view.messages->size() >= messages;
+            },
+            10000);
+    };
+
+    ASSERT_TRUE(turn(2));
+    EXPECT_EQ(mcp_line(0), "MCP: files (not connected yet)");
+    // Nothing changed: the line is byte for byte the same next turn.
+    ASSERT_TRUE(turn(4));
+    EXPECT_EQ(mcp_line(1), mcp_line(0));
+
+    const auto requests = server->requests();
+    ASSERT_EQ(requests.size(), 2u);
+    for (const auto& r : requests) EXPECT_NE(r.url.find("llm.example.com"), std::string::npos);
 }
 
 // Device model spec 5: a device no core service knows, added by one board

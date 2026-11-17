@@ -315,6 +315,14 @@ const char* strings_ja(StrId id) {
             return "Lua スクリプトを実行";
         case StrId::AgentNoteToolCall:
             return "「{}」を呼び出し · {}";
+        case StrId::AgentNoteMcpAdded:
+            return "MCP サーバー「{}」を追加しました";
+        case StrId::AgentNoteMcpRemoved:
+            return "MCP サーバー「{}」を削除しました";
+        case StrId::AgentNoteMcpEnabled:
+            return "MCP サーバー「{}」を有効にしました";
+        case StrId::AgentNoteMcpDisabled:
+            return "MCP サーバー「{}」を無効にしました";
         case StrId::AgentConfirmDelete:
             return "Agent がシーン「{}」を削除しようとしています";
         case StrId::AgentConfirmWithData:
@@ -798,9 +806,17 @@ const char* strings_ja(StrId id) {
         case StrId::ActLuaRun:
             return "Lua スクリプトを実行";
         case StrId::ActToolsFind:
-            return "シーンツールを検索";
+            return "ツールを検索";
         case StrId::ActToolsCall:
-            return "シーンツールを呼び出す";
+            return "ツールを呼び出す";
+        case StrId::ActMcpServers:
+            return "MCP サーバーを確認";
+        case StrId::ActMcpAdd:
+            return "MCP サーバーを追加";
+        case StrId::ActMcpRemove:
+            return "MCP サーバーを削除";
+        case StrId::ActMcpEnable:
+            return "MCP サーバーをオン/オフ";
         case StrId::ActUiTree:
             return "画面を確認";
         case StrId::ActUiScreenshot:

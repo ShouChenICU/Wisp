@@ -1,9 +1,9 @@
 #pragma once
 
 // Shared fixture for the wisp_admin router tests: real services (Wi-Fi
-// over a FakeWifi, pairing, model profiles, system settings) over a temp
-// directory, a FakeHttpClient behind the model profiles' connectivity
-// test, counters for the reboot
+// over a FakeWifi, pairing, model profiles, MCP servers, system settings)
+// over a temp directory, a FakeHttpClient behind the model profiles'
+// connectivity test, a settable fake MCP prober, counters for the reboot
 // and factory-reset hooks, an empty SceneRepository, the fixture WispPack that tools/pack_assets.py
 // builds from tests/net/fixtures/web, and a settable monotonic clock.
 
@@ -29,6 +29,7 @@
 #include "wisp/core/boot_report.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/occupancy.hpp"
 #include "wisp/core/scene_repository.hpp"
@@ -71,6 +72,12 @@ struct AdminFixture {
         models = std::make_unique<core::ModelProfileService>(*storage, bus, random);
         EXPECT_TRUE(models->init());
         models->set_prober(net::make_model_prober(http, [this] { return now.load(); }));
+        mcp = std::make_unique<core::McpServerService>(*storage, bus);
+        EXPECT_TRUE(mcp->init());
+        mcp->set_prober([this](const core::McpServerTarget& target) {
+            probed_targets.push_back(target);
+            return mcp_probe;
+        });
         settings = std::make_unique<core::SystemSettings>(*backend, bus);
         scenes = std::make_unique<core::SceneRepository>(
             *storage,
@@ -107,6 +114,7 @@ struct AdminFixture {
             .wifi = *wifi,
             .pairing = *pairing,
             .models = *models,
+            .mcp = mcp.get(),
             .settings = *settings,
             .assets = assets ? &*assets : nullptr,
             .board = "sim",
@@ -161,6 +169,11 @@ struct AdminFixture {
     std::unique_ptr<net::WifiService> wifi;
     std::unique_ptr<net::PairingService> pairing;
     std::unique_ptr<core::ModelProfileService> models;
+    // Written on the calling thread (no flash worker); its prober answers
+    // `mcp_probe` and records each target it was handed.
+    std::unique_ptr<core::McpServerService> mcp;
+    core::McpProbe mcp_probe{.ok = true, .protocol = "2025-06-18"};
+    std::vector<core::McpServerTarget> probed_targets;
     std::unique_ptr<core::SystemSettings> settings;
     // Installed scenes (none until a test installs one); no SceneHost.
     std::unique_ptr<core::SceneRepository> scenes;
@@ -190,6 +203,7 @@ inline const std::vector<std::string>& every_authenticated_get_route() {
         "/api/v1/wifi/scan",
         "/api/v1/ai/profiles",
         "/api/v1/ai/presets",
+        "/api/v1/mcp/servers",
         "/api/v1/clients",
         "/api/v1/system/firmware",
         "/api/v1/scenes",

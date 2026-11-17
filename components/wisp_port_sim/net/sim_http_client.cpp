@@ -24,6 +24,9 @@ struct Transfer {
     bool too_large = false;
     bool truncated = false;
     bool cancelled = false;
+    // on_body returned false under stop_is_end: the reader is done, which
+    // ends the transfer as a success.
+    bool stopped = false;
     CURL* curl = nullptr;
     bool status_sent = false;  // req->on_status has been called
 };
@@ -44,6 +47,15 @@ void send_status(Transfer* t) {
 bool stop_requested(const Transfer* t) {
     return (t->req->cancelled && t->req->cancelled()) ||
            (t->req->watch != nullptr && t->req->watch->reason() != net::RequestWatch::Reason::None);
+}
+
+// req->on_body returned false.
+void refused(Transfer* t) {
+    if (t->req->stop_is_end) {
+        t->stopped = true;
+    } else {
+        t->cancelled = true;
+    }
 }
 
 size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
@@ -69,7 +81,7 @@ size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
             send_status(t);
             if (t->req->on_body) {
                 if (!t->req->on_body({reinterpret_cast<const uint8_t*>(data), take})) {
-                    t->cancelled = true;
+                    refused(t);
                 }
             } else {
                 t->res->body.append(data, take);
@@ -81,7 +93,7 @@ size_t on_data(char* data, size_t size, size_t nmemb, void* user) {
     send_status(t);
     if (t->req->on_body) {
         if (!t->req->on_body({reinterpret_cast<const uint8_t*>(data), n})) {
-            t->cancelled = true;
+            refused(t);
             return 0;
         }
     } else {
@@ -271,10 +283,11 @@ net::HttpClientResponse SimHttpClient::request(const net::HttpClientRequest& req
         res.transport = net::TransportError::Timeout;
     } else if (t.cancelled || rc == CURLE_ABORTED_BY_CALLBACK) {
         res.transport = net::TransportError::Cancelled;
-    } else if (t.truncated) {
+    } else if (t.truncated || t.stopped) {
         // on_data() stopped the transfer deliberately, after keeping the
-        // first max_response_bytes of the body (truncate_at_limit): a
-        // success, not CURLE_WRITE_ERROR.
+        // first max_response_bytes of the body (truncate_at_limit) or
+        // because the reader was done (stop_is_end): a success, not
+        // CURLE_WRITE_ERROR.
         res.transport = net::TransportError::None;
     } else if (t.too_large || rc == CURLE_FILESIZE_EXCEEDED) {
         res.transport = net::TransportError::TooLarge;

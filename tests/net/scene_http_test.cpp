@@ -1137,6 +1137,80 @@ TEST_F(SceneHttpTest, AgentPrincipalLogPrivacy) {
     EXPECT_NE(log.find("POST"), std::string::npos) << log;
 }
 
+// stop_is_success (spec 4.4): the MCP client stops reading an SSE answer
+// once it has the response it waits for; that is a success that keeps the
+// status and the headers (the session id), not "other".
+class SceneHttpStopTest : public SceneHttpTest {
+protected:
+    void SetUp() override {
+        SceneHttpTest::SetUp();
+        make();
+        client.next = {
+            .status = 200,
+            .body = std::string(10 * 1024, 'e'),
+            .headers = {{"mcp-session-id", "s-1"}, {"content-type", "text/event-stream"}}};
+    }
+
+    static SceneHttpRequest stopping(SceneHttpRequest req, bool stop_is_success) {
+        req.method = Method::Post;
+        req.on_body = [](std::span<const uint8_t>) { return false; };
+        req.stop_is_success = stop_is_success;
+        return req;
+    }
+
+    static std::string header(const SceneHttpResult& r, const char* name) {
+        for (const auto& [n, v] : r.headers)
+            if (n == name) return v;
+        return "(missing)";
+    }
+};
+
+TEST_F(SceneHttpStopTest, AgentStopIsSuccessKeepsStatusAndHeaders) {
+    auto r = run(stopping(agent_get("https://x.example.com/mcp"), true));
+    EXPECT_EQ(r.error, "");
+    EXPECT_EQ(r.status, 200);
+    EXPECT_EQ(header(r, "mcp-session-id"), "s-1");
+    EXPECT_EQ(r.body.size(), 0u);
+    ASSERT_TRUE(client.last());
+    EXPECT_TRUE(client.last()->stop_is_end);
+}
+
+TEST_F(SceneHttpStopTest, AgentStopWithoutStopIsSuccessIsOther) {
+    EXPECT_EQ(run(stopping(agent_get("https://x.example.com/mcp"), false)).error, "other");
+    ASSERT_TRUE(client.last());
+    EXPECT_FALSE(client.last()->stop_is_end);
+}
+
+TEST_F(SceneHttpStopTest, StopIsSuccessIsIgnoredForTheScenePrincipal) {
+    auto req = stopping(get("https://api.example.com/mcp"), true);
+    req.download = true;
+    EXPECT_EQ(run(std::move(req)).error, "other");
+    ASSERT_TRUE(client.last());
+    EXPECT_FALSE(client.last()->stop_is_end);
+}
+
+TEST_F(SceneHttpStopTest, StopIsSuccessDoesNotHideACancel) {
+    client.before_piece = [this] { http->cancel_scene(std::string(kAgentHttpId)); };
+    Results r;
+    http->submit(stopping(agent_get("https://x.example.com/mcp"), true), r.sink());
+    ASSERT_TRUE(wait_until([&] { return client.saw_cancel.load(); }, 2000));
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(r.size(), 0u);
+    client.before_piece = nullptr;
+}
+
+// The deadline passes after the client's cancel poll, so SceneHttp's own
+// on_body refuses the piece and, under stop_is_end, the client reports
+// that as transport None: the timed_out flag must still win over success.
+TEST_F(SceneHttpStopTest, StopIsSuccessDoesNotHideTheDeadline) {
+    client.after_cancel_poll = [this] { now += 20000; };
+    auto req = stopping(agent_get("https://x.example.com/mcp"), true);
+    req.timeout_ms = 10000;
+    EXPECT_EQ(run(std::move(req)).error, "timeout");
+    EXPECT_EQ(client.pieces.load(), 1);
+    client.after_cancel_poll = nullptr;
+}
+
 TEST(SceneHttpTask, ConfigOfBothLanes) {
     const auto i = SceneHttp::task_config(HttpLane::Interactive);
     const auto d = SceneHttp::task_config(HttpLane::Download);

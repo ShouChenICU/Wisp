@@ -40,6 +40,8 @@
 #include "wisp/agent/context.hpp"
 #include "wisp/agent/conversation.hpp"
 #include "wisp/agent/io_runner.hpp"
+#include "wisp/agent/mcp_tool_provider.hpp"
+#include "wisp/agent/scene_tool_provider.hpp"
 #include "wisp/agent/scene_workspace.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
@@ -47,6 +49,7 @@
 #include "wisp/base/value.hpp"
 #include "wisp/core/device_service.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -61,6 +64,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/llm_client.hpp"
+#include "wisp/net/mcp_client.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -190,6 +194,11 @@ struct AgentWiringDeps {
     core::SceneFiles* files = nullptr;
     // SceneWiring::http(); null: no http.fetch tool.
     net::SceneHttp* scene_http = nullptr;
+    // With scene_http, the MCP provider and the mcp.* tools; null (or no
+    // scene_http): neither. Must outlive the AgentWiring.
+    core::McpServerService* mcp = nullptr;
+    // The MCP client's clientInfo.version (Platform::firmware_version).
+    std::string firmware_version{};
     // <System>/agent, <System>/memory/notes.json and <scene data
     // root>/.drafts.
     std::string conversation_dir{};
@@ -316,8 +325,14 @@ private:
     std::unique_ptr<core::MemoryStore> memory_;
     agent::ToolIndex tool_index_;
     std::unique_ptr<SceneToolIndexObserver> tool_index_observer_;
-    // Before registry_, so it outlives the registry's io executor.
+    // Before the providers and registry_, so it outlives the registry's io
+    // executor.
     std::unique_ptr<agent::IoRunner> io_runner_;
+    // Before registry_, so it is destroyed after it: tools.find/tools.call
+    // reach the provider through the registry.
+    std::unique_ptr<agent::SceneToolProvider> scene_tools_;
+    std::unique_ptr<net::McpClient> mcp_client_;
+    std::unique_ptr<agent::McpToolProvider> mcp_tools_;
     std::unique_ptr<agent::ToolRegistry> registry_;
     std::unique_ptr<scene::UiInspector> inspector_;
     std::unique_ptr<agent::ConfirmService> confirm_;

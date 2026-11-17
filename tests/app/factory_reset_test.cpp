@@ -29,6 +29,7 @@
 #include "wisp/app/power_manager.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/notification_service.hpp"
@@ -193,6 +194,26 @@ TEST(FactoryReset, ClearsEverythingButLibraryAndReboots) {
     auto scene = read_on_flash(app, library);
     ASSERT_TRUE(scene);
     EXPECT_EQ(std::string(scene.value().begin(), scene.value().end()), kept);
+}
+
+// The MCP servers carry header values (bearer tokens): in memory and
+// on disk, they go.
+TEST(FactoryReset, ClearsMcpServers) {
+    UiNetHarness h;
+    ASSERT_TRUE(h.start("system."));
+    wisp::app::App& app = *h.app;
+    ASSERT_TRUE(app.mcp().create({.name = "Files",
+                                  .url = "http://mcp.local/mcp",
+                                  .headers = {{"Authorization", "Bearer t"}}}));
+    const std::string file =
+        app.storage().write_root(wisp::core::Area::System).value() + "/secrets/mcp.json";
+    ASSERT_TRUE(app.storage_worker()->drain(2000));
+    ASSERT_TRUE(std::filesystem::exists(file));
+
+    wisp::app::factory_reset(app);
+
+    EXPECT_FALSE(std::filesystem::exists(file));
+    EXPECT_TRUE(app.mcp().list().empty());
 }
 
 // The agent's conversations and archives live under <System>/agent/.

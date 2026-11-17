@@ -39,6 +39,11 @@ private:
     os::LargeVector<IndexedTool> tools_;
 };
 
+// ToolIndex's query rule, shared with the MCP provider: every
+// whitespace-separated word of `query` occurs in `name` or `description`,
+// ASCII letters case-insensitive, other bytes exact. An empty query matches.
+bool match_query(std::string_view query, std::string_view name, std::string_view description);
+
 inline constexpr size_t kFindMax = 20;
 inline constexpr size_t kListMax = 200;
 

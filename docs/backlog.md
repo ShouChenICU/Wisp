@@ -440,3 +440,20 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 - `tools/check_settings.py` works line by line: a default or range restated two lines away from the key's name passes. Likely future false positives: unit conversions by 60 next to a seconds or minutes setting, and 255 (an 8-bit maximum) next to brightness; give such a line the `settings-literal-ok:` marker with its reason.
 - `SceneBackground.ErrorInBackgroundStopsAndNotifies` failed once under a loaded full run and passes 20 times alone; the same load-sensitive area as `SceneBackground.ExitClosesFromAnyState` (see the `close_slot()` finding under "State cells beside the events parked review findings").
 - `NetWiring.NetworkExpectedFollowsEnabledAndSavedNetworks` and `AppScenes.SelfCheckTakesTheImuBackWhenAFaultedPanelCloses` each failed once in a full suite run while two worktrees ran CI at the same time, and passed repeatedly alone; load-sensitive timing, find the wait that is too tight.
+
+## MCP client: device checks not run
+
+- An MCP server that keeps its SSE response stream open after the answer: a call returns at once instead of after `timeout_ms`, and `EspHttpClient`'s stop path (`stop_is_end`) leaves no connection or task behind.
+- The `wisp.shttp` stack high-water mark (`mem`) after parsing a large SSE JSON page (the page cap is 512 KiB, parsed in place on that task).
+- `mem` at idle, and during an MCP call while TTS speaks: internal free and largest block against `wisp/app/ram_budget.hpp`, plus the `wisp.agent` and `wisp.shttp` high-water marks. Record the numbers in `docs/hardware/<board>.md`.
+- Two real servers end to end, one on the LAN over `http://` and one over `https://` with a bearer header: `Test` on the web card, `tools.find` then `tools.call` by voice, a `401` (the card shows the category, the agent sees the failure), and a session expiry (restart the server between two calls: one `404`, one re-initialize, `mcp: <id> initialize ok` in the log).
+- "Connect the MCP server at <url>" by voice goes through `mcp.add` with no dialog and the note on screen; the next turn's `tools.find` sees it. After a factory reset `secrets/mcp.json` is gone and the card is empty.
+- If the CJK font was regenerated for the new notes, run `idf.py fonts-flash` and check zh and ja render.
+
+## MCP client: deferred
+
+- A probe (`POST /mcp/servers/{id}/test`) runs on the admin httpd thread and can block it for up to 30 s; other admin requests wait. Move it to a deferred answer if that is felt in practice.
+- MCP image results arrive as a text note ("[image omitted: ...]") until the image slot of J3 is connected; then pass them into the turn's image slot.
+- OAuth for MCP servers (only static headers today).
+- The `GET` event stream and `tools/list_changed` (the tool list refreshes only on the next `tools.find` after its cache time-to-live).
+- MCP resources and prompts.

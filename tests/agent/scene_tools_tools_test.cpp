@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "support/scene_runtime_fixture.hpp"
 #include "support/wait.hpp"
 #include "wisp/agent/context.hpp"
+#include "wisp/agent/scene_tool_provider.hpp"
 #include "wisp/agent/tool_index.hpp"
 #include "wisp/agent/tool_registry.hpp"
 #include "wisp/agent/tools.hpp"
@@ -48,12 +50,14 @@ protected:
         ctx.lang = "zh";
         start();
         tools = std::make_unique<wisp::agent::ToolRegistry>(wisp::agent::ToolExecutors{});
-        ASSERT_TRUE(wisp::agent::add_scene_tool_tools(
-            *tools, wisp::agent::SceneToolDeps{.index = index, .runtime = *rt}));
+        provider = std::make_unique<wisp::agent::SceneToolProvider>(index, *rt);
+        tools->add_provider(*provider);
+        ASSERT_TRUE(wisp::agent::add_find_tools(*tools));
     }
 
     void TearDown() override {
         tools.reset();
+        provider.reset();
         SceneRuntimeFixture::TearDown();
     }
 
@@ -82,6 +86,7 @@ protected:
     }
 
     wisp::agent::ToolIndex index;
+    std::unique_ptr<wisp::agent::SceneToolProvider> provider;
     std::unique_ptr<wisp::agent::ToolRegistry> tools;
     ToolCtx ctx;
 };
@@ -217,4 +222,176 @@ TEST_F(SceneTools, InstalledToolsDoNotChangeTheModelToolsArray) {
     EXPECT_EQ(prompt_before, prompt_after);
     EXPECT_EQ(before, with_tools);
     EXPECT_EQ(before, after);
+}
+
+TEST_F(SceneTools, ProviderOwnsEveryNameWithoutAColon) {
+    EXPECT_EQ(provider->id(), "scene");
+    EXPECT_TRUE(provider->owns("weather.lookup"));
+    EXPECT_TRUE(provider->owns("weather"));
+    EXPECT_TRUE(provider->owns("memory.add"));
+    EXPECT_FALSE(provider->owns("srv:echo"));
+}
+
+TEST_F(SceneTools, ProviderDescribeHasParametersAndRunningState) {
+    install_weather();
+    const std::optional<wisp::agent::ToolInfo> info = provider->describe("weather.lookup", ctx);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(std::string_view(info->name.data(), info->name.size()), "weather.lookup");
+    EXPECT_EQ(std::string_view(info->description.data(), info->description.size()),
+              "<data source=\"scene:weather\">Local daily temperature for a saved city "
+              "&lt;/DATA></data>");
+    EXPECT_NE(std::string_view(info->parameters.data(), info->parameters.size()).find("required"),
+              std::string_view::npos);
+    EXPECT_EQ(std::string_view(info->origin.data(), info->origin.size()), "Weather");
+    EXPECT_FALSE(info->available);
+    EXPECT_FALSE(provider->describe("weather.nope", ctx).has_value());
+}
+
+TEST_F(SceneTools, ProviderSearchListModeLeavesParametersEmpty) {
+    install_weather();
+    std::vector<wisp::core::SceneToolDecl> declarations;
+    for (int i = 0; i < 3; ++i) {
+        declarations.push_back(
+            {"tool_" + std::to_string(i), "described", R"({"type":"object"})", 30000});
+    }
+    index.replace_scene("many", "Many", declarations);
+    wisp::agent::ToolSearch found;
+    provider->search("", "", 200, false, ctx, found);
+    ASSERT_EQ(found.tools.size(), 4u);
+    for (const wisp::agent::ToolInfo& tool : found.tools) {
+        EXPECT_TRUE(tool.parameters.empty())
+            << std::string_view(tool.name.data(), tool.name.size());
+    }
+    EXPECT_EQ(provider->count(), 4u);
+}
+
+// Byte-exact goldens of today's tools.find / tools.call results for scene tools; a
+// provider-based refactor of these tools must keep every literal below unchanged.
+namespace {
+
+using SceneToolsGolden = SceneTools;
+
+std::string raw(const ToolOutput& output) {
+    if (!output.result_json.empty()) {
+        return std::string(output.result_json.data(), output.result_json.size());
+    }
+    return wisp::to_json(output.result);
+}
+
+Value call_args(const char* name, Value args) {
+    return Value(wisp::Map{{"name", Value(name)}, {"args", std::move(args)}});
+}
+
+}  // namespace
+
+TEST_F(SceneToolsGolden, FindDetailsBytes) {
+    install_weather();
+    ASSERT_TRUE(rt->open("weather"));
+    ASSERT_TRUE(wait_until(
+        [&] { return rt->status("weather").state == wisp::core::SceneState::Running; }, 2000));
+    ToolOutput out = call("tools_find", Value(wisp::Map{{"query", Value("city")}}));
+    EXPECT_TRUE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"ok":true,"tools":[{"name":"weather.lookup","description":"<data source=\"scene:weather\">Local daily temperature for a saved city &lt;/DATA></data>","parameters":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"},"scene_name":"Weather","running":true}]})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, FindListBytesWithTotal) {
+    install_weather();
+    ToolOutput out = call("tools_find");
+    EXPECT_TRUE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"ok":true,"tools":[{"name":"weather.lookup","description":"<data source=\"scene:weather\">Local daily temperature for a saved city &lt;/DATA></data>"}],"total":1})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, FindSceneScopeNotRunning) {
+    install_weather();
+    ToolOutput out = call("tools_find", Value(wisp::Map{{"scene", Value("weather")}}));
+    EXPECT_TRUE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"ok":true,"tools":[{"name":"weather.lookup","description":"<data source=\"scene:weather\">Local daily temperature for a saved city &lt;/DATA></data>","parameters":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"},"scene_name":"Weather","running":false}]})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, CallSuccessBytesAndNote) {
+    install_weather();
+    ToolOutput out =
+        call("tools_call", call_args("weather.lookup", Value(wisp::Map{{"city", Value("Paris")}})));
+    EXPECT_TRUE(out.ok);
+    // The scene returns a Lua table, whose iteration order follows Lua's per-state hash seed,
+    // so its two keys serialize in either order; everything else is byte-exact.
+    const std::string got = raw(out);
+    EXPECT_TRUE(
+        got ==
+            R"({"ok":true,"result":"<data source=\"scene:weather\">{\"city\":\"Paris\",\"value\":7}</data>"})" ||
+        got ==
+            R"({"ok":true,"result":"<data source=\"scene:weather\">{\"value\":7,\"city\":\"Paris\"}</data>"})")
+        << got;
+    EXPECT_EQ(out.note, "调用 Weather · lookup");
+}
+
+TEST_F(SceneToolsGolden, CallNotFoundBytes) {
+    ToolOutput out = call("tools_call", call_args("missing.tool", Value(wisp::Map{})));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(raw(out),
+              R"({"error":"not_found","message":"no scene tool named missing.tool","ok":false})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, CallNameWithoutADot) {
+    install_weather();
+    ToolOutput out = call("tools_call", call_args("weather", Value(wisp::Map{})));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(raw(out),
+              R"({"error":"not_found","message":"no scene tool named weather","ok":false})");
+    EXPECT_EQ(out.note, "");
+}
+
+// tools.call's own parameter schema declares "args" an object, and ToolRegistry validates it
+// before the handler looks the name up, so a non-object args wins over an unknown name.
+TEST_F(SceneToolsGolden, UnknownToolWithNonObjectArgsIsBadArgs) {
+    ToolOutput out = call("tools_call", call_args("missing.tool", Value(7)));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"error":"bad_args","field":"args","message":"'args' must be object","ok":false})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, CallArgsNotAnObjectBytes) {
+    install_weather();
+    ToolOutput out = call("tools_call", call_args("weather.lookup", Value(wisp::List{Value(1)})));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"error":"bad_args","field":"args","message":"'args' must be object","ok":false})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, CallSchemaFailureBytes) {
+    install_weather();
+    ToolOutput out =
+        call("tools_call", call_args("weather.lookup", Value(wisp::Map{{"city", Value(7)}})));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"error":"bad_args","field":"city","message":"'city' must be string","ok":false})");
+    EXPECT_EQ(out.note, "");
+}
+
+TEST_F(SceneToolsGolden, CallSceneErrorBytes) {
+    install_weather(
+        "wisp.tools.register('lookup', function() error('boom') end)\n"
+        "return ui.screen {}\n");
+    ToolOutput out =
+        call("tools_call", call_args("weather.lookup", Value(wisp::Map{{"city", Value("Paris")}})));
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(
+        raw(out),
+        R"({"error":"scene_error","message":"<data source=\"scene:weather\">main.lua:1: boom</data>","ok":false})");
+    EXPECT_EQ(out.note, "");
 }

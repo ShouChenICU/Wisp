@@ -80,6 +80,7 @@
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/latest_save.hpp"
+#include "wisp/core/mcp_servers.hpp"
 #include "wisp/core/memory_store.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/occupancy.hpp"
@@ -111,6 +112,8 @@ struct NetWiringDeps {
     core::EventBus& bus;
     core::StorageManager& storage;
     core::ModelProfileService& models;
+    // AdminDeps::mcp (see there); null: the /mcp routes answer 503.
+    core::McpServerService* mcp = nullptr;
     core::SystemSettings& system_settings;
     // GET /device reports its last battery sample; null: battery unknown.
     const core::PowerMonitor* power_monitor = nullptr;
