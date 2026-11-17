@@ -442,3 +442,12 @@ Source: `docs/superpowers/plans/2026-11-15-settings-schema.md`. Simulator and un
 - The web page's "More settings" card shows an Enum key's raw codes as its choices, and gives an Int key that has choices a number field. No such key exists today.
 - `tools/check_settings.py` works line by line: a default or range restated two lines away from the key's name passes. Likely future false positives: unit conversions by 60 next to a seconds or minutes setting, and 255 (an 8-bit maximum) next to brightness; give such a line the `settings-literal-ok:` marker with its reason.
 - `SceneBackground.ErrorInBackgroundStopsAndNotifies` failed once under a loaded full run and passes 20 times alone; the same load-sensitive area as `SceneBackground.ExitClosesFromAnyState` (see the `close_slot()` finding under "State cells beside the events parked review findings").
+
+## Firmware size trim: device checks not run
+
+Source: branch `perf/firmware-size` (2026-11-16). `wisp/base/number_text.hpp` replaced floating `std::to_chars`/`from_chars` with `snprintf("%.*e")`/`strtod`; `number_text_test` compares it with the host's libstdc++ only, while the device runs picolibc's printf and strtod.
+
+- Compare `format_double`/`parse_double` on the device with host-generated vectors: about 60 values (the `LuaJson.FloatTextIsShortest` list, some powers of two, integral values from 1.8e19 to 1e20) formatted, and the `NumberText.ParsesLikeFromChars` strings parsed. Watch the rounding of `%.*e` to fewer digits than the shortest form, `strtod` with more than 19 significant digits or a very long exponent (`1e0000000000000000000005`), and zero padding of integral values from 2^64 up (allowed: same length, reads back).
+- Time 10,000 `format_double` calls (each takes about 10 libc conversions): a `wisp.store` record with thousands of floats is encoded on the scene's thread.
+- `docs.read` of `lua`, `example/weather-round` and an unknown topic: each inflates about 45–55 KB into PSRAM per call; check the time per call and that `mem` shows no internal RAM taken.
+- The admin web page, now served minified: every page loads and works as before.
