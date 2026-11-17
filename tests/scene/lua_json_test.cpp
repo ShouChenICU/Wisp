@@ -121,6 +121,78 @@ TEST_F(LuaJson, RoundTripsNestedValues) {
               "float");
 }
 
+// A float is written as the shortest text that reads back as the same
+// double, fixed or scientific (whichever is shorter, fixed on a tie), with
+// ".0" added when it would otherwise read back as an integer.
+TEST_F(LuaJson, FloatTextIsShortest) {
+    const std::pair<const char*, const char*> cases[] = {
+        {"0.1", "0.1"},
+        {"0.1 + 0.2", "0.30000000000000004"},
+        {"1 / 3", "0.3333333333333333"},
+        {"-2.5", "-2.5"},
+        {"-0.0", "-0.0"},
+        {"0.0", "0.0"},
+        {"100.0", "100.0"},
+        {"1e4", "10000.0"},
+        {"1e5", "1e+05"},
+        {"123456.0", "123456.0"},
+        {"1234567.0", "1234567.0"},
+        {"0.001", "0.001"},
+        {"0.0001", "1e-04"},
+        {"1e-5", "1e-05"},
+        {"1.5e-7", "1.5e-07"},
+        {"12345678.9", "12345678.9"},
+        {"2^53", "9007199254740992.0"},
+        {"2^63", "9223372036854775808.0"},
+        {"1e15", "1e+15"},
+        {"1e16", "1e+16"},
+        {"1e21", "1e+21"},
+        {"1e22", "1e+22"},
+        {"123e20", "1.23e+22"},
+        {"math.pi", "3.141592653589793"},
+        {"-math.pi * 1e10", "-31415926535.89793"},
+        {"1.7976931348623157e308", "1.7976931348623157e+308"},
+        {"2.2250738585072014e-308", "2.2250738585072014e-308"},
+        {"5e-324", "5e-324"},
+        {"9007199254740993.0", "9007199254740992.0"},
+        {"0.000123456789012345", "0.000123456789012345"},
+        {"5e-5", "5e-05"},
+        {"1e100", "1e+100"},
+    };
+    for (const auto& [src, want] : cases) {
+        EXPECT_EQ(ok(std::string("return ") + src), want) << src;
+    }
+}
+
+// Decoding a float: JSON's number grammar only, the nearest double, and
+// out-of-range values refused rather than turned into inf or 0.
+TEST_F(LuaJson, FloatTextDecodes) {
+    const char* show =
+        "return function(v) return math.type(v) .. ' ' .. string.format('%.17g', v) end";
+    const std::pair<const char*, const char*> cases[] = {
+        {"0.1", "float 0.10000000000000001"},
+        {"-0.0", "float -0"},
+        {"1E2", "float 100"},
+        {"1e+2", "float 100"},
+        {"2.5e-3", "float 0.0025000000000000001"},
+        {"0.1000000000000000055511151231257827", "float 0.10000000000000001"},
+        {"3.00000000000000000000000000000000000000000000000000000000000000000000000001", "float 3"},
+        {"4e-320", "float 3.999955468730732e-320"},
+        {"1.7976931348623157e308", "float 1.7976931348623157e+308"},
+        {"123456789012345678901234567890", "float 1.2345678901234568e+29"},
+        {"-9223372036854775809", "float -9.2233720368547758e+18"},
+    };
+    for (const auto& [json, want] : cases) {
+        EXPECT_EQ(decode_check(json, show), want) << json;
+    }
+    const int top = lua_gettop(L);
+    for (std::string_view bad : {"1e400", "-1e400", "1e-400", "+1", "0x10", "inf", "-inf", "nan",
+                                 "Infinity", "1.", ".5", "1e", "1e+", "-", "-.5", "1.5x", "0.5e"}) {
+        EXPECT_FALSE(push_json(L, bad)) << bad;
+        EXPECT_EQ(lua_gettop(L), top) << bad;
+    }
+}
+
 TEST_F(LuaJson, RecordLeavesOutTopLevelId) {
     auto record = [&](const std::string& src) {
         run(src);
