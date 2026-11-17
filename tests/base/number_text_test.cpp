@@ -97,6 +97,14 @@ TEST(NumberText, FormatsPowersOfTwoLikeToChars) {
     }
 }
 
+// Not finite: nothing is written, rather than reading past the probe text.
+TEST(NumberText, WritesNothingForInfinityOrNan) {
+    char buf[wisp::kDoubleTextMax];
+    EXPECT_EQ(wisp::format_double(std::numeric_limits<double>::infinity(), buf), 0u);
+    EXPECT_EQ(wisp::format_double(-std::numeric_limits<double>::infinity(), buf), 0u);
+    EXPECT_EQ(wisp::format_double(std::numeric_limits<double>::quiet_NaN(), buf), 0u);
+}
+
 TEST(NumberText, FormatsRandomDoublesLikeToChars) {
     std::mt19937_64 rng(12345);
     for (int i = 0; i < 200000; ++i) {

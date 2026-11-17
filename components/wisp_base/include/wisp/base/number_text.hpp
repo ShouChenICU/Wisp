@@ -17,8 +17,12 @@ inline constexpr size_t kDoubleTextMax = 32;
 // Writes finite `d` as std::to_chars(first, last, d) does and returns the
 // length: the fewest significant digits that read back as `d`, in fixed or
 // scientific form, whichever is shorter (fixed on a tie), an integral value
-// in fixed form with its exact digits. The scientific exponent has at least
-// two digits ("1e+05"). Not NUL-terminated.
+// in fixed form with its exact digits. One exception: an integral value of
+// 2^64 or more in fixed form comes from the libc's "%.0f", which may pad
+// after 17 significant digits with zeros (picolibc does); the text has the
+// same length and reads back as `d`. The scientific exponent has at least
+// two digits ("1e+05"). Not NUL-terminated. Infinity and NaN write nothing
+// and return 0.
 size_t format_double(double d, char (&out)[kDoubleTextMax]);
 
 // Reads `text`, which must be exactly one JSON number (RFC 8259: an optional

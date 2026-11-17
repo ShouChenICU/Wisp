@@ -57,6 +57,8 @@ bool shortest_at(double d, int prec, Decimal& c) {
 }  // namespace
 
 size_t format_double(double d, char (&out)[kDoubleTextMax]) {
+    // "inf" and "nan" have no exponent for shortest_at() to stop at.
+    if (!std::isfinite(d)) return 0;
     size_t len = 0;
     if (std::signbit(d)) {
         out[len++] = '-';
@@ -65,18 +67,24 @@ size_t format_double(double d, char (&out)[kDoubleTextMax]) {
 
     // The fewest significant digits that read back as `d`: 17 always do,
     // and if some count does, every larger one does too.
+    // `hi` only moves to a count that read back, so when the search ends
+    // `c` already holds that count's digits unless it never moved.
     Decimal c;
+    Decimal probe;
     int lo = 1;
     int hi = 17;
+    bool found = false;
     while (lo < hi) {
         const int mid = (lo + hi) / 2;
-        if (shortest_at(d, mid, c)) {
+        if (shortest_at(d, mid, probe)) {
             hi = mid;
+            c = probe;
+            found = true;
         } else {
             lo = mid + 1;
         }
     }
-    shortest_at(d, lo, c);
+    if (!found) shortest_at(d, lo, c);
     const char* digits = c.digits;
     int n = c.n;
     const int exp = c.exp;
@@ -99,6 +107,9 @@ size_t format_double(double d, char (&out)[kDoubleTextMax]) {
         if (exp >= n - 1) {
             // Integral: its exact digits, like to_chars (the shortest digits
             // padded with zeros would read back too, but are not the value).
+            // From 2^64 up this relies on "%.0f"; picolibc prints at most
+            // 17 significant digits and pads the rest with zeros, which has
+            // the same length and still reads back, but is not exact.
             if (d < 18446744073709551616.0) {
                 o = std::to_chars(o, out + kDoubleTextMax, static_cast<uint64_t>(d)).ptr;
             } else {
