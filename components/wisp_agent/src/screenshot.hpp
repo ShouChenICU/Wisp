@@ -17,14 +17,15 @@
 namespace wisp::agent {
 
 struct ScreenshotOptions {
-    uint32_t width = kScreenshotWidth;  // never scaled up (plan decision 10)
+    uint32_t width =
+        kScreenshotWidth;  // never scaled up (vision plan 2026-11-16-llm-vision.md, decision 10)
     int quality = kScreenshotQuality;
     size_t max_bytes = kImageMaxBytes;  // at most kImageMaxBytes
 };
 
 // The crop: the bounding box of the pixels hal::visible() accepts, not
-// safe_rect(), which would cut away visible content on a round panel (plan
-// decision 2). The full panel for every shape today; empty (x1 > x2) when no
+// safe_rect(), which would cut away visible content on a round panel
+// (provider spec 3.6). The full panel for every shape today; empty (x1 > x2) when no
 // pixel is visible.
 hal::Area screenshot_area(const hal::ScreenShape& shape);
 

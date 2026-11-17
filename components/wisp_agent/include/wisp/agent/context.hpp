@@ -112,7 +112,7 @@ struct BuiltRequest {
     os::LargeVector<net::LlmPart> parts;
     os::LargeString part_text;
     // Everything in `messages`: text bytes / 3, plus kImageEstTokens per
-    // image (plan decision 6).
+    // image (vision plan 2026-11-16-llm-vision.md, decision 6).
     size_t est_tokens = 0;
     size_t fixed_tokens = 0;  // the system prompt and the dynamic info alone
 };

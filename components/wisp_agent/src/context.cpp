@@ -360,10 +360,25 @@ constexpr std::string_view kLeadHead = "Image from ";
 constexpr std::string_view kLeadMid = " (call ";
 constexpr std::string_view kLeadTail = "):";
 
-const RequestImage* image_for(std::span<const RequestImage> images, std::string_view call_id) {
-    for (const RequestImage& im : images)
-        if (im.call_id == call_id) return &im;
-    return nullptr;
+// Pairs each image with the tool message that carries its call id, newest
+// image against the newest message, each message used once: a gateway that
+// reuses ids across responses or turns must not send an image twice or give
+// the newest one to an older message.
+os::LargeVector<const RequestImage*> match_images(std::span<const net::LlmMessage> messages,
+                                                  std::span<const RequestImage> images) {
+    os::LargeVector<const RequestImage*> at;
+    at.resize(messages.size(), nullptr);
+    size_t end = messages.size();
+    for (size_t k = images.size(); k-- > 0;) {
+        for (size_t i = end; i-- > 0;) {
+            if (messages[i].role != net::LlmRole::Tool || at[i] != nullptr) continue;
+            if (messages[i].tool_call_id != images[k].call_id) continue;
+            at[i] = &images[k];
+            end = i;
+            break;
+        }
+    }
+    return at;
 }
 
 size_t lead_size(const RequestImage& im) {
@@ -377,6 +392,7 @@ void attach_images(BuiltRequest& req, std::span<const RequestImage> images) {
     if (images.empty()) return;
     // A first pass sizes `parts` and `part_text`, so the views taken in the
     // second never move.
+    const os::LargeVector<const RequestImage*> match = match_images(req.messages, images);
     size_t inserts = 0, n_parts = 0, lead_bytes = 0;
     bool run_has = false;
     for (size_t i = 0; i <= req.messages.size(); ++i) {
@@ -386,7 +402,7 @@ void attach_images(BuiltRequest& req, std::span<const RequestImage> images) {
             run_has = false;
             continue;
         }
-        const RequestImage* im = image_for(images, req.messages[i].tool_call_id);
+        const RequestImage* im = match[i];
         if (im == nullptr) continue;
         run_has = true;
         n_parts += 2;
@@ -415,7 +431,7 @@ void attach_images(BuiltRequest& req, std::span<const RequestImage> images) {
             continue;
         }
         out.push_back(req.messages[i]);
-        const RequestImage* im = image_for(images, req.messages[i].tool_call_id);
+        const RequestImage* im = match[i];
         if (im == nullptr) continue;
         const size_t at = req.part_text.size();
         req.part_text.append(kLeadHead.data(), kLeadHead.size());

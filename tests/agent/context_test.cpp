@@ -1015,6 +1015,30 @@ TEST(AttachImages, NoImagesNoChange) {
     EXPECT_TRUE(r.parts.empty());
 }
 
+// A gateway that reuses a call id: an earlier turn's tool message keeps no
+// image, and the running turn's newest image goes to the newest message.
+TEST(AttachImages, ReusedCallIdMatchesTheNewestMessage) {
+    BuiltRequest r;
+    r.messages.push_back(msg(LlmRole::System, "S"));
+    r.messages.push_back(msg(LlmRole::User, "q1"));
+    r.messages.push_back(msg(LlmRole::Assistant, ""));
+    r.messages.push_back(msg(LlmRole::Tool, "{}", "call_0"));
+    r.messages.push_back(msg(LlmRole::User, "q2"));
+    r.messages.push_back(msg(LlmRole::Assistant, ""));
+    r.messages.push_back(msg(LlmRole::Tool, "{}", "call_0"));
+    r.messages.push_back(msg(LlmRole::Assistant, ""));
+    r.messages.push_back(msg(LlmRole::Tool, "{}", "call_0"));
+    const RequestImage images[] = {older("call_0"), jpeg("call_0")};
+    attach_images(r, images);
+    EXPECT_EQ(shape(r),
+              (std::vector<std::string>{"system S", "user q1", "assistant ", "tool call_0",
+                                        "user q2", "assistant ", "tool call_0",
+                                        "user [Image from t.shot (call call_0):] [" +
+                                            std::string(kImageOmittedNewer) + "]",
+                                        "assistant ", "tool call_0",
+                                        "user [Image from t.shot (call call_0):] <image/jpeg 4>"}));
+}
+
 // The views survive a move of the request, as build() returns it.
 TEST(AttachImages, ViewsSurviveAMove) {
     BuiltRequest r = one_step();

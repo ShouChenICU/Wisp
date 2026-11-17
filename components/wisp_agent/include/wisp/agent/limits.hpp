@@ -59,12 +59,13 @@ inline constexpr size_t kSummaryChars = 200;
 
 // Largest encoded image a tool may hand the model (spec 3.5): about 171 KiB of base64.
 inline constexpr size_t kImageMaxBytes = 128 * 1024;
-// What one image counts toward the request estimate (plan decision 6).
+// What one image counts toward the request estimate (vision plan 2026-11-16-llm-vision.md, decision
+// 6).
 inline constexpr size_t kImageEstTokens = 1024;
 
 // ui.screenshot (spec 3.6): the image's width (a narrower panel keeps its own,
-// plan decision 10), the JPEG quality, the registered tool timeout, and how
-// long it waits for the UI thread to take the snapshot.
+// vision plan 2026-11-16-llm-vision.md, decision 10), the JPEG quality, the registered tool
+// timeout, and how long it waits for the UI thread to take the snapshot.
 inline constexpr uint32_t kScreenshotWidth = 240;
 inline constexpr int kScreenshotQuality = 70;
 inline constexpr uint32_t kScreenshotToolMs = 10000;
