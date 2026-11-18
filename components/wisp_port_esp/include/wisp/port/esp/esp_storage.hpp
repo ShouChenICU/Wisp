@@ -20,8 +20,8 @@
 //
 //   - EspSdStorage ("storage.sd", caps removable=true, fs="fat"): wraps
 //     bmgr's SDMMC fs_fat device (name/model passed in by board.cpp --
-//     see the constructor; AGENTS.md's "Board independence" rule keeps the actual
-//     bmgr device name/chip model string out of this ESP-only *portable*
+//     see EspSdStorageConfig; AGENTS.md's "Board independence" rule keeps
+//     the actual bmgr device name/chip model string out of this platform
 //     component). Always registered, even when no card is present at
 //     boot (board.cpp then records DeviceState::Missing/"no card").
 //
@@ -122,9 +122,9 @@ namespace wisp::port::esp {
 // `mount_point` is the fs_sdcard bmgr device's configured mount point
 // ("/sd" -- board_devices.yaml). `id`, `role` (caps "role"; empty writes
 // none), `bmgr_device` and `model` are board-specific facts board.cpp
-// passes in (AGENTS.md's "Board independence" rule: this ESP-only
-// *portable* component must not itself name a specific board's device id,
-// bmgr device or chip model).
+// passes in (AGENTS.md's "Board independence" rule: this platform
+// component must not itself name a specific board's device id, bmgr
+// device or chip model).
 struct EspSdStorageConfig {
     std::string id;
     std::string role;
