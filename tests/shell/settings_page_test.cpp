@@ -975,24 +975,38 @@ class SettingsKeyReach : public SettingsPageTest,
 
 }  // namespace
 
-// The keys walk the whole page on every screen shape: its last row, and
-// the first again after the wrap, end up wholly on the visible screen.
+// The keys walk the whole page on every screen shape: each focused
+// object's row (its name and value with it) ends up wholly on the visible
+// screen; the last takes the list to its end and, after the wrap, the
+// first takes it back to its top.
 TEST_P(SettingsKeyReach, FirstAndLastRowsAreFullyVisibleWhenFocused) {
     const PreviewShape& p = GetParam();
     boot(p.shape, p.size, p.size);
     keys_on();
-    focus_last();
-    harness->on_ui([&] {
-        lv_obj_t* f = lv_group_get_focused(group);
-        EXPECT_TRUE(wisp::test::box_visible(harness->shape(), coords_of(f)))
-            << coords_of(f).y1 << ".." << coords_of(f).y2;
-    });
+    auto row_visible = [&] {
+        harness->on_ui([&] {
+            lv_obj_t* f = lv_group_get_focused(group);
+            ASSERT_NE(f, nullptr);
+            lv_obj_t* row = f;
+            while (row != nullptr && !lv_obj_has_flag(row, wisp::ui::kFocusRow))
+                row = lv_obj_get_parent(row);
+            ASSERT_NE(row, nullptr);
+            const lv_area_t a = coords_of(row);
+            EXPECT_TRUE(wisp::test::box_visible(harness->shape(), a))
+                << a.x1 << "," << a.y1 << ".." << a.x2 << "," << a.y2;
+        });
+    };
+    for (int i = 0; i < 200 && !last_shown(); ++i) {
+        next();
+        row_visible();
+    }
+    ASSERT_TRUE(last_shown());
+    harness->on_ui([&] { EXPECT_LE(lv_obj_get_scroll_bottom(page()->list()), 0); });
     next();
+    row_visible();
     harness->on_ui([&] {
-        lv_obj_t* f = lv_group_get_focused(group);
-        EXPECT_EQ(f, lv_group_get_obj_by_index(group, 0));
-        EXPECT_TRUE(wisp::test::box_visible(harness->shape(), coords_of(f)))
-            << coords_of(f).y1 << ".." << coords_of(f).y2;
+        EXPECT_EQ(lv_group_get_focused(group), lv_group_get_obj_by_index(group, 0));
+        EXPECT_LE(lv_obj_get_scroll_top(page()->list()), 0);
     });
 }
 

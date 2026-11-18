@@ -491,6 +491,9 @@ private:
     // is still in scope, else focuses the scope's first choice.
     void rescope();
     bool take_nav_key(NavKey key);
+    // The nav group's focus callback: shows a focus the keys moved
+    // (ui::show_focus()).
+    static void nav_focus_cb(lv_group_t* group);
     // A key LVGL's keypad holds down was pressed on `was_focused`, and the
     // focus has moved since: LVGL acts on whatever is focused when the key
     // is released or repeats, so it is told to wait for the release

@@ -108,7 +108,8 @@ lv_obj_t* make_group_heading(lv_obj_t* parent, const char* text);
 // pressed state reaches the card's edges; the rows pad themselves.
 lv_obj_t* make_row_card(lv_obj_t* card_parent);
 // A part of a row card that is not a row (a slider, a hint): a box padded
-// like a row.
+// like a row, shown whole when a key focuses a control in it
+// (ui::kFocusRow), as a row of make_list_row() is.
 lv_obj_t* make_row_box(lv_obj_t* card);
 // Parts `obj` from what is above it in its card: a hairline on colour
 // panels, a gap on two-tone ones (which have no grey for a hairline).

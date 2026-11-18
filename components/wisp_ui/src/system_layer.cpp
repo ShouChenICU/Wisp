@@ -216,6 +216,7 @@ uint64_t SystemLayer::now_ms() const { return now_ms_ ? now_ms_() : lv_tick_get(
 
 SystemLayer::~SystemLayer() {
     // Nothing to rescope while the pieces go.
+    if (nav_group_ != nullptr) lv_group_set_focus_cb(nav_group_, nullptr);
     nav_group_ = nullptr;
     close_confirm(confirm_box_);
     hide_error();
@@ -943,7 +944,12 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
 // --- Key navigation ---
 
 void SystemLayer::set_nav_group(lv_group_t* group) {
+    if (nav_group_ != nullptr) lv_group_set_focus_cb(nav_group_, nullptr);
     nav_group_ = group;
+    if (group != nullptr) {
+        lv_group_set_user_data(group, this);
+        lv_group_set_focus_cb(group, &SystemLayer::nav_focus_cb);
+    }
     scope_is_screen_ = true;
     screen_focus_ = nullptr;
     key_consumed_ = false;
@@ -1056,7 +1062,19 @@ bool SystemLayer::take_nav_key(NavKey key) {
     if (now == before && shown) return false;
     lv_obj_add_state(now, static_cast<lv_state_t>(LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY));
     lv_obj_scroll_to_view_recursive(now, LV_ANIM_ON);
+    show_focus(nav_group_, now, shape_);
     return true;
+}
+
+void SystemLayer::nav_focus_cb(lv_group_t* group) {
+    auto* self = static_cast<SystemLayer*>(lv_group_get_user_data(group));
+    lv_obj_t* obj = lv_group_get_focused(group);
+    // A key move (lv_group_focus_next()/prev()) calls this after the
+    // object's FOCUSED event, whose scroll_to_view this corrects. A focus
+    // set in code (lv_group_focus_obj()) calls it before the event, whose
+    // scroll would undo the correction; take_nav_key() shows that focus.
+    if (self == nullptr || obj == nullptr || !lv_obj_has_state(obj, LV_STATE_FOCUSED)) return;
+    show_focus(group, obj, self->shape_);
 }
 
 void SystemLayer::rescope() {

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "lvgl.h"
+#include "wisp/hal/display_geometry.hpp"
 
 namespace wisp::ui {
 
@@ -22,6 +23,10 @@ enum class NavKey : uint8_t { Prev, Next, Ok, Back };
 // default: a clickable row built from a plain lv_obj. The shell's
 // detail::kNoSwipe is LV_OBJ_FLAG_USER_1.
 inline constexpr lv_obj_flag_t kKeyFocusable = LV_OBJ_FLAG_USER_2;
+
+// Marks the box a key focus inside it brings into view whole: a list row
+// whose name and value sit beside, or above, the focused control.
+inline constexpr lv_obj_flag_t kFocusRow = LV_OBJ_FLAG_USER_3;
 
 // Whether the keys reach `obj`: it carries kKeyFocusable, or it is
 // clickable and of a class LVGL puts in a group by default (a button,
@@ -40,5 +45,16 @@ void collect_focusable(lv_obj_t* root, std::vector<lv_obj_t*>& out);
 // theme's row focus: a raised fill while a key focuses it, or an outline
 // on a two-tone panel, which cannot show the fill.
 void make_key_focusable(lv_obj_t* obj);
+
+// What a focus move shows, after LVGL's own scroll_to_view (which knows
+// neither the screen's shape nor the row around a control): the nearest
+// vertically scrollable ancestor of `obj` is scrolled so that `obj`'s
+// focus row (its nearest kFocusRow ancestor, or itself) lies wholly on
+// the visible part of `shape` (hal::row_span()) and inside that
+// ancestor, by the least distance. The first object of `group` takes the
+// list to its top and the last to its bottom when the row stays visible
+// there, so the wrap shows a list's heading and end padding. Nothing
+// changes when no ancestor scrolls (a dialog) or the row cannot fit.
+void show_focus(lv_group_t* group, lv_obj_t* obj, const hal::ScreenShape& shape);
 
 }  // namespace wisp::ui
