@@ -24,6 +24,7 @@
 
 #include "agent_wiring.hpp"
 #include "factory_reset.hpp"
+#include "nav_keys.hpp"
 #include "net_wiring.hpp"
 #include "notification_router.hpp"
 #include "scene_wiring.hpp"
@@ -107,6 +108,12 @@ struct App::Impl {
     // the system duties (whose dialogs it holds) and the shell are torn
     // down.
     std::unique_ptr<ui::SystemLayer> system_layer;
+    // The nav-role buttons as keys (nav_keys.hpp), on a board that has
+    // them: built right after the system layer, whose nav group and key
+    // hook App sets up first. App::stop() resets it first of the UI's
+    // pieces, before the shell and the system layer: its listener pushes
+    // into `ui`, and the keys it pushes reach the layer through the hook.
+    std::unique_ptr<NavKeys> nav_keys;
     // Drives queue_storage_refresh() (storage_io.hpp) every 2 s; created
     // once the storage worker runs, stopped before it stops.
     std::unique_ptr<os::Timer> storage_timer;

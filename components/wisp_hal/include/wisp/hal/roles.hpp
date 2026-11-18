@@ -26,7 +26,10 @@
 //   Button     power                                  ButtonService standby polling,
 //                                                     PowerManager, system duties
 //   Button     talk                                   TalkKey
-//   Button     nav_prev, nav_next, nav_ok, nav_back   LVGL keypad
+//   Button     nav_prev, nav_next, nav_ok, nav_back   LVGL keypad (app NavKeys): any of
+//                                                     them makes the keypad; nav_next
+//                                                     and nav_ok move the focus,
+//                                                     nav_prev and nav_back optional
 //
 // A board may use other names for devices only it or the generic path
 // cares about; no portable code looks those up.
