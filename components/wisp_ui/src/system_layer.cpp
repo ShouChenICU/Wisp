@@ -955,7 +955,9 @@ bool SystemLayer::on_nav_key(NavKey key, bool pressed) {
     // press it saw without its release would stay down (repeat, long
     // press), a release it never saw the press of would click.
     if (!pressed) {
-        const bool consumed = std::exchange(key_consumed_, false);
+        // Back's release too, whether or not its press was seen: LVGL is
+        // never given Back.
+        const bool consumed = std::exchange(key_consumed_, false) || key == NavKey::Back;
         // The focus may have moved without a rescope (LVGL refocuses when
         // the focused object is deleted).
         if (!consumed && key == NavKey::Ok && nav_group_ != nullptr &&
@@ -965,11 +967,61 @@ bool SystemLayer::on_nav_key(NavKey key, bool pressed) {
         ok_pressed_on_ = nullptr;
         return consumed;
     }
+    if (key == NavKey::Back) {
+        // Set first: nav_back() runs callbacks.
+        key_consumed_ = true;
+        ok_pressed_on_ = nullptr;
+        nav_back();
+        return true;
+    }
     key_consumed_ = take_nav_key(key);
     ok_pressed_on_ = !key_consumed_ && key == NavKey::Ok && nav_group_ != nullptr
                          ? lv_group_get_focused(nav_group_)
                          : nullptr;
     return key_consumed_;
+}
+
+bool SystemLayer::nav_back() {
+    if (confirm_no_ != nullptr) {
+        // As the No button: closed first, so the answer may open the next
+        // dialog.
+        std::function<void(bool)> on_answer = std::move(on_answer_);
+        close_confirm(confirm_box_);
+        if (on_answer) on_answer(false);
+        return true;
+    }
+    if (error_panel_ != nullptr) {
+        std::function<void()> on_back = std::move(on_error_back_);
+        hide_error();
+        if (on_back) on_back();
+        return true;
+    }
+    if (kb_ != nullptr) {
+        hide_keyboard();
+        return true;
+    }
+    if (panel_ != nullptr) {
+        // A moving sheet is already on its way; the press is still the
+        // panel's, so nothing under it goes back too.
+        if (motion_ == PanelMotion::Still) slide_panel(false);
+        return true;
+    }
+    // Copies: either may replace or clear itself.
+    if (on_back_) {
+        std::function<void()> on_back = on_back_;
+        on_back();
+        return true;
+    }
+    if (nav_back_fallback_) {
+        std::function<void()> fallback = nav_back_fallback_;
+        fallback();
+        return true;
+    }
+    return false;
+}
+
+void SystemLayer::set_nav_back_fallback(std::function<void()> fallback) {
+    nav_back_fallback_ = std::move(fallback);
 }
 
 void SystemLayer::drop_held_key(lv_obj_t* was_focused) {
@@ -996,7 +1048,6 @@ bool SystemLayer::take_nav_key(NavKey key) {
     lv_obj_t* before = lv_group_get_focused(nav_group_);
     const bool shown = before != nullptr && lv_obj_has_state(before, LV_STATE_FOCUS_KEY);
     rescope();
-    if (key == NavKey::Back) return true;
     lv_obj_t* now = lv_group_get_focused(nav_group_);
     if (now == nullptr) return true;
     // A focus this press's rescope chose was never seen either, although

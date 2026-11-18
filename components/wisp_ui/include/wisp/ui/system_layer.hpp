@@ -366,12 +366,26 @@ public:
     void set_nav_group(lv_group_t* group);
     // The nav-key hook's body (UiRuntime::set_nav_key_hook()): returns
     // whether the entry is consumed, so LVGL never sees it. A press first
-    // brings the scope up to date. Back is consumed. Next, Prev and OK are
-    // consumed when nothing is in scope, and when the focus is not shown
-    // yet: they then only show it and scroll it into view. Otherwise LVGL
-    // moves the focus or activates it. A release is consumed exactly when
-    // its press was; a press that never gets its release is tolerated.
+    // brings the scope up to date. Back's press calls nav_back(), and both
+    // its edges are consumed. Next, Prev and OK are consumed when nothing
+    // is in scope, and when the focus is not shown yet: they then only
+    // show it and scroll it into view. Otherwise LVGL moves the focus or
+    // activates it. A release is consumed exactly when its press was; a
+    // press that never gets its release is tolerated.
     bool on_nav_key(NavKey key, bool pressed);
+    // What the back key does (device-model spec 9.1): the first of these
+    // that applies, and only that one. A confirm dialog from
+    // open_confirm() is answered no, as its No button does; the error
+    // card's Back; the keyboard hides; the panel, resting open, slides
+    // shut (while it moves, nothing); the back handler; the fallback. A
+    // form from open_dialog() is its owner's to close, so Back passes it
+    // by. Returns false when nothing applied. From a key it runs inside
+    // the keypad's read callback, so whatever it calls must not delete the
+    // screen in front: the fallback, for one, posts its work.
+    bool nav_back();
+    // What nav_back() does when nothing of the layer's applies (the
+    // shell's page back); empty: nothing.
+    void set_nav_back_fallback(std::function<void()> fallback);
 
     // Moves every piece that is up to the front of the top layer, from
     // the bottom: the banner, the panel, the error panel, the
@@ -561,6 +575,7 @@ private:
     int banner_event_depth_ = 0;
 
     lv_group_t* nav_group_ = nullptr;
+    std::function<void()> nav_back_fallback_;
     bool scope_is_screen_ = true;
     // What had the focus on the screen when a dialog, the error card or
     // the panel took the scope, and whether it was shown; given back once

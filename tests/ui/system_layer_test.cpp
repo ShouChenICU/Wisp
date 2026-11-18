@@ -3569,6 +3569,124 @@ TEST_F(SystemLayerTest, FocusRingStaysInsideTheDialog) {
     }
 }
 
+// Back takes one piece away per press, the one in front first, and only
+// then reaches the back handler and, without one, the fallback.
+TEST_F(SystemLayerTest, BackClosesOnePieceAtATime) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int handler = 0, fallback = 0;
+    std::vector<bool> answers;
+    on_ui([&] {
+        layer->set_back_handler([&] { ++handler; });
+        layer->set_nav_back_fallback([&] { ++fallback; });
+        lv_obj_t* ta = lv_textarea_create(lv_screen_active());
+        layer->show_keyboard(ta);
+        ASSERT_NE(layer->open_confirm(
+                      StrId::ResetTitle, "Sure?", [&](bool y) { answers.push_back(y); },
+                      wisp::ui::ButtonRole::Danger),
+                  nullptr);
+
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_EQ(answers, std::vector<bool>{false});
+        EXPECT_FALSE(layer->confirm_open());
+        EXPECT_NE(layer->keyboard(), nullptr);
+        EXPECT_EQ(handler, 0);
+
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_EQ(layer->keyboard(), nullptr);
+        EXPECT_EQ(handler, 0);
+
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_EQ(handler, 1);
+        EXPECT_EQ(fallback, 0);
+
+        layer->set_back_handler({});
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_EQ(fallback, 1);
+        EXPECT_EQ(handler, 1);
+        EXPECT_EQ(answers.size(), 1u);
+
+        layer->set_nav_back_fallback({});
+        EXPECT_FALSE(layer->nav_back());
+        EXPECT_EQ(fallback, 1);
+    });
+}
+
+TEST_F(SystemLayerTest, BackClosesTheErrorCardWithItsBack) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int reloads = 0, backs = 0, handler = 0;
+    on_ui([&] {
+        layer->set_back_handler([&] { ++handler; });
+        layer->show_error({"Demo", "main.lua", 3, "boom"}, [&] { ++reloads; }, [&] { ++backs; });
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_FALSE(layer->error_visible());
+        EXPECT_EQ(backs, 1);
+        EXPECT_EQ(reloads, 0);
+        EXPECT_EQ(handler, 0);
+    });
+}
+
+// The panel slides shut, and Back while it slides does nothing more.
+TEST_F(SystemLayerTest, BackClosesThePanelOnly) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int handler = 0, fallback = 0;
+    on_ui([&] {
+        layer->set_back_handler([&] { ++handler; });
+        layer->set_nav_back_fallback([&] { ++fallback; });
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->update_panel(sample_model());
+        layer->open_panel();
+    });
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] {
+        ASSERT_TRUE(layer->panel_open());
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_TRUE(layer->panel_moving());
+        EXPECT_TRUE(layer->nav_back());
+    });
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    EXPECT_EQ(handler, 0);
+    EXPECT_EQ(fallback, 0);
+}
+
+// A form's owner closes it: Back passes it by.
+TEST_F(SystemLayerTest, BackSkipsAForm) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int fallback = 0;
+    on_ui([&] {
+        layer->set_nav_back_fallback([&] { ++fallback; });
+        lv_obj_t* form = layer->open_dialog();
+        ASSERT_NE(form, nullptr);
+        lv_button_create(form);
+        EXPECT_TRUE(layer->nav_back());
+        EXPECT_EQ(fallback, 1);
+        EXPECT_TRUE(layer->confirm_open());
+        layer->close_confirm(form);
+    });
+}
+
+TEST_F(SystemLayerTest, BackKeyGoesBack) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int handler = 0, keys = 0, clicks = 0;
+    lv_obj_t* btn = nullptr;
+    on_ui([&] {
+        layer->set_back_handler([&] { ++handler; });
+        btn = make_counting_button(100, 100, 120, 60, &clicks);
+        lv_obj_add_event_cb(
+            btn, [](lv_event_t* e) { ++*static_cast<int*>(lv_event_get_user_data(e)); },
+            LV_EVENT_KEY, &keys);
+    });
+    nav(NavKey::Next);  // shows the focus
+    on_ui([&] { EXPECT_EQ(focused(), btn); });
+    nav(NavKey::Back);
+    EXPECT_EQ(handler, 1);
+    EXPECT_EQ(keys, 0);
+    EXPECT_EQ(clicks, 0);
+    // Each edge was consumed: the next key still moves as usual.
+    nav(NavKey::Back);
+    EXPECT_EQ(handler, 2);
+}
+
 // A manual preview (docs/testing.md): the confirm dialog with each button
 // focused by a key, as confirm-<shape>-no.png and confirm-<shape>-yes.png
 // in the directory WISP_KEYNAV_SCREENSHOTS names.

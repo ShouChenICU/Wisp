@@ -198,6 +198,13 @@ void Shell::start() {
         talk_listener_ =
             deps_.conversation->add_listener([this](const TurnView&) { request_talk(); });
     }
+    // Posted like the diagnostics' back handler: it arrives from inside the
+    // keypad's read callback.
+    deps_.layer.set_nav_back_fallback([this, alive = alive_] {
+        deps_.ui.post([this, alive] {
+            if (*alive) back();
+        });
+    });
     show(Page::Home);
 }
 
@@ -220,6 +227,7 @@ void Shell::stop() {
     talk_listener_ = 0;
     abort_drag();
     if (diag_ != nullptr) close_diagnostics();
+    deps_.layer.set_nav_back_fallback({});
     *alive_ = false;
     alive_.reset();
     close_choice();
@@ -400,6 +408,18 @@ void Shell::show(Page p) {
     }
     page_ = p;
     WLOG_I(kTag, "page %s", to_string(p));
+}
+
+bool Shell::back() {
+    if (home_ == nullptr || sliding()) return false;
+    if (connections_ && connections_->back()) return true;
+    if (choice_screen_ != nullptr) {
+        close_choice();
+        return true;
+    }
+    if (page_ == Page::Home) return false;
+    show(Page::Home);
+    return true;
 }
 
 lv_obj_t* Shell::build_page(Page p) {
