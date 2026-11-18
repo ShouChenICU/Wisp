@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-14-device-model-design.md` (approved 2026-11-14), sections 6, 7, 8, 11, the H2 part of section 13, 14.4 and 17.3. Roadmap: `docs/superpowers/plans/2026-11-14-architecture-optimization-roadmap.md` section H. H1 (`docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-path.md`) is merged; its deviation 1 (ESP ids stay in the port) is closed here. H3 (keypad, pixel format) is a separate plan.
 
+**Owner decisions (2026-11-18):** rulings 7 (drop the 1.75C boot-time GPIO3 warning; electrical checks stay in its hardware doc) and 8 (touch levels/flags move into the YAML, checked by touching all four corners) are accepted; `CHANGELOG.md` gains an `Unreleased` section.
+
 ## Global Constraints
 
 - Branch `feat/board-kit`; no commits on `main`; nothing pushed.
