@@ -578,12 +578,6 @@ void run_headless(wisp::app::App& app, const SimOptions& opts,
     }
 }
 
-// Translates one SDL event into SimInput state. Mouse motion only
-// updates the touch point while a button is held (dragging); key repeat
-// events are ignored (SimInput only cares about down/up transitions).
-// Captures the mouse while the (simulated touch) button is held, so a
-// drag that leaves the window still keeps delivering motion events
-// instead of silently losing the touch.
 // The keyboard keys behind --nav-keys' four buttons; the arrow keys stay the tilt.
 std::optional<wisp::port::sim::SimButtonKind> nav_kind(SDL_Keycode key) {
     using Kind = wisp::port::sim::SimButtonKind;
@@ -604,6 +598,12 @@ std::optional<wisp::port::sim::SimButtonKind> nav_kind(SDL_Keycode key) {
     }
 }
 
+// Translates one SDL event into SimInput state. Mouse motion only
+// updates the touch point while a button is held (dragging); key repeat
+// events are ignored (SimInput only cares about down/up transitions).
+// Captures the mouse while the (simulated touch) button is held, so a
+// drag that leaves the window still keeps delivering motion events
+// instead of silently losing the touch.
 void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& running) {
     switch (ev.type) {
         case SDL_QUIT:
