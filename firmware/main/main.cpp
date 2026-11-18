@@ -46,6 +46,7 @@
 #include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
 #include "wisp/port/esp/sleep_stats.hpp"
+#include "wisp/port/esp/target.hpp"
 #include "wisp/port/esp/wall_clock.hpp"
 #include "wisp_board_desc.h"
 
@@ -75,7 +76,7 @@ void apply_pm_config(bool light_sleep_enable) {
     // this stayed hard-coded to 240. CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ is
     // each target's own Kconfig-validated default max frequency.
     cfg.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    cfg.min_freq_mhz = 80;
+    cfg.min_freq_mhz = wisp::port::esp::kTarget.dfs_min_mhz;
     cfg.light_sleep_enable = light_sleep_enable;
     esp_err_t err = esp_pm_configure(&cfg);
     if (err != ESP_OK) {

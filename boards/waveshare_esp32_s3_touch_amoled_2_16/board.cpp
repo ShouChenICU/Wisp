@@ -545,8 +545,6 @@ void init_wifi(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& rep
     wisp::port::esp::EspWifiConfig config;
     config.id = "net.wifi";
     config.role = wisp::hal::role::kMain;
-    config.model = "ESP32-S3";
-    config.bands = {"2.4GHz"};
     auto wifi = wisp::port::esp::EspWifi::create(std::move(config));
     if (!wifi) {
         record_failed(report, "net.wifi", wisp::hal::DeviceClass::Network, wifi.error().message);

@@ -15,9 +15,11 @@
 #include "esp_wifi_default.h"
 #include "lwip/inet.h"
 #include "mdns.h"
+#include "soc/soc_caps.h"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/port/esp/target.hpp"
 #include "wisp/port/esp/wifi_reason.hpp"
 
 namespace wisp::port::esp {
@@ -365,9 +367,12 @@ Result<std::shared_ptr<EspWifi>> EspWifi::create(EspWifiConfig config) {
     auto impl = std::make_unique<Impl>();
     impl->info.id = config.id;
     impl->info.cls = kClass;
-    impl->info.model = config.model;
+    impl->info.model = kTarget.model;
     List bands;
-    for (const std::string& b : config.bands) bands.emplace_back(b);
+    bands.emplace_back("2.4GHz");
+#ifdef SOC_WIFI_SUPPORT_5G
+    bands.emplace_back("5GHz");
+#endif
     impl->info.caps = Properties{{"ap", true}, {"bands", std::move(bands)}};
     if (!config.role.empty()) impl->info.caps["role"] = wisp::Value(config.role);
     impl->config = std::move(config);

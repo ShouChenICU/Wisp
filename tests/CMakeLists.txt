@@ -261,6 +261,8 @@ wisp_test(NAME lv_blend_mask_test SRCS port_esp/lv_blend_mask_test.cpp LIBS wisp
 target_include_directories(lv_blend_mask_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp)
 wisp_test(NAME button_input_test SRCS port_esp/button_input_test.cpp)
 target_include_directories(button_input_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
+wisp_test(NAME target_facts_test SRCS port_esp/target_facts_test.cpp)
+target_include_directories(target_facts_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME audio_downmix_test SRCS port_esp/audio_downmix_test.cpp)
 target_include_directories(audio_downmix_test PRIVATE ${WISP_ROOT}/components/wisp_port_esp/include)
 wisp_test(NAME jpeg_header_test SRCS port_esp/jpeg_header_test.cpp)
