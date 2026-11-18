@@ -2,11 +2,26 @@
 
 namespace wisp::ui {
 
+namespace {
+
+void ring_room_cb(lv_event_t* e) {
+    lv_event_set_ext_draw_size(e, theme::kFocusRingWidth + theme::kFocusRingPad);
+}
+
+}  // namespace
+
 lv_obj_t* make_dialog_actions(lv_obj_t* parent) {
     lv_obj_t* row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    // A button's key-focus ring is drawn just outside it, and the row is
+    // only as tall as its buttons. LVGL lets a child draw outside an
+    // overflow-visible parent only as far as the parent's own extra draw
+    // size, which a bare row does not have.
+    lv_obj_add_flag(row, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_add_event_cb(row, &ring_room_cb, LV_EVENT_REFR_EXT_DRAW_SIZE, nullptr);
+    lv_obj_refresh_ext_draw_size(row);
     lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

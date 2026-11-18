@@ -51,6 +51,16 @@
 //     backdrop is marked (the backdrop is translucent), so while a dialog
 //     is open nothing under it skips a redraw; dialogs are rare and short.
 //
+// Key navigation (device-model spec 9.1, wisp/ui/key_nav.hpp): the nav
+// keys move a focus group that holds only what is in front, its "scope":
+// the open dialog, else the error card, else the panel's content box
+// while it rests open, else the active screen. Nothing under a dialog or
+// on a screen that is not loaded is ever focused. A dialog opens with its
+// safe answer (No, the error card's Back) focused, so a stray OK never
+// confirms; closing it gives the focus back to what had it on the screen.
+// On a board with touch a focus set this way is not shown, and the first
+// Next, Prev or OK only shows it: it neither moves nor activates.
+//
 // Every member is UI thread only, like every lv_* call.
 
 #include <cstdint>
@@ -65,6 +75,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/ui/drag.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -349,6 +360,19 @@ public:
     // callback.
     void close_confirm(lv_obj_t* box);
 
+    // The focus group the nav keys move (UiRuntime::nav_group()); the layer
+    // fills it with what is in front. nullptr turns key navigation off.
+    // Set once after construction; cleared before destruction.
+    void set_nav_group(lv_group_t* group);
+    // The nav-key hook's body (UiRuntime::set_nav_key_hook()): returns
+    // whether the entry is consumed, so LVGL never sees it. A press first
+    // brings the scope up to date. Back is consumed. Next, Prev and OK are
+    // consumed when nothing is in scope, and when the focus is not shown
+    // yet: they then only show it and scroll it into view. Otherwise LVGL
+    // moves the focus or activates it. A release is consumed exactly when
+    // its press was; a press that never gets its release is tolerated.
+    bool on_nav_key(NavKey key, bool pressed);
+
     // Moves every piece that is up to the front of the top layer, from
     // the bottom: the banner, the panel, the error panel, the
     // keyboard, the back arrow and the dialog (with its backdrop). Whoever
@@ -447,6 +471,13 @@ private:
     // of its own events, on the next timer pass.
     void discard_keyboard(bool now);
 
+    // Brings the focus group up to what is in front (see the header
+    // comment). Rebuilds it only when the scope's focusable objects
+    // changed; a rebuild keeps the focused object, shown or not, when it
+    // is still in scope, else focuses the scope's first choice.
+    void rescope();
+    bool take_nav_key(NavKey key);
+
     static void error_btn_cb(lv_event_t* e);
     static void key_cb(lv_event_t* e);
     static void kb_done_cb(lv_event_t* e);
@@ -475,6 +506,7 @@ private:
     lv_obj_t* error_panel_ = nullptr;  // the card
     lv_obj_t* error_backdrop_ = nullptr;
     lv_obj_t* error_reload_ = nullptr;
+    lv_obj_t* error_back_ = nullptr;
     std::function<void()> on_reload_;
     std::function<void()> on_error_back_;
 
@@ -489,6 +521,7 @@ private:
 
     lv_obj_t* confirm_box_ = nullptr;
     lv_obj_t* confirm_yes_ = nullptr;
+    lv_obj_t* confirm_no_ = nullptr;
     std::function<void(bool)> on_answer_;
 
     PanelHandlers panel_handlers_;
@@ -521,6 +554,15 @@ private:
     std::function<void(int)> banner_action_;
     lv_timer_t* banner_timer_ = nullptr;
     int banner_event_depth_ = 0;
+
+    lv_group_t* nav_group_ = nullptr;
+    bool scope_is_screen_ = true;
+    // What had the focus on the screen when a dialog, the error card or
+    // the panel took the scope, and whether it was shown; given back once
+    // the scope is the screen again.
+    lv_obj_t* screen_focus_ = nullptr;
+    bool screen_focus_shown_ = false;
+    bool key_consumed_ = false;  // the last press was consumed
 };
 
 namespace detail {

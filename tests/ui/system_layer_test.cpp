@@ -23,7 +23,9 @@
 #include "wisp/core/log.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/os.hpp"
+#include "wisp/port/sim/png_writer.hpp"
 #include "wisp/ui/dialog.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -44,6 +46,7 @@ using wisp::test::find_button_with_label;
 using wisp::test::find_label_containing;
 using wisp::test::find_obj_of_class;
 using wisp::test::run_on_ui_blocking;
+using wisp::ui::NavKey;
 using wisp::ui::StrId;
 using wisp::ui::SystemLayer;
 
@@ -165,15 +168,19 @@ bool press(lv_obj_t* matrix, const char* text) {
 
 // A UiRuntime over a fake display and touch panel, with a SystemLayer
 // built on its UI thread for `shape` (by default the display's own).
+// With `keypad` the runtime has a keypad too, and the layer takes its
+// keys: it scopes the runtime's focus group and is the nav-key hook.
 class SystemLayerTest : public ::testing::Test {
 protected:
     void start(const std::string& display_shape = "circle",
-               wisp::ui::Lang lang = wisp::ui::Lang::Zh, int corner_radius = 40) {
+               wisp::ui::Lang lang = wisp::ui::Lang::Zh, int corner_radius = 40,
+               bool keypad = false, int side = kSide) {
         wisp::ui::set_lang(lang);
-        display = std::make_shared<FakeDisplay>("display.main", kSide, kSide, 1, display_shape);
+        display = std::make_shared<FakeDisplay>("display.main", side, side, 1, display_shape);
         display->set_cap("corner_radius", corner_radius);
         touch = std::make_shared<FakeTouch>("touch.main");
-        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch);
+        ui = std::make_unique<wisp::ui::UiRuntime>(display, touch,
+                                                   wisp::ui::UiConfig{.keypad = keypad});
         ASSERT_TRUE(ui->start());
         auto parsed = wisp::hal::screen_shape_from_caps(display->info().caps);
         ASSERT_TRUE(parsed);
@@ -188,12 +195,25 @@ protected:
             clock_ms = 1000;
             layer->set_clock([this] { return clock_ms.load(); });
             indev = lv_indev_get_next(nullptr);
+            if (keypad) layer->set_nav_group(ui->nav_group());
         });
+        if (keypad) {
+            keys_seen = 0;
+            ui->set_nav_key_hook([this](NavKey k, bool pressed) {
+                const bool consumed = layer->on_nav_key(k, pressed);
+                ++keys_seen;
+                return consumed;
+            });
+        }
     }
 
     void TearDown() override {
         if (ui) {
-            on_ui([&] { layer.reset(); });
+            ui->set_nav_key_hook({});
+            on_ui([&] {
+                if (layer) layer->set_nav_group(nullptr);
+                layer.reset();
+            });
             ui->stop();
         }
         wisp::ui::set_lang(wisp::ui::Lang::Zh);
@@ -251,10 +271,39 @@ protected:
         return btn;
     }
 
+    // Presses and releases `k` through the runtime's keypad, as a nav
+    // button would, and waits until the layer and LVGL have both seen it.
+    void nav(NavKey k) {
+        const int before = keys_seen.load();
+        ASSERT_TRUE(ui->push_key(k, true));
+        ASSERT_TRUE(ui->push_key(k, false));
+        const uint64_t until = wisp::os::now_ms() + 2000;
+        while (keys_seen.load() < before + 2) {
+            ASSERT_LT(wisp::os::now_ms(), until) << "the keys were never read";
+            wisp::os::sleep_ms(1);
+        }
+        // LVGL handles an entry after the read that returned it; this runs
+        // on a later pass of the UI loop.
+        on_ui([] {});
+    }
+
+    lv_obj_t* focused() const { return lv_group_get_focused(ui->nav_group()); }
+
+    // The objects in the focus group, in its order.
+    std::vector<lv_obj_t*> group_objs() const {
+        std::vector<lv_obj_t*> out;
+        lv_group_t* g = ui->nav_group();
+        for (uint32_t i = 0; i < lv_group_get_obj_count(g); ++i) {
+            out.push_back(lv_group_get_obj_by_index(g, i));
+        }
+        return out;
+    }
+
     std::shared_ptr<FakeDisplay> display;
     std::shared_ptr<FakeTouch> touch;
     std::unique_ptr<wisp::ui::UiRuntime> ui;
     std::unique_ptr<SystemLayer> layer;
+    std::atomic<int> keys_seen{0};
     lv_indev_t* indev = nullptr;
     std::atomic<uint64_t> clock_ms{1000};
     ScreenShape shape;
@@ -3085,6 +3134,292 @@ TEST_F(SystemLayerPanel, NoteWithTwoActions) {
         tap(locate("Release"));
         EXPECT_EQ(calls, (std::vector<std::string>{"system.reminder/todo-1 1",
                                                    "system.reminder/todo-1 0", "system/w1 0"}));
+    }
+}
+
+// --- Key navigation ---
+
+// The screens the key focus is checked on: 480 x 480 as a rectangle and
+// as a rounded rectangle, and the 466 round panel.
+struct KeyShapeCase {
+    const char* shape;
+    int corner_radius;
+    int side;
+};
+constexpr KeyShapeCase kKeyShapeCases[] = {
+    {"rect", 0, 480}, {"rounded_rect", 70, 480}, {"circle", 0, 466}};
+
+// Button `i` of an open_confirm() dialog's row: 0 is Yes, 1 is No.
+lv_obj_t* confirm_button(lv_obj_t* box, int32_t i) {
+    lv_obj_t* row = lv_obj_get_child(box, -1);
+    return row == nullptr ? nullptr : lv_obj_get_child(row, i);
+}
+
+const char* kLongZhText =
+    "恢复出厂设置会清除所有设置、对话记录、记忆和已保存的场景，并断开所有网络连接。"
+    "此操作无法撤销。确定要继续吗？";
+
+TEST_F(SystemLayerTest, DialogFocusesTheSafeAnswer) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    on_ui([&] {
+        lv_obj_t* box = layer->open_confirm(
+            StrId::ResetTitle, "Sure?", [](bool) {}, wisp::ui::ButtonRole::Danger);
+        ASSERT_NE(box, nullptr);
+        EXPECT_EQ(focused(), confirm_button(box, 1));
+        EXPECT_EQ(group_objs(),
+                  (std::vector<lv_obj_t*>{confirm_button(box, 0), confirm_button(box, 1)}));
+    });
+}
+
+// On a board with touch the dialog's focus is not shown until a key is
+// pressed, and that first press only shows it: a stray key never answers.
+TEST_F(SystemLayerTest, FirstKeyOnlyShowsTheFocus) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int yes = 0, no = 0;
+    lv_obj_t* box = nullptr;
+    on_ui([&] {
+        box = layer->open_confirm(StrId::ResetTitle, "Sure?", [&](bool y) { ++(y ? yes : no); });
+        ASSERT_NE(box, nullptr);
+        EXPECT_FALSE(lv_obj_has_state(confirm_button(box, 1), LV_STATE_FOCUS_KEY));
+    });
+    lv_obj_t* yes_btn = nullptr;
+    lv_obj_t* no_btn = nullptr;
+    on_ui([&] {
+        yes_btn = confirm_button(box, 0);
+        no_btn = confirm_button(box, 1);
+    });
+    nav(NavKey::Next);
+    on_ui([&] {
+        EXPECT_EQ(focused(), no_btn);
+        EXPECT_TRUE(lv_obj_has_state(no_btn, LV_STATE_FOCUS_KEY));
+    });
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_EQ(focused(), yes_btn); });
+    nav(NavKey::Ok);
+    EXPECT_EQ(yes, 1);
+    EXPECT_EQ(no, 0);
+    on_ui([&] { EXPECT_FALSE(layer->confirm_open()); });
+}
+
+TEST_F(SystemLayerTest, OkOnTheSafeAnswerSaysNo) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    std::vector<bool> answers;
+    on_ui([&] {
+        ASSERT_NE(layer->open_confirm(
+                      StrId::ResetTitle, "Sure?", [&](bool y) { answers.push_back(y); },
+                      wisp::ui::ButtonRole::Danger),
+                  nullptr);
+    });
+    nav(NavKey::Next);
+    EXPECT_TRUE(answers.empty());
+    nav(NavKey::Ok);
+    EXPECT_EQ(answers, std::vector<bool>{false});
+    on_ui([&] { EXPECT_FALSE(layer->confirm_open()); });
+}
+
+// A dialog holds the focus while it is open; closing it gives the focus
+// back to the screen's object that had it, shown as it was.
+TEST_F(SystemLayerTest, DialogTrapsFocusAndGivesItBack) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int clicks_a = 0, clicks_b = 0;
+    lv_obj_t* a = nullptr;
+    lv_obj_t* b = nullptr;
+    on_ui([&] {
+        a = make_counting_button(100, 100, 120, 60, &clicks_a);
+        b = make_counting_button(100, 200, 120, 60, &clicks_b);
+    });
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_EQ(focused(), a); });
+    nav(NavKey::Next);
+    on_ui([&] {
+        EXPECT_EQ(focused(), b);
+        EXPECT_TRUE(lv_obj_has_state(b, LV_STATE_FOCUS_KEY));
+    });
+    lv_obj_t* box = nullptr;
+    lv_obj_t* yes_btn = nullptr;
+    lv_obj_t* no_btn = nullptr;
+    std::vector<bool> answers;
+    on_ui([&] {
+        box =
+            layer->open_confirm(StrId::ResetTitle, "Sure?", [&](bool y) { answers.push_back(y); });
+        ASSERT_NE(box, nullptr);
+        yes_btn = confirm_button(box, 0);
+        no_btn = confirm_button(box, 1);
+        EXPECT_EQ(group_objs(), (std::vector<lv_obj_t*>{yes_btn, no_btn}));
+        EXPECT_FALSE(lv_obj_has_state(b, LV_STATE_FOCUSED));
+    });
+    nav(NavKey::Next);  // shows No
+    std::vector<lv_obj_t*> seen;
+    for (int i = 0; i < 4; ++i) {
+        nav(NavKey::Next);
+        on_ui([&] { seen.push_back(focused()); });
+    }
+    EXPECT_EQ(seen, (std::vector<lv_obj_t*>{yes_btn, no_btn, yes_btn, no_btn}));
+    nav(NavKey::Ok);
+    EXPECT_EQ(answers, std::vector<bool>{false});
+    EXPECT_EQ(clicks_a + clicks_b, 0);
+    on_ui([&] {
+        EXPECT_EQ(group_objs(), (std::vector<lv_obj_t*>{a, b}));
+        EXPECT_EQ(focused(), b);
+        EXPECT_TRUE(lv_obj_has_state(b, LV_STATE_FOCUS_KEY));
+    });
+}
+
+// Only the loaded screen's objects take the focus.
+TEST_F(SystemLayerTest, FocusStaysOnTheScreenInFront) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    lv_obj_t* s1 = nullptr;
+    lv_obj_t* s2 = nullptr;
+    lv_obj_t* a = nullptr;
+    lv_obj_t* c = nullptr;
+    on_ui([&] {
+        s1 = lv_screen_active();
+        a = lv_button_create(s1);
+        s2 = lv_obj_create(nullptr);
+        c = lv_button_create(s2);
+    });
+    for (int i = 0; i < 4; ++i) {
+        nav(NavKey::Next);
+        on_ui([&] {
+            EXPECT_EQ(focused(), a);
+            EXPECT_FALSE(lv_obj_has_state(c, LV_STATE_FOCUSED));
+        });
+    }
+    on_ui([&] { lv_screen_load(s2); });
+    for (int i = 0; i < 3; ++i) {
+        nav(NavKey::Next);
+        on_ui([&] {
+            EXPECT_EQ(focused(), c);
+            EXPECT_FALSE(lv_obj_has_state(a, LV_STATE_FOCUSED));
+        });
+    }
+    on_ui([&] {
+        lv_screen_load(s1);
+        lv_obj_delete(s2);
+    });
+}
+
+TEST_F(SystemLayerTest, ErrorCardFocusesBack) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int reloads = 0, backs = 0;
+    lv_obj_t* back = nullptr;
+    on_ui([&] {
+        layer->show_error({"Demo", "main.lua", 3, "boom"}, [&] { ++reloads; }, [&] { ++backs; });
+        back = find_button_with_label(lv_layer_top(), wisp::ui::tr(StrId::SceneBack));
+        ASSERT_NE(back, nullptr);
+        EXPECT_EQ(focused(), back);
+    });
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_TRUE(lv_obj_has_state(back, LV_STATE_FOCUS_KEY)); });
+    EXPECT_EQ(backs, 0);
+    nav(NavKey::Ok);
+    EXPECT_EQ(backs, 1);
+    EXPECT_EQ(reloads, 0);
+    on_ui([&] { EXPECT_FALSE(layer->error_visible()); });
+}
+
+TEST_F(SystemLayerTest, HiddenAndDisabledButtonsAreSkipped) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    lv_obj_t* a = nullptr;
+    lv_obj_t* d = nullptr;
+    on_ui([&] {
+        lv_obj_t* scr = lv_screen_active();
+        a = lv_button_create(scr);
+        lv_obj_t* b = lv_button_create(scr);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t* c = lv_button_create(scr);
+        lv_obj_add_state(c, LV_STATE_DISABLED);
+        d = lv_button_create(scr);
+    });
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_EQ(focused(), a); });
+    std::vector<lv_obj_t*> seen;
+    for (int i = 0; i < 2; ++i) {
+        nav(NavKey::Next);
+        on_ui([&] { seen.push_back(focused()); });
+    }
+    EXPECT_EQ(seen, (std::vector<lv_obj_t*>{d, a}));
+}
+
+// The focus ring (outline_pad + outline_width outside the button) is
+// drawn whole: inside the dialog and every ancestor that clips it, on the
+// visible screen, and clear of the other button.
+TEST_F(SystemLayerTest, FocusRingStaysInsideTheDialog) {
+    constexpr int32_t kRing = 4;
+    for (const KeyShapeCase& c : kKeyShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius, true, c.side);
+        lv_obj_t* box = nullptr;
+        on_ui([&] {
+            box = layer->open_confirm(
+                StrId::ResetTitle, kLongZhText, [](bool) {}, wisp::ui::ButtonRole::Danger);
+            ASSERT_NE(box, nullptr);
+        });
+        for (int32_t i : {1, 0}) {
+            nav(NavKey::Next);
+            on_ui([&] {
+                lv_obj_t* btn = confirm_button(box, i);
+                lv_obj_t* other = confirm_button(box, 1 - i);
+                ASSERT_EQ(focused(), btn);
+                ASSERT_TRUE(lv_obj_has_state(btn, LV_STATE_FOCUS_KEY));
+                lv_obj_update_layout(lv_layer_top());
+                EXPECT_EQ(lv_obj_get_style_outline_pad(btn, LV_PART_MAIN) +
+                              lv_obj_get_style_outline_width(btn, LV_PART_MAIN),
+                          kRing);
+                lv_area_t ring;
+                lv_obj_get_coords(btn, &ring);
+                lv_area_increase(&ring, kRing, kRing);
+                for (lv_obj_t* p = lv_obj_get_parent(btn); p != lv_obj_get_parent(box);
+                     p = lv_obj_get_parent(p)) {
+                    // What LVGL lets a child draw in (lv_obj_area_is_visible()).
+                    lv_area_t pa;
+                    lv_obj_get_coords(p, &pa);
+                    if (lv_obj_has_flag(p, LV_OBJ_FLAG_OVERFLOW_VISIBLE)) {
+                        const int32_t ext = lv_obj_get_ext_draw_size(p);
+                        lv_area_increase(&pa, ext, ext);
+                    }
+                    EXPECT_TRUE(lv_area_is_in(&ring, &pa, 0))
+                        << area_str(ring) << " outside " << area_str(pa);
+                }
+                EXPECT_TRUE(wisp::test::box_visible(shape, ring)) << area_str(ring);
+                lv_area_t o;
+                lv_obj_get_coords(other, &o);
+                const int32_t gap =
+                    std::max({o.x1 - ring.x2, ring.x1 - o.x2, o.y1 - ring.y2, ring.y1 - o.y2}) - 1;
+                EXPECT_GE(gap, wisp::ui::theme::kGapXs) << area_str(ring) << " " << area_str(o);
+            });
+        }
+    }
+}
+
+// A manual preview (docs/testing.md): the confirm dialog with each button
+// focused by a key, as confirm-<shape>-no.png and confirm-<shape>-yes.png
+// in the directory WISP_KEYNAV_SCREENSHOTS names.
+class SystemLayerPreview : public SystemLayerTest {};
+
+TEST_F(SystemLayerPreview, DISABLED_FocusedDialog) {
+    const char* dir = std::getenv("WISP_KEYNAV_SCREENSHOTS");
+    if (dir == nullptr) GTEST_SKIP() << "WISP_KEYNAV_SCREENSHOTS is not set";
+    for (const KeyShapeCase& c : kKeyShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius, true, c.side);
+        on_ui([&] {
+            ASSERT_NE(
+                layer->open_confirm(
+                    StrId::ResetTitle, kLongZhText, [](bool) {}, wisp::ui::ButtonRole::Danger),
+                nullptr);
+        });
+        for (const char* name : {"no", "yes"}) {
+            nav(NavKey::Next);
+            auto shot = ui->snapshot_rgb888();
+            ASSERT_TRUE(shot);
+            const std::string path = std::string(dir) + "/confirm-" + c.shape + "-" + name + ".png";
+            ASSERT_TRUE(
+                wisp::port::sim::write_png_rgb888(path, shot.value().data(), c.side, c.side))
+                << path;
+        }
     }
 }
 

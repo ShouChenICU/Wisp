@@ -130,7 +130,8 @@ wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_por
 wisp_test(NAME ui_cells_test SRCS ui/ui_cells_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME a8_font_test SRCS ui/a8_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
-wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp
+          LIBS wisp_ui wisp_port_sim_dev wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME system_notice_test SRCS ui/system_notice_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME theme_test SRCS ui/theme_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME wisp_model_test SRCS ui/wisp_model_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)

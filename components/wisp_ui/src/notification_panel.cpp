@@ -180,6 +180,7 @@ void SystemLayer::open_panel() {
     if (!can_open_panel()) return;
     build_panel();
     raise();
+    rescope();
     WLOG_I("ui", "panel: shown");
 }
 
@@ -274,6 +275,7 @@ void SystemLayer::finish_slide() {
     motion_ = PanelMotion::Still;
     place_panel(shape_.height);
     pause_panel_marks(false);
+    rescope();
     WLOG_I("ui", "panel: shown");
 }
 
@@ -530,6 +532,7 @@ void SystemLayer::discard_panel() {
     // A closed panel keeps nothing it showed; on_open builds the next model.
     model_ = PanelModel{};
     WLOG_I("ui", "panel: gone");
+    rescope();
     // The banner-only notices that waited for the panel to go.
     show_next_banner();
     // A copy: the owner may replace the handlers from it.

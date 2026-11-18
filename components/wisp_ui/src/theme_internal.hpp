@@ -12,6 +12,11 @@ namespace wisp::ui::detail {
 // Builds it once per lv_init().
 lv_theme_t* install_theme(lv_display_t* disp, const lv_font_t* font);
 
+// The fill a key-focusable row (wisp/ui/key_nav.hpp) takes while a key
+// focuses it, or with `colour` false (a two-tone panel) its outline. Valid
+// while the theme is installed.
+lv_style_t* focus_row_style(bool colour);
+
 // Frees what install_theme() built. Called after lv_deinit(), once no
 // object uses the theme's styles any more.
 void release_theme();

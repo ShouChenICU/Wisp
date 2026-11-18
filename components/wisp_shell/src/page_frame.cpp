@@ -4,12 +4,16 @@
 #include <vector>
 
 #include "wisp/ui/fonts.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 #include "wisp/ui/wisp_view.hpp"
 
 namespace wisp::shell::detail {
+
+// Both are LVGL user flags; a row may carry both.
+static_assert(kNoSwipe != ui::kKeyFocusable);
 
 namespace {
 // Between the list's rows, the title and the first row too.
