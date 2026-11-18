@@ -85,12 +85,15 @@ public:
     // queue ReminderScheduler::done() / snooze() on the worker and silence
     // the alarm. Either way the notice goes.
     void act(const std::string& source, const std::string& id, int index = 0);
-    // Shows a posted notification (the banner). Any thread.
-    void set_banner(std::function<void(const core::Notification&)> show);
+    // Shows a posted notification (the banner), with whether it is listed
+    // (NotificationChange::listed: false for a banner-only post). Any
+    // thread.
+    using BannerFn = std::function<void(const core::Notification&, bool listed)>;
+    void set_banner(BannerFn show);
 
 private:
     void on_change(const core::NotificationChange& c);
-    void posted(const core::Notification& n);
+    void posted(const core::Notification& n, bool listed);
     void act_reminder(const core::Notification& n, int index);
     uint8_t volume() const;
 
@@ -99,7 +102,7 @@ private:
 
     // Guards banner_ and sounding_*.
     mutable os::Mutex mu_;
-    std::shared_ptr<const std::function<void(const core::Notification&)>> banner_;
+    std::shared_ptr<const BannerFn> banner_;
     // The notification whose sound was played last.
     std::string sounding_source_, sounding_id_;
 };

@@ -2802,6 +2802,69 @@ TEST_F(BannerTest, TapCallsBackAndSwipeUpOnlyHides) {
     on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
 }
 
+// drop_banners() takes down the banner shown and those waiting that its
+// test picks, at once; the next one left shows.
+TEST_F(BannerTest, DropBannersTakesThePickedDown) {
+    start("rect");
+    use_fake_tick();
+    int taps = 0;
+    on_ui([&] {
+        layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [&] { ++taps; });
+        layer->show_banner({"b", "n2", "B", "Beta", "Second", "two"}, [&] { ++taps; });
+        layer->show_banner({"c", "n3", "C", "Gamma", "Third", "three"}, [&] { ++taps; });
+        layer->drop_banners([](const wisp::ui::BannerInfo& b) { return b.id == "n2"; });
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "First"), nullptr);
+        layer->drop_banners([](const wisp::ui::BannerInfo& b) { return b.id == "n1"; });
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "Third"), nullptr);
+    });
+    advance(SystemLayer::kBannerMs);
+    on_ui([&] { EXPECT_EQ(layer->banner(), nullptr); });
+    EXPECT_EQ(taps, 0);
+}
+
+// The pull-down panel never has a banner over it (scene-device spec 5.3):
+// the banners go as it starts to come down, and none shows while it is
+// there or comes back once it has gone. Checked on every shape, opened at
+// once and pulled down by a finger.
+TEST_F(BannerTest, PanelTakesTheBannersAway) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        wisp::ui::PanelHandlers h;
+        h.on_open = [this] { layer->update_panel(sample_model()); };
+        on_ui([&] {
+            layer->set_panel_handlers(h);
+            layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {});
+            layer->show_banner({"b", "n2", "B", "Beta", "Second", "two"}, [] {});
+            ASSERT_NE(layer->banner(), nullptr);
+            layer->open_panel();
+            ASSERT_TRUE(layer->panel_open());
+            EXPECT_EQ(layer->banner(), nullptr);
+            layer->show_banner({"c", "n3", "C", "Gamma", "Third", "three"}, [] {});
+            EXPECT_EQ(layer->banner(), nullptr);
+            layer->close_panel();
+            EXPECT_EQ(layer->banner(), nullptr);
+            // A new one after the panel has gone shows as usual.
+            layer->show_banner({"d", "n4", "D", "Delta", "Fourth", "four"}, [] {});
+            EXPECT_NE(layer->banner(), nullptr);
+        });
+        // A finger pulling the panel down takes the banner away as soon
+        // as the panel starts to follow it.
+        feed({{240, 4, 0}});
+        feed({{240, 4, 0}});
+        feed({{240, static_cast<int16_t>(4 + top_trigger(shape) + 10), 0}});
+        on_ui([&] {
+            EXPECT_TRUE(layer->panel_open());
+            EXPECT_EQ(layer->banner(), nullptr);
+            layer->close_panel();
+        });
+        feed({});
+    }
+}
+
 TEST_F(BannerTest, StacksBelowConfirm) {
     start("circle");
     on_ui([&] {

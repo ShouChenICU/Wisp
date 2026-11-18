@@ -42,10 +42,8 @@ void NotificationRouter::stop() {
     if (deps_.ui->post([done] { done->give(); })) done->take(os::kForever);
 }
 
-void NotificationRouter::set_banner(std::function<void(const core::Notification&)> show) {
-    auto shared = show ? std::make_shared<const std::function<void(const core::Notification&)>>(
-                             std::move(show))
-                       : nullptr;
+void NotificationRouter::set_banner(BannerFn show) {
+    auto shared = show ? std::make_shared<const BannerFn>(std::move(show)) : nullptr;
     std::lock_guard<os::Mutex> lock(mu_);
     banner_ = std::move(shared);
 }
@@ -57,7 +55,7 @@ uint8_t NotificationRouter::volume() const {
 }
 
 void NotificationRouter::on_change(const core::NotificationChange& c) {
-    if (c.kind == core::NotificationChange::Kind::Posted) return posted(c.n);
+    if (c.kind == core::NotificationChange::Kind::Posted) return posted(c.n, c.listed);
     bool sounding = false;
     {
         std::lock_guard<os::Mutex> lock(mu_);
@@ -66,7 +64,7 @@ void NotificationRouter::on_change(const core::NotificationChange& c) {
     if (sounding && deps_.tones != nullptr) deps_.tones->silence();
 }
 
-void NotificationRouter::posted(const core::Notification& n) {
+void NotificationRouter::posted(const core::Notification& n, bool listed) {
     const bool off = deps_.power != nullptr && deps_.power->standby();
     // An alarm rings until the user touches the device (spec 5.1), which
     // they can only do with the screen on, so it wakes it as wake = true
@@ -100,12 +98,12 @@ void NotificationRouter::posted(const core::Notification& n) {
     } else if (sound) {
         deps_.tones->play(kind, vol);
     }
-    std::shared_ptr<const std::function<void(const core::Notification&)>> banner;
+    std::shared_ptr<const BannerFn> banner;
     {
         std::lock_guard<os::Mutex> lock(mu_);
         banner = banner_;
     }
-    if (banner) (*banner)(n);
+    if (banner) (*banner)(n, listed);
 }
 
 void NotificationRouter::tap(const std::string& source, const std::string& id) {

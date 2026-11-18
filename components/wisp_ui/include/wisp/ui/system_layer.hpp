@@ -27,7 +27,8 @@
 //     moved far enough down is taken from the widget under it. Whichever
 //     of the two gestures crosses its trigger first owns the press.
 //   - A banner is an opaque card near the top, shown for kBannerMs, one
-//     at a time, and marked.
+//     at a time, and marked. None shows while the pull-down panel is
+//     there.
 //   - The pull-down panel is a full-screen opaque backdrop without
 //     children, marked like the error panel's, and over it a content
 //     box, marked as well: the safe area, cut short at the bottom where
@@ -138,6 +139,10 @@ struct PanelHandlers {
 struct BannerInfo {
     std::string source, id, badge, name, title, body;
     std::string action_label, action2_label;
+    // Whether its notice is in the panel's list, so its banner goes when
+    // the notice goes; false for a foreground scene's own post, which is
+    // only ever a banner. For the owner's drop_banners() test.
+    bool listed = true;
 };
 
 class SystemLayer {
@@ -278,8 +283,17 @@ public:
     // next one shows. With action labels it is taller by a row of buttons
     // at least kPanelRowMinH high and stays kActionBannerMs; a button hides
     // it and calls `on_action` with its index (0 for action_label's).
+    // The panel lists every notice, so no banner shows over it (spec 5.3,
+    // revised 2026-11-17): one queued while the panel is there (open,
+    // following a finger or sliding) is dropped, and the panel coming
+    // down drops the banner shown and those waiting, none of which comes
+    // back once it has gone.
     void show_banner(BannerInfo b, std::function<void()> on_tap,
                      std::function<void(int index)> on_action = {});
+    // Takes down at once the banner shown, if `gone` picks it, and drops
+    // the waiting ones it picks, without calling their callbacks (their
+    // notices have gone). Then the next one left shows.
+    void drop_banners(const std::function<bool(const BannerInfo&)>& gone);
     // The banner shown now, else nullptr.
     lv_obj_t* banner() const { return banner_; }
     // Presses action button `index` (0 for action_label's) of the banner
@@ -498,6 +512,7 @@ private:
     };
     std::deque<QueuedBanner> banners_;  // waiting, the next first
     lv_obj_t* banner_ = nullptr;
+    BannerInfo banner_info_;  // the one banner_ shows
     std::function<void()> banner_tap_;
     std::function<void(int)> banner_action_;
     lv_timer_t* banner_timer_ = nullptr;

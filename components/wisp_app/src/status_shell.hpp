@@ -32,7 +32,13 @@
 //     NotificationRouter::act(); "clear all" clears every one.
 //   - Banners: NotificationRouter::set_banner() hands each posted
 //     notification over; it is shown on the UI thread, and a tap on it is
-//     NotificationRouter::tap().
+//     NotificationRouter::tap(). A listed notice's banner follows the
+//     notice summary cell like the panel: each refresh takes down the
+//     banners (shown or waiting) whose notice has gone, and one whose
+//     notice went before it reached the UI thread never shows. A banner-
+//     only post (a foreground scene's own) is not in the list and only
+//     goes on its own. The pull-down panel coming down takes every banner
+//     away (SystemLayer::show_banner()).
 //
 // start() runs on any thread. Every SystemLayer call is made on the UI
 // thread.

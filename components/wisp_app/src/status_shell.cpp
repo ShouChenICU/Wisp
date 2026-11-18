@@ -153,9 +153,10 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         return "";
     }
 
-    ui::BannerInfo banner_of(const core::Notification& n) {
+    ui::BannerInfo banner_of(const core::Notification& n, bool listed) {
         const ui::PanelNote p = note_of(n);
         ui::BannerInfo b;
+        b.listed = listed;
         b.source = n.source;
         b.id = n.id;
         b.badge = std::string_view(p.badge);
@@ -221,6 +222,12 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
         return m;
     }
 
+    // Whether the notice a listed banner shows has gone (dismissed,
+    // cleared, tapped in the panel, evicted). UI thread.
+    bool notice_gone(const ui::BannerInfo& b) const {
+        return b.listed && !deps.notes.find(b.source, b.id).has_value();
+    }
+
     // UI thread.
     void refresh() {
         const Counts c{static_cast<int>(background().size()),
@@ -229,6 +236,9 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
             WLOG_I(kTag, "status: background=%d unread=%d", c.background, c.unread);
             shown = c;
         }
+        // The banners follow the list as the panel does: one whose notice
+        // has gone goes at once (scene-device spec 5.3).
+        deps.layer.drop_banners([this](const ui::BannerInfo& b) { return notice_gone(b); });
         if (deps.layer.panel_open()) deps.layer.update_panel(model());
     }
 };
@@ -292,10 +302,14 @@ void StatusShell::start() {
     // the text is made on the UI thread, which may ask the runtime for
     // scene names. The banner keeps its tap until the layer goes, which
     // may be after stop(): the tap then does nothing.
-    st.deps.router.set_banner([s](const core::Notification& n) {
-        if (!post_ui(s, [n](const StatePtr& st) {
+    st.deps.router.set_banner([s](const core::Notification& n, bool listed) {
+        if (!post_ui(s, [n, listed](const StatePtr& st) {
+                ui::BannerInfo info = st->banner_of(n, listed);
+                // Gone before it got here: refresh() has nothing to take
+                // down, so it must not show at all.
+                if (st->notice_gone(info)) return;
                 st->deps.layer.show_banner(
-                    st->banner_of(n),
+                    std::move(info),
                     [st, source = n.source, id = n.id] {
                         if (!st->stopped.load()) st->deps.router.tap(source, id);
                     },

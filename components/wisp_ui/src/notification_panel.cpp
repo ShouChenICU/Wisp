@@ -302,6 +302,12 @@ void SystemLayer::panel_refill_cb(void* self_ptr) {
 }
 
 void SystemLayer::build_panel() {
+    // The panel lists every notice, so the user sees them all there; a
+    // banner kept under it would show again once it goes (spec 5.3). They
+    // all go now, before panel_ is set, and show_banner() drops new ones
+    // until the panel has gone.
+    banners_.clear();
+    hide_banner();
     // The whole screen: whatever is under the panel is hidden, and a touch
     // outside the content box closes it. It has no children and never
     // changes, so what scrolls under it is cut although it spans the

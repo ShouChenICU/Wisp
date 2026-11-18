@@ -221,14 +221,20 @@ TEST_F(NotificationRouterTest, BannerShowsEveryPost) {
     make_router();
     std::mutex banner_mu;
     std::vector<std::string> shown;
-    router->set_banner([&](const Notification& n) {
+    router->set_banner([&](const Notification& n, bool listed) {
         std::lock_guard<std::mutex> lock(banner_mu);
-        shown.push_back(n.id);
+        shown.push_back(n.id + (listed ? "" : " (banner only)"));
     });
     post("demo", "a", NotifySound::None, false);
     notes->post_system(wisp::core::notice::kSceneError, "demo");
+    // A foreground scene's own post is not listed.
+    Notification own;
+    own.source = "demo";
+    own.id = "own";
+    own.title = "t";
+    ASSERT_TRUE(notes->post(std::move(own), true));
     std::lock_guard<std::mutex> lock(banner_mu);
-    EXPECT_EQ(shown, (std::vector<std::string>{"a", "scene_error:demo"}));
+    EXPECT_EQ(shown, (std::vector<std::string>{"a", "scene_error:demo", "own (banner only)"}));
 }
 
 TEST_F(NotificationRouterPaced, TapSilencesAndDelivers) {

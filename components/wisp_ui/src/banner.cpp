@@ -32,8 +32,14 @@ constexpr int32_t kActionsGap = theme::kGapXs;
 
 void SystemLayer::show_banner(BannerInfo b, std::function<void()> on_tap,
                               std::function<void(int index)> on_action) {
+    if (panel_ != nullptr) return;
     banners_.push_back({std::move(b), std::move(on_tap), std::move(on_action)});
     if (banner_ == nullptr) show_next_banner();
+}
+
+void SystemLayer::drop_banners(const std::function<bool(const BannerInfo&)>& gone) {
+    std::erase_if(banners_, [&gone](const QueuedBanner& q) { return gone(q.info); });
+    if (banner_ != nullptr && gone(banner_info_)) hide_banner();
 }
 
 void SystemLayer::show_next_banner() {
@@ -169,6 +175,7 @@ void SystemLayer::show_next_banner() {
     }
 
     banner_ = card;
+    banner_info_ = std::move(next.info);
     banner_tap_ = std::move(next.on_tap);
     banner_action_ = std::move(next.on_action);
     mark_opaque_overlay(card);
@@ -195,6 +202,7 @@ void SystemLayer::hide_banner() {
         banner_ = nullptr;
         WLOG_I("ui", "banner: gone");
     }
+    banner_info_ = {};
     banner_tap_ = nullptr;
     banner_action_ = nullptr;
     show_next_banner();

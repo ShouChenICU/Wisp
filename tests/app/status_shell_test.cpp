@@ -538,6 +538,110 @@ TEST_F(StatusShellTest, BannerOnPostAndTapOpensScene) {
         6000));
 }
 
+// The text of the banner shown now, "" without one.
+std::string banner_text(lv_obj_t* banner) {
+    if (banner == nullptr) return {};
+    std::vector<std::pair<std::string, lv_area_t>> labels;
+    wisp::test::collect_labels(banner, labels);
+    std::string text;
+    for (const auto& [t, a] : labels) text += t + "|";
+    return text;
+}
+
+class StatusShellBannerTest : public StatusShellTest {
+protected:
+    // The banner shown now, read on the UI thread.
+    std::string shown() {
+        std::string text;
+        on_ui([&] { text = banner_text(layer->banner()); });
+        return text;
+    }
+    bool wait_shown(const std::string& needle) {
+        const bool ok = wait_until([&] { return shown().find(needle) != std::string::npos; }, 2000);
+        EXPECT_TRUE(ok) << shown();
+        return ok;
+    }
+    bool wait_none() {
+        const bool ok = wait_until([&] { return shown().empty(); }, 2000);
+        EXPECT_TRUE(ok) << shown();
+        return ok;
+    }
+};
+
+// Clearing every notice takes its banner down at once, and the banners
+// waiting behind it never show.
+TEST_F(StatusShellBannerTest, ClearAllTakesTheBannersDown) {
+    start_shell();
+    post("a", "n1", "First");
+    post("a", "n2", "Second");
+    ASSERT_TRUE(wait_shown("First"));
+    notes->clear_all();
+    ASSERT_TRUE(wait_none());
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(shown(), "");
+}
+
+// Dismissing one notice (its close button in the panel, a swipe) takes
+// down its banner, shown or waiting, and only its.
+TEST_F(StatusShellBannerTest, DismissTakesItsBannerDown) {
+    start_shell();
+    post("a", "n1", "First");
+    post("a", "n2", "Second");
+    post("a", "n3", "Third");
+    ASSERT_TRUE(wait_shown("First"));
+    ASSERT_TRUE(notes->dismiss("a", "n2", wisp::core::DismissReason::Dismiss));
+    wisp::os::sleep_ms(50);
+    EXPECT_NE(shown().find("First"), std::string::npos);
+    ASSERT_TRUE(notes->dismiss("a", "n1", wisp::core::DismissReason::Dismiss));
+    EXPECT_TRUE(wait_shown("Third"));
+}
+
+// A notice gone before its banner reaches the UI thread gets none.
+TEST_F(StatusShellBannerTest, NoBannerForANoticeAlreadyGone) {
+    start_shell();
+    on_ui([&] {
+        post("a", "n1", "First");
+        notes->clear_all();
+    });
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(shown(), "");
+}
+
+// A foreground scene's own post is a banner only, never listed: the
+// changes of the list do not take it down.
+TEST_F(StatusShellBannerTest, BannerOnlyPostStaysThroughListChanges) {
+    start_shell();
+    Notification n;
+    n.source = "f";
+    n.id = "own";
+    n.source_name = "Front";
+    n.title = "Own";
+    ASSERT_TRUE(notes->post(std::move(n), true));
+    ASSERT_TRUE(wait_shown("Own"));
+    post("a", "n1", "Listed");
+    notes->clear_all();
+    wisp::os::sleep_ms(50);
+    EXPECT_NE(shown().find("Own"), std::string::npos);
+}
+
+// The pull-down panel lists every notice: while it is there no banner
+// shows over it, and those it hid do not come back once it closes.
+TEST_F(StatusShellBannerTest, PanelHidesBanners) {
+    start_shell();
+    post("a", "n1", "First");
+    post("a", "n2", "Second");
+    ASSERT_TRUE(wait_shown("First"));
+    open_panel();
+    EXPECT_EQ(shown(), "");
+    post("a", "n3", "Third");
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(shown(), "");
+    EXPECT_TRUE(panel_has("Third"));
+    on_ui([&] { layer->close_panel(); });
+    wisp::os::sleep_ms(50);
+    EXPECT_EQ(shown(), "");
+}
+
 // stop() takes the handlers and the banner away before the layer goes.
 TEST_F(StatusShellTest, StopUninstalls) {
     start_shell();
