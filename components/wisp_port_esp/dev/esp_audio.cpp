@@ -244,6 +244,15 @@ Result<std::shared_ptr<EspAudioIn>> EspAudioIn::create(esp_codec_dev_handle_t co
     if (i2s_channel == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null i2s channel handle");
     }
+    const auto& channels = config.channels;
+    if (channels.empty() || channels.size() > kMaxCaptureChannels) {
+        return R::err(
+            ErrorCode::InvalidArgument,
+            "audio_in needs 1 to " + std::to_string(kMaxCaptureChannels) + " capture channels");
+    }
+    if (std::find(channels.begin(), channels.end(), AudioChannel::Mic) == channels.end()) {
+        return R::err(ErrorCode::InvalidArgument, "audio_in capture channels name no mic");
+    }
     return R::ok(
         std::shared_ptr<EspAudioIn>(new EspAudioIn(codec_dev, i2s_channel, std::move(config))));
 }
@@ -254,7 +263,12 @@ EspAudioIn::EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_c
     info_.id = std::move(config.id);
     info_.cls = kClass;
     info_.model = std::move(config.model);
-    info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
+    wisp::List names;
+    for (AudioChannel c : config.channels) {
+        channels_[channel_count_++] = c;
+        names.emplace_back(to_string(c));
+    }
+    info_.caps = wisp::Properties{{"standby", wisp::Value("off")}, {"channels", std::move(names)}};
     if (!config.role.empty()) info_.caps["role"] = wisp::Value(std::move(config.role));
     std::memset(scratch_, 0, sizeof(scratch_));
 }
@@ -272,8 +286,8 @@ Result<void> EspAudioIn::open(const wisp::hal::AudioFormat& format) {
 
     esp_codec_dev_sample_info_t fs = {};
     fs.bits_per_sample = kBitsPerSample;
-    fs.channel = 2;
-    fs.channel_mask = 0x3;
+    fs.channel = channel_count_;
+    fs.channel_mask = static_cast<uint16_t>((1u << channel_count_) - 1);
     fs.sample_rate = format.sample_rate;
 
     int ret = esp_codec_dev_open(codec_dev_, &fs);
@@ -295,16 +309,17 @@ Result<size_t> EspAudioIn::read(int16_t* frames, size_t count) {
         return Result<size_t>::err(ErrorCode::InvalidArgument, "audio_in not open");
     }
 
+    const std::span<const AudioChannel> roles(channels_, channel_count_);
     size_t done = 0;
     while (done < count) {
-        size_t chunk = std::min(count - done, kScratchFrames);
-        int len = static_cast<int>(chunk * 2 * sizeof(int16_t));
+        size_t chunk = capture_chunk_frames(count - done, kScratchSamples, channel_count_);
+        int len = static_cast<int>(chunk * channel_count_ * sizeof(int16_t));
         int ret = esp_codec_dev_read(codec_dev_, scratch_, len);
         if (ret != ESP_CODEC_DEV_OK) {
             return Result<size_t>::err(ErrorCode::IoError,
                                        "esp_codec_dev_read: " + std::to_string(ret));
         }
-        downmix_stereo_to_mono(scratch_, frames + done, chunk);
+        downmix(scratch_, frames + done, chunk, roles);
         done += chunk;
     }
     return Result<size_t>::ok(done);

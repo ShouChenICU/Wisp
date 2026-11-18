@@ -30,7 +30,9 @@ devices:
         address: 0x30
         frequency: 400000
 
-  # ES7210 dual microphone capture path (EspAudioIn downmixes to mono).
+  # ES7210 dual microphone capture path; the channel layout (two mics) is
+  # declared in board.cpp's EspAudioInConfig::channels, and EspAudioIn
+  # downmixes the mics to mono.
   - name: audio_adc
     chip: es7210
     type: audio_codec

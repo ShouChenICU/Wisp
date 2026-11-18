@@ -434,10 +434,14 @@ void init_audio(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
         wisp::port::esp::EspAudioOutConfig{
             .id = "audio_out.main", .role = wisp::hal::role::kMain, .model = "ES8311"},
         &wisp::port::esp::EspAudioOut::create);
-    init_audio_device(registry, report, kBmgrAudioAdc, wisp::hal::DeviceClass::AudioIn,
-                      wisp::port::esp::EspAudioInConfig{
-                          .id = "audio_in.main", .role = wisp::hal::role::kMain, .model = "ES7210"},
-                      &wisp::port::esp::EspAudioIn::create);
+    init_audio_device(
+        registry, report, kBmgrAudioAdc, wisp::hal::DeviceClass::AudioIn,
+        wisp::port::esp::EspAudioInConfig{
+            .id = "audio_in.main",
+            .role = wisp::hal::role::kMain,
+            .model = "ES7210",
+            .channels = {wisp::port::esp::AudioChannel::Mic, wisp::port::esp::AudioChannel::Mic}},
+        &wisp::port::esp::EspAudioIn::create);
 }
 
 void init_internal_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {

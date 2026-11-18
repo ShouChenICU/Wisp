@@ -84,7 +84,7 @@ The ESP port's devices name no id or role of their own; the board passes both, s
 | `Storage` | `removable`, `fs` |
 | `Network` | `ap` (bool, whether the hotspot `start_ap()` is supported; when false, `WifiService` does not open the setup hotspot), `bands` (list of bands, such as `["2.4GHz"]`) |
 | `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below); other keys need nothing |
-| `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"` |
+| `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"`. `AudioIn` optionally declares `channels`, one role per physical capture channel (`"mic"`, or `"ref"` for the speaker signal looped back), such as `["mic", "mic"]`; the ESP port takes it from `EspAudioInConfig::channels` (1 to 4 channels, at least one mic) and delivers the mono mean of the mic channels |
 
 In addition, every device that switches on and off with the power level declares `standby` (see "Standby and power levels" below), and every device portable code looks up declares `role` in its caps.
 

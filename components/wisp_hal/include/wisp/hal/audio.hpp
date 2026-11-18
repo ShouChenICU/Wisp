@@ -17,6 +17,9 @@ struct AudioFormat {
 // when set_power() releases the audio hardware at Standby/DeepStandby;
 // see StandbyPolicy in wisp/hal/device.hpp). Playing or recording below
 // Dim is not supported.
+// AudioIn also: "channels" (list of strings, optional: one role per
+// physical capture channel, "mic" or "ref" for the speaker signal looped
+// back; read() still delivers the mono mix of the "mic" channels).
 class AudioOut : public Device {
 public:
     static constexpr DeviceClass kClass = DeviceClass::AudioOut;

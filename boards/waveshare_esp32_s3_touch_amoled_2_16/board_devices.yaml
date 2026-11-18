@@ -36,11 +36,11 @@ devices:
         address: 0x30
         frequency: 400000
 
-  # ES7210 dual microphone capture path. Channel count/mask (2ch, the two
-  # wired mics) move to esp_codec_dev_open()'s sample info and init gain
-  # to a post-open esp_codec_dev_set_in_gain() call, both done at runtime
-  # by wisp::port::esp::EspAudioIn (same file as EspAudioOut above) -- see
-  # that device's comment for why 2 physical channels downmixed to mono.
+  # ES7210 dual microphone capture path. The channel layout (two mics)
+  # is declared in board.cpp's EspAudioInConfig::channels, which
+  # wisp::port::esp::EspAudioIn turns into esp_codec_dev_open()'s channel
+  # count/mask and downmixes to mono; init gain is a post-open
+  # esp_codec_dev_set_in_gain() call.
   - name: audio_adc
     chip: es7210
     type: audio_codec
