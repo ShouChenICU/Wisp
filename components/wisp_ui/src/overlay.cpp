@@ -143,12 +143,16 @@ bool marked(lv_obj_t* obj) {
     return std::any_of(list.begin(), list.end(), [obj](const Overlay& o) { return o.obj == obj; });
 }
 
-// Whether `area` touches a shown, unmarked object on `layer`.
+// Whether `area` touches a shown object on `layer` that is unmarked or
+// paused. A paused overlay is drawn like any other object: a sheet moving
+// over another overlay (the pull-down panel over a banner) must not have
+// what it draws there cut by the overlay it hides.
 bool touches_other(lv_obj_t* layer, const lv_area_t& area) {
     if (layer == nullptr) return false;
     for (uint32_t i = 0; i < lv_obj_get_child_count(layer); ++i) {
         lv_obj_t* child = lv_obj_get_child(layer, static_cast<int32_t>(i));
-        if (marked(child) || lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
+        const Overlay* o = find(child);
+        if ((o != nullptr && !o->paused) || lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
         const lv_area_t box = box_of(child);
         lv_area_t common;
         if (intersect(area, box, &common)) return true;

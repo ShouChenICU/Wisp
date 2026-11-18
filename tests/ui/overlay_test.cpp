@@ -356,6 +356,28 @@ TEST(Overlay, APausedSheetMovingUpAndDownIsDrawn) {
                                              move_to(-40), move_to(0), resume, scroll, scroll}));
 }
 
+// A paused sheet above another marked overlay (the pull-down panel coming
+// down over a banner): what the sheet draws over the other overlay is
+// drawn, not cut by the overlay it hides.
+Scene build_sheet_over_card() {
+    Scene s = build_scene(true);
+    lv_obj_t* card = s.card;
+    Scene sheet = build_sheet();
+    lv_obj_delete(sheet.list);
+    s.card = sheet.card;
+    s.inner = card;
+    wisp::ui::pause_opaque_overlay(s.card, true);
+    lv_obj_set_y(s.card, -kSide);
+    lv_obj_update_layout(s.card);
+    return s;
+}
+
+TEST(Overlay, APausedSheetMovingOverAnotherOverlayIsDrawn) {
+    EXPECT_TRUE(same_as_full_redraw_of(
+        build_sheet_over_card,
+        {move_to(-kSide + 60), move_to(-kSide / 2), move_to(-20), move_to(0), resume, scroll}));
+}
+
 // Paused, nothing is cut; resumed, it counts again once a frame has drawn
 // it (here the first scroll's), and the scrolls after that are skipped
 // under it again: wholly covered, what is left is a single pixel.

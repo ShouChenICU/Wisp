@@ -11,7 +11,7 @@
 // overlay's box may be the overlay's own change and is left alone (for an
 // OwnChanges::InOwnEvents overlay, only while it handles an event); so is
 // one that touches any other visible object on the top or system layer
-// (such as the performance label). Any other area comes from below the
+// (such as the performance label, or a paused overlay). Any other area comes from below the
 // overlays, and the rows of each overlay that are opaque edge to edge
 // (all but its rounded corners' rows) are cut out of it; an area they
 // cover wholly is dropped. An overlay
@@ -59,8 +59,10 @@ void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own = OwnChanges::InsideBox);
 // box is redrawn on the next refresh. For an overlay that moves (the
 // pull-down panel following the finger): an area invalidated before the
 // move would otherwise be cut by where the overlay still is, though the
-// move uncovers it. Resumed, it counts again from the next frame that
-// draws it. No-op on an unmarked object.
+// move uncovers it. It also counts as an unmarked object drawn above the
+// others, so an area it touches is cut by no overlay: what it draws over
+// another overlay (a banner under the moving panel) is drawn. Resumed, it counts again from the
+// next frame that draws it. No-op on an unmarked object.
 void pause_opaque_overlay(lv_obj_t* obj, bool paused);
 
 // Tells the marked overlays of `disp` that the panel may no longer show
