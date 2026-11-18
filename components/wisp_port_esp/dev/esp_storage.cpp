@@ -28,7 +28,7 @@ namespace {
 
 constexpr const char* kTag = "esp_storage";
 
-// Must match the "storage" partition label in boards/<board>/partitions.csv
+// Must match the "storage" partition label in boards/common/partitions/<flash size>.csv
 // (a required partition name -- docs/porting-guide.md). Unlike
 // EspSdStorage's bmgr device name/model (passed in by board.cpp -- see
 // esp_storage.hpp's comment), this is not a board-specific fact: every

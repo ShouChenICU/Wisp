@@ -7,7 +7,7 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 ## SoC and storage
 
 - ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM (80 MHz)
-- For the partition table, see `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` (for the board-level sdkconfig of flash, PSRAM, the console and so on, see `sdkconfig.defaults.board` in the same directory):
+- For the partition table, see `boards/common/partitions/16mb.csv` (for the board-level sdkconfig of flash, PSRAM, the console and so on, see `sdkconfig.defaults.board` in the same directory):
 
   | Partition | Offset | Size |
   |---|---|---|

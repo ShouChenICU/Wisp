@@ -10,7 +10,7 @@ Board support for the Waveshare ESP32-S3-Touch-AMOLED-1.75C: a 466×466 round AM
 | `setup_device.c` | Factory functions bmgr calls: the CO5300 init command sequence (copied from Waveshare's BSP) and its 6-column offset, and a CST9217 factory that passes bmgr's touch config (pins, levels and orientation from `board_devices.yaml`) through. Compiled by the `gen_bmgr_codes` component that bmgr generates. |
 | `board.cpp` | Wisp's board entry point, `create_board()`: a `BoardSpec` for the board kit (`boards/common/board_kit.hpp`), with the panel facts bmgr does not carry, `bring_up_chips()` for the AXP2101, the optional PCF85063 and the QMI8658, and the PMU fallback for the PWR key. Compiled by `firmware/main`; `firmware/CMakeLists.txt` removes it from the `gen_bmgr_codes` sources. |
 | `board.cmake` | The driver components `board.cpp` uses (`WISP_BOARD_REQUIRES`). |
-| `partitions.csv` | This board's partition table (32 MB flash: everything the cache maps below 16 MB, `storage` in the upper 16 MB). The conventions are in `docs/porting-guide.md`. |
+| `../common/partitions/32mb.csv` | The shared 32 MB partition table (set in `sdkconfig.defaults.board`; everything the cache maps below 16 MB, `storage` in the upper 16 MB). The conventions are in `docs/porting-guide.md`. |
 | `sdkconfig.defaults.board` | Board sdkconfig: 32 MB QIO flash, octal PSRAM without XIP, the USB serial console and the partition table path. `idf.py bmgr` merges it into `board_manager.defaults`. It applies only to a new sdkconfig, so delete the sdkconfig after changing it. |
 
 The IMU (QMI8658, at 0x6B or 0x6A, probed), the power management chip (AXP2101, with a PMU PWR-key fallback) and the optional PCF85063 RTC are not handed to bmgr; Wisp's own drivers handle them.

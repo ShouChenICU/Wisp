@@ -20,7 +20,7 @@ SCRIPT = TOOLS / "pack_font_image.py"
 COMMITTED_TTF = ROOT / "components" / "wisp_ui" / "fonts" / "noto_sans_cjk_sc_subset.ttf"
 sys.path.insert(0, str(TOOLS))
 
-# The reference board's fonts partition (boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv).
+# The reference board's fonts partition (boards/common/partitions/16mb.csv).
 REFERENCE_FONTS_PARTITION = 0x2D0000
 
 HEADER = struct.Struct("<4sHHII16x")

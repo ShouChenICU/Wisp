@@ -4,11 +4,10 @@
 //
 //   - EspInternalStorage ("storage.int"/"littlefs", caps removable=false,
 //     fs="littlefs"): mounts the "storage" flash partition (see
-//     boards/<board>/partitions.csv, docs/porting-guide.md) with esp_vfs_littlefs_register()
-//     directly -- this is *not* a bmgr device (board_devices.yaml has no
-//     fs_littlefs entry): EspInternalStorage::create() calls
-//     esp_vfs_littlefs_register() directly instead of going through
-//     bmgr. Always mounted at
+//     boards/common/partitions/<flash size>.csv, docs/porting-guide.md) with
+//     esp_vfs_littlefs_register() directly -- this is *not* a bmgr device (board_devices.yaml has
+//     no fs_littlefs entry): EspInternalStorage::create() calls esp_vfs_littlefs_register()
+//     directly instead of going through bmgr. Always mounted at
 //     "/int"; never removable, so online() is always true once
 //     constructed. A mount failure (even after esp_littlefs's own
 //     internal format-and-retry, format_if_mount_failed=true) means this

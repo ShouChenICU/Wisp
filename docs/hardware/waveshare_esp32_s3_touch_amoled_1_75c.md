@@ -10,7 +10,7 @@ Most of the hardware matches the reference board (`docs/hardware/waveshare_esp32
 
 - ESP32-S3R8: 8 MB octal PSRAM (80 MHz, in the package), 32 MB QIO flash. The flash reads JEDEC id `C84019` with `esptool flash-id` (GigaDevice, 256 Mbit), read on the device by the user; the schematic's BOM part `XM25QH128` (16 MB) is out of date.
 - No XIP from PSRAM (`sdkconfig.defaults.board`): see "Flash: no suspend, no XIP" below.
-- For the partition table, see `boards/waveshare_esp32_s3_touch_amoled_1_75c/partitions.csv` (for the board-level sdkconfig of flash, PSRAM and the console, see `sdkconfig.defaults.board` in the same directory):
+- For the partition table, see `boards/common/partitions/32mb.csv` (for the board-level sdkconfig of flash, PSRAM and the console, see `sdkconfig.defaults.board` in the same directory):
 
   | Partition | Offset | Size |
   |---|---|---|
