@@ -1063,7 +1063,9 @@ void SystemLayer::rescope() {
         return;
     }
 
-    if (focused != nullptr) drop_held_key(focused);
+    // Also with nothing focused: closing a dialog or the error card deletes
+    // its focused button first, which leaves the group without a focus.
+    drop_held_key(focused);
     lv_obj_t* target = in_scope(first_choice) ? first_choice : nullptr;
     bool restored = false;
     if (target == nullptr && in_scope(remembered)) {

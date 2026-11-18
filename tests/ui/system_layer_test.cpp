@@ -3455,6 +3455,50 @@ TEST_F(SystemLayerTest, HeldNextStopsRepeatingAcrossARescope) {
     EXPECT_EQ(focus_moves, 0);
 }
 
+// Closing what held the scope ends a repeat started in it too: the held
+// key does not go on moving the focus over the screen given back.
+TEST_F(SystemLayerTest, HeldNextStopsRepeatingWhenTheScopeCloses) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int focus_moves = 0;
+    on_ui([&] {
+        for (int i = 0; i < 3; ++i) {
+            lv_obj_t* btn = lv_button_create(lv_screen_active());
+            lv_obj_add_event_cb(
+                btn, [](lv_event_t* e) { ++*static_cast<int*>(lv_event_get_user_data(e)); },
+                LV_EVENT_FOCUSED, &focus_moves);
+        }
+    });
+    for (const char* closing : {"confirm", "error"}) {
+        SCOPED_TRACE(closing);
+        const bool confirm = std::strcmp(closing, "confirm") == 0;
+        lv_obj_t* box = nullptr;
+        on_ui([&] {
+            if (confirm) {
+                box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
+            } else {
+                layer->show_error({"Demo", "main.lua", 3, "boom"}, [] {}, [] {});
+            }
+        });
+        nav(NavKey::Next);  // shows No or Back
+        key(NavKey::Next, true);
+        on_ui([&] {
+            if (confirm) {
+                layer->close_confirm(box);
+            } else {
+                layer->hide_error();
+            }
+        });
+        lv_obj_t* given_back = nullptr;
+        on_ui([&] { given_back = focused(); });
+        const int moves = focus_moves;
+        // Past LVGL's long-press time (400 ms) and several repeats (100 ms).
+        wisp::os::sleep_ms(800);
+        key(NavKey::Next, false);
+        EXPECT_EQ(focus_moves, moves);
+        on_ui([&] { EXPECT_EQ(focused(), given_back); });
+    }
+}
+
 // The release LVGL waits for after a rescope may be dropped by a pause;
 // the keypad's idle reads (released) end the wait, so the next key after
 // the pause still works.
