@@ -11,6 +11,7 @@
 static_assert(LV_COLOR_DEPTH == 16, "wisp_ui requires LV_COLOR_DEPTH == 16 (RGB565)");
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -128,6 +129,35 @@ struct UiRuntime::Impl {
     lv_display_t* lv_disp = nullptr;
     lv_indev_t* lv_indev = nullptr;
 
+    // The keypad input device (UiConfig::keypad) and its group. The group
+    // is filled by its owner (SystemLayer) with what is in front. The
+    // device is atomic because push_key() checks it from any thread.
+    std::atomic<lv_indev_t*> lv_keypad{nullptr};
+    lv_group_t* nav_group = nullptr;
+
+    // push_key()'s ring, the nav keys it accepted a press of and no
+    // release yet (a NavKey-indexed bitmask), and whether LVGL must forget
+    // a key it saw pressed before the next read (set by a pause). All under
+    // key_mutex, a short lock push_key() may take from any thread.
+    struct KeyEntry {
+        NavKey key;
+        bool pressed;
+    };
+    os::Mutex key_mutex;
+    std::array<KeyEntry, kKeyRing> key_ring{};
+    size_t key_head = 0;
+    size_t key_count = 0;
+    uint8_t keys_down = 0;
+    bool key_reset_pending = false;
+    // What the keypad's read callback last reported; repeated while the
+    // ring is empty, so a held key auto-repeats through LVGL. UI task only.
+    uint32_t key_last = LV_KEY_ENTER;
+    lv_indev_state_t key_last_state = LV_INDEV_STATE_RELEASED;
+
+    // set_nav_key_hook()'s hook, held like frame_hook.
+    os::Mutex nav_key_hook_mutex;
+    std::shared_ptr<const NavKeyHook> nav_key_hook;
+
     // What failed to reach the panel since the last redraw_lost(): the
     // panel still shows older pixels there. UI task only.
     bool has_lost = false;
@@ -187,6 +217,8 @@ struct UiRuntime::Impl {
     static void flush_wait_cb(lv_display_t* disp);
     static void invalidate_area_cb(lv_event_t* e);
     static void indev_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
+    static void keypad_read_cb(lv_indev_t* indev, lv_indev_data_t* data);
+    void clear_keys_locked();
 };
 
 void UiRuntime::Impl::drain_post_queue() {
@@ -515,6 +547,76 @@ void UiRuntime::Impl::indev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
     }
 }
 
+// Drops the queued entries and the keys that are down, and has LVGL forget
+// a key it saw pressed: the releases that would have lifted it are gone.
+void UiRuntime::Impl::clear_keys_locked() {
+    key_head = 0;
+    key_count = 0;
+    keys_down = 0;
+    key_reset_pending = true;
+}
+
+void UiRuntime::Impl::keypad_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
+    auto* impl = static_cast<Impl*>(lv_indev_get_user_data(indev));
+    std::shared_ptr<const NavKeyHook> hook;
+    bool hook_loaded = false;
+    for (;;) {
+        KeyEntry entry{};
+        bool more = false;
+        bool reset = false;
+        bool empty = false;
+        {
+            std::lock_guard<os::Mutex> lock(impl->key_mutex);
+            reset = std::exchange(impl->key_reset_pending, false);
+            empty = impl->key_count == 0;
+            if (!empty) {
+                entry = impl->key_ring[impl->key_head];
+                impl->key_head = (impl->key_head + 1) % kKeyRing;
+                --impl->key_count;
+                more = impl->key_count > 0;
+            }
+        }
+        if (reset) {
+            // Outside the lock: the reset sends events. lv_indev_reset()
+            // clears the press timing (no long press) but not the keypad's
+            // last state; left pressed, the next released read would be
+            // taken as the key's release and click. LVGL's own
+            // wait-for-release clears it the same way.
+            lv_indev_reset(indev, nullptr);
+            indev->keypad.last_state = LV_INDEV_STATE_RELEASED;
+            impl->key_last_state = LV_INDEV_STATE_RELEASED;
+        }
+        if (empty) break;
+        if (!hook_loaded) {
+            std::lock_guard<os::Mutex> lock(impl->nav_key_hook_mutex);
+            hook = impl->nav_key_hook;
+            hook_loaded = true;
+        }
+        if (hook && (*hook)(entry.key, entry.pressed)) continue;
+        uint32_t key = 0;
+        switch (entry.key) {
+            case NavKey::Prev:
+                key = LV_KEY_PREV;
+                break;
+            case NavKey::Next:
+                key = LV_KEY_NEXT;
+                break;
+            case NavKey::Ok:
+                key = LV_KEY_ENTER;
+                break;
+            case NavKey::Back:
+                break;
+        }
+        if (key == 0) continue;
+        impl->key_last = key;
+        impl->key_last_state = entry.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+        data->continue_reading = more;
+        break;
+    }
+    data->key = impl->key_last;
+    data->state = impl->key_last_state;
+}
+
 UiRuntime::UiRuntime(std::shared_ptr<hal::Display> display, std::shared_ptr<hal::Touch> touch,
                      UiConfig config)
     : impl_(std::make_unique<Impl>()) {
@@ -605,6 +707,8 @@ Result<void> UiRuntime::start() {
         detail::release_theme();
         impl_->lv_disp = nullptr;
         impl_->lv_indev = nullptr;
+        impl_->lv_keypad.store(nullptr, std::memory_order_release);
+        impl_->nav_group = nullptr;
         impl_->free_buffers();
         return Result<void>::err(code, message);
     };
@@ -667,6 +771,33 @@ Result<void> UiRuntime::start() {
          {lv_display_get_layer_top(impl_->lv_disp), lv_display_get_layer_sys(impl_->lv_disp)}) {
         lv_obj_set_style_text_font(layer, default_font(), 0);
         lv_obj_set_style_text_color(layer, lv_color_hex(theme::kText), 0);
+    }
+
+    // Before the pointer: lv_indev_create() puts the newest device first in
+    // lv_indev_get_next(), and code that looks for the pointer (the system
+    // layer's back gesture, the scene view) expects to find it there.
+    if (impl_->config.keypad) {
+        lv_indev_t* keypad = lv_indev_create();
+        if (keypad == nullptr) {
+            return fail_after_lv_init(ErrorCode::NoMemory, "lv_indev_create (keypad) failed");
+        }
+        impl_->nav_group = lv_group_create();
+        if (impl_->nav_group == nullptr) {
+            return fail_after_lv_init(ErrorCode::NoMemory, "lv_group_create failed");
+        }
+        lv_indev_set_type(keypad, LV_INDEV_TYPE_KEYPAD);
+        lv_indev_set_display(keypad, impl_->lv_disp);
+        lv_indev_set_user_data(keypad, impl_.get());
+        lv_indev_set_read_cb(keypad, &Impl::keypad_read_cb);
+        lv_indev_set_group(keypad, impl_->nav_group);
+        {
+            std::lock_guard<os::Mutex> lock(impl_->key_mutex);
+            impl_->clear_keys_locked();
+            impl_->key_reset_pending = false;
+        }
+        impl_->key_last = LV_KEY_ENTER;
+        impl_->key_last_state = LV_INDEV_STATE_RELEASED;
+        impl_->lv_keypad.store(keypad, std::memory_order_release);
     }
 
     if (impl_->touch) {
@@ -757,6 +888,9 @@ void UiRuntime::stop() {
     // tearing LVGL down now is safe. The last stripe may still be on the
     // wire, so wait for it before freeing its buffer.
     impl_->display->wait_flush();
+    // No new key entry is queued from here on; lv_deinit() frees the
+    // keypad and its group.
+    impl_->lv_keypad.store(nullptr, std::memory_order_release);
     // The vector fonts and their glyph caches live in LVGL's heap and
     // lv_cache; they go before the instance does, and the next start()
     // creates them again on demand.
@@ -765,6 +899,7 @@ void UiRuntime::stop() {
     detail::release_theme();
     impl_->lv_disp = nullptr;
     impl_->lv_indev = nullptr;
+    impl_->nav_group = nullptr;
 
     impl_->free_buffers();
 }
@@ -810,6 +945,13 @@ bool UiRuntime::on_ui_thread() const {
 
 void UiRuntime::set_paused(bool paused) {
     bool was_paused = impl_->paused.exchange(paused, std::memory_order_acq_rel);
+    if (paused) {
+        // After the flag, under the lock push_key() checks it under: no
+        // entry accepted before the pause survives it, and none is
+        // accepted after.
+        std::lock_guard<os::Mutex> lock(impl_->key_mutex);
+        impl_->clear_keys_locked();
+    }
     // ui_main()'s paused branch blocks forever (os::kForever) waiting
     // for post()'d work, rather than polling -- so unpausing (paused:
     // true -> false) must itself wake a UI task
@@ -831,6 +973,34 @@ void UiRuntime::set_touch_activity_cb(std::function<void()> cb) {
     std::lock_guard<os::Mutex> lock(impl_->touch_activity_mutex);
     impl_->touch_activity_cb = std::move(cb);
 }
+
+bool UiRuntime::push_key(NavKey key, bool pressed) {
+    if (impl_->lv_keypad.load(std::memory_order_acquire) == nullptr) return false;
+    const auto bit = static_cast<uint8_t>(1u << static_cast<unsigned>(key));
+    std::lock_guard<os::Mutex> lock(impl_->key_mutex);
+    if (impl_->paused.load(std::memory_order_acquire)) return false;
+    if (pressed) {
+        if (impl_->keys_down != 0 || kKeyRing - impl_->key_count < 2) return false;
+        impl_->keys_down = bit;
+    } else {
+        if ((impl_->keys_down & bit) == 0 || impl_->key_count == kKeyRing) return false;
+        impl_->keys_down = 0;
+    }
+    impl_->key_ring[(impl_->key_head + impl_->key_count) % kKeyRing] = {key, pressed};
+    ++impl_->key_count;
+    return true;
+}
+
+void UiRuntime::set_nav_key_hook(NavKeyHook hook) {
+    std::shared_ptr<const NavKeyHook> next;
+    if (hook) next = std::make_shared<const NavKeyHook>(std::move(hook));
+    {
+        std::lock_guard<os::Mutex> lock(impl_->nav_key_hook_mutex);
+        std::swap(impl_->nav_key_hook, next);
+    }
+}
+
+lv_group_t* UiRuntime::nav_group() const { return impl_->nav_group; }
 
 void UiRuntime::set_frame_hook(std::function<void()> hook) {
     std::shared_ptr<const std::function<void()>> next;
