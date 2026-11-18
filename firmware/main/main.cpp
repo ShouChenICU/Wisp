@@ -21,6 +21,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
+#include "esp_psram.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -147,6 +148,8 @@ extern "C" void app_main() {
     // they asked for; enter deep sleep with no wakeup source configured
     // instead -- the closest approximation of "off" this chip has, and
     // generic across every ESP32 variant (no per-chip wakeup config).
+    platform.psram_bytes =
+        esp_psram_is_initialized() ? static_cast<int64_t>(esp_psram_get_size()) : 0;
     platform.request_power_off = [] { esp_deep_sleep_start(); };
     platform.heap_info = [] {
         // Byte-addressable internal RAM, as `mem` reports it: what a stack

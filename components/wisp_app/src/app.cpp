@@ -22,6 +22,7 @@
 #include "storage_io.hpp"
 #include "wisp/agent/context.hpp"
 #include "wisp/agent/conversation.hpp"
+#include "wisp/app/ram_budget.hpp"
 #include "wisp/base/error.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/button_service.hpp"
@@ -140,6 +141,14 @@ Result<void> App::start() {
             impl_->report.record(
                 {device->info().id, device->info().cls, core::DeviceState::Ok, ""});
         }
+    }
+    // Boot continues on a smaller PSRAM; the note is the only record.
+    if (impl_->platform.psram_bytes >= 0 && impl_->platform.psram_bytes < kMinPsramBytes) {
+        const std::string size = impl_->platform.psram_bytes == 0
+                                     ? "none"
+                                     : std::to_string(impl_->platform.psram_bytes >> 20) + "MB";
+        impl_->report.set_note("psram", size);
+        WLOG_E("app", "PSRAM %s: Wisp needs 8 MB or more", size.c_str());
     }
     // The wiring below finds these devices by role main; one registered
     // without it would be treated as missing with nothing saying why.

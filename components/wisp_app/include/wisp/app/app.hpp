@@ -191,6 +191,11 @@ struct Platform {
     // the whole function may be empty (no heap diagnostics available).
     std::function<Value()> heap_info;
 
+    // The PSRAM chip's size in bytes (not the heap's total, which is smaller);
+    // -1 not measured (the simulator), 0 none. App::start() records a size
+    // under wisp/app/ram_budget.hpp's kMinPsramBytes as the boot note "psram".
+    int64_t psram_bytes = -1;
+
     // Turns automatic light sleep on or off (scene-device spec 4.1):
     // wisp::app::PowerManager calls it with `true` in deep standby while
     // WISP_ENABLE_LIGHT_SLEEP is enabled and no cpu wake lock is held, and with

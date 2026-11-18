@@ -146,7 +146,7 @@ Bringing a new board onto the scene runtime (scene spec 2.1/2.3) needs no board-
 
 Prerequisites (already in the shared configuration; new boards do not change them):
 
-- PSRAM: the Lua heap (the allocator in `components/wisp_scene/src/vm.cpp`) and the LVGL heap (`components/wisp_ui/src/lv_mem_wisp.cpp`) are both on `os::alloc(Mem::Large)`, and fall back to internal RAM without PSRAM (much smaller; a few example scenes running together probably will not fit; see the internal RAM budget in AGENTS.md section 5).
+- PSRAM: the Lua heap (the allocator in `components/wisp_scene/src/vm.cpp`) and the LVGL heap (`components/wisp_ui/src/lv_mem_wisp.cpp`) are both on `os::alloc(Mem::Large)`, and nothing falls back to internal RAM. A board needs PSRAM of 8 MB or more (`kMinPsramBytes`, `wisp/app/ram_budget.hpp`). With less, or none, the boot report records the note `psram` and nothing else is promised (see the internal RAM budget in AGENTS.md section 5).
 - `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` is already in `firmware/sdkconfig.defaults`; putting the 128 KB stack of `wisp.scene` into PSRAM depends on it.
 
 For acceptance, besides the "Scenes card" item of the hardware diagnostics checklist in Step 5 below, also run the scene-related rows of the board hardware document's "Device acceptance checklist" (following `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`).

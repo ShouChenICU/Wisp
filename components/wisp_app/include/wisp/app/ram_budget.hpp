@@ -32,6 +32,10 @@ inline constexpr int64_t kWorstInternalLargestMin = 16 * 1024;
 inline constexpr int64_t kIdleInternalFreeMin = kWorstInternalFreeMin + 20 * 1024;
 inline constexpr int64_t kIdleInternalLargestMin = 20 * 1024;
 
+// The PSRAM Wisp is sized for: the Lua and LVGL heaps, the glyph cache and
+// the large buffers all live there (AGENTS.md section 5).
+inline constexpr int64_t kMinPsramBytes = 8 * 1024 * 1024;
+
 struct InternalRam {
     int64_t free = -1;     // bytes; -1 unknown
     int64_t largest = -1;  // largest free block, bytes; -1 unknown

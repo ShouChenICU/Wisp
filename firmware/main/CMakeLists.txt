@@ -15,7 +15,7 @@ idf_component_register(
          ${CMAKE_CURRENT_LIST_DIR}/../../boards/common/board_kit.cpp
     PRIV_INCLUDE_DIRS ../../boards/common
     REQUIRES wisp_app wisp_port_esp esp_board_manager esp_lcd esp_lcd_touch esp_driver_i2c
-             esp_driver_gpio esp_pm esp_app_format ${_wisp_board_requires}
+             esp_driver_gpio esp_pm esp_psram esp_app_format ${_wisp_board_requires}
     # Moves esp_new_jpeg's IRAM code to flash (see the file).
     LDFRAGMENTS esp_new_jpeg.lf
 )

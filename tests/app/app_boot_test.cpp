@@ -92,6 +92,8 @@ struct MakeAppOptions {
     bool count_lang_reads = false;
     // The internal storage's root; empty: a fresh temporary directory.
     std::string internal_root;
+    // Platform::psram_bytes; -1 is not measured.
+    int64_t psram_bytes = -1;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -256,6 +258,7 @@ private:
             if (on_reboot) on_reboot();
         };
         platform.font_image = opts.font_image;
+        platform.psram_bytes = opts.psram_bytes;
         return platform;
     }
 };
@@ -263,6 +266,50 @@ private:
 Harness make_app(MakeAppOptions opts) { return Harness(opts); }
 
 }  // namespace
+
+namespace {
+// The boot report's "psram" note, or empty when there is none.
+std::string psram_note(Harness& h) {
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* v = rep.find("notes")->find("psram");
+    return v ? v->as_string() : std::string();
+}
+constexpr int64_t kMiB = 1024 * 1024;
+}  // namespace
+
+TEST(AppBoot, NoPsramIsNoted) {
+    auto h = make_app({.with_display = false, .psram_bytes = 0});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "none");
+}
+
+TEST(AppBoot, SmallPsramIsNoted) {
+    {
+        auto h = make_app({.with_display = false, .psram_bytes = 4 * kMiB});
+        ASSERT_TRUE(h.app.start());
+        EXPECT_EQ(psram_note(h), "4MB");
+    }
+    auto h = make_app({.with_display = false, .psram_bytes = 8 * kMiB - 1});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "7MB");
+}
+
+TEST(AppBoot, EightMegabytesHasNoNote) {
+    {
+        auto h = make_app({.with_display = false, .psram_bytes = 8 * kMiB});
+        ASSERT_TRUE(h.app.start());
+        EXPECT_EQ(psram_note(h), "");
+    }
+    auto h = make_app({.with_display = false, .psram_bytes = 16 * kMiB});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "");
+}
+
+TEST(AppBoot, UnmeasuredPsramHasNoNote) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "");
+}
 
 TEST(AppBoot, EmitsReportAndManifest) {
     auto h = make_app({.with_display = false});
