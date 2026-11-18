@@ -80,6 +80,8 @@ wisp::Result<SimOptions> parse_sim_options(int argc, const char* const* argv) {
             opts.headless = true;
         } else if (arg == "--no-sd") {
             opts.no_sd = true;
+        } else if (arg == "--nav-keys") {
+            opts.nav_keys = true;
         } else if (arg == "--wisp-demo") {
             opts.wisp_demo = true;
         } else if (arg == "--screenshot") {

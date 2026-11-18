@@ -51,6 +51,7 @@ The mouse stands in for your finger. <kbd>P</kbd> is the power key, <kbd>+</kbd>
 | `--data-dir <dir>` | Data directory, `./sim-data` by default |
 | `--web-dir <dir>` | Serve the console straight from the source tree; just reload after edits |
 | `--no-sd` / `--disable <id>` / `--wifi-fail` | Simulate no SD card, a failed device, or an unreachable router |
+| `--nav-keys` | Add four keyboard buttons for keypad navigation: Page Up / Page Down or Tab / Return / Escape or Backspace |
 | `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | Tap or swipe at a given time |
 
 </details>

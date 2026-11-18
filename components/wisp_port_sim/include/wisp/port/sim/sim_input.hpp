@@ -41,7 +41,7 @@ struct SimTiltState {
     float az = 1;
 };
 
-enum class SimButtonKind { Power, VolUp, VolDown };
+enum class SimButtonKind { Power, VolUp, VolDown, NavPrev, NavNext, NavOk, NavBack };
 
 class SimInput {
 public:
@@ -60,6 +60,17 @@ public:
     void key_power(bool down, uint64_t at_us) { key(SimButtonKind::Power, down, at_us); }
     void key_vol_up(bool down, uint64_t at_us) { key(SimButtonKind::VolUp, down, at_us); }
     void key_vol_down(bool down, uint64_t at_us) { key(SimButtonKind::VolDown, down, at_us); }
+
+    // The --nav-keys keyboard keys (wisp/hal/roles.hpp's nav_* roles).
+    void key_nav(SimButtonKind kind, bool down) { key(kind, down); }
+    void key_nav(SimButtonKind kind, bool down, uint64_t at_us) { key(kind, down, at_us); }
+
+    // Whether the key behind `kind` is held down.
+    bool button_pressed(SimButtonKind kind) const {
+        const auto& channel = buttons_[static_cast<size_t>(kind)];
+        std::lock_guard<std::mutex> lock(channel.mutex);
+        return channel.down;
+    }
 
     Result<void> set_button_sink(SimButtonKind kind, const void* owner, hal::ButtonEdgeSink sink) {
         auto& channel = buttons_[static_cast<size_t>(kind)];
@@ -146,12 +157,6 @@ private:
         std::deque<Edge> pending;
     };
 
-    bool button_pressed(SimButtonKind kind) const {
-        const auto& channel = buttons_[static_cast<size_t>(kind)];
-        std::lock_guard<std::mutex> lock(channel.mutex);
-        return channel.down;
-    }
-
     void key(SimButtonKind kind, bool down, std::optional<uint64_t> at_us = {}) {
         auto& channel = buttons_[static_cast<size_t>(kind)];
         std::unique_lock<std::mutex> lock(channel.mutex);
@@ -175,7 +180,7 @@ private:
         channel.idle.notify_all();
     }
 
-    std::array<ButtonChannel, 3> buttons_;
+    std::array<ButtonChannel, 7> buttons_;
     mutable std::mutex mutex_;
     SimTouchState touch_;
     float ax_ = 0.0f;

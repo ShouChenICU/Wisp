@@ -96,6 +96,9 @@ struct SimBoardConfig {
     std::string data_dir = "./sim-data";
     // --wifi-fail: every net.wifi connection attempt fails (see sim_wifi.hpp).
     bool wifi_fail = false;
+    // --nav-keys: four buttons with the nav_* roles, driven by the keyboard
+    // (device model spec 9.1), so the keypad navigation can be tried on the PC.
+    bool nav_keys = false;
 };
 
 class SimBoard : public wisp::app::Board {

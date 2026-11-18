@@ -85,6 +85,13 @@ TEST(SimOptions, ExitAfterMsValidation) {
     EXPECT_FALSE(parse_sim_options(3, empty));
 }
 
+TEST(SimOptions, NavKeys) {
+    const char* defaults[] = {"wisp_sim"};
+    EXPECT_FALSE(parse_sim_options(1, defaults).value().nav_keys);
+    const char* argv[] = {"wisp_sim", "--nav-keys"};
+    EXPECT_TRUE(parse_sim_options(2, argv).value().nav_keys);
+}
+
 TEST(SimOptions, ParsesNetFlags) {
     const char* defaults[] = {"wisp_sim"};
     auto d = parse_sim_options(1, defaults).value();
