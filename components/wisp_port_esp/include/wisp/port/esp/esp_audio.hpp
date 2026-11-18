@@ -211,7 +211,7 @@ private:
     // 30ms of two channels at 16kHz; small enough to keep as a fixed
     // member array (no heap allocation on the read() hot path), large
     // enough that a 3s capture only needs ~100 esp_codec_dev_read() calls
-    // with two channels (~150 with four). More channels mean shorter
+    // with two channels (~150 with three, ~200 with four). More channels mean shorter
     // chunks, not a larger buffer.
     static constexpr size_t kScratchSamples = 960;
 
