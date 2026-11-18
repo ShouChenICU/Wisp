@@ -72,3 +72,23 @@ peripherals:
       pin: 46
       mode: GPIO_MODE_OUTPUT
       default_level: 0
+
+  # Buttons (board.cpp's ButtonSpec names them). GPIO3 is SYS_OUT, which
+  # follows the PWR key (high while held, from the schematic; the PMU
+  # PWRON status is the fallback): input with no pulls, since SYS_OUT has
+  # its external pull network (R9 to VCC3V3). BOOT is active-low with no
+  # external pull-up.
+  - name: btn_power
+    type: gpio
+    role: io
+    config:
+      pin: 3
+      mode: GPIO_MODE_INPUT
+
+  - name: btn_boot
+    type: gpio
+    role: io
+    config:
+      pin: 0
+      mode: GPIO_MODE_INPUT
+      pull_up: true
