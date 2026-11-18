@@ -13,9 +13,9 @@
 // docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md's acceptance table (row 12) for
 // the real-hardware check this needs.
 //
-// Not a wisp_* portable component: this is a pure-C ESP-IDF component
-// (drivers/), consumed only by wisp::port::esp::EspImu
-// (components/wisp_port_esp/dev/esp_imu.cpp).
+// Not a wisp_* portable component: this is a pure-C driver in an ESP-IDF
+// component (drivers/), consumed by its Wisp adapter wisp::drivers::
+// Qmi8658Imu (wisp/qmi8658_imu.cpp in the same component).
 
 #include <stdbool.h>
 #include <stdint.h>

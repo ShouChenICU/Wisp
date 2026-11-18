@@ -10,6 +10,7 @@ A board consists of the following parts:
 2. **`setup_device.c`** (optional; needed only when the board has a device type that esp_board_manager has no built-in factory function for): gives bmgr the constructor entry point for the custom device.
 3. **`board.cpp`**: implements `wisp::board::create_board()`, which returns a `wisp::app::Board`. Its `init()` wraps the device handles bmgr has already created (display, touch, audio, SD card) in the `wisp::hal::Device` interface, brings up the devices bmgr does not manage (IMU, PMU, RTC, buttons and so on) with Wisp's own drivers (through the buses bmgr exposes), and registers all of them in `DeviceRegistry`.
 4. **`partitions.csv` and `sdkconfig.defaults.board`**: the board's partition table and board-level sdkconfig (see "Partitions and board configuration" and "Firmware and partitions" below).
+5. **`board.cmake`**: the driver components (`drivers/<chip>/`) that `board.cpp` uses, as `WISP_BOARD_REQUIRES` (see "Step 2" below).
 
 ## Step 1: Write the bmgr YAML
 
@@ -33,6 +34,14 @@ Renaming a board changes the board name descriptor in the image: a device runnin
 ## Step 2: Add drivers (`drivers/`)
 
 For a chip that the esp_board_manager component library does not have, create a plain-C ESP-IDF component under `drivers/<chip>/`. Its CMakeLists uses `idf_component_register(...)` directly, not `wisp_component()` from `cmake/wisp_component.cmake`: that macro exists so that the portable layers (`wisp_base`/`os`/`hal`/`core`/`ui`/`app`) work under both the `idf.py` build and the host simulator build, while a driver is compiled only in the `idf.py` firmware build and uses ESP-IDF's `driver/*` headers directly, so it does not need that dual-build switch. If the MyOS project (MIT, by ShouChen) already has a driver for the chip, port it first: keep the register sequences and conversion formulas, and remove MyOS-specific logic that is irrelevant to the board, such as sleep and power-rail control. State "Ported from MyOS (MIT, Copyright (c) 2026 ShouChen)" in the file header and register it in `docs/references.md`. A completely new register configuration (a feature MyOS never drove, such as the gyroscope) must say "newly written, not verified" in the file header, and get an item in the device acceptance checklist that checks it specifically.
+
+The chip's Wisp adapter (the `hal::Device` subclass that wraps the C driver, such as `wisp::drivers::Qmi8658Imu`) lives in the same component, under `drivers/<chip>/wisp/<chip>_<role>.cpp`, with its header at `drivers/<chip>/include/wisp/drivers/<chip>_<role>.hpp` and namespace `wisp::drivers`. Add the source to `SRCS`, add `wisp_hal wisp_os wisp_core` to `REQUIRES`, and pin `target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_20)`; the C driver stays usable on its own. The adapter takes a config aggregate (`id`, `role`, a `model` defaulting to the chip's name, plus whatever the chip needs, such as an I2C address or an axis map), so the board names the device and the adapter names the chip. `wisp_port_esp` never requires a driver component (`tools/check_layering.py`); instead the board lists the drivers its `board.cpp` uses in `boards/<board>/board.cmake`:
+
+```cmake
+set(WISP_BOARD_REQUIRES axp2101 pcf85063 qmi8658)
+```
+
+`firmware/CMakeLists.txt` includes that file before `project()` and publishes the list as a build property, which `firmware/main` adds to its requirements.
 
 ## Step 3: Write `board.cpp`
 

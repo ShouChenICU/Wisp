@@ -9,12 +9,12 @@
 // them and brings up the rest:
 //   - display_lcd -> display.main (EspDisplay, CO5300, 466x466 circle)
 //   - lcd_touch   -> touch.main   (EspTouch, CST9217)
-//   - i2c_master + drivers/axp2101 -> power.main (EspPower, AXP2101)
-//   - i2c_master + drivers/pcf85063 -> clock.main (EspClock), only if a
+//   - i2c_master + drivers/axp2101 -> power.main (Axp2101Power)
+//   - i2c_master + drivers/pcf85063 -> clock.main (Pcf85063Clock), only if a
 //     PCF85063 answers at 0x51: the vendor's BSP, schematic and examples
 //     show no RTC on this board, though its product page lists one. Absent,
 //     clock.main is recorded as missing and the time comes from SNTP alone.
-//   - i2c_master + drivers/qmi8658 at 0x6B or 0x6A -> imu.main (EspImu)
+//   - i2c_master + drivers/qmi8658 at 0x6B or 0x6A -> imu.main (Qmi8658Imu)
 //   - PWR -> button.power (PMU fallback until GPIO3 hardware acceptance)
 //   - GPIO0 (BOOT) -> button.boot (EspGpioButton), the talk key
 //   - bmgr's audio_dac/audio_adc -> audio_out.main/audio_in.main
@@ -44,13 +44,13 @@
 #include "esp_err.h"
 #include "qmi8658_conv.h"
 #include "wisp/core/log.hpp"
+#include "wisp/drivers/axp2101_power.hpp"
+#include "wisp/drivers/pcf85063_clock.hpp"
+#include "wisp/drivers/qmi8658_imu.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/esp_audio.hpp"
 #include "wisp/port/esp/esp_button.hpp"
-#include "wisp/port/esp/esp_clock.hpp"
 #include "wisp/port/esp/esp_display.hpp"
-#include "wisp/port/esp/esp_imu.hpp"
-#include "wisp/port/esp/esp_power.hpp"
 #include "wisp/port/esp/esp_storage.hpp"
 #include "wisp/port/esp/esp_touch.hpp"
 #include "wisp/port/esp/esp_wifi.hpp"
@@ -88,7 +88,7 @@ constexpr int kImuProbeTimeoutMs = 50;
 // edge raised its -y pointed up. So screen x = -chip y, screen y = chip x.
 constexpr wisp::hal::ImuAxisMap kImuMount{.from = {1, 0, 2}, .negate = {true, false, false}};
 
-// PCF85063's fixed 7-bit address; probed before EspClock::create().
+// PCF85063's fixed 7-bit address; probed before Pcf85063Clock::create().
 constexpr uint16_t kRtcAddr = 0x51;
 constexpr int kRtcProbeTimeoutMs = 20;
 
@@ -234,16 +234,17 @@ i2c_master_bus_handle_t get_i2c_bus() {
 }
 
 // Returns the PMU for button.power, or null when it did not come up.
-std::shared_ptr<wisp::port::esp::EspPower> init_power(wisp::core::DeviceRegistry& registry,
-                                                      wisp::core::BootReport& report,
-                                                      i2c_master_bus_handle_t i2c_bus) {
+std::shared_ptr<wisp::drivers::Axp2101Power> init_power(wisp::core::DeviceRegistry& registry,
+                                                        wisp::core::BootReport& report,
+                                                        i2c_master_bus_handle_t i2c_bus) {
     constexpr const char* id = "power.main";
     constexpr auto cls = wisp::hal::DeviceClass::Power;
     if (i2c_bus == nullptr) {
         record_failed(report, id, cls, "no i2c_master bus handle");
         return nullptr;
     }
-    auto power = wisp::port::esp::EspPower::create(i2c_bus, "AXP2101");
+    auto power =
+        wisp::drivers::Axp2101Power::create(i2c_bus, {.id = id, .role = wisp::hal::role::kMain});
     if (!power) {
         record_failed(report, id, cls, power.error().message);
         return nullptr;
@@ -276,7 +277,8 @@ void init_clock(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
         record_failed(report, id, cls, "i2c probe: " + err_name(probe));
         return;
     }
-    auto clock = wisp::port::esp::EspClock::create(i2c_bus, "PCF85063");
+    auto clock =
+        wisp::drivers::Pcf85063Clock::create(i2c_bus, {.id = id, .role = wisp::hal::role::kMain});
     if (!clock) {
         record_failed(report, id, cls, clock.error().message);
         return;
@@ -303,7 +305,8 @@ void init_imu(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& repo
         record_failed(report, id, cls, "no answer at 0x6B or 0x6A");
         return;
     }
-    auto imu = wisp::port::esp::EspImu::create(i2c_bus, "QMI8658", addr, kImuMount);
+    auto imu = wisp::drivers::Qmi8658Imu::create(
+        i2c_bus, {.id = id, .role = wisp::hal::role::kMain, .addr = addr, .mount = kImuMount});
     if (!imu) {
         record_failed(report, id, cls, imu.error().message);
         return;
@@ -312,7 +315,7 @@ void init_imu(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& repo
 }
 
 void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report,
-                  std::shared_ptr<wisp::port::esp::EspPower> power) {
+                  std::shared_ptr<wisp::drivers::Axp2101Power> power) {
     constexpr auto cls = wisp::hal::DeviceClass::Button;
 
     bool configured = false;
@@ -339,8 +342,9 @@ void init_buttons(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
                "standby metadata 100 ms");
         add_device(
             registry, report,
-            std::make_shared<wisp::port::esp::EspPmuPowerKey>(
-                std::move(power), "button.power", "axp2101-pwrkey", wisp::hal::role::kPower));
+            std::make_shared<wisp::drivers::Axp2101PowerKey>(
+                std::move(power), wisp::drivers::Axp2101PowerKeyConfig{
+                                      .id = "button.power", .role = wisp::hal::role::kPower}));
     } else {
         record_failed(report, "button.power", cls, "power.main unavailable");
     }

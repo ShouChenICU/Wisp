@@ -9,13 +9,12 @@
 //   - display_lcd -> display.main (wisp::port::esp::EspDisplay, CO5300)
 //   - lcd_touch   -> touch.main   (wisp::port::esp::EspTouch, CST9217)
 //   - i2c_master (bmgr peripheral, shared bus) + drivers/axp2101 ->
-//     power.main (wisp::port::esp::EspPower, AXP2101)
-//   - i2c_master + drivers/pcf85063 -> clock.main (wisp::port::esp::EspClock,
-//     PCF85063); on success the system clock is set from the RTC
+//     power.main (wisp::drivers::Axp2101Power)
+//   - i2c_master + drivers/pcf85063 -> clock.main (wisp::drivers::
+//     Pcf85063Clock); on success the system clock is set from the RTC
 //     (port wall_clock.hpp) right after this board's init() returns -- see
 //     sync_system_clock_from_rtc() below.
-//   - i2c_master + drivers/qmi8658 -> imu.main (wisp::port::esp::EspImu,
-//     QMI8658)
+//   - i2c_master + drivers/qmi8658 -> imu.main (wisp::drivers::Qmi8658Imu)
 //   - plain GPIOs -> button.power/vol_up/vol_down (wisp::port::esp::
 //     EspGpioButton)
 //   - bmgr's audio_dac/audio_adc esp_codec_dev handles ->
@@ -69,13 +68,13 @@
 #include "esp_board_periph.h"
 #include "esp_err.h"
 #include "wisp/core/log.hpp"
+#include "wisp/drivers/axp2101_power.hpp"
+#include "wisp/drivers/pcf85063_clock.hpp"
+#include "wisp/drivers/qmi8658_imu.hpp"
 #include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/esp_audio.hpp"
 #include "wisp/port/esp/esp_button.hpp"
-#include "wisp/port/esp/esp_clock.hpp"
 #include "wisp/port/esp/esp_display.hpp"
-#include "wisp/port/esp/esp_imu.hpp"
-#include "wisp/port/esp/esp_power.hpp"
 #include "wisp/port/esp/esp_storage.hpp"
 #include "wisp/port/esp/esp_touch.hpp"
 #include "wisp/port/esp/esp_wifi.hpp"
@@ -302,7 +301,8 @@ void init_power(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
         record_failed(report, id, cls, "no i2c_master bus handle");
         return;
     }
-    auto power = wisp::port::esp::EspPower::create(i2c_bus, "AXP2101");
+    auto power =
+        wisp::drivers::Axp2101Power::create(i2c_bus, {.id = id, .role = wisp::hal::role::kMain});
     if (!power) {
         record_failed(report, id, cls, power.error().message);
         return;
@@ -325,7 +325,8 @@ void init_clock(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
         record_failed(report, id, cls, "no i2c_master bus handle");
         return;
     }
-    auto clock = wisp::port::esp::EspClock::create(i2c_bus, "PCF85063");
+    auto clock =
+        wisp::drivers::Pcf85063Clock::create(i2c_bus, {.id = id, .role = wisp::hal::role::kMain});
     if (!clock) {
         record_failed(report, id, cls, clock.error().message);
         return;
@@ -341,7 +342,8 @@ void init_imu(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& repo
         record_failed(report, id, cls, "no i2c_master bus handle");
         return;
     }
-    auto imu = wisp::port::esp::EspImu::create(i2c_bus, "QMI8658");
+    auto imu =
+        wisp::drivers::Qmi8658Imu::create(i2c_bus, {.id = id, .role = wisp::hal::role::kMain});
     if (!imu) {
         record_failed(report, id, cls, imu.error().message);
         return;
@@ -538,7 +540,7 @@ void init_wifi(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& rep
 }
 
 // Sets the system clock from clock.main's RTC, if (and only if) it was
-// registered and currently holds a plausible time -- EspClock::get_unix()
+// registered and currently holds a plausible time -- Pcf85063Clock::get_unix()
 // (drivers/pcf85063) already fails rather than return a bogus reading
 // when the chip's oscillator-stop flag is set or the decoded year looks
 // wrong, so this never needs to re-check that itself; it just must not

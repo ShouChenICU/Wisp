@@ -8,9 +8,9 @@
 // get/set take a Unix timestamp directly, and the board decides whether
 // and how to convert to a local display time.
 //
-// Not a wisp_* portable component: this is a pure-C ESP-IDF component
-// (drivers/), consumed only by wisp::port::esp::EspClock
-// (components/wisp_port_esp/dev/esp_clock.cpp).
+// Not a wisp_* portable component: this is a pure-C driver in an ESP-IDF
+// component (drivers/), consumed by its Wisp adapter wisp::drivers::
+// Pcf85063Clock (wisp/pcf85063_clock.cpp in the same component).
 
 #include <stdint.h>
 

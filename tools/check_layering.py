@@ -521,6 +521,28 @@ def check_device_id_literals(root, errors):
                 )
 
 
+def check_port_requires_no_drivers(root, errors):
+    """A chip's Wisp adapter lives in its driver component and the board
+    names its drivers (boards/<board>/board.cmake), so the ESP port stays
+    free of every chip: it may require no component under drivers/."""
+    path = root / "components" / "wisp_port_esp" / "CMakeLists.txt"
+    drivers_dir = root / "drivers"
+    if not path.is_file() or not drivers_dir.is_dir():
+        return
+    args_text = _extract_wisp_component_call(
+        strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+    )
+    if args_text is None:
+        return
+    lists = _parse_keyword_lists(args_text, CMAKE_LIST_KEYWORDS)
+    for name in lists["REQUIRES"] + lists["IDF_REQUIRES"]:
+        if (drivers_dir / name).is_dir():
+            errors.append(
+                f"{path}: wisp_port_esp must not require the chip driver {name} "
+                "(AGENTS.md section 3)"
+            )
+
+
 def run(root):
     """Runs every check against `root` and returns the list of error
     strings found (empty if clean). Importable so tools/check_layering_
@@ -537,6 +559,7 @@ def run(root):
         check_flash_api(root, path, errors)
         check_flash_access_true(root, path, errors)
     check_device_id_literals(root, errors)
+    check_port_requires_no_drivers(root, errors)
     return errors
 
 

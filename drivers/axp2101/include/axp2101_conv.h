@@ -118,7 +118,7 @@ static inline uint8_t axp2101_iprechg_code(uint16_t ma) {
 // battery-voltage ADC reading already indicated, and `pct_read_ok` is
 // whether the REG_BAT_PCT (0xA4) read that follows actually succeeded. A
 // failed PCT read must be reported the same way as "no battery wired" --
-// wisp::port::esp::EspPower::status() maps !battery_present to
+// wisp::drivers::Axp2101Power::status() maps !battery_present to
 // PowerStatus::battery_percent == -1 (unknown) -- rather than leaving
 // battery_percent at 0, which looks like a real empty battery and would
 // spuriously fire wisp::core::PowerMonitor's power.battery.low.
@@ -141,7 +141,7 @@ static inline bool axp2101_battery_present_after_pct_read(bool preliminary_prese
 #define AXP2101_IRQ2_PKEY_ALL 0x0F
 
 // The PWRON key's level, rebuilt from the latched edge bits for boards
-// where no GPIO follows the key (wisp::port::esp::EspPmuPowerKey).
+// where no GPIO follows the key (wisp::drivers::Axp2101PowerKey).
 // Zero-initialise; `down` is the level the last update left behind.
 typedef struct {
     bool down;

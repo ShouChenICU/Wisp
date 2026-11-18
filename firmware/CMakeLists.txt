@@ -45,6 +45,15 @@ wisp_version(PROJECT_VER)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
+# The board's driver components (boards/<board>/board.cmake sets
+# WISP_BOARD_REQUIRES), which firmware/main requires so board.cpp can use
+# their Wisp adapters. ESP-IDF expands component requirements in a
+# separate CMake run that sees build properties but not cache variables
+# (WISP_BOARD is empty there), so the list travels as a build property set
+# before project() (AGENTS.md section 8).
+include(${CMAKE_CURRENT_LIST_DIR}/../boards/${WISP_BOARD}/board.cmake)
+idf_build_set_property(WISP_BOARD_REQUIRES "${WISP_BOARD_REQUIRES}")
+
 # LVGL configuration (AGENTS.md's "LVGL configuration" pitfall): the lvgl/lvgl
 # component's own CMake (env_support/cmake/esp.cmake) publicly defines
 # LV_CONF_INCLUDE_SIMPLE, but lv_conf_internal.h checks LV_CONF_PATH

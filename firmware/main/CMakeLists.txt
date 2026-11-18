@@ -3,10 +3,15 @@
 # wisp::board::create_board(), components/wisp_app/include/wisp/app/board.hpp).
 # board.cpp drives esp_board_manager (bmgr) and the esp_lcd/esp_lcd_touch
 # handles it creates (see boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp).
+# The board's driver components, published by firmware/CMakeLists.txt from
+# boards/<board>/board.cmake. Read as a build property because this file
+# also runs in ESP-IDF's requirement-expansion pass, where WISP_BOARD is
+# not set.
+idf_build_get_property(_wisp_board_requires WISP_BOARD_REQUIRES)
 idf_component_register(
     SRCS main.cpp board_desc.c ${CMAKE_CURRENT_LIST_DIR}/../../boards/${WISP_BOARD}/board.cpp
     REQUIRES wisp_app wisp_port_esp esp_board_manager esp_lcd esp_lcd_touch esp_driver_i2c
-             esp_driver_gpio esp_pm esp_app_format
+             esp_driver_gpio esp_pm esp_app_format ${_wisp_board_requires}
     # Moves esp_new_jpeg's IRAM code to flash (see the file).
     LDFRAGMENTS esp_new_jpeg.lf
 )

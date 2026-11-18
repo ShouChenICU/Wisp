@@ -1,37 +1,36 @@
-#include "wisp/port/esp/esp_imu.hpp"
+#include "wisp/drivers/qmi8658_imu.hpp"
 
 #include <string>
 #include <utility>
 
 #include "esp_err.h"
 #include "wisp/base/error.hpp"
-#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 
-namespace wisp::port::esp {
+namespace wisp::drivers {
 
-Result<std::shared_ptr<EspImu>> EspImu::create(i2c_master_bus_handle_t bus, std::string model,
-                                               uint8_t addr, wisp::hal::ImuAxisMap mount) {
-    using R = Result<std::shared_ptr<EspImu>>;
+Result<std::shared_ptr<Qmi8658Imu>> Qmi8658Imu::create(i2c_master_bus_handle_t bus,
+                                                       Qmi8658ImuConfig config) {
+    using R = Result<std::shared_ptr<Qmi8658Imu>>;
     if (bus == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null i2c bus handle");
     }
 
     qmi8658_handle_t handle = nullptr;
-    esp_err_t err = qmi8658_init(bus, addr, &handle);
+    esp_err_t err = qmi8658_init(bus, config.addr, &handle);
     if (err != ESP_OK) {
         return R::err(ErrorCode::DeviceFailure,
                       std::string("qmi8658_init: ") + esp_err_to_name(err));
     }
     // Not make_shared: the constructor is private.
-    return R::ok(std::shared_ptr<EspImu>(new EspImu(handle, std::move(model), mount)));
+    return R::ok(std::shared_ptr<Qmi8658Imu>(new Qmi8658Imu(handle, std::move(config))));
 }
 
-EspImu::EspImu(qmi8658_handle_t handle, std::string model, wisp::hal::ImuAxisMap mount)
-    : handle_(handle), mount_(mount) {
-    info_.id = "imu.main";
+Qmi8658Imu::Qmi8658Imu(qmi8658_handle_t handle, Qmi8658ImuConfig config)
+    : handle_(handle), mount_(config.mount) {
+    info_.id = std::move(config.id);
     info_.cls = kClass;
-    info_.model = std::move(model);
+    info_.model = std::move(config.model);
     info_.caps = wisp::Properties{
         {"accel", true},
         {"gyro", true},
@@ -39,15 +38,15 @@ EspImu::EspImu(qmi8658_handle_t handle, std::string model, wisp::hal::ImuAxisMap
         {"max_rate_hz", 1000},
         {"standby", wisp::Value("off")},
     };
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
+    if (!config.role.empty()) info_.caps["role"] = wisp::Value(std::move(config.role));
 }
 
 // No deinit: this device, like every other ESP HAL device Wisp
-// registers, lives for the process's lifetime (drivers/qmi8658 provides
-// no qmi8658_deinit()).
-EspImu::~EspImu() = default;
+// registers, lives for the process's lifetime (qmi8658.h provides no
+// qmi8658_deinit()).
+Qmi8658Imu::~Qmi8658Imu() = default;
 
-Result<wisp::hal::ImuSample> EspImu::read() {
+Result<wisp::hal::ImuSample> Qmi8658Imu::read() {
     using R = Result<wisp::hal::ImuSample>;
     if (!powered_.load(std::memory_order_acquire)) {
         return R::err(ErrorCode::DeviceFailure, "imu is powered off");
@@ -70,7 +69,7 @@ Result<wisp::hal::ImuSample> EspImu::read() {
     return R::ok(wisp::hal::to_screen_frame(out, mount_));
 }
 
-Result<void> EspImu::set_rate(uint32_t hz) {
+Result<void> Qmi8658Imu::set_rate(uint32_t hz) {
     // Clamp to the "max_rate_hz" cap advertised in info_.caps above
     // (qmi8658_set_odr() clamps the same way internally, but this keeps
     // the HAL-level contract self-evident without reading the driver).
@@ -86,7 +85,7 @@ Result<void> EspImu::set_rate(uint32_t hz) {
     return Result<void>::ok();
 }
 
-Result<void> EspImu::set_power(wisp::hal::PowerLevel level) {
+Result<void> Qmi8658Imu::set_power(wisp::hal::PowerLevel level) {
     const bool on = wisp::hal::powered_at(wisp::hal::StandbyPolicy::Off, level);
     if (on == powered_.load(std::memory_order_acquire)) {
         return Result<void>::ok();
@@ -102,4 +101,4 @@ Result<void> EspImu::set_power(wisp::hal::PowerLevel level) {
     return Result<void>::ok();
 }
 
-}  // namespace wisp::port::esp
+}  // namespace wisp::drivers

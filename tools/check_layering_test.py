@@ -657,6 +657,36 @@ class CheckLayeringTest(unittest.TestCase):
         write(self.root, "firmware/managed_components/x/a.c", "void f() { nvs_commit(h); }\n")
         self.assertEqual(check_layering.run(self.root), [])
 
+    def test_port_requiring_a_chip_driver_is_flagged(self):
+        write(self.root, "drivers/axp2101/CMakeLists.txt", "idf_component_register()\n")
+        write(
+            self.root,
+            "components/wisp_port_esp/CMakeLists.txt",
+            minimal_cmake("wisp_port_esp", idf_requires="freertos axp2101"),
+        )
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wisp_port_esp must not require the chip driver axp2101", errors[0])
+        self.assertIn("(AGENTS.md section 3)", errors[0])
+
+    def test_port_requires_without_drivers_pass(self):
+        write(self.root, "drivers/axp2101/CMakeLists.txt", "idf_component_register()\n")
+        write(
+            self.root,
+            "components/wisp_port_esp/CMakeLists.txt",
+            minimal_cmake("wisp_port_esp", idf_requires="freertos esp_lcd"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_a_requires_name_that_is_not_a_driver_dir_passes(self):
+        write(self.root, "drivers/qmi8658/CMakeLists.txt", "idf_component_register()\n")
+        write(
+            self.root,
+            "components/wisp_port_esp/CMakeLists.txt",
+            minimal_cmake("wisp_port_esp", requires="qmi"),
+        )
+        self.assertEqual(check_layering.run(self.root), [])
+
 
 if __name__ == "__main__":
     unittest.main()
