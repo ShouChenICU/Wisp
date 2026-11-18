@@ -596,11 +596,26 @@ Scope in this phase, system UI only:
 
 Not in scope: focus order on every shell page (phase M's `PageStack` owns pages), scene key input (phase I's `wisp.input.on("key")`), the on-screen keyboard.
 
+> In the code (how H3 differs from the wording above):
+>
+> 1. The focus group is not LVGL's default group. With `lv_group_set_default()` LVGL adds every button, switch and textarea of every screen to it when created, and `lv_group_focus_next()` does not skip objects on screens that are not loaded. `UiRuntime` creates one group for the keypad only, and `SystemLayer` fills it with what is in front (the focus scope), rebuilding it when that changes.
+> 2. Any nav role creates the keypad. `nav_prev` and `nav_back` are optional; `nav_next` and `nav_ok` are needed to move focus and to answer (the group wraps, so `nav_next` alone reaches every item). `nav_back` alone works, since it needs no focus. `App` logs a warning at boot when a nav key exists without `nav_next` or `nav_ok`. The keypad indev is created before the pointer, so the pointer stays first in `lv_indev_get_next(nullptr)` (LVGL inserts at the list head).
+> 3. Keys go through `UiRuntime::push_key()` one at a time, not through a ring of 8: LVGL's keypad handles one key, and a second key's press would count as the first one still pressing. A press is accepted only while no nav key is down and two slots are free (the press and its release), so a release always fits; the release of a key that is not down is ignored.
+> 4. Keys are refused while the UI is paused. Any button already wakes the screen; without this the waking press would also act on whatever is focused after the resume. After a pause, the keypad's LVGL state (including `keypad.last_state`) is reset on the next keypad read, not in the resume branch, so a key held across standby neither clicks nor repeats.
+> 5. On a board with touch the first key only shows the focus. LVGL sets `LV_STATE_FOCUS_KEY` only when the focusing input device is a keypad, and a focus set in code is attributed to the pointer when there is one. Whenever the focused object lacks `LV_STATE_FOCUS_KEY`, a Next/Prev/OK press only adds it (no move, no click). On a keys-only board a focus set in code is already shown.
+> 6. `nav_back` acts on the press and does, first that applies: answers an open confirm dialog "no"; the error card's Back; hides the keyboard; closes the panel; calls the back handler (scene or diagnostics); otherwise `Shell::back()` (Wi-Fi password form or detail, choice page, sub-page to Home). On the home screen it does nothing. The back gesture alone would not cover shell pages, which go back by page drags.
+> 7. Settings rows are plain clickable objects, not LVGL widget classes, so `ui::make_list_row()` marks them `ui::kKeyFocusable` (`ui::make_key_focusable()`), and `collect_focusable()` descends into such rows so a control inside one (a network row's info button) stays reachable. Key focus brings the focused object's whole row into `hal::row_span()` (`ui::show_focus`, `kFocusRow` on list rows and row boxes); focusing the group's first or last object scrolls the list to its top or bottom, so the ends stay fully visible. A key held while focus moves (a dialog opens or closes by code) is dropped with `lv_indev_wait_release`: it acts on neither object. Other shell pages stay with phase M's `PageStack`.
+> 8. The focus scope is the active screen, whatever it is, so the widgets of a scene in front are reachable like any other; scenes get no key events (phase I).
+>
+> The simulator has the keys with `--nav-keys` (Page Up = prev, Page Down or Tab = next, Return or keypad Enter = OK, Escape or Backspace = back).
+
 **Encoder**: deferred. No current board has one. When one does, it gets a typed interface `hal::Encoder` (`read_delta()`, `pressed()`) and an LVGL encoder input device on the same group; the design above does not change.
 
 ### 9.2 Pixel format
 
 `Display` caps gain `pixel_format` (`"rgb565"`; absent means `rgb565`, so current boards need no change). `rgb565_be` keeps its meaning. `UiRuntime::start()` fails with `Unsupported` for any other format; `App` then takes the existing headless path (`app.cpp:367-371`) and records the note `"display": "unsupported_pixel_format"`. `lv_conf.h` keeps `LV_COLOR_DEPTH 16`.
+
+> In the code: a `pixel_format` that is present but is not the string `"rgb565"` (another string, a number) is unsupported; absent is `rgb565`. The boot report keeps `"mode": "headless"` beside `"display": "unsupported_pixel_format"`.
 
 What an e-paper or monochrome panel would still need (out of scope): an LVGL colour depth or a conversion in `flush()` to 1/2/4-bit; a full-refresh render mode (the reserved `render_mode: "full"`, `docs/porting-guide.md` capability table); refresh pacing and ghosting control (partial versus full updates); a theme without animations or grey levels; standby semantics for a panel that keeps its image unpowered; separate `WISP_PERF` baselines.
 
@@ -710,6 +725,8 @@ On both boards, after H2:
 9. 1.75C: RTC still reported `missing`, IMU orientation unchanged, power key on GPIO3.
 
 After H3, on a board with keys (or the 2.16 with nav roles assigned to its volume keys for the test): dialogs answerable by keys; back works.
+
+> In the code: no board change is committed for this. The nav-role assignment on the 2.16's volume keys is a local, uncommitted patch to `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` for the check, so H2 (which moves ids and roles into `BoardSpec`) has nothing to merge. A nav key pressed in deep standby is expected to wake the device; that depends on `ButtonService`'s standby polling reporting nav keys.
 
 ---
 

@@ -469,3 +469,13 @@ Source: branch `perf/firmware-size` (2026-11-16). `wisp/base/number_text.hpp` re
 - The admin web page, now served minified: every page loads and works as before.
 - The `wisp.agent` stack high-water mark in `mem` after a `docs.read`: `inflate_raw()` now runs there and takes about 2 KB of stack (its decoder and code-length tables); before, only the zip reader ran it.
 - Playback and recording on both boards after the codec trim: after a full flash built from a regenerated `sdkconfig`, play speech and record from the microphone, and check that the boot report shows `audio_out` and `audio_in` initialised. An existing build directory keeps its old `sdkconfig`, and with it all the codecs (about 32 KB more image), until that file is deleted or `idf.py fullclean` runs.
+
+## Keypad input: not done and device checks not run
+
+Source: branch `feat/keypad-input` (2026-11-18).
+
+- Keys from Home to the sub-pages and on the history and scene list pages (phase M's `PageStack`).
+- The on-screen keyboard and sliders by key; scene key input (`wisp.input.on("key")`, phase I).
+- Device checks on the 2.16 with the local volume-key patch (plan `docs/superpowers/plans/2026-11-18-device-model-3-keypad-input.md`, device checks): dialogs by keys, settings rows walked and wrapped, back from choice pages, scenes, diagnostics and the panel, waking by a key press clicks nothing. Not run yet.
+- A nav key pressed in deep standby wakes the device (depends on `ButtonService` standby polling reporting nav keys).
+- The interactive simulator check with `--nav-keys` (Page Up/Page Down/Tab/Return/Escape on a real window) was not run: no display where it was written.

@@ -66,13 +66,13 @@ After `init()`, `App::start()` automatically adds a `DeviceState::Ok` for every 
 
 | Class | Required caps |
 |---|---|
-| `Display` | `width`, `height`, `shape` (`rect`/`rounded_rect`/`circle`), `corner_radius` (for `rounded_rect`), `panel`, `brightness`, `area_align`; optional `rgb565_be` (true when the panel wants RGB565 high byte first; the UI renders directly in that byte order); optional draw-buffer policy, which defaults to two 24-line buffers in internal DMA RAM with partial refresh: `draw_buf_lines` (lines per buffer, default 24, capped at the screen height), `draw_buf_mem` (`"dma"`, the default, is internal DMA RAM; `"large"` is DMA-readable PSRAM, i.e. `Mem::DmaLarge`, declared only when the chip's DMA can read PSRAM and the display driver can also send from PSRAM; falls back to `"dma"` when the allocation fails), `render_mode` (only `"partial"` is implemented; `"full"`/`"direct"` are reserved names that currently log a warning and are treated as `"partial"`). An invalid value logs a warning and uses the default, without blocking boot (`wisp/hal/draw_buf_policy.hpp`). The ESP port publishes these through the fields of the same names in `EspDisplayConfig` |
+| `Display` | `width`, `height`, `shape` (`rect`/`rounded_rect`/`circle`), `corner_radius` (for `rounded_rect`), `panel`, `brightness`, `area_align`; optional `pixel_format` (only `"rgb565"`; absent means `rgb565`; it is the buffer format `flush()` receives, so a panel whose native format differs, such as RGB888, declares `rgb565` and converts in its driver's `flush()`, which costs a conversion buffer and more bus bandwidth; any other value leaves the display dark and the boot report notes `display`; e-paper and monochrome panels need roadmap phase N); optional `rgb565_be` (true when the panel wants RGB565 high byte first; the UI renders directly in that byte order); optional draw-buffer policy, which defaults to two 24-line buffers in internal DMA RAM with partial refresh: `draw_buf_lines` (lines per buffer, default 24, capped at the screen height), `draw_buf_mem` (`"dma"`, the default, is internal DMA RAM; `"large"` is DMA-readable PSRAM, i.e. `Mem::DmaLarge`, declared only when the chip's DMA can read PSRAM and the display driver can also send from PSRAM; falls back to `"dma"` when the allocation fails), `render_mode` (only `"partial"` is implemented; `"full"`/`"direct"` are reserved names that currently log a warning and are treated as `"partial"`). An invalid value logs a warning and uses the default, without blocking boot (`wisp/hal/draw_buf_policy.hpp`). The ESP port publishes these through the fields of the same names in `EspDisplayConfig` |
 | `Touch` | `max_points` |
 | `Imu` | `accel`, `gyro`, `magnetometer`, `max_rate_hz` |
 | `Power` | `battery`, `charging_status` |
 | `Storage` | `removable`, `fs` |
 | `Network` | `ap` (bool, whether the hotspot `start_ap()` is supported; when false, `WifiService` does not open the setup hotspot), `bands` (list of bands, such as `["2.4GHz"]`) |
-| `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below); other keys need nothing |
+| `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below), the `nav_*` roles for navigation keys (see "Navigation keys"); other keys need nothing |
 | `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"` |
 
 In addition, every device that switches on and off with the power level declares `standby` (see "Standby and power levels" below), and every device portable code looks up declares `role` in its caps.
@@ -85,7 +85,7 @@ In addition, every device that switches on and off with the power level declares
 | Storage | `internal`, `removable` | `StorageManager` (the internal flash and the SD card), self-check |
 | Button | `power` | standby polling, `PowerManager`, the power key's short and long press |
 | Button | `talk` | push-to-talk (see "Voice and the talk key" below) |
-| Button | `nav_prev`, `nav_next`, `nav_ok`, `nav_back` | reserved for keypad navigation |
+| Button | `nav_prev`, `nav_next`, `nav_ok`, `nav_back` | keypad navigation of the system UI (see "Navigation keys") |
 
 A board gives role `main` to its display, touch, power, clock, IMU, Wi-Fi and both audio devices, `internal`/`removable` to its storage, `power` to its power key and `talk` to its talk key; other keys need no role. One interface has at most one device per role (a generic device: one per kind and role); `DeviceRegistry::add()` refuses a second one, and the board records it as failed. What a missing role costs:
 
@@ -236,6 +236,8 @@ No chip name appears in the portable layers. Things that vary by chip are concen
 | Internal SRAM budget | Measured on each board with the `mem` command and recorded in `docs/hardware/<board>.md`; the budget minimums are in `wisp/app/ram_budget.hpp` (AGENTS.md section 5) |
 
 **Planned target: ESP32-S31** (not verified; to be checked once hardware is available). What is known: RISC-V cores (the SIMD routines in `lv_blend/esp32s3/` cannot be used; they need rewriting, or the C path first); flash and PSRAM are on separate buses, with PSRAM as 250 MHz octal DDR; it has PPA, 2D-DMA and JPEG codec hardware; it needs ESP-IDF ≥ 6.1, beyond the currently pinned range. When executing from PSRAM with XIP, flash operations no longer stop the cache, but the ESP-IDF documentation still says external RAM cannot be accessed while the cache is disabled and task stacks default to internal RAM, so the stack placement policy stays as it is until measured.
+
+**Navigation keys**: give `nav_next` and `nav_ok` (and optionally `nav_prev` and `nav_back`) to keys no other role uses; the system UI then works without touch. `nav_next`/`nav_prev` move the focus ring (the first press only shows it on a board with touch), `nav_ok` presses the focused control, `nav_back` goes back (closes a dialog or the panel, leaves a scene, a choice page or a sub-page). `nav_back` alone works; without `nav_next` and `nav_ok` the focus cannot move, and `App` logs a warning at boot. In this version keys answer system dialogs, go back and walk the settings rows; they do not yet move from Home to a sub-page, drive the history and scene list pages, the on-screen keyboard or sliders, and scenes get no key events.
 
 ## Step 4: Build
 

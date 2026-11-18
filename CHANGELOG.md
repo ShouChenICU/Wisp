@@ -2,6 +2,13 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## Unreleased
+
+### Features
+
+- Boards with navigation keys (roles `nav_prev`/`nav_next`/`nav_ok`/`nav_back`) answer system dialogs, go back and walk the settings list without touch; the simulator has them with `--nav-keys`.
+- A display whose buffer format the UI cannot render yet (anything but RGB565) is left dark and the boot report notes `display`; the rest of the device keeps working.
+
 ## 0.6.0 — 2026-11-16
 
 ### Features
