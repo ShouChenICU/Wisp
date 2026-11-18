@@ -277,8 +277,19 @@ protected:
         const int before = keys_seen.load();
         ASSERT_TRUE(ui->push_key(k, true));
         ASSERT_TRUE(ui->push_key(k, false));
+        wait_keys_seen(before + 2);
+    }
+
+    // Only presses `k`, or only releases it.
+    void key(NavKey k, bool pressed) {
+        const int before = keys_seen.load();
+        ASSERT_TRUE(ui->push_key(k, pressed));
+        wait_keys_seen(before + 1);
+    }
+
+    void wait_keys_seen(int n) {
         const uint64_t until = wisp::os::now_ms() + 2000;
-        while (keys_seen.load() < before + 2) {
+        while (keys_seen.load() < n) {
             ASSERT_LT(wisp::os::now_ms(), until) << "the keys were never read";
             wisp::os::sleep_ms(1);
         }
@@ -3339,6 +3350,127 @@ TEST_F(SystemLayerTest, HiddenAndDisabledButtonsAreSkipped) {
         on_ui([&] { seen.push_back(focused()); });
     }
     EXPECT_EQ(seen, (std::vector<lv_obj_t*>{d, a}));
+}
+
+// A key held while code changes the focus (an agent's dialog opens, a
+// dialog closes on its own) acts on neither object when it is released:
+// the press belonged to what was focused before.
+TEST_F(SystemLayerTest, HeldOkAcrossADialogDoesNotAnswerIt) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int clicks = 0;
+    lv_obj_t* a = nullptr;
+    on_ui([&] { a = make_counting_button(100, 100, 120, 60, &clicks); });
+    nav(NavKey::Next);  // shows a
+    key(NavKey::Ok, true);
+    on_ui([&] { EXPECT_TRUE(lv_obj_has_state(a, LV_STATE_PRESSED)); });
+    std::vector<bool> answers;
+    lv_obj_t* box = nullptr;
+    on_ui([&] {
+        box =
+            layer->open_confirm(StrId::ResetTitle, "Sure?", [&](bool y) { answers.push_back(y); });
+        ASSERT_NE(box, nullptr);
+        EXPECT_FALSE(lv_obj_has_state(a, LV_STATE_PRESSED));
+    });
+    key(NavKey::Ok, false);
+    EXPECT_TRUE(answers.empty());
+    EXPECT_EQ(clicks, 0);
+    on_ui([&] {
+        EXPECT_TRUE(layer->confirm_open());
+        EXPECT_EQ(focused(), confirm_button(box, 1));
+        EXPECT_FALSE(lv_obj_has_state(confirm_button(box, 1), LV_STATE_PRESSED));
+    });
+    // The keypad goes on as usual.
+    nav(NavKey::Next);  // shows No
+    nav(NavKey::Ok);
+    EXPECT_EQ(answers, std::vector<bool>{false});
+    EXPECT_EQ(clicks, 0);
+}
+
+TEST_F(SystemLayerTest, HeldOkWhenADialogClosesClicksNothing) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int clicks = 0;
+    lv_obj_t* a = nullptr;
+    on_ui([&] { a = make_counting_button(100, 100, 120, 60, &clicks); });
+    nav(NavKey::Next);  // shows a
+    std::vector<bool> answers;
+    lv_obj_t* box = nullptr;
+    on_ui([&] {
+        box =
+            layer->open_confirm(StrId::ResetTitle, "Sure?", [&](bool y) { answers.push_back(y); });
+    });
+    nav(NavKey::Next);  // shows No
+    key(NavKey::Ok, true);
+    on_ui([&] { layer->close_confirm(box); });
+    key(NavKey::Ok, false);
+    EXPECT_TRUE(answers.empty());
+    EXPECT_EQ(clicks, 0);
+    on_ui([&] {
+        EXPECT_EQ(focused(), a);
+        EXPECT_FALSE(lv_obj_has_state(a, LV_STATE_PRESSED));
+    });
+}
+
+// The focused object going away while OK is held moves LVGL's focus to
+// the next one; the release does not click that one either.
+TEST_F(SystemLayerTest, HeldOkOnADeletedObjectClicksNothing) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int clicks_a = 0, clicks_b = 0;
+    lv_obj_t* a = nullptr;
+    lv_obj_t* b = nullptr;
+    on_ui([&] {
+        a = make_counting_button(100, 100, 120, 60, &clicks_a);
+        b = make_counting_button(100, 200, 120, 60, &clicks_b);
+    });
+    nav(NavKey::Next);  // shows a
+    key(NavKey::Ok, true);
+    on_ui([&] { lv_obj_delete(a); });
+    key(NavKey::Ok, false);
+    EXPECT_EQ(clicks_a + clicks_b, 0);
+    on_ui([&] { EXPECT_FALSE(lv_obj_has_state(b, LV_STATE_PRESSED)); });
+}
+
+// A held Next repeats only within the scope it was pressed in.
+TEST_F(SystemLayerTest, HeldNextStopsRepeatingAcrossARescope) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    on_ui([&] {
+        for (int i = 0; i < 3; ++i) lv_button_create(lv_screen_active());
+    });
+    nav(NavKey::Next);  // shows the first
+    key(NavKey::Next, true);
+    lv_obj_t* box = nullptr;
+    int focus_moves = 0;
+    on_ui([&] {
+        box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {});
+        for (int32_t i : {0, 1}) {
+            lv_obj_add_event_cb(
+                confirm_button(box, i),
+                [](lv_event_t* e) { ++*static_cast<int*>(lv_event_get_user_data(e)); },
+                LV_EVENT_FOCUSED, &focus_moves);
+        }
+    });
+    // Past LVGL's long-press time (400 ms) and several repeats (100 ms).
+    wisp::os::sleep_ms(800);
+    key(NavKey::Next, false);
+    on_ui([&] { EXPECT_EQ(focused(), confirm_button(box, 1)); });
+    EXPECT_EQ(focus_moves, 0);
+}
+
+// The release LVGL waits for after a rescope may be dropped by a pause;
+// the keypad's idle reads (released) end the wait, so the next key after
+// the pause still works.
+TEST_F(SystemLayerTest, AKeyHeldIntoAPauseLeavesTheKeypadWorking) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    on_ui([&] { lv_button_create(lv_screen_active()); });
+    nav(NavKey::Next);
+    key(NavKey::Ok, true);
+    lv_obj_t* box = nullptr;
+    on_ui([&] { box = layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {}); });
+    ui->set_paused(true);
+    ui->set_paused(false);
+    EXPECT_FALSE(ui->push_key(NavKey::Ok, false));
+    nav(NavKey::Next);  // shows No
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_EQ(focused(), confirm_button(box, 0)); });
 }
 
 // The focus ring (outline_pad + outline_width outside the button) is

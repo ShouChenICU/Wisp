@@ -477,6 +477,11 @@ private:
     // is still in scope, else focuses the scope's first choice.
     void rescope();
     bool take_nav_key(NavKey key);
+    // A key LVGL's keypad holds down was pressed on `was_focused`, and the
+    // focus has moved since: LVGL acts on whatever is focused when the key
+    // is released or repeats, so it is told to wait for the release
+    // instead, and `was_focused` loses its pressed state.
+    void drop_held_key(lv_obj_t* was_focused);
 
     static void error_btn_cb(lv_event_t* e);
     static void key_cb(lv_event_t* e);
@@ -563,6 +568,8 @@ private:
     lv_obj_t* screen_focus_ = nullptr;
     bool screen_focus_shown_ = false;
     bool key_consumed_ = false;  // the last press was consumed
+    // What was focused when LVGL was last given an OK press.
+    lv_obj_t* ok_pressed_on_ = nullptr;
 };
 
 namespace detail {

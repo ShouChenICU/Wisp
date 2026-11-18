@@ -954,9 +954,41 @@ bool SystemLayer::on_nav_key(NavKey key, bool pressed) {
     // LVGL's keypad must see a release exactly when it saw the press: a
     // press it saw without its release would stay down (repeat, long
     // press), a release it never saw the press of would click.
-    if (!pressed) return std::exchange(key_consumed_, false);
+    if (!pressed) {
+        const bool consumed = std::exchange(key_consumed_, false);
+        // The focus may have moved without a rescope (LVGL refocuses when
+        // the focused object is deleted).
+        if (!consumed && key == NavKey::Ok && nav_group_ != nullptr &&
+            lv_group_get_focused(nav_group_) != ok_pressed_on_) {
+            drop_held_key(ok_pressed_on_);
+        }
+        ok_pressed_on_ = nullptr;
+        return consumed;
+    }
     key_consumed_ = take_nav_key(key);
+    ok_pressed_on_ = !key_consumed_ && key == NavKey::Ok && nav_group_ != nullptr
+                         ? lv_group_get_focused(nav_group_)
+                         : nullptr;
     return key_consumed_;
+}
+
+void SystemLayer::drop_held_key(lv_obj_t* was_focused) {
+    lv_indev_t* keypad = nullptr;
+    for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_KEYPAD && lv_indev_get_group(i) == nav_group_) {
+            keypad = i;
+            break;
+        }
+    }
+    if (keypad == nullptr || keypad->keypad.last_state != LV_INDEV_STATE_PRESSED) return;
+    // Consuming the release instead would leave the key down in LVGL.
+    // Waiting skips the held reads (no repeat, no long press) and the
+    // release itself.
+    lv_indev_wait_release(keypad);
+    if (was_focused != nullptr && lv_obj_is_valid(was_focused) &&
+        lv_obj_has_state(was_focused, LV_STATE_PRESSED)) {
+        lv_obj_send_event(was_focused, LV_EVENT_PRESS_LOST, keypad);
+    }
 }
 
 bool SystemLayer::take_nav_key(NavKey key) {
@@ -1031,6 +1063,7 @@ void SystemLayer::rescope() {
         return;
     }
 
+    if (focused != nullptr) drop_held_key(focused);
     lv_obj_t* target = in_scope(first_choice) ? first_choice : nullptr;
     bool restored = false;
     if (target == nullptr && in_scope(remembered)) {
