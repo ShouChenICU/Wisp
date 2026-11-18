@@ -69,8 +69,37 @@ TEST_F(SystemNotice, HolderLabels) {
     // A scene's lock shows the scene's name, or its id without one.
     EXPECT_EQ(wisp::ui::holder_label("scene.x", "番茄钟"), "番茄钟");
     EXPECT_EQ(wisp::ui::holder_label("scene.x", ""), "x");
-    // A holder this version does not know is shown as it is.
-    EXPECT_EQ(wisp::ui::holder_label("system.later", ""), "system.later");
+    // A holder this version does not know reads as a generic phrase,
+    // never as its raw id.
+    EXPECT_EQ(wisp::ui::holder_label("system.later", ""), "System task");
+    EXPECT_EQ(wisp::ui::holder_label("other", ""), "System task");
+}
+
+// Every system holder the code takes a wake lock as has its own label in
+// every language.
+TEST_F(SystemNotice, EverySystemHolderHasALabel) {
+    const char* holders[] = {"system.upload",    "system.ota",          "system.ntp",
+                             "system.netwindow", "system.hotspot",      "system.tone",
+                             "system.download",  "system.powered_wifi", "system.agent",
+                             "system.voice"};
+    for (Lang lang : wisp::ui::kAllLangs) {
+        wisp::ui::set_lang(lang);
+        const std::string generic = wisp::ui::holder_label("system.unknown", "");
+        for (const char* h : holders) {
+            SCOPED_TRACE(std::string(wisp::ui::lang_code(lang)) + " " + h);
+            const std::string label = wisp::ui::holder_label(h, "");
+            EXPECT_FALSE(label.empty());
+            EXPECT_EQ(label.find("system."), std::string::npos) << label;
+            EXPECT_NE(label, generic);
+        }
+        EXPECT_EQ(generic.find("system."), std::string::npos) << generic;
+    }
+    wisp::ui::set_lang(Lang::Zh);
+    EXPECT_EQ(wisp::ui::holder_label("system.powered_wifi", ""), "外接电源时的 Wi-Fi");
+    EXPECT_EQ(wisp::ui::system_notice_text(wisp::core::notice::kWakeLockLong,
+                                           wisp::ui::holder_label("system.agent", ""))
+                  .body,
+              "AI 对话已让设备保持唤醒 30 分钟");
 }
 
 }  // namespace

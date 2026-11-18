@@ -231,6 +231,14 @@ const char* strings_ja(StrId id) {
             return "通知音";
         case StrId::HolderDownload:
             return "ファイルのダウンロード";
+        case StrId::HolderPoweredWifi:
+            return "外部電源時の Wi-Fi";
+        case StrId::HolderAgent:
+            return "AI との会話";
+        case StrId::HolderVoice:
+            return "音声";
+        case StrId::HolderSystem:
+            return "システム処理";
         case StrId::PanelBackground:
             return "バックグラウンド";
         case StrId::PanelNotifications:

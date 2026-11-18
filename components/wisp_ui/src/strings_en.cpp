@@ -228,6 +228,14 @@ const char* strings_en(StrId id) {
             return "Alert sound";
         case StrId::HolderDownload:
             return "File download";
+        case StrId::HolderPoweredWifi:
+            return "Wi-Fi on external power";
+        case StrId::HolderAgent:
+            return "AI conversation";
+        case StrId::HolderVoice:
+            return "Voice";
+        case StrId::HolderSystem:
+            return "System task";
         case StrId::PanelBackground:
             return "In background";
         case StrId::PanelNotifications:

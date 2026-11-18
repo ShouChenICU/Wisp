@@ -197,6 +197,11 @@ enum class StrId : uint16_t {
     HolderHotspot,
     HolderTone,
     HolderDownload,
+    HolderPoweredWifi,
+    HolderAgent,
+    HolderVoice,
+    // A holder this version has no label for.
+    HolderSystem,
     // The pull-down panel (spec 5.6). PanelMinutes and PanelHours carry
     // "{}", how long a scene has been in the background.
     PanelBackground,

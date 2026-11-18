@@ -26,7 +26,8 @@ NoticeText system_notice_text(std::string_view code, std::string_view arg);
 
 // What a wake lock holder is called on screen: a "system.<module>" holder
 // by its HolderXxx string, a "scene.<id>" holder by `scene_name` (its id
-// when the name is empty), anything else as it is.
+// when the name is empty), any other holder by HolderSystem: an id is
+// never shown to the user.
 std::string holder_label(std::string_view holder, std::string_view scene_name);
 
 }  // namespace wisp::ui

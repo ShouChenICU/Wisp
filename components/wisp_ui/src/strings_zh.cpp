@@ -229,6 +229,14 @@ const char* strings_zh(StrId id) {
             return "提示音";
         case StrId::HolderDownload:
             return "文件下载";
+        case StrId::HolderPoweredWifi:
+            return "外接电源时的 Wi-Fi";
+        case StrId::HolderAgent:
+            return "AI 对话";
+        case StrId::HolderVoice:
+            return "语音";
+        case StrId::HolderSystem:
+            return "系统任务";
         case StrId::PanelBackground:
             return "后台运行";
         case StrId::PanelNotifications:
