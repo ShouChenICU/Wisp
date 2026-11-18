@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
-#include <fstream>
 #include <future>
 #include <map>
 #include <memory>
@@ -18,11 +17,14 @@
 #include <string>
 #include <vector>
 
+#include "lvgl_private.h"  // lv_event_dsc_t::filter
 #include "shell/page_fixture.hpp"
 #include "support/cell_barrier.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/port/sim/png_writer.hpp"
 #include "wisp/shell/choice_page.hpp"
 #include "wisp/shell/home.hpp"
+#include "wisp/ui/key_nav.hpp"
 
 using wisp::Value;
 using wisp::shell::Page;
@@ -89,6 +91,12 @@ protected:
     void TearDown() override {
         // A write still queued sets the harness's cell.
         (void)worker.drain(2000);
+        if (group != nullptr) {
+            harness->on_ui([&] {
+                harness->layer().set_nav_group(nullptr);
+                lv_group_delete(group);
+            });
+        }
         harness.reset();
         worker.stop();
     }
@@ -150,8 +158,45 @@ protected:
         return out;
     }
 
+    // Gives the layer a focus group of its own, as a keypad's would be.
+    void keys_on() {
+        harness->on_ui([&] {
+            group = lv_group_create();
+            harness->layer().set_nav_group(group);
+        });
+    }
+    // One press of Next as the keypad delivers it: the layer's hook first,
+    // LVGL's move only when the hook leaves the press to it. Returns once
+    // the focus has scrolled into view.
+    void next() {
+        harness->on_ui([&] {
+            if (!harness->layer().on_nav_key(wisp::ui::NavKey::Next, true))
+                lv_group_focus_next(group);
+            (void)harness->layer().on_nav_key(wisp::ui::NavKey::Next, false);
+        });
+        ASSERT_TRUE(harness->ui_until([] { return lv_anim_count_running() == 0; }));
+        harness->on_ui([] { lv_obj_update_layout(lv_screen_active()); });
+    }
+    // Whether the focus is on the group's last object and shown.
+    bool last_shown() {
+        bool yes = false;
+        harness->on_ui([&] {
+            const uint32_t n = lv_group_get_obj_count(group);
+            lv_obj_t* f = lv_group_get_focused(group);
+            yes = n > 0 && f == lv_group_get_obj_by_index(group, n - 1) &&
+                  lv_obj_has_state(f, LV_STATE_FOCUS_KEY);
+        });
+        return yes;
+    }
+    // Presses Next until the last object of the group has the shown focus.
+    void focus_last() {
+        for (int i = 0; i < 200 && !last_shown(); ++i) next();
+        ASSERT_TRUE(last_shown());
+    }
+
     wisp::core::StorageWorker worker;
     std::unique_ptr<wisp::test::PageHarness> harness;
+    lv_group_t* group = nullptr;
     wisp::core::SettingsSnapshot stored = defaults();
     std::mutex mu;
     std::vector<std::map<std::string, Value>> writes;
@@ -851,15 +896,117 @@ TEST_F(SettingsPageTest, OpenChoicePageIsLeftAlone) {
 
 namespace {
 
+bool has_clicked_handler(lv_obj_t* obj) {
+    const uint32_t n = lv_obj_get_event_count(obj);
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t code =
+            lv_obj_get_event_dsc(obj, i)->filter & ~static_cast<uint32_t>(LV_EVENT_PREPROCESS);
+        if (code == LV_EVENT_CLICKED) return true;
+    }
+    return false;
+}
+
+void rows_with_clicked(lv_obj_t* root, std::vector<lv_obj_t*>& out) {
+    const uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* c = lv_obj_get_child(root, static_cast<int32_t>(i));
+        if (has_clicked_handler(c)) out.push_back(c);
+        rows_with_clicked(c, out);
+    }
+}
+
+// Every object of `root` with a click handler is key-focusable, and once
+// the layer has rescoped, its group holds them top to bottom.
+void expect_rows_focusable(lv_group_t* g, lv_obj_t* root) {
+    std::vector<lv_obj_t*> rows;
+    rows_with_clicked(root, rows);
+    ASSERT_FALSE(rows.empty());
+    std::vector<lv_obj_t*> in_group;
+    for (uint32_t i = 0; i < lv_group_get_obj_count(g); ++i)
+        in_group.push_back(lv_group_get_obj_by_index(g, i));
+    for (lv_obj_t* r : rows) {
+        EXPECT_TRUE(lv_obj_has_flag(r, wisp::ui::kKeyFocusable)) << coords_of(r).y1;
+        EXPECT_NE(std::find(in_group.begin(), in_group.end(), r), in_group.end());
+    }
+    for (size_t i = 1; i < in_group.size(); ++i)
+        EXPECT_LE(coords_of(in_group[i - 1]).y1, coords_of(in_group[i]).y1) << i;
+}
+
+}  // namespace
+
+// The settings page's rows and a choice page's are reached by the keys
+// (device-model spec 9.1).
+TEST_F(SettingsPageTest, RowsAreKeyFocusable) {
+    boot();
+    keys_on();
+    harness->on_ui([&] {
+        // A press rescopes to what is in front.
+        (void)harness->layer().on_nav_key(wisp::ui::NavKey::Next, true);
+        (void)harness->layer().on_nav_key(wisp::ui::NavKey::Next, false);
+        lv_obj_update_layout(lv_screen_active());
+        expect_rows_focusable(group, harness->shell().page_screen());
+    });
+    tap_row(Row::ScreenOff);
+    ASSERT_TRUE(
+        harness->ui_until([&] { return choice() != nullptr && !harness->shell().sliding(); }));
+    harness->on_ui([&] {
+        (void)harness->layer().on_nav_key(wisp::ui::NavKey::Next, true);
+        (void)harness->layer().on_nav_key(wisp::ui::NavKey::Next, false);
+        lv_obj_update_layout(lv_screen_active());
+        expect_rows_focusable(group, lv_screen_active());
+        ASSERT_GT(choice()->count(), 0u);
+        EXPECT_TRUE(lv_obj_has_flag(choice()->row(0), wisp::ui::kKeyFocusable));
+    });
+}
+
+namespace {
+
 struct PreviewShape {
     const char* shape;
     int32_t size;
 };
 
+std::string preview_name(const ::testing::TestParamInfo<PreviewShape>& info) {
+    return std::string(info.param.shape) + "_" + std::to_string(info.param.size);
+}
+
+class SettingsKeyReach : public SettingsPageTest,
+                         public ::testing::WithParamInterface<PreviewShape> {};
+
+}  // namespace
+
+// The keys walk the whole page on every screen shape: its last row, and
+// the first again after the wrap, end up wholly on the visible screen.
+TEST_P(SettingsKeyReach, FirstAndLastRowsAreFullyVisibleWhenFocused) {
+    const PreviewShape& p = GetParam();
+    boot(p.shape, p.size, p.size);
+    keys_on();
+    focus_last();
+    harness->on_ui([&] {
+        lv_obj_t* f = lv_group_get_focused(group);
+        EXPECT_TRUE(wisp::test::box_visible(harness->shape(), coords_of(f)))
+            << coords_of(f).y1 << ".." << coords_of(f).y2;
+    });
+    next();
+    harness->on_ui([&] {
+        lv_obj_t* f = lv_group_get_focused(group);
+        EXPECT_EQ(f, lv_group_get_obj_by_index(group, 0));
+        EXPECT_TRUE(wisp::test::box_visible(harness->shape(), coords_of(f)))
+            << coords_of(f).y1 << ".." << coords_of(f).y2;
+    });
+}
+
+INSTANTIATE_TEST_SUITE_P(ScreenShapes, SettingsKeyReach,
+                         ::testing::Values(PreviewShape{"rect", 480}, PreviewShape{"circle", 466},
+                                           PreviewShape{"rounded_rect", 480}),
+                         preview_name);
+
+namespace {
+
 class SettingsPreview : public SettingsPageTest,
                         public ::testing::WithParamInterface<PreviewShape> {
 protected:
-    // Writes the screen as <dir>/<shape>-<size>-<name>.ppm when
+    // Writes the screen as <dir>/<shape>-<size>-<name>.png when
     // WISP_SETTINGS_SCREENSHOTS names a directory.
     void screenshot(const std::string& name) {
         const char* dir = std::getenv("WISP_SETTINGS_SCREENSHOTS");
@@ -868,12 +1015,12 @@ protected:
         harness->on_ui([] { lv_obj_update_layout(lv_screen_active()); });
         auto shot = harness->ui().snapshot_rgb888();
         ASSERT_TRUE(shot);
-        std::ofstream file(
-            std::string(dir) + "/" + p.shape + "-" + std::to_string(p.size) + "-" + name + ".ppm",
-            std::ios::binary);
-        ASSERT_TRUE(file);
-        file << "P6\n" << p.size << " " << p.size << "\n255\n";
-        file.write(reinterpret_cast<const char*>(shot.value().data()), shot.value().size());
+        const std::string path =
+            std::string(dir) + "/" + p.shape + "-" + std::to_string(p.size) + "-" + name + ".png";
+        ASSERT_TRUE(wisp::port::sim::write_png_rgb888(path, shot.value().data(),
+                                                      static_cast<uint32_t>(p.size),
+                                                      static_cast<uint32_t>(p.size)))
+            << path;
     }
 };
 
@@ -905,10 +1052,35 @@ TEST_P(SettingsPreview, DISABLED_PageAndChoice) {
     screenshot("screen-off-bottom");
 }
 
+// A manual preview: the key focus on a value row of the settings page, on
+// its last row and, after the wrap, on its first.
+TEST_P(SettingsPreview, DISABLED_KeyFocus) {
+    const PreviewShape& p = GetParam();
+    boot(p.shape, p.size, p.size);
+    keys_on();
+    // A value row: its value and chevron beside the focus fill.
+    lv_obj_t* screen_off = nullptr;
+    harness->on_ui([&] { screen_off = page()->row(Row::ScreenOff); });
+    auto shown_on = [&](lv_obj_t* obj) {
+        bool yes = false;
+        harness->on_ui([&] {
+            yes = lv_group_get_focused(group) == obj && lv_obj_has_state(obj, LV_STATE_FOCUS_KEY);
+        });
+        return yes;
+    };
+    for (int i = 0; i < 200 && !shown_on(screen_off); ++i) next();
+    ASSERT_TRUE(shown_on(screen_off));
+    screenshot("settings-focus-row");
+    focus_last();
+    screenshot("settings-focus-last");
+    next();
+    // Moved there by LVGL without a keypad, the focus is shown by the next
+    // press.
+    next();
+    screenshot("settings-focus-first");
+}
+
 INSTANTIATE_TEST_SUITE_P(ScreenShapes, SettingsPreview,
                          ::testing::Values(PreviewShape{"rect", 480}, PreviewShape{"circle", 466},
                                            PreviewShape{"rounded_rect", 480}),
-                         [](const ::testing::TestParamInfo<PreviewShape>& info) {
-                             return std::string(info.param.shape) + "_" +
-                                    std::to_string(info.param.size);
-                         });
+                         preview_name);

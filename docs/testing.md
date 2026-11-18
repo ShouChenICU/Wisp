@@ -56,9 +56,10 @@ WISP_CONNECTIONS_SCREENSHOTS=/tmp/wisp-connections \
   --gtest_also_run_disabled_tests --gtest_filter='*ConnectionsPreview*'
 ```
 
-The settings page preview (the page from its top to its last row, and the
-screen-off choice page at both ends, on rect 480, circle 466 and rounded_rect
-480) runs the same way:
+The settings page preview (the page from its top to its last row, the
+screen-off choice page at both ends, and the key focus on a value row, the
+last row and, after the wrap, the first, on rect 480, circle 466 and
+rounded_rect 480; PNG files) runs the same way:
 
 ```bash
 mkdir -p /tmp/wisp-settings

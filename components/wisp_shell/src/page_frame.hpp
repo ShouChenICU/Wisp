@@ -120,7 +120,8 @@ struct ListRow {
 };
 // A row of a row card, at least kMinTouchPx high: `icon` (an LV_SYMBOL_*
 // or WISP_SYMBOL_*, or nullptr) and `name` at its left, under a divider
-// unless it is the card's first. A `clickable` row shows a pressed state.
+// unless it is the card's first. A `clickable` row shows a pressed state
+// and the nav keys reach it (ui::make_key_focusable()).
 // Whatever is added to the row afterwards goes after the name, at its
 // right end.
 ListRow make_list_row(lv_obj_t* card, const char* icon, const char* name, bool clickable);

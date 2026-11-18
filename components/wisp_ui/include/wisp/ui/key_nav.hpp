@@ -31,7 +31,9 @@ bool key_focusable(lv_obj_t* obj);
 
 // Appends the key-focusable objects under `root` (not `root` itself) to
 // `out`, in tree order. A hidden object and all it holds are skipped, and
-// so are the children of a focusable object (a button's label).
+// so is what a widget focusable by its class holds (a button's label); an
+// object focusable by kKeyFocusable is followed by the focusable objects
+// it holds (a row's own button).
 void collect_focusable(lv_obj_t* root, std::vector<lv_obj_t*>& out);
 
 // Makes `obj` reachable by the keys (kKeyFocusable) and gives it the

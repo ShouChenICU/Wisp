@@ -248,6 +248,9 @@ ListRow make_list_row(lv_obj_t* card, const char* icon, const char* name, bool c
     if (!first) add_divider(row);
     if (clickable) {
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        // A plain lv_obj is no class LVGL puts in a group: the keys reach
+        // it only by the flag (device-model spec 9.1).
+        ui::make_key_focusable(row);
         // Two-tone panels have no grey to press with.
         if (colour_panel(card)) {
             lv_obj_set_style_radius(row, ui::theme::kRadius, 0);

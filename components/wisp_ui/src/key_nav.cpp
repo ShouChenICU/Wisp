@@ -18,11 +18,14 @@ void collect_focusable(lv_obj_t* root, std::vector<lv_obj_t*>& out) {
     for (uint32_t i = 0; i < n; ++i) {
         lv_obj_t* child = lv_obj_get_child(root, static_cast<int32_t>(i));
         if (lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
-        if (key_focusable(child)) {
-            out.push_back(child);
-        } else {
+        if (!key_focusable(child)) {
             collect_focusable(child, out);
+            continue;
         }
+        out.push_back(child);
+        // A row focusable by the flag may hold a control of its own (a
+        // network row's info button); a widget's own children are parts of it.
+        if (lv_obj_has_flag(child, kKeyFocusable)) collect_focusable(child, out);
     }
 }
 
