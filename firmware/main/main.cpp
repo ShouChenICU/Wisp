@@ -140,6 +140,10 @@ extern "C" void app_main() {
         std::printf("%s\n", line.c_str());
         std::fflush(stdout);
     };
+    // The chip's size, not the free heap: the boot report checks it
+    // against the 8 MB support floor.
+    platform.psram_bytes =
+        esp_psram_is_initialized() ? static_cast<int64_t>(esp_psram_get_size()) : 0;
     // Fallback for the self-check UI's power-off confirm dialog (see
     // self_check_screen.cpp's do_power_off()): reached only when the
     // board's own Power::power_off() either doesn't exist or just
@@ -148,8 +152,6 @@ extern "C" void app_main() {
     // they asked for; enter deep sleep with no wakeup source configured
     // instead -- the closest approximation of "off" this chip has, and
     // generic across every ESP32 variant (no per-chip wakeup config).
-    platform.psram_bytes =
-        esp_psram_is_initialized() ? static_cast<int64_t>(esp_psram_get_size()) : 0;
     platform.request_power_off = [] { esp_deep_sleep_start(); };
     platform.heap_info = [] {
         // Byte-addressable internal RAM, as `mem` reports it: what a stack
