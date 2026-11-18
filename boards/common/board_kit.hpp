@@ -50,11 +50,17 @@
 
 namespace wisp::board_kit {
 
+// The const char* fields below all flow into std::string, so each has a
+// non-null default: a designated initializer that leaves one out must not
+// hand std::string a nullptr (undefined behaviour, an abort at boot). A
+// left-out field reads as empty instead, and the registry refuses an
+// empty id, which records the slot failed.
+
 // A device's identity in the registry and the boot report.
 struct Slot {
-    const char* id;
-    hal::DeviceClass cls;
-    const char* role;  // caps "role"; "" writes none
+    const char* id = "";
+    hal::DeviceClass cls = hal::DeviceClass::Other;
+    const char* role = "";  // caps "role"; "" writes none
 };
 
 class Kit;
@@ -64,10 +70,10 @@ class Kit;
 struct DisplaySpec {
     Slot slot{"display.main", hal::DeviceClass::Display, hal::role::kMain};
     const char* bmgr = "display_lcd";
-    const char* model;
-    const char* shape;
+    const char* model = "";
+    const char* shape = "rect";  // EspDisplayConfig's defaults
     int corner_radius = 0;
-    const char* panel;
+    const char* panel = "lcd";
     int area_align = 1;
     port::esp::EspDisplayConfig::PanelSleep sleep =
         port::esp::EspDisplayConfig::PanelSleep::VendorDispSleep;
@@ -77,19 +83,19 @@ struct DisplaySpec {
 struct TouchSpec {
     Slot slot{"touch.main", hal::DeviceClass::Touch, hal::role::kMain};
     const char* bmgr = "lcd_touch";
-    const char* model;
+    const char* model = "";
 };
 
 struct AudioOutSpec {
     Slot slot{"audio_out.main", hal::DeviceClass::AudioOut, hal::role::kMain};
     const char* bmgr = "audio_dac";
-    const char* model;
+    const char* model = "";
 };
 
 struct AudioInSpec {
     Slot slot{"audio_in.main", hal::DeviceClass::AudioIn, hal::role::kMain};
     const char* bmgr = "audio_adc";
-    const char* model;
+    const char* model = "";
     // One role per physical capture channel, in the codec's order.
     std::span<const port::esp::AudioChannel> channels;
 };
@@ -97,13 +103,13 @@ struct AudioInSpec {
 struct SdSpec {
     Slot slot{"storage.sd", hal::DeviceClass::Storage, hal::role::kRemovable};
     const char* bmgr = "fs_sdcard";
-    const char* model;
+    const char* model = "";
 };
 
 struct ButtonSpec {
     Slot slot;
-    const char* bmgr_gpio;  // a `gpio` peripheral in board_peripherals.yaml
-    bool active_low;        // pressed reads 0
+    const char* bmgr_gpio = "";  // a `gpio` peripheral in board_peripherals.yaml
+    bool active_low = false;     // true: pressed reads 0
     const char* model = "gpio-button";
     hal::ButtonInputMode mode = hal::ButtonInputMode::EdgeEvent;
     // Used when the GPIO path is unavailable; when set, that path also
@@ -112,7 +118,7 @@ struct ButtonSpec {
 };
 
 struct BoardSpec {
-    const char* name;
+    const char* name = "";
     std::optional<DisplaySpec> display;
     std::optional<TouchSpec> touch;
     std::optional<AudioOutSpec> audio_out;

@@ -83,6 +83,9 @@ const wisp::board_kit::ButtonSpec kButtons[] = {
     {.slot = {"button.power", DeviceClass::Button, role::kPower}, .bmgr_gpio = "btn_power", .active_low = false},
 };
 constexpr Slot kChips[] = {{"imu.main", DeviceClass::Imu, role::kMain}};
+// One role per physical capture channel, in the codec's order.
+constexpr wisp::port::esp::AudioChannel kMics[] = {wisp::port::esp::AudioChannel::Mic,
+                                                   wisp::port::esp::AudioChannel::Mic};
 
 void bring_up_chips(Kit& kit) {
     i2c_master_bus_handle_t bus = kit.i2c("i2c_master");   // null (logged) when bmgr has no such bus
@@ -93,6 +96,8 @@ const wisp::board_kit::BoardSpec kSpec{
     .name = "<board>",
     .display = wisp::board_kit::DisplaySpec{.model = "CO5300", .shape = "rounded_rect", .corner_radius = 70, .panel = "amoled"},
     .touch = wisp::board_kit::TouchSpec{.model = "CST9217"},
+    .audio_out = wisp::board_kit::AudioOutSpec{.model = "ES8311"},
+    .audio_in = wisp::board_kit::AudioInSpec{.model = "ES7210", .channels = kMics},
     .buttons = kButtons,
     .chips = kChips,
     .bring_up_chips = &bring_up_chips,
@@ -107,6 +112,8 @@ The kit's `init()` runs one sequence for every board: internal storage (before b
 
 - **What the spec carries**: the device ids and roles (`Slot`), the bmgr names (defaulting to `display_lcd`, `lcd_touch`, `audio_dac`, `audio_adc`, `fs_sdcard`), and the facts bmgr does not carry: models, the panel's `shape`, measured `corner_radius`, `panel`, `area_align` and sleep method, the capture channel roles. Width, height, QSPI framing and byte order come from bmgr's display config, the SD mount point from the `fs_sdcard` config.
 - **Pins**: none in `board.cpp`. A button names its `gpio` peripheral (`bmgr_gpio`) and its polarity; the outputs held through light sleep (display reset and CS, touch reset, the PA enable of `audio_dac`) are read from bmgr's device configs, skipping a pin the YAML leaves at -1 or names twice.
+- **Defaults**: a field the initializer leaves out takes its default (`shape = "rect"`, `panel = "lcd"`, an empty model), never a null string; a slot with an empty id is refused by the registry and recorded failed.
+- **Device types the build lacks**: bmgr compiles a device type only when the YAML declares one, and the kit compiles its use of each type behind bmgr's symbol (`CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT`, `..._LCD_TOUCH_SUPPORT`, `..._AUDIO_CODEC_SUPPORT`, `..._FS_FAT_SUPPORT`, `CONFIG_ESP_BOARD_PERIPH_GPIO_SUPPORT`). A board without touch or audio leaves that spec out (`std::nullopt`); a spec whose type the build lacks is recorded failed ("no lcd_touch device in this build"), and the outputs held through light sleep skip it.
 - **Failures**: `bring_up_chips()` registers through `kit.add(slot, result)`, which records an error result or a registry refusal as failed; `kit.failed()`/`kit.missing()` record the rest (`missing` for an absent optional chip, such as a board without an RTC). Never let a step abort: a missing device only degrades the system, it does not block boot (AGENTS.md section 3 "Device model").
 - **A button with a fallback**: `ButtonSpec::fallback` names a function the kit calls when the GPIO path is unavailable (the peripheral failed, or the GPIO edge service cannot be installed), for example a power key read from the PMU instead. A button without a fallback whose peripheral failed is recorded failed.
 
@@ -127,7 +134,7 @@ The ESP port's devices name no id or role of their own; the board passes both, s
 | `Storage` | `removable`, `fs` |
 | `Network` | `ap` (bool, whether the hotspot `start_ap()` is supported; when false, `WifiService` does not open the setup hotspot), `bands` (list of bands, such as `["2.4GHz"]`) |
 | `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below); other keys need nothing |
-| `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"`. `AudioIn` optionally declares `channels`, one role per physical capture channel (`"mic"`, or `"ref"` for the speaker signal looped back), such as `["mic", "mic"]`; the ESP port takes it from `EspAudioInConfig::channels` (1 to 4 channels, at least one mic) and delivers the mono mean of the mic channels |
+| `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"`. `AudioIn` may declare `channels`, one role per physical capture channel (`"mic"`, or `"ref"` for the speaker signal looped back), such as `["mic", "mic"]`. On the ESP port it is required: the board kit's `AudioInSpec::channels` (passed on as `EspAudioInConfig::channels`) must list 1 to 4 channels with at least one mic, or `audio_in.main` is recorded failed; the port delivers the mono mean of the mic channels. A 3- or 4-channel layout also needs the board's I2S (TDM slots) and codec configuration in the YAML to deliver that many slots |
 
 In addition, every device that switches on and off with the power level declares `standby` (see "Standby and power levels" below), and every device portable code looks up declares `role` in its caps.
 

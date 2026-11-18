@@ -4,15 +4,11 @@
 #include <cstring>
 #include <vector>
 
-#include "dev_audio_codec.h"
-#include "dev_display_lcd.h"
-#include "dev_lcd_touch.h"
 #include "driver/gpio.h"
 #include "esp_board_manager.h"
 #include "esp_board_manager_err.h"
 #include "esp_board_periph.h"
 #include "held_pins.hpp"
-#include "periph_gpio.h"
 #include "sdkconfig.h"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/clock.hpp"
@@ -24,9 +20,25 @@
 #include "wisp/port/esp/esp_wifi.hpp"
 #include "wisp/port/esp/wall_clock.hpp"
 
-// bmgr compiles a device type only for a board that declares one.
+// bmgr compiles a device or peripheral type, and exports its header, only
+// for a board whose YAML declares one (managed_components/espressif__
+// esp_board_manager/devices/CMakeLists.txt, peripherals/CMakeLists.txt), so
+// every use of a type's config or handle struct sits behind its symbol. A
+// spec whose type the build lacks is recorded failed.
+#ifdef CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT
+#include "dev_audio_codec.h"
+#endif
+#ifdef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT
+#include "dev_display_lcd.h"
+#endif
 #ifdef CONFIG_ESP_BOARD_DEV_FS_FAT_SUPPORT
 #include "dev_fs_fat.h"
+#endif
+#ifdef CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT
+#include "dev_lcd_touch.h"
+#endif
+#ifdef CONFIG_ESP_BOARD_PERIPH_GPIO_SUPPORT
+#include "periph_gpio.h"
 #endif
 
 namespace wisp::board_kit {
@@ -48,6 +60,7 @@ const Config* device_config(const char* name, esp_err_t& err) {
     return static_cast<const Config*>(config);
 }
 
+#ifdef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT
 // The panel IO's SPI part, or null for a panel on any other bus.
 const dev_display_lcd_spi_sub_config_t* spi_part(const dev_display_lcd_config_t* cfg) {
 #ifdef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUB_SPI_SUPPORT
@@ -59,6 +72,7 @@ const dev_display_lcd_spi_sub_config_t* spi_part(const dev_display_lcd_config_t*
 #endif
     return nullptr;
 }
+#endif
 
 void init_internal_storage(Kit& kit, const BoardSpec& spec) {
     kit.add(spec.internal_storage, port::esp::EspInternalStorage::create(
@@ -66,6 +80,10 @@ void init_internal_storage(Kit& kit, const BoardSpec& spec) {
 }
 
 void init_display(Kit& kit, const DisplaySpec& spec) {
+#ifndef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT
+    kit.failed(spec.slot,
+               std::string("bmgr ") + spec.bmgr + ": no display_lcd device in this build");
+#else
     void* handle = nullptr;
     esp_err_t err = esp_board_manager_get_device_handle(spec.bmgr, &handle);
     if (err != ESP_OK || handle == nullptr) {
@@ -99,9 +117,13 @@ void init_display(Kit& kit, const DisplaySpec& spec) {
     dc.sleep_out_settle_ms = spec.sleep_out_settle_ms;
     kit.add(spec.slot,
             port::esp::EspDisplay::create(handles->panel_handle, handles->io_handle, dc));
+#endif
 }
 
 void init_touch(Kit& kit, const TouchSpec& spec) {
+#ifndef CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT
+    kit.failed(spec.slot, std::string("bmgr ") + spec.bmgr + ": no lcd_touch device in this build");
+#else
     void* handle = nullptr;
     esp_err_t err = esp_board_manager_get_device_handle(spec.bmgr, &handle);
     if (err != ESP_OK || handle == nullptr) {
@@ -129,6 +151,7 @@ void init_touch(Kit& kit, const TouchSpec& spec) {
                spec.bmgr, err_name(err).c_str());
     }
     kit.add_device(spec.slot, std::make_shared<port::esp::EspTouch>(handles->touch_handle, tc));
+#endif
 }
 
 // Sets the system clock from the main RTC, if one registered and it holds
@@ -167,6 +190,15 @@ std::shared_ptr<hal::Device> gpio_button(const ButtonSpec& spec, int pin) {
 // its gpio_config() succeeded.
 void init_button(Kit& kit, const ButtonSpec& spec) {
     int pin = -1;
+#ifndef CONFIG_ESP_BOARD_PERIPH_GPIO_SUPPORT
+    // Only a fallback can bring the button up.
+    if (spec.fallback == nullptr) {
+        kit.failed(spec.slot,
+                   std::string("bmgr ") + spec.bmgr_gpio + ": no gpio peripheral in this build");
+        return;
+    }
+    esp_err_t err = ESP_ERR_NOT_SUPPORTED;
+#else
     void* config = nullptr;
     esp_err_t err = esp_board_manager_get_periph_config(spec.bmgr_gpio, &config);
     if (err == ESP_OK && config != nullptr) {
@@ -176,6 +208,7 @@ void init_button(Kit& kit, const ButtonSpec& spec) {
     } else if (err == ESP_OK) {
         err = ESP_ERR_NOT_FOUND;
     }
+#endif
     const bool configured = err == ESP_OK;
 
     if (spec.fallback == nullptr) {
@@ -201,6 +234,11 @@ template <class Device, class Config>
 void init_audio_device(Kit& kit, const Slot& slot, const char* bmgr, Config device_config_in,
                        Result<std::shared_ptr<Device>> (*make)(esp_codec_dev_handle_t,
                                                                i2s_chan_handle_t, Config)) {
+#ifndef CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT
+    (void)device_config_in;
+    (void)make;
+    kit.failed(slot, std::string("bmgr ") + bmgr + ": no audio_codec device in this build");
+#else
     void* handle = nullptr;
     esp_err_t err = esp_board_manager_get_device_handle(bmgr, &handle);
     if (err != ESP_OK || handle == nullptr) {
@@ -227,6 +265,7 @@ void init_audio_device(Kit& kit, const Slot& slot, const char* bmgr, Config devi
     }
     kit.add(slot, make(handles->codec_dev, static_cast<i2s_chan_handle_t>(i2s_channel),
                        std::move(device_config_in)));
+#endif
 }
 
 void init_audio_out(Kit& kit, const AudioOutSpec& spec) {
@@ -295,10 +334,12 @@ void init_sd(Kit& kit, const SdSpec& spec) {
 //     glitching low while SCLK floats could latch noise as command bits.
 // The pins come from bmgr's static config tables, so the list does not
 // depend on which devices came up. Order: display reset, touch reset,
-// PA, display CS. See docs/hardware/<board>.md "Standby and power saving".
+// PA, display CS; a device type the build lacks holds nothing. See
+// docs/hardware/<board>.md "Standby and power saving".
 void hold_outputs(const BoardSpec& spec) {
     HeldPins held;
     esp_err_t err = ESP_OK;
+#ifdef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT
     const dev_display_lcd_spi_sub_config_t* spi = nullptr;
     if (spec.display) {
         if (const auto* cfg = device_config<dev_display_lcd_config_t>(spec.display->bmgr, err)) {
@@ -308,19 +349,26 @@ void hold_outputs(const BoardSpec& spec) {
     if (spi != nullptr) {
         held.add(spi->panel_config.reset_gpio_num);
     }
+#endif
+#ifdef CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT
     if (spec.touch) {
         if (const auto* cfg = device_config<dev_lcd_touch_config_t>(spec.touch->bmgr, err)) {
             held.add(cfg->touch_config.rst_gpio_num);
         }
     }
+#endif
+#ifdef CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT
     if (spec.audio_out) {
         if (const auto* cfg = device_config<dev_audio_codec_config_t>(spec.audio_out->bmgr, err)) {
             held.add(cfg->pa_peripheral.port);
         }
     }
+#endif
+#ifdef CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT
     if (spi != nullptr) {
         held.add(spi->io_spi_config.cs_gpio_num);
     }
+#endif
 
     char line[8 * kMaxHeldPins + 1] = {};
     size_t used = 0;
