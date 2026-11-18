@@ -20,6 +20,10 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 - `audio_in.main` declares caps `channels`, one role per capture channel (`["mic", "mic"]` on both boards); the mono output averages the mic channels.
 - `docs/porting-guide.md` gains a support matrix and the list of what a new chip target touches.
 
+### Fixes
+
+- Starting a new conversation (or deleting all of them) clears Home: the last turn's text and the reason it failed no longer stay on screen.
+
 ## 0.6.0 — 2026-11-16
 
 ### Features
