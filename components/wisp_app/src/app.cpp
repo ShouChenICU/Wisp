@@ -396,10 +396,14 @@ Result<void> App::start() {
         ui_config.glyph_image = impl_->platform.glyph_image;
         ui_config.builtin_glyphs = impl_->platform.builtin_glyphs;
         impl_->ui = std::make_unique<ui::UiRuntime>(display, touch, std::move(ui_config));
-        if (!impl_->ui->start()) {
+        auto ui_started = impl_->ui->start();
+        if (!ui_started) {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");
             impl_->ui.reset();
             impl_->report.set_note("mode", "headless");
+            if (ui_started.error().code == ErrorCode::Unsupported) {
+                impl_->report.set_note("display", "unsupported_pixel_format");
+            }
         } else {
             // Before anything that shows on the top layer (the self-check
             // screen and its dialogs, later the scenes).

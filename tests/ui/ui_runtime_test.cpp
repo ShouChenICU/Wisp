@@ -57,6 +57,29 @@ TEST(UiRuntime, RendersPostedContentWithAlignedFlushes) {
     ui.stop();
 }
 
+TEST(UiRuntime, StartRefusesAnotherPixelFormat) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    disp->set_cap("pixel_format", wisp::Value("l8"));
+    {
+        wisp::ui::UiRuntime ui(disp, nullptr);
+        auto r = ui.start();
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, wisp::ErrorCode::Unsupported);
+        EXPECT_NE(r.error().message.find("l8"), std::string::npos);
+        EXPECT_FALSE(lv_is_initialized());
+    }
+    auto plain = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    wisp::ui::UiRuntime ui(plain, nullptr);
+    EXPECT_TRUE(ui.start());
+}
+
+TEST(UiRuntime, StartAcceptsAnExplicitRgb565) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    disp->set_cap("pixel_format", wisp::Value("rgb565"));
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    EXPECT_TRUE(ui.start());
+}
+
 TEST(UiRuntime, PerfCountsFramesUnderAnimation) {
     auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
     wisp::ui::UiRuntime ui(disp, nullptr);

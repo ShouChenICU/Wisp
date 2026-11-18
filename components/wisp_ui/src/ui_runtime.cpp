@@ -552,6 +552,12 @@ Result<void> UiRuntime::start() {
         return Result<void>::err(ErrorCode::InvalidArgument,
                                  "display caps missing a usable width/height");
     }
+    // Before lv_init() and any allocation, so a refusal leaves nothing to undo.
+    const std::string format = hal::pixel_format(caps);
+    if (format != hal::kPixelFormatRgb565) {
+        return Result<void>::err(ErrorCode::Unsupported,
+                                 "unsupported pixel format '" + format + "'");
+    }
 
     const hal::DrawBufPolicy policy = hal::draw_buf_policy(caps);
     for (const char* w : policy.warnings) WLOG_W("ui", "display caps: %s", w);

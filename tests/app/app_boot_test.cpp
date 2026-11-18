@@ -304,6 +304,7 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
     ASSERT_NE(notes, nullptr);
     EXPECT_EQ(notes->find("mode"), nullptr);
     EXPECT_EQ(notes->find("storage"), nullptr);
+    EXPECT_EQ(notes->find("display"), nullptr);
 
     // The touch panel: the UI reads it as its pointer.
     bool pointer = false;
@@ -441,6 +442,22 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     h.app.bus().unsubscribe(dim_event_sub);
     h.app.stop();
     EXPECT_EQ(h.app.devices(), nullptr);
+}
+
+// A buffer format the UI cannot render leaves the display dark, with the
+// reason in the boot report.
+TEST(AppBoot, UnsupportedPixelFormatBootsHeadlessWithANote) {
+    auto h = make_app({});
+    h.display->set_cap("pixel_format", wisp::Value("i1"));
+    ASSERT_TRUE(h.app.start());
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* notes = rep.find("notes");
+    ASSERT_NE(notes, nullptr);
+    ASSERT_NE(notes->find("mode"), nullptr);
+    EXPECT_EQ(notes->find("mode")->as_string(), "headless");
+    ASSERT_NE(notes->find("display"), nullptr);
+    EXPECT_EQ(notes->find("display")->as_string(), "unsupported_pixel_format");
+    EXPECT_EQ(h.app.ui(), nullptr);
 }
 
 // A display that does not declare the role is not the main display: the

@@ -115,7 +115,9 @@ public:
     // task. Fails with Busy if another UiRuntime in this process is
     // already started (LVGL 9.5 has only one global instance under
     // LV_USE_OS == LV_OS_NONE); fails with InvalidArgument if `display`'s
-    // caps don't carry a usable width/height; fails with NoMemory if the
+    // caps don't carry a usable width/height; fails with Unsupported if
+    // its caps "pixel_format" is anything but rgb565 (checked before
+    // lv_init(), so nothing is left behind); fails with NoMemory if the
     // draw buffers, the LVGL display, or (when `touch` is non-null) the
     // LVGL input device can't be allocated.
     Result<void> start();
