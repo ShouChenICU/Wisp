@@ -3276,6 +3276,93 @@ TEST_F(SystemLayerTest, DialogTrapsFocusAndGivesItBack) {
     });
 }
 
+// A screen reached by touch has no key focus to give back: a dialog, the
+// error card or the panel closing over it leaves it unfocused, so its list
+// stays where the finger left it and nothing on it hears FOCUSED. The
+// next key picks the focus and only shows it.
+TEST_F(SystemLayerTest, ClosingOverATouchedScreenFocusesNothing) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    int focus_events = 0;
+    lv_obj_t* ta = nullptr;
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->update_panel(sample_model());
+        lv_obj_t* scr = lv_screen_active();
+        lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+        ta = lv_textarea_create(scr);
+        for (int i = 0; i < 20; ++i) lv_obj_set_height(lv_button_create(scr), 80);
+        for (uint32_t i = 0; i < lv_obj_get_child_count(scr); ++i) {
+            lv_obj_add_event_cb(
+                lv_obj_get_child(scr, static_cast<int32_t>(i)),
+                [](lv_event_t* e) { ++*static_cast<int*>(lv_event_get_user_data(e)); },
+                LV_EVENT_FOCUSED, &focus_events);
+        }
+        lv_obj_update_layout(scr);
+        lv_obj_scroll_to_y(scr, 1050, LV_ANIM_OFF);
+        ASSERT_EQ(lv_obj_get_scroll_y(scr), 1050);
+    });
+    for (const char* closing : {"confirm", "error", "panel"}) {
+        SCOPED_TRACE(closing);
+        on_ui([&] {
+            if (std::strcmp(closing, "confirm") == 0) {
+                layer->close_confirm(layer->open_confirm(StrId::ResetTitle, "Sure?", [](bool) {}));
+            } else if (std::strcmp(closing, "error") == 0) {
+                layer->show_error({"Demo", "main.lua", 3, "boom"}, [] {}, [] {});
+                layer->hide_error();
+            } else {
+                layer->open_panel();
+            }
+        });
+        if (std::strcmp(closing, "panel") == 0) {
+            ASSERT_TRUE(panel_settled());
+            on_ui([&] {
+                ASSERT_TRUE(layer->panel_open());
+                layer->close_panel();
+            });
+        }
+        on_ui([&] {
+            EXPECT_EQ(focused(), nullptr);
+            EXPECT_EQ(lv_obj_get_scroll_y(lv_screen_active()), 1050);
+        });
+        EXPECT_EQ(focus_events, 0);
+    }
+    nav(NavKey::Next);
+    on_ui([&] {
+        EXPECT_EQ(focused(), ta);
+        EXPECT_TRUE(lv_obj_has_state(ta, LV_STATE_FOCUS_KEY));
+    });
+    EXPECT_EQ(focus_events, 1);
+}
+
+// A group whose objects were all disabled when it was filled gets a focus
+// from the first key after one is enabled: keys are never swallowed for
+// want of a focus.
+TEST_F(SystemLayerTest, AKeyFocusesWhatWasEnabledSinceTheScopeWasFilled) {
+    start("rect", wisp::ui::Lang::Zh, 0, true);
+    lv_obj_t* a = nullptr;
+    lv_obj_t* b = nullptr;
+    on_ui([&] {
+        a = lv_button_create(lv_screen_active());
+        b = lv_button_create(lv_screen_active());
+        lv_obj_add_state(a, LV_STATE_DISABLED);
+        lv_obj_add_state(b, LV_STATE_DISABLED);
+    });
+    nav(NavKey::Next);
+    on_ui([&] {
+        EXPECT_EQ(focused(), nullptr);
+        EXPECT_EQ(group_objs(), (std::vector<lv_obj_t*>{a, b}));
+        lv_obj_remove_state(b, LV_STATE_DISABLED);
+    });
+    nav(NavKey::Next);  // shows b
+    on_ui([&] {
+        EXPECT_EQ(focused(), b);
+        EXPECT_TRUE(lv_obj_has_state(b, LV_STATE_FOCUS_KEY));
+        lv_obj_remove_state(a, LV_STATE_DISABLED);
+    });
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_EQ(focused(), a); });
+}
+
 // Only the loaded screen's objects take the focus.
 TEST_F(SystemLayerTest, FocusStaysOnTheScreenInFront) {
     start("rect", wisp::ui::Lang::Zh, 0, true);

@@ -1053,7 +1053,7 @@ bool SystemLayer::take_nav_key(NavKey key) {
     if (nav_group_ == nullptr) return false;
     lv_obj_t* before = lv_group_get_focused(nav_group_);
     const bool shown = before != nullptr && lv_obj_has_state(before, LV_STATE_FOCUS_KEY);
-    rescope();
+    rescope(true);
     lv_obj_t* now = lv_group_get_focused(nav_group_);
     if (now == nullptr) return true;
     // A focus this press's rescope chose was never seen either, although
@@ -1077,7 +1077,7 @@ void SystemLayer::nav_focus_cb(lv_group_t* group) {
     show_focus(group, obj, self->shape_);
 }
 
-void SystemLayer::rescope() {
+void SystemLayer::rescope(bool by_key) {
     lv_group_t* g = nav_group_;
     if (g == nullptr) return;
     lv_obj_t* root = lv_screen_active();
@@ -1106,7 +1106,9 @@ void SystemLayer::rescope() {
     const uint32_t count = lv_group_get_obj_count(g);
     bool same = count == objs.size();
     for (uint32_t i = 0; same && i < count; ++i) same = lv_group_get_obj_by_index(g, i) == objs[i];
-    if (same) return;
+    // A group left without a focus (nothing was chosen yet, or everything
+    // in scope was disabled) is not done until a key chooses one.
+    if (same && (focused != nullptr || (!by_key && first_choice == nullptr))) return;
 
     auto in_scope = [&](lv_obj_t* obj) {
         return obj != nullptr && std::find(objs.begin(), objs.end(), obj) != objs.end();
@@ -1116,11 +1118,13 @@ void SystemLayer::rescope() {
     // textarea's would show and hide the keyboard) and its key focus
     // stays as it was.
     if (keep) g->obj_focus = nullptr;
-    lv_group_remove_all_objs(g);
-    // Frozen, the first object added is not focused on its own.
-    lv_group_focus_freeze(g, true);
-    for (lv_obj_t* obj : objs) lv_group_add_obj(g, obj);
-    lv_group_focus_freeze(g, false);
+    if (!same) {
+        lv_group_remove_all_objs(g);
+        // Frozen, the first object added is not focused on its own.
+        lv_group_focus_freeze(g, true);
+        for (lv_obj_t* obj : objs) lv_group_add_obj(g, obj);
+        lv_group_focus_freeze(g, false);
+    }
     if (keep) {
         for (auto* node = static_cast<lv_obj_t**>(lv_ll_get_head(&g->obj_ll)); node != nullptr;
              node = static_cast<lv_obj_t**>(lv_ll_get_next(&g->obj_ll, node))) {
@@ -1137,11 +1141,14 @@ void SystemLayer::rescope() {
     drop_held_key(focused);
     lv_obj_t* target = in_scope(first_choice) ? first_choice : nullptr;
     bool restored = false;
-    if (target == nullptr && in_scope(remembered)) {
+    // Focusing scrolls the object into view and tells it (a textarea
+    // brings up the keyboard, a scene hears it): only a key, or a focus a
+    // key chose before, may do that to a list the finger left elsewhere.
+    if (target == nullptr && in_scope(remembered) && (screen_focus_shown_ || by_key)) {
         target = remembered;
         restored = true;
     }
-    if (target == nullptr) {
+    if (target == nullptr && by_key) {
         for (lv_obj_t* obj : objs) {
             if (!lv_obj_has_state(obj, LV_STATE_DISABLED)) {
                 target = obj;

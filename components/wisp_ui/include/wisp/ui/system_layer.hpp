@@ -57,9 +57,15 @@
 // while it rests open, else the active screen. Nothing under a dialog or
 // on a screen that is not loaded is ever focused. A dialog opens with its
 // safe answer (No, the error card's Back) focused, so a stray OK never
-// confirms; closing it gives the focus back to what had it on the screen.
-// On a board with touch a focus set this way is not shown, and the first
-// Next, Prev or OK only shows it: it neither moves nor activates.
+// confirms. Anywhere else (the screen, the panel) a focus is chosen only
+// in response to a key, or given back: closing a dialog, the error card
+// or the panel gives back a focus a key had shown on the screen, and
+// otherwise leaves the group unfocused, because focusing scrolls a list
+// to the object and tells it (a textarea brings up the keyboard, a scene
+// hears it). The next key then focuses the scope's first enabled object.
+// A Next, Prev or OK press that finds the focus not shown yet (on a board
+// with touch a focus set in code is not) or that chose the focus itself
+// only shows it: it neither moves nor activates.
 //
 // Every member is UI thread only, like every lv_* call.
 
@@ -488,8 +494,11 @@ private:
     // Brings the focus group up to what is in front (see the header
     // comment). Rebuilds it only when the scope's focusable objects
     // changed; a rebuild keeps the focused object, shown or not, when it
-    // is still in scope, else focuses the scope's first choice.
-    void rescope();
+    // is still in scope. Else it focuses a dialog's safe answer or the
+    // error card's Back, or gives back a screen focus a key had shown;
+    // anything else is focused only `by_key` (the first enabled object,
+    // also when the group was left without a focus).
+    void rescope(bool by_key = false);
     bool take_nav_key(NavKey key);
     // The nav group's focus callback: shows a focus the keys moved
     // (ui::show_focus()).
@@ -582,7 +591,7 @@ private:
     bool scope_is_screen_ = true;
     // What had the focus on the screen when a dialog, the error card or
     // the panel took the scope, and whether it was shown; given back once
-    // the scope is the screen again.
+    // the scope is the screen again, if it was shown (rescope()).
     lv_obj_t* screen_focus_ = nullptr;
     bool screen_focus_shown_ = false;
     bool key_consumed_ = false;  // the last press was consumed

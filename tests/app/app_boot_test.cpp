@@ -1637,6 +1637,7 @@ TEST(AppBoot, AWakingPressDoesNotAnswerTheDialog) {
     press(h, "button.nav_next");
     ASSERT_TRUE(wait_until([&] { return focused_is(h, "是"); }, 3000));
 
+    ASSERT_TRUE(confirm_open(h));
     run_on_ui_blocking(ui, [pm] { pm->enter_standby(); });
     ASSERT_TRUE(pm->standby());
     ASSERT_TRUE(ui->paused());
@@ -1647,7 +1648,8 @@ TEST(AppBoot, AWakingPressDoesNotAnswerTheDialog) {
     // Long enough for a key that got through to reach the dialog.
     wisp::os::sleep_ms(300);
     EXPECT_EQ(h.power_offs.load(), 0);
-    if (confirm_open(h)) EXPECT_TRUE(focused_is(h, "是"));
+    ASSERT_TRUE(confirm_open(h));
+    EXPECT_TRUE(focused_is(h, "是"));
     h.app.stop();
 }
 
