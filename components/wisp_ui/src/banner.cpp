@@ -32,7 +32,9 @@ constexpr int32_t kActionsGap = theme::kGapXs;
 
 void SystemLayer::show_banner(BannerInfo b, std::function<void()> on_tap,
                               std::function<void(int index)> on_action) {
-    if (panel_ != nullptr) return;
+    // A listed notice is in the panel already; a banner-only one waits
+    // for the panel to go (show_next_banner()).
+    if (panel_ != nullptr && b.listed) return;
     banners_.push_back({std::move(b), std::move(on_tap), std::move(on_action)});
     if (banner_ == nullptr) show_next_banner();
 }
@@ -43,7 +45,7 @@ void SystemLayer::drop_banners(const std::function<bool(const BannerInfo&)>& gon
 }
 
 void SystemLayer::show_next_banner() {
-    if (banner_ != nullptr || banners_.empty()) return;
+    if (banner_ != nullptr || banners_.empty() || panel_ != nullptr) return;
     QueuedBanner next = std::move(banners_.front());
     banners_.pop_front();
     const BannerInfo& b = next.info;
@@ -186,7 +188,7 @@ void SystemLayer::show_next_banner() {
     raise();
 }
 
-void SystemLayer::hide_banner() {
+void SystemLayer::hide_banner(bool show_next) {
     if (banner_timer_ != nullptr) {
         lv_timer_delete(banner_timer_);
         banner_timer_ = nullptr;
@@ -205,7 +207,7 @@ void SystemLayer::hide_banner() {
     banner_info_ = {};
     banner_tap_ = nullptr;
     banner_action_ = nullptr;
-    show_next_banner();
+    if (show_next) show_next_banner();
 }
 
 void SystemLayer::banner_timer_cb(lv_timer_t* t) {

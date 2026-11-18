@@ -283,11 +283,14 @@ public:
     // next one shows. With action labels it is taller by a row of buttons
     // at least kPanelRowMinH high and stays kActionBannerMs; a button hides
     // it and calls `on_action` with its index (0 for action_label's).
-    // The panel lists every notice, so no banner shows over it (spec 5.3,
-    // revised 2026-11-17): one queued while the panel is there (open,
-    // following a finger or sliding) is dropped, and the panel coming
-    // down drops the banner shown and those waiting, none of which comes
-    // back once it has gone.
+    // No banner shows over the panel (spec 5.3). The panel lists every
+    // listed notice, so a listed banner queued while the panel is there
+    // (open, following a finger or sliding) is dropped, and the panel
+    // coming down drops the listed banner shown and those waiting; none
+    // of them comes back, also when the pull is cancelled. A banner-only
+    // one (BannerInfo::listed false) is in no list: it waits, the one
+    // shown going back to the front of the queue, and shows once the
+    // panel has gone.
     void show_banner(BannerInfo b, std::function<void()> on_tap,
                      std::function<void(int index)> on_action = {});
     // Takes down at once the banner shown, if `gone` picks it, and drops
@@ -422,7 +425,8 @@ private:
     static void panel_slide_cb(void* self, int32_t offset);
     static void panel_slide_done_cb(lv_anim_t* a);
     void show_next_banner();
-    void hide_banner();
+    // Then shows the next one waiting, unless `show_next` is false.
+    void hide_banner(bool show_next = true);
 
     static void panel_cb(lv_event_t* e);
     static void banner_cb(lv_event_t* e);

@@ -224,8 +224,8 @@ SystemLayer::~SystemLayer() {
     panel_event_depth_ = 0;
     // Without calling on_close.
     panel_handlers_ = {};
-    discard_panel();
     banners_.clear();
+    discard_panel();
     banner_event_depth_ = 0;
     hide_banner();
     if (arrow_ != nullptr) {

@@ -2865,6 +2865,39 @@ TEST_F(BannerTest, PanelTakesTheBannersAway) {
     }
 }
 
+// A banner-only notice (a foreground scene's own) is in no list, so the
+// panel cannot show it: it waits while the panel is there and shows once
+// the panel has gone, the one shown when the panel came down first.
+TEST_F(BannerTest, BannerOnlyWaitsForThePanel) {
+    start("rect");
+    wisp::ui::PanelHandlers h;
+    h.on_open = [this] { layer->update_panel(sample_model()); };
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        wisp::ui::BannerInfo own{"f", "own", "F", "Front", "Own", "mine"};
+        own.listed = false;
+        wisp::ui::BannerInfo later{"f", "later", "F", "Front", "Later", "mine too"};
+        later.listed = false;
+        layer->show_banner(own, [] {});
+        layer->show_banner({"a", "n1", "A", "Alpha", "First", "one"}, [] {});
+        layer->open_panel();
+        ASSERT_TRUE(layer->panel_open());
+        EXPECT_EQ(layer->banner(), nullptr);
+        layer->show_banner(later, [] {});
+        layer->show_banner({"b", "n2", "B", "Beta", "Second", "two"}, [] {});
+        EXPECT_EQ(layer->banner(), nullptr);
+        layer->close_panel();
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "Own"), nullptr);
+        layer->drop_banners([](const wisp::ui::BannerInfo& b) { return b.id == "own"; });
+        ASSERT_NE(layer->banner(), nullptr);
+        EXPECT_NE(find_label_containing(layer->banner(), "Later"), nullptr);
+        // The listed ones went with the panel.
+        layer->drop_banners([](const wisp::ui::BannerInfo& b) { return b.id == "later"; });
+        EXPECT_EQ(layer->banner(), nullptr);
+    });
+}
+
 TEST_F(BannerTest, StacksBelowConfirm) {
     start("circle");
     on_ui([&] {

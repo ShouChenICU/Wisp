@@ -37,8 +37,8 @@
 //     banners (shown or waiting) whose notice has gone, and one whose
 //     notice went before it reached the UI thread never shows. A banner-
 //     only post (a foreground scene's own) is not in the list and only
-//     goes on its own. The pull-down panel coming down takes every banner
-//     away (SystemLayer::show_banner()).
+//     goes on its own. No banner shows over the pull-down panel
+//     (SystemLayer::show_banner()).
 //
 // start() runs on any thread. Every SystemLayer call is made on the UI
 // thread.

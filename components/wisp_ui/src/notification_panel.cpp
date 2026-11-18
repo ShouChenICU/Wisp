@@ -302,12 +302,14 @@ void SystemLayer::panel_refill_cb(void* self_ptr) {
 }
 
 void SystemLayer::build_panel() {
-    // The panel lists every notice, so the user sees them all there; a
-    // banner kept under it would show again once it goes (spec 5.3). They
-    // all go now, before panel_ is set, and show_banner() drops new ones
-    // until the panel has gone.
-    banners_.clear();
-    hide_banner();
+    // The panel lists every listed notice, so their banners go for good
+    // (spec 5.3). A banner-only one is in no list: it waits, from the
+    // front of the queue, until discard_panel() shows it.
+    std::erase_if(banners_, [](const QueuedBanner& q) { return q.info.listed; });
+    if (banner_ != nullptr && !banner_info_.listed) {
+        banners_.push_front({banner_info_, banner_tap_, banner_action_});
+    }
+    hide_banner(/*show_next=*/false);
     // The whole screen: whatever is under the panel is hidden, and a touch
     // outside the content box closes it. It has no children and never
     // changes, so what scrolls under it is cut although it spans the
@@ -528,6 +530,8 @@ void SystemLayer::discard_panel() {
     // A closed panel keeps nothing it showed; on_open builds the next model.
     model_ = PanelModel{};
     WLOG_I("ui", "panel: gone");
+    // The banner-only notices that waited for the panel to go.
+    show_next_banner();
     // A copy: the owner may replace the handlers from it.
     if (std::function<void()> on_close = panel_handlers_.on_close) on_close();
 }
