@@ -587,9 +587,17 @@ class CheckLayeringTest(unittest.TestCase):
         )
         self.assertEqual(check_layering.run(self.root), [])
 
-    def test_device_id_literal_in_the_ports_passes(self):
-        for port in ("wisp_port_sim", "wisp_port_esp"):
-            write(self.root, f"components/{port}/src/x.cpp", 'auto d = get("display.main");\n')
+    def test_device_id_literal_in_the_sim_port_passes(self):
+        write(self.root, "components/wisp_port_sim/src/x.cpp", 'auto d = get("display.main");\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+    def test_device_id_literal_in_esp_port_is_flagged(self):
+        write(self.root, "components/wisp_port_esp/dev/x.cpp", 'info_.id = "display.main";\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("x.cpp:1: device id literal \"display.main\"", errors[0])
+
+        write(self.root, "components/wisp_port_esp/dev/x.cpp", '// info_.id = "display.main";\n')
         self.assertEqual(check_layering.run(self.root), [])
 
     def test_topic_with_an_id_prefix_passes(self):

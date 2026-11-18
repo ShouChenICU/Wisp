@@ -503,10 +503,11 @@ def strip_comments_keep_strings(text):
 
 
 def check_device_id_literals(root, errors):
-    """Portable code (every wisp_* component but the two ports) and the
+    """Portable code (every wisp_* component but the two ports), the ESP
+    port (its devices take their ids from configs the board fills) and the
     simulator's own sources find devices by role, never by id literal."""
     paths = []
-    for component in COMPONENTS:
+    for component in (*COMPONENTS, "wisp_port_esp"):
         paths.extend(iter_source_files(root, component))
     sim_dir = root / "simulator"
     if sim_dir.is_dir():

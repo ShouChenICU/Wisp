@@ -61,7 +61,9 @@ namespace wisp::port::esp {
 
 struct EspWifiConfig {
     // DeviceInfo id/model (board-provided; e.g. "net.wifi", the chip name).
-    std::string id = "net.wifi";
+    std::string id;
+    // caps "role"; empty writes none.
+    std::string role;
     std::string model;
     // The caps "bands" list: what the chip's radio supports.
     std::vector<std::string> bands = {"2.4GHz"};

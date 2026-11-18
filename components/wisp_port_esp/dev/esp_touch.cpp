@@ -7,17 +7,16 @@
 #include "esp_err.h"
 #include "esp_lcd_touch.h"
 #include "wisp/base/error.hpp"
-#include "wisp/hal/roles.hpp"
 
 namespace wisp::port::esp {
 
 EspTouch::EspTouch(esp_lcd_touch_handle_t handle, EspTouchConfig config)
     : handle_(handle), config_(std::move(config)) {
-    info_.id = "touch.main";
+    info_.id = config_.id;
     info_.cls = kClass;
     info_.model = config_.model;
     info_.caps = wisp::Properties{{"max_points", 1}};
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
+    if (!config_.role.empty()) info_.caps["role"] = wisp::Value(config_.role);
     if (can_sleep()) {
         info_.caps["standby"] = wisp::Value("off");
     }

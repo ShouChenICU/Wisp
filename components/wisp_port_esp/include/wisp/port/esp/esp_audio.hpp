@@ -84,6 +84,20 @@
 
 namespace wisp::port::esp {
 
+// DeviceInfo id/model and caps "role" (empty writes none), all chosen by
+// the board.
+struct EspAudioOutConfig {
+    std::string id;
+    std::string role;
+    std::string model;
+};
+
+struct EspAudioInConfig {
+    std::string id;
+    std::string role;
+    std::string model;
+};
+
 class EspAudioOut : public wisp::hal::AudioOut {
 public:
     // Wraps an already-constructed esp_codec_dev_handle_t and the I2S TX
@@ -92,7 +106,7 @@ public:
     // null.
     static Result<std::shared_ptr<EspAudioOut>> create(esp_codec_dev_handle_t codec_dev,
                                                        i2s_chan_handle_t i2s_channel,
-                                                       std::string model);
+                                                       EspAudioOutConfig config);
 
     ~EspAudioOut() override;
 
@@ -129,7 +143,8 @@ public:
     Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
-    EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel, std::string model);
+    EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
+                EspAudioOutConfig config);
 
     // Writes enough silence to flush any real audio out of the I2S DMA
     // ring before close() actually closes the codec device -- see file
@@ -151,7 +166,7 @@ public:
     // null.
     static Result<std::shared_ptr<EspAudioIn>> create(esp_codec_dev_handle_t codec_dev,
                                                       i2s_chan_handle_t i2s_channel,
-                                                      std::string model);
+                                                      EspAudioInConfig config);
 
     ~EspAudioIn() override;
 
@@ -194,7 +209,8 @@ private:
     // capture only needs ~100 esp_codec_dev_read() calls.
     static constexpr size_t kScratchFrames = 480;
 
-    EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel, std::string model);
+    EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
+               EspAudioInConfig config);
 
     wisp::hal::DeviceInfo info_;
     esp_codec_dev_handle_t codec_dev_;

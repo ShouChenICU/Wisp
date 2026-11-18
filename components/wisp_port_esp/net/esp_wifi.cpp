@@ -17,7 +17,6 @@
 #include "mdns.h"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/port/esp/wifi_reason.hpp"
 
@@ -370,7 +369,7 @@ Result<std::shared_ptr<EspWifi>> EspWifi::create(EspWifiConfig config) {
     List bands;
     for (const std::string& b : config.bands) bands.emplace_back(b);
     impl->info.caps = Properties{{"ap", true}, {"bands", std::move(bands)}};
-    impl->info.caps["role"] = wisp::Value(wisp::hal::role::kMain);
+    if (!config.role.empty()) impl->info.caps["role"] = wisp::Value(config.role);
     impl->config = std::move(config);
 
     const auto failed = [&impl](const char* what, esp_err_t err) {

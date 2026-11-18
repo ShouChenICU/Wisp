@@ -163,6 +163,8 @@ void init_display(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& 
     auto* cfg = static_cast<const dev_display_lcd_config_t*>(config);
 
     wisp::port::esp::EspDisplayConfig dc;
+    dc.id = "display.main";
+    dc.role = wisp::hal::role::kMain;
     dc.model = "CO5300";
     dc.width = cfg->lcd_width;
     dc.height = cfg->lcd_height;
@@ -216,6 +218,8 @@ void init_touch(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& re
     }
 
     wisp::port::esp::EspTouchConfig tc;
+    tc.id = "touch.main";
+    tc.role = wisp::hal::role::kMain;
     tc.model = "CST9217";
     tc.width = width;
     tc.height = height;
@@ -380,29 +384,29 @@ void hold_outputs_during_light_sleep() {
     }
 }
 
-template <class Device>
+template <class Device, class Config>
 void init_audio_device(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report,
-                       const char* dev_name, const char* id, wisp::hal::DeviceClass cls,
-                       const char* model,
+                       const char* dev_name, wisp::hal::DeviceClass cls, Config device_config,
                        wisp::Result<std::shared_ptr<Device>> (*make)(esp_codec_dev_handle_t,
-                                                                     i2s_chan_handle_t,
-                                                                     std::string)) {
+                                                                     i2s_chan_handle_t, Config)) {
+    const std::string id = device_config.id;
     void* handle = nullptr;
     esp_err_t err = esp_board_manager_get_device_handle(dev_name, &handle);
     if (err != ESP_OK || handle == nullptr) {
-        record_failed(report, id, cls,
+        record_failed(report, id.c_str(), cls,
                       std::string("bmgr ") + dev_name + " handle: " + err_name(err));
         return;
     }
     auto* handles = static_cast<dev_audio_codec_handles_t*>(handle);
     if (handles->codec_dev == nullptr) {
-        record_failed(report, id, cls, std::string("bmgr ") + dev_name + ": null codec_dev handle");
+        record_failed(report, id.c_str(), cls,
+                      std::string("bmgr ") + dev_name + ": null codec_dev handle");
         return;
     }
     void* config = nullptr;
     err = esp_board_manager_get_device_config(dev_name, &config);
     if (err != ESP_OK || config == nullptr) {
-        record_failed(report, id, cls,
+        record_failed(report, id.c_str(), cls,
                       std::string("bmgr ") + dev_name + " config: " + err_name(err));
         return;
     }
@@ -411,28 +415,34 @@ void init_audio_device(wisp::core::DeviceRegistry& registry, wisp::core::BootRep
     err = i2s_name != nullptr ? esp_board_manager_get_periph_handle(i2s_name, &i2s_channel)
                               : ESP_ERR_NOT_FOUND;
     if (err != ESP_OK || i2s_channel == nullptr) {
-        record_failed(report, id, cls, std::string("bmgr ") + dev_name + " i2s: " + err_name(err));
+        record_failed(report, id.c_str(), cls,
+                      std::string("bmgr ") + dev_name + " i2s: " + err_name(err));
         return;
     }
-    auto device = make(handles->codec_dev, static_cast<i2s_chan_handle_t>(i2s_channel), model);
+    auto device = make(handles->codec_dev, static_cast<i2s_chan_handle_t>(i2s_channel),
+                       std::move(device_config));
     if (!device) {
-        record_failed(report, id, cls, device.error().message);
+        record_failed(report, id.c_str(), cls, device.error().message);
         return;
     }
     add_device(registry, report, device.value());
 }
 
 void init_audio(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
-    init_audio_device<wisp::port::esp::EspAudioOut>(
-        registry, report, kBmgrAudioDac, "audio_out.main", wisp::hal::DeviceClass::AudioOut,
-        "ES8311", &wisp::port::esp::EspAudioOut::create);
-    init_audio_device<wisp::port::esp::EspAudioIn>(registry, report, kBmgrAudioAdc, "audio_in.main",
-                                                   wisp::hal::DeviceClass::AudioIn, "ES7210",
-                                                   &wisp::port::esp::EspAudioIn::create);
+    init_audio_device(
+        registry, report, kBmgrAudioDac, wisp::hal::DeviceClass::AudioOut,
+        wisp::port::esp::EspAudioOutConfig{
+            .id = "audio_out.main", .role = wisp::hal::role::kMain, .model = "ES8311"},
+        &wisp::port::esp::EspAudioOut::create);
+    init_audio_device(registry, report, kBmgrAudioAdc, wisp::hal::DeviceClass::AudioIn,
+                      wisp::port::esp::EspAudioInConfig{
+                          .id = "audio_in.main", .role = wisp::hal::role::kMain, .model = "ES7210"},
+                      &wisp::port::esp::EspAudioIn::create);
 }
 
 void init_internal_storage(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
-    auto internal = wisp::port::esp::EspInternalStorage::create();
+    auto internal =
+        wisp::port::esp::EspInternalStorage::create("storage.int", wisp::hal::role::kInternal);
     if (!internal) {
         record_failed(report, "storage.int", wisp::hal::DeviceClass::Storage,
                       internal.error().message);
@@ -444,6 +454,7 @@ void init_internal_storage(wisp::core::DeviceRegistry& registry, wisp::core::Boo
 void init_wifi(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) {
     wisp::port::esp::EspWifiConfig config;
     config.id = "net.wifi";
+    config.role = wisp::hal::role::kMain;
     config.model = "ESP32-S3";
     config.bands = {"2.4GHz"};
     auto wifi = wisp::port::esp::EspWifi::create(std::move(config));

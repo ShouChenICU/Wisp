@@ -9,7 +9,6 @@
 #include "esp_err.h"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/hal/roles.hpp"
 #include "wisp/port/esp/audio_downmix.hpp"
 #include "wisp/port/esp/i2s_power.hpp"
 
@@ -119,7 +118,7 @@ Result<void> set_channel_power(i2s_chan_handle_t channel, bool stream_open,
 
 Result<std::shared_ptr<EspAudioOut>> EspAudioOut::create(esp_codec_dev_handle_t codec_dev,
                                                          i2s_chan_handle_t i2s_channel,
-                                                         std::string model) {
+                                                         EspAudioOutConfig config) {
     using R = Result<std::shared_ptr<EspAudioOut>>;
     if (codec_dev == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null codec_dev handle");
@@ -128,17 +127,17 @@ Result<std::shared_ptr<EspAudioOut>> EspAudioOut::create(esp_codec_dev_handle_t 
         return R::err(ErrorCode::InvalidArgument, "null i2s channel handle");
     }
     return R::ok(
-        std::shared_ptr<EspAudioOut>(new EspAudioOut(codec_dev, i2s_channel, std::move(model))));
+        std::shared_ptr<EspAudioOut>(new EspAudioOut(codec_dev, i2s_channel, std::move(config))));
 }
 
 EspAudioOut::EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
-                         std::string model)
+                         EspAudioOutConfig config)
     : codec_dev_(codec_dev), i2s_channel_(i2s_channel), volume_percent_(kOutputGainPercent) {
-    info_.id = "audio_out.main";
+    info_.id = std::move(config.id);
     info_.cls = kClass;
-    info_.model = std::move(model);
+    info_.model = std::move(config.model);
     info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
+    if (!config.role.empty()) info_.caps["role"] = wisp::Value(std::move(config.role));
 }
 
 // No esp_codec_dev_delete(): the handle is owned by bmgr (it lives for
@@ -237,7 +236,7 @@ Result<void> EspAudioOut::set_volume(uint8_t percent) {
 
 Result<std::shared_ptr<EspAudioIn>> EspAudioIn::create(esp_codec_dev_handle_t codec_dev,
                                                        i2s_chan_handle_t i2s_channel,
-                                                       std::string model) {
+                                                       EspAudioInConfig config) {
     using R = Result<std::shared_ptr<EspAudioIn>>;
     if (codec_dev == nullptr) {
         return R::err(ErrorCode::InvalidArgument, "null codec_dev handle");
@@ -246,17 +245,17 @@ Result<std::shared_ptr<EspAudioIn>> EspAudioIn::create(esp_codec_dev_handle_t co
         return R::err(ErrorCode::InvalidArgument, "null i2s channel handle");
     }
     return R::ok(
-        std::shared_ptr<EspAudioIn>(new EspAudioIn(codec_dev, i2s_channel, std::move(model))));
+        std::shared_ptr<EspAudioIn>(new EspAudioIn(codec_dev, i2s_channel, std::move(config))));
 }
 
 EspAudioIn::EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
-                       std::string model)
+                       EspAudioInConfig config)
     : codec_dev_(codec_dev), i2s_channel_(i2s_channel), mic_gain_db_(kDefaultMicGainDb) {
-    info_.id = "audio_in.main";
+    info_.id = std::move(config.id);
     info_.cls = kClass;
-    info_.model = std::move(model);
+    info_.model = std::move(config.model);
     info_.caps = wisp::Properties{{"standby", wisp::Value("off")}};
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
+    if (!config.role.empty()) info_.caps["role"] = wisp::Value(std::move(config.role));
     std::memset(scratch_, 0, sizeof(scratch_));
 }
 

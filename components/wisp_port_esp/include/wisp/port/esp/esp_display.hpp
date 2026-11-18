@@ -24,6 +24,8 @@
 namespace wisp::port::esp {
 
 struct EspDisplayConfig {
+    std::string id;              // DeviceInfo::id, chosen by the board
+    std::string role;            // caps "role"; empty writes none
     std::string model;           // DeviceInfo::model, e.g. the panel controller chip
     int width = 0;               // caps "width"
     int height = 0;              // caps "height"
