@@ -11,17 +11,16 @@
 // overlay's box may be the overlay's own change and is left alone (for an
 // OwnChanges::InOwnEvents overlay, only while it handles an event); so is
 // one that touches any other visible object on the top or system layer
-// (such as the performance label, or a paused overlay). Any other area comes from below the
-// overlays, and the rows of each overlay that are opaque edge to edge
-// (all but its rounded corners' rows) are cut out of it; an area they
-// cover wholly is dropped. An overlay
-// counts only while it and every ancestor are shown, at full opacity,
-// blended normally, unmasked and untransformed, its background is opaque
-// (no gradient descriptor), and the last frame drew it so; otherwise
-// nothing is cut. One that stops counting (hidden, faded or transformed,
-// directly or through its layer) has its last drawn box redrawn on the
-// next refresh. Nothing is cut while the display renders: the event
-// then only carries LVGL's band-height probe.
+// (such as the performance label, or a paused overlay). Any other area
+// comes from below the overlays, and the rows of each overlay that are
+// opaque edge to edge (all but its rounded corners' rows) are cut out of
+// it; an area they cover wholly is dropped. An overlay counts only while
+// it and every ancestor are shown, at full opacity, blended normally,
+// unmasked and untransformed, its background is opaque (no gradient
+// descriptor), and the last frame drew it so; otherwise nothing is cut. One that stops counting
+// (hidden, faded or transformed, directly or through its layer) has its last drawn box redrawn on
+// the next refresh. Nothing is cut while the display renders: the event then only carries LVGL's
+// band-height probe.
 //
 // So everything drawn above a marked overlay must be inside a marked
 // overlay itself, or be a separate object on the top or system layer, as
@@ -61,8 +60,9 @@ void mark_opaque_overlay(lv_obj_t* obj, OwnChanges own = OwnChanges::InsideBox);
 // move would otherwise be cut by where the overlay still is, though the
 // move uncovers it. It also counts as an unmarked object drawn above the
 // others, so an area it touches is cut by no overlay: what it draws over
-// another overlay (a banner under the moving panel) is drawn. Resumed, it counts again from the
-// next frame that draws it. No-op on an unmarked object.
+// another overlay (a network card under the moving panel) is drawn.
+// Resumed, it counts again from the next frame that draws it. No-op on an
+// unmarked object.
 void pause_opaque_overlay(lv_obj_t* obj, bool paused);
 
 // Tells the marked overlays of `disp` that the panel may no longer show
