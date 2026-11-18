@@ -438,3 +438,20 @@ On both boards, flashed with `idf.py -p <port> flash` from the last commit (the 
 ## Execution record
 
 (Filled in by Task 1 and kept current by later tasks: V1-V3 results, per-board image size and % of the smallest app slot after each firmware-touching task.)
+
+### Task 1: bmgr/IDF checks and baselines (main's code)
+
+Both boards were built from a fresh `build-<B>/sdkconfig`; the baseline files are in `firmware/build-baseline/` (git-ignored). A fresh checkout needs `idf.py set-target esp32s3` before `idf.py bmgr` (the `bmgr` subcommand only exists once the component manager has fetched esp_board_manager); that command rewrites `firmware/dependencies.lock` (esp_boards 0.7.2 to 0.7.3, drops esp_io_expander), so the lock was restored with `git checkout` and is not part of any commit.
+
+- **V1 confirmed.** With `boards/common/partitions/.probe` present, `idf.py bmgr -c ../boards -b waveshare_esp32_s3_touch_amoled_2_16` exits 0, prints no `Skipping invalid board` (or any "invalid board") warning, and `components/gen_bmgr_codes/CMakeLists.txt` lists nothing under `boards/common/`.
+- **V2 confirmed.** The generated configs hold every value the kit will read:
+  - 2.16: display `reset_gpio_num = 39`, `cs_gpio_num = 12`; touch `rst_gpio_num = 40`, `int_gpio_num = 11`; audio `pa_peripheral.port = 46`; SD `mount_point = "/sd"`; the periph config also has a `gpio` peripheral with `gpio_num = 46`.
+  - 1.75C: display `reset_gpio_num = 1`, `cs_gpio_num = 12`; touch `rst_gpio_num = 2`, `int_gpio_num = 11`; `pa_peripheral.port = 46`; no SD device (as expected).
+- **V3 confirmed.** `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y` and `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y` in both baseline sdkconfigs.
+- **Baselines.**
+
+| Board | Image (`wisp.bin`) | Smallest app slot | Used | Partition table sha256 |
+|---|---|---|---|---|
+| 2.16 | 0x38d580 (3,724,672 B) | 0x480000 | 78.9% (21% free) | `b36c4bd8a170942f37688a3bf5cee8c1420f32b52ae4949b9e56696c2f1c659a` |
+| 1.75C | 0x37cb70 (3,656,560 B) | 0x5f0000 | 58.7% (41% free) | `5fa9b1c82c2cfe7fc2dc8643b7a9dd8247d4f1c75d94459fc631c90bc9f2cba2` |
+
