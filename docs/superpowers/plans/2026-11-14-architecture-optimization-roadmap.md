@@ -45,6 +45,7 @@ Order follows two rules: fix user-visible defects first; then build the primitiv
 | K | Voice protocol interfaces | spec first | B | M |
 | L | Composition root, layering DAG and core split | spec first | D, E | L |
 | M | Shell page stack and SceneRuntime split | plan | I | M |
+| N | E-paper and monochrome displays (added 2026-11-18, not scheduled) | spec first | H, M | L |
 
 A, C, G and H have no mutual dependencies and can run in parallel worktrees.
 
@@ -178,6 +179,16 @@ Decisions for the spec:
 
 - `shell::PageStack`: pages implement `build`, `root`, `can_swipe(dir)`, `on_back`; drags run between the top two entries. Home and the scene view are the bottom entries. `ConversationController`'s booleans become an explicit phase enum.
 - `SceneRuntime` loses `AgentLuaHost` and `SceneToolHost` to their own classes behind a `SlotHost` interface (service wiring already moved to modules in phase I).
+
+### N. E-paper and monochrome displays (spec first; added 2026-11-18, not scheduled)
+
+Phase H3 makes `Display` caps `pixel_format` the format of the buffers `flush()` receives; a panel whose native format differs only by colour packing (for example RGB888) declares `rgb565` and converts in its driver. E-paper and monochrome panels need more than a conversion (device-model spec 9.2):
+
+- **Rendering.** A 1/2/4-bit buffer format: either LVGL renders at that depth (`LV_COLOR_DEPTH` is global, so this needs a per-build choice or a separate draw path), or `flush()` thresholds/dithers RGB565. The spec picks one after measuring both.
+- **Refresh.** The reserved `render_mode: "full"`; for e-paper, refresh pacing, partial versus full updates and ghosting control, with the shell and scenes told the panel is slow (no animations, no per-frame updates; `WISP_PERF` baselines of their own).
+- **Theme.** A theme without animations or grey gradients, readable at 1 bit; system UI and the example scenes checked with it.
+- **Standby.** An e-paper panel keeps its image unpowered: screen-off and standby semantics (what the last frame shows, whether the wisp is drawn) are defined, and phase F's levels take it into account.
+- **Scenes.** `wisp.device.info()` reports the format and refresh class so scenes can adapt.
 
 ## Open decisions for the owner
 
