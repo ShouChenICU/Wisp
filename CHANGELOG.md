@@ -4,6 +4,11 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 
 ## Unreleased
 
+### Features
+
+- Boards with navigation keys (roles `nav_prev`/`nav_next`/`nav_ok`/`nav_back`) answer system dialogs, go back and walk the settings list without touch; the simulator has them with `--nav-keys`.
+- A display whose buffer format the UI cannot render yet (anything but RGB565) is left dark and the boot report notes `display`; the rest of the device keeps working.
+
 ### Changes
 
 - Chip adapters live with their drivers: the AXP2101, PCF85063 and QMI8658 Wisp devices moved from the ESP port into `drivers/<chip>/wisp/` (namespace `wisp::drivers`), and each board lists its drivers in `boards/<board>/board.cmake`. The ESP port requires no driver and names no device id; the board passes every id and role.

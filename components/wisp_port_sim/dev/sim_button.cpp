@@ -19,17 +19,7 @@ wisp::Result<void> SimButton::set_edge_sink(wisp::hal::ButtonEdgeSink sink) {
     return input_->set_button_sink(kind_, this, sink);
 }
 
-bool SimButton::pressed() {
-    switch (kind_) {
-        case Kind::Power:
-            return input_->power_pressed();
-        case Kind::VolUp:
-            return input_->vol_up_pressed();
-        case Kind::VolDown:
-            return input_->vol_down_pressed();
-    }
-    return false;
-}
+bool SimButton::pressed() { return input_->button_pressed(kind_); }
 
 wisp::Result<void> SimButton::set_power(wisp::hal::PowerLevel /*level*/) {
     return wisp::Result<void>::ok();

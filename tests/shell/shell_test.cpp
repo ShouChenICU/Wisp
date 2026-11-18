@@ -13,6 +13,7 @@
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "wisp/core/event_bus.hpp"
+#include "wisp/core/log.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/scene/scene_runtime.hpp"
@@ -369,4 +370,101 @@ TEST(Shell, DestroyedWithoutStopHearsNoMoreEvents) {
     wisp::test::run_on_ui_blocking(&ui, [&] { layer.reset(); });
     bus.stop();
     ui.stop();
+}
+
+namespace {
+
+// The seq of the last "shell: page ..." line, 0 without one.
+uint32_t last_page_log() {
+    uint32_t seq = 0;
+    for (const auto& e : wisp::log::ring_entries())
+        if (e.tag == "shell" && e.msg.rfind("page ", 0) == 0) seq = e.seq;
+    return seq;
+}
+
+}  // namespace
+
+// The back key with nothing of the layer's up: the shell's own page back,
+// posted, one step per press.
+TEST(ShellTest, BackKeyLeavesASubPage) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.shell().show(Page::Settings);
+        EXPECT_TRUE(f.layer().nav_back());
+    });
+    f.on_ui([&] {
+        EXPECT_EQ(f.shell().page(), Page::Home);
+        EXPECT_EQ(f.shell().page_screen(), nullptr);
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+    });
+}
+
+TEST(ShellTest, BackKeyClosesAChoicePageFirst) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.shell().show(Page::Settings);
+        f.shell().open_choice({.labels = {"a", "b"}, .on_pick = [](size_t) {}});
+        ASSERT_NE(f.shell().choice_page(), nullptr);
+        f.layer().nav_back();
+    });
+    f.on_ui([&] {
+        EXPECT_EQ(f.shell().choice_page(), nullptr);
+        EXPECT_EQ(f.shell().page(), Page::Settings);
+        EXPECT_EQ(lv_screen_active(), f.shell().page_screen());
+        f.layer().nav_back();
+    });
+    f.on_ui([&] { EXPECT_EQ(f.shell().page(), Page::Home); });
+}
+
+TEST(ShellTest, BackOnHomeDoesNothing) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    uint32_t logged = 0;
+    f.on_ui([&] {
+        f.shell().start();
+        logged = last_page_log();
+        EXPECT_FALSE(f.shell().back());
+        f.layer().nav_back();
+    });
+    f.on_ui([&] {
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+        EXPECT_EQ(f.shell().page(), Page::Home);
+        EXPECT_EQ(last_page_log(), logged);
+    });
+}
+
+// The diagnostics go through the shell's back handler, which the layer
+// runs before its fallback.
+TEST(ShellTest, BackKeyClosesTheDiagnostics) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.shell().open_diagnostics();
+        ASSERT_TRUE(f.shell().diagnostics_open());
+        EXPECT_TRUE(f.layer().nav_back());
+    });
+    f.on_ui([&] {
+        EXPECT_FALSE(f.shell().diagnostics_open());
+        EXPECT_EQ(f.closes, 1);
+        EXPECT_EQ(lv_screen_active(), f.shell().home_screen());
+    });
+}
+
+// stop() takes the fallback away, and a back still queued does nothing.
+TEST(ShellTest, BackKeyAfterStopDoesNothing) {
+    ShellFixture f("rect");
+    ASSERT_TRUE(f.started());
+    f.on_ui([&] {
+        f.shell().start();
+        f.shell().show(Page::Settings);
+        EXPECT_TRUE(f.layer().nav_back());
+        f.shell().stop();
+        EXPECT_FALSE(f.layer().nav_back());
+    });
+    f.on_ui([&] { EXPECT_EQ(f.shell().home_screen(), nullptr); });
 }

@@ -51,6 +51,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 | `--data-dir <dir>` | データディレクトリ（既定は `./sim-data`） |
 | `--web-dir <dir>` | ソースツリーから直接管理画面を配信。編集後はリロードするだけ |
 | `--no-sd` / `--disable <id>` / `--wifi-fail` | SD カードなし、デバイスの故障、ルーターに届かない状態を再現 |
+| `--nav-keys` | キー操作用に 4 つのキーボードボタンを追加: Page Up / Page Down または Tab / Return / Escape または Backspace |
 | `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | 指定時刻にタップ・スワイプ |
 
 </details>

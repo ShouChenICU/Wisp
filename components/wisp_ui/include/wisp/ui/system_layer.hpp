@@ -51,6 +51,22 @@
 //     backdrop is marked (the backdrop is translucent), so while a dialog
 //     is open nothing under it skips a redraw; dialogs are rare and short.
 //
+// Key navigation (device-model spec 9.1, wisp/ui/key_nav.hpp): the nav
+// keys move a focus group that holds only what is in front, its "scope":
+// the open dialog, else the error card, else the panel's content box
+// while it rests open, else the active screen. Nothing under a dialog or
+// on a screen that is not loaded is ever focused. A dialog opens with its
+// safe answer (No, the error card's Back) focused, so a stray OK never
+// confirms. Anywhere else (the screen, the panel) a focus is chosen only
+// in response to a key, or given back: closing a dialog, the error card
+// or the panel gives back a focus a key had shown on the screen, and
+// otherwise leaves the group unfocused, because focusing scrolls a list
+// to the object and tells it (a textarea brings up the keyboard, a scene
+// hears it). The next key then focuses the scope's first enabled object.
+// A Next, Prev or OK press that finds the focus not shown yet (on a board
+// with touch a focus set in code is not) or that chose the focus itself
+// only shows it: it neither moves nor activates.
+//
 // Every member is UI thread only, like every lv_* call.
 
 #include <cstdint>
@@ -65,6 +81,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/ui/drag.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/strings.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -349,6 +366,33 @@ public:
     // callback.
     void close_confirm(lv_obj_t* box);
 
+    // The focus group the nav keys move (UiRuntime::nav_group()); the layer
+    // fills it with what is in front. nullptr turns key navigation off.
+    // Set once after construction; cleared before destruction.
+    void set_nav_group(lv_group_t* group);
+    // The nav-key hook's body (UiRuntime::set_nav_key_hook()): returns
+    // whether the entry is consumed, so LVGL never sees it. A press first
+    // brings the scope up to date. Back's press calls nav_back(), and both
+    // its edges are consumed. Next, Prev and OK are consumed when nothing
+    // is in scope, and when the focus is not shown yet: they then only
+    // show it and scroll it into view. Otherwise LVGL moves the focus or
+    // activates it. A release is consumed exactly when its press was; a
+    // press that never gets its release is tolerated.
+    bool on_nav_key(NavKey key, bool pressed);
+    // What the back key does (device-model spec 9.1): the first of these
+    // that applies, and only that one. A confirm dialog from
+    // open_confirm() is answered no, as its No button does; the error
+    // card's Back; the keyboard hides; the panel, resting open, slides
+    // shut (while it moves, nothing); the back handler; the fallback. A
+    // form from open_dialog() is its owner's to close, so Back passes it
+    // by. Returns false when nothing applied. From a key it runs inside
+    // the keypad's read callback, so whatever it calls must not delete the
+    // screen in front: the fallback, for one, posts its work.
+    bool nav_back();
+    // What nav_back() does when nothing of the layer's applies (the
+    // shell's page back); empty: nothing.
+    void set_nav_back_fallback(std::function<void()> fallback);
+
     // Moves every piece that is up to the front of the top layer, from
     // the bottom: the banner, the panel, the error panel, the
     // keyboard, the back arrow and the dialog (with its backdrop). Whoever
@@ -447,6 +491,24 @@ private:
     // of its own events, on the next timer pass.
     void discard_keyboard(bool now);
 
+    // Brings the focus group up to what is in front (see the header
+    // comment). Rebuilds it only when the scope's focusable objects
+    // changed; a rebuild keeps the focused object, shown or not, when it
+    // is still in scope. Else it focuses a dialog's safe answer or the
+    // error card's Back, or gives back a screen focus a key had shown;
+    // anything else is focused only `by_key` (the first enabled object,
+    // also when the group was left without a focus).
+    void rescope(bool by_key = false);
+    bool take_nav_key(NavKey key);
+    // The nav group's focus callback: shows a focus the keys moved
+    // (ui::show_focus()).
+    static void nav_focus_cb(lv_group_t* group);
+    // A key LVGL's keypad holds down was pressed on `was_focused`, and the
+    // focus has moved since: LVGL acts on whatever is focused when the key
+    // is released or repeats, so it is told to wait for the release
+    // instead, and `was_focused` loses its pressed state.
+    void drop_held_key(lv_obj_t* was_focused);
+
     static void error_btn_cb(lv_event_t* e);
     static void key_cb(lv_event_t* e);
     static void kb_done_cb(lv_event_t* e);
@@ -475,6 +537,7 @@ private:
     lv_obj_t* error_panel_ = nullptr;  // the card
     lv_obj_t* error_backdrop_ = nullptr;
     lv_obj_t* error_reload_ = nullptr;
+    lv_obj_t* error_back_ = nullptr;
     std::function<void()> on_reload_;
     std::function<void()> on_error_back_;
 
@@ -489,6 +552,7 @@ private:
 
     lv_obj_t* confirm_box_ = nullptr;
     lv_obj_t* confirm_yes_ = nullptr;
+    lv_obj_t* confirm_no_ = nullptr;
     std::function<void(bool)> on_answer_;
 
     PanelHandlers panel_handlers_;
@@ -521,6 +585,18 @@ private:
     std::function<void(int)> banner_action_;
     lv_timer_t* banner_timer_ = nullptr;
     int banner_event_depth_ = 0;
+
+    lv_group_t* nav_group_ = nullptr;
+    std::function<void()> nav_back_fallback_;
+    bool scope_is_screen_ = true;
+    // What had the focus on the screen when a dialog, the error card or
+    // the panel took the scope, and whether it was shown; given back once
+    // the scope is the screen again, if it was shown (rescope()).
+    lv_obj_t* screen_focus_ = nullptr;
+    bool screen_focus_shown_ = false;
+    bool key_consumed_ = false;  // the last press was consumed
+    // What was focused when LVGL was last given an OK press.
+    lv_obj_t* ok_pressed_on_ = nullptr;
 };
 
 namespace detail {

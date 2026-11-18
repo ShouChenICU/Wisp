@@ -71,6 +71,8 @@ struct SimOptions {
     // wisp_background(panel)), cycling its moods (spec 6.1), in front of
     // the home screen.
     bool wisp_demo = false;
+    // Registers four keyboard buttons with the nav_* roles (SimBoardConfig).
+    bool nav_keys = false;
 };
 
 // Parses argv[1..argc) (argv[0], the program name, is ignored) into a
@@ -82,7 +84,7 @@ struct SimOptions {
 // --swipe <x1>,<y1>,<x2>,<y2>@<ms> (both repeatable, appended to
 // `touches` in order), --scenes-dir <path>, --open-scene <id>,
 // --font-image <path|none>, --glyph-image <path|none>, --imu-script
-// <path> and --wisp-demo.
+// <path>, --wisp-demo and --nav-keys.
 //
 // Fails with wisp::ErrorCode::InvalidArgument if:
 //   - an argument is none of the flags above (the error message includes

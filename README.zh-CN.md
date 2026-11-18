@@ -51,6 +51,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 | `--data-dir <dir>` | 数据目录，默认 `./sim-data` |
 | `--web-dir <dir>` | 直接从源码目录提供后台网页，改完刷新即可 |
 | `--no-sd` / `--disable <id>` / `--wifi-fail` | 模拟没插卡、某个设备坏了、连不上路由器 |
+| `--nav-keys` | 增加四个键盘按键用于按键导航：Page Up / Page Down 或 Tab / Return / Escape 或 Backspace |
 | `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | 在指定时间点击或滑动 |
 
 </details>

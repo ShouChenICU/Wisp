@@ -404,17 +404,34 @@ Result<void> App::start() {
         ui_config.font_image = impl_->platform.font_image;
         ui_config.glyph_image = impl_->platform.glyph_image;
         ui_config.builtin_glyphs = impl_->platform.builtin_glyphs;
+        ui_config.keypad = has_nav_keys(impl_->registry);
+        const bool keypad = ui_config.keypad;
         impl_->ui = std::make_unique<ui::UiRuntime>(display, touch, std::move(ui_config));
-        if (!impl_->ui->start()) {
+        auto ui_started = impl_->ui->start();
+        if (!ui_started) {
             WLOG_E("app", "UiRuntime failed to start; continuing headless");
             impl_->ui.reset();
             impl_->report.set_note("mode", "headless");
+            if (ui_started.error().code == ErrorCode::Unsupported) {
+                impl_->report.set_note("display", "unsupported_pixel_format");
+            }
         } else {
             // Before anything that shows on the top layer (the self-check
             // screen and its dialogs, later the scenes).
             shape = display_shape(*display);
-            impl_->ui->run_blocking(
-                [&] { impl_->system_layer = std::make_unique<ui::SystemLayer>(shape); });
+            impl_->ui->run_blocking([&] {
+                impl_->system_layer = std::make_unique<ui::SystemLayer>(shape);
+                impl_->system_layer->set_nav_group(impl_->ui->nav_group());
+            });
+            // The layer sees every key before LVGL does (Back, a focus not
+            // shown yet); it lives until stop() has removed the hook.
+            ui::SystemLayer* layer = impl_->system_layer.get();
+            impl_->ui->set_nav_key_hook(
+                [layer](ui::NavKey key, bool pressed) { return layer->on_nav_key(key, pressed); });
+            if (keypad) {
+                impl_->nav_keys =
+                    std::make_unique<NavKeys>(impl_->registry, impl_->buttons, *impl_->ui);
+            }
         }
     } else {
         impl_->report.set_note("mode", "headless");
@@ -970,6 +987,8 @@ void App::stop() {
     // the diagnostics are still up before touching them.
     // The console first: its commands reach the net services.
     stop_console(*this);
+    // No key reaches the UI while it is torn down.
+    impl_->nav_keys.reset();
     // The capsule, the panel and the banners let go of the router and the
     // system layer.
     if (impl_->status_shell) {
@@ -1014,9 +1033,14 @@ void App::stop() {
     impl_->duties.reset();
     // Closed with the shell; this catches one opened without it.
     stop_self_check(impl_->self_check);
-    // After the duties, which close their dialogs through it.
+    // After the duties, which close their dialogs through it. The key
+    // hook, which reaches it, goes first.
     if (impl_->ui && impl_->system_layer) {
-        impl_->ui->run_blocking([&] { impl_->system_layer.reset(); });
+        impl_->ui->set_nav_key_hook({});
+        impl_->ui->run_blocking([&] {
+            impl_->system_layer->set_nav_group(nullptr);
+            impl_->system_layer.reset();
+        });
     }
     // A confirmed factory reset still running uses the bus, storage and
     // the net services; let it finish (it ends in Platform::reboot).
@@ -1172,7 +1196,7 @@ void App::stop() {
     impl_->power_monitor.reset();
 
     // State-cell, inbox and button-listener owners rely on this order:
-    // voice (its talk key) -> shell -> duties -> power manager -> buttons
+    // nav keys -> voice (its talk key) -> shell -> duties -> power manager -> buttons
     // -> ui -> bus, so button listeners are removed before ButtonService
     // stops, UI-dispatched subscriptions and inboxes are released before
     // the UI runtime goes and cells and inboxes before the bus

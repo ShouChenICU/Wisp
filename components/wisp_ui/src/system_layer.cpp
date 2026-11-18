@@ -215,6 +215,9 @@ void SystemLayer::set_clock(std::function<uint64_t()> now_ms) { now_ms_ = std::m
 uint64_t SystemLayer::now_ms() const { return now_ms_ ? now_ms_() : lv_tick_get(); }
 
 SystemLayer::~SystemLayer() {
+    // Nothing to rescope while the pieces go.
+    if (nav_group_ != nullptr) lv_group_set_focus_cb(nav_group_, nullptr);
+    nav_group_ = nullptr;
     close_confirm(confirm_box_);
     hide_error();
     discard_keyboard(true);
@@ -628,7 +631,7 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
         lv_obj_t* btn =
             add_dialog_button(row, tr(id), reload ? ButtonRole::Primary : ButtonRole::Secondary);
         lv_obj_add_event_cb(btn, &SystemLayer::error_btn_cb, LV_EVENT_CLICKED, this);
-        if (reload) error_reload_ = btn;
+        (reload ? error_reload_ : error_back_) = btn;
     }
 
     // Too tall for the safe area: the card stops at its height and the
@@ -650,6 +653,7 @@ void SystemLayer::show_error(ErrorPanelInfo info, std::function<void()> on_reloa
     // buttons where they are drawn.
     lv_obj_update_layout(card);
     raise();
+    rescope();
 }
 
 void SystemLayer::hide_error() {
@@ -659,8 +663,10 @@ void SystemLayer::hide_error() {
     error_panel_ = nullptr;
     error_backdrop_ = nullptr;
     error_reload_ = nullptr;
+    error_back_ = nullptr;
     on_reload_ = nullptr;
     on_error_back_ = nullptr;
+    rescope();
 }
 
 void SystemLayer::error_btn_cb(lv_event_t* e) {
@@ -900,7 +906,9 @@ lv_obj_t* SystemLayer::open_confirm(StrId title, const std::string& text,
     lv_obj_update_layout(box);
     confirm_box_ = box;
     confirm_yes_ = yes;
+    confirm_no_ = no;
     on_answer_ = std::move(on_answer);
+    rescope();
     return box;
 }
 
@@ -908,6 +916,9 @@ lv_obj_t* SystemLayer::open_dialog() {
     if (confirm_box_) return nullptr;
     confirm_box_ = lv_msgbox_create(nullptr);
     lv_obj_set_width(confirm_box_, std::min(kConfirmMaxWidth, width_of(safe_)));
+    // Still empty: the first key press after the owner fills it scopes
+    // the form.
+    rescope();
     return confirm_box_;
 }
 
@@ -916,7 +927,9 @@ void SystemLayer::close_confirm(lv_obj_t* box) {
     lv_msgbox_close(box);
     confirm_box_ = nullptr;
     confirm_yes_ = nullptr;
+    confirm_no_ = nullptr;
     on_answer_ = nullptr;
+    rescope();
 }
 
 void SystemLayer::confirm_btn_cb(lv_event_t* e) {
@@ -926,6 +939,234 @@ void SystemLayer::confirm_btn_cb(lv_event_t* e) {
     std::function<void(bool)> on_answer = std::move(self->on_answer_);
     self->close_confirm(self->confirm_box_);
     if (on_answer) on_answer(yes);
+}
+
+// --- Key navigation ---
+
+void SystemLayer::set_nav_group(lv_group_t* group) {
+    if (nav_group_ != nullptr) lv_group_set_focus_cb(nav_group_, nullptr);
+    nav_group_ = group;
+    if (group != nullptr) {
+        lv_group_set_user_data(group, this);
+        lv_group_set_focus_cb(group, &SystemLayer::nav_focus_cb);
+    }
+    scope_is_screen_ = true;
+    screen_focus_ = nullptr;
+    key_consumed_ = false;
+    rescope();
+}
+
+bool SystemLayer::on_nav_key(NavKey key, bool pressed) {
+    // LVGL's keypad must see a release exactly when it saw the press: a
+    // press it saw without its release would stay down (repeat, long
+    // press), a release it never saw the press of would click.
+    if (!pressed) {
+        // Back's release too, whether or not its press was seen: LVGL is
+        // never given Back.
+        const bool consumed = std::exchange(key_consumed_, false) || key == NavKey::Back;
+        // The focus may have moved without a rescope (LVGL refocuses when
+        // the focused object is deleted).
+        if (!consumed && key == NavKey::Ok && nav_group_ != nullptr &&
+            lv_group_get_focused(nav_group_) != ok_pressed_on_) {
+            drop_held_key(ok_pressed_on_);
+        }
+        ok_pressed_on_ = nullptr;
+        return consumed;
+    }
+    if (key == NavKey::Back) {
+        // Set first: nav_back() runs callbacks.
+        key_consumed_ = true;
+        ok_pressed_on_ = nullptr;
+        nav_back();
+        return true;
+    }
+    key_consumed_ = take_nav_key(key);
+    ok_pressed_on_ = !key_consumed_ && key == NavKey::Ok && nav_group_ != nullptr
+                         ? lv_group_get_focused(nav_group_)
+                         : nullptr;
+    return key_consumed_;
+}
+
+bool SystemLayer::nav_back() {
+    if (confirm_no_ != nullptr) {
+        // As the No button: closed first, so the answer may open the next
+        // dialog.
+        std::function<void(bool)> on_answer = std::move(on_answer_);
+        close_confirm(confirm_box_);
+        if (on_answer) on_answer(false);
+        return true;
+    }
+    if (error_panel_ != nullptr) {
+        std::function<void()> on_back = std::move(on_error_back_);
+        hide_error();
+        if (on_back) on_back();
+        return true;
+    }
+    if (kb_ != nullptr) {
+        hide_keyboard();
+        return true;
+    }
+    if (panel_ != nullptr) {
+        // A moving sheet is already on its way; the press is still the
+        // panel's, so nothing under it goes back too.
+        if (motion_ == PanelMotion::Still) slide_panel(false);
+        return true;
+    }
+    // Copies: either may replace or clear itself.
+    if (on_back_) {
+        std::function<void()> on_back = on_back_;
+        on_back();
+        return true;
+    }
+    if (nav_back_fallback_) {
+        std::function<void()> fallback = nav_back_fallback_;
+        fallback();
+        return true;
+    }
+    return false;
+}
+
+void SystemLayer::set_nav_back_fallback(std::function<void()> fallback) {
+    nav_back_fallback_ = std::move(fallback);
+}
+
+void SystemLayer::drop_held_key(lv_obj_t* was_focused) {
+    lv_indev_t* keypad = nullptr;
+    for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i)) {
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_KEYPAD && lv_indev_get_group(i) == nav_group_) {
+            keypad = i;
+            break;
+        }
+    }
+    if (keypad == nullptr || keypad->keypad.last_state != LV_INDEV_STATE_PRESSED) return;
+    // Consuming the release instead would leave the key down in LVGL.
+    // Waiting skips the held reads (no repeat, no long press) and the
+    // release itself.
+    lv_indev_wait_release(keypad);
+    if (was_focused != nullptr && lv_obj_is_valid(was_focused) &&
+        lv_obj_has_state(was_focused, LV_STATE_PRESSED)) {
+        lv_obj_send_event(was_focused, LV_EVENT_PRESS_LOST, keypad);
+    }
+}
+
+bool SystemLayer::take_nav_key(NavKey key) {
+    if (nav_group_ == nullptr) return false;
+    lv_obj_t* before = lv_group_get_focused(nav_group_);
+    const bool shown = before != nullptr && lv_obj_has_state(before, LV_STATE_FOCUS_KEY);
+    rescope(true);
+    lv_obj_t* now = lv_group_get_focused(nav_group_);
+    if (now == nullptr) return true;
+    // A focus this press's rescope chose was never seen either, although
+    // LVGL marks it as a key focus (the keypad is the active input device
+    // here): it too is only shown.
+    if (now == before && shown) return false;
+    lv_obj_add_state(now, static_cast<lv_state_t>(LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY));
+    lv_obj_scroll_to_view_recursive(now, LV_ANIM_ON);
+    show_focus(nav_group_, now, shape_);
+    return true;
+}
+
+void SystemLayer::nav_focus_cb(lv_group_t* group) {
+    auto* self = static_cast<SystemLayer*>(lv_group_get_user_data(group));
+    lv_obj_t* obj = lv_group_get_focused(group);
+    // A key move (lv_group_focus_next()/prev()) calls this after the
+    // object's FOCUSED event, whose scroll_to_view this corrects. A focus
+    // set in code (lv_group_focus_obj()) calls it before the event, whose
+    // scroll would undo the correction; take_nav_key() shows that focus.
+    if (self == nullptr || obj == nullptr || !lv_obj_has_state(obj, LV_STATE_FOCUSED)) return;
+    show_focus(group, obj, self->shape_);
+}
+
+void SystemLayer::rescope(bool by_key) {
+    lv_group_t* g = nav_group_;
+    if (g == nullptr) return;
+    lv_obj_t* root = lv_screen_active();
+    lv_obj_t* first_choice = nullptr;
+    if (confirm_box_ != nullptr) {
+        root = confirm_box_;
+        first_choice = confirm_no_;
+    } else if (error_panel_ != nullptr) {
+        root = error_panel_;
+        first_choice = error_back_;
+    } else if (panel_ != nullptr && motion_ == PanelMotion::Still) {
+        root = panel_;
+    }
+    const bool is_screen = root == lv_screen_active();
+    lv_obj_t* focused = lv_group_get_focused(g);
+    if (scope_is_screen_ && !is_screen) {
+        screen_focus_ = focused;
+        screen_focus_shown_ = focused != nullptr && lv_obj_has_state(focused, LV_STATE_FOCUS_KEY);
+    }
+    scope_is_screen_ = is_screen;
+    // Given back at most once, whether or not the screen changed meanwhile.
+    lv_obj_t* remembered = is_screen ? std::exchange(screen_focus_, nullptr) : nullptr;
+
+    std::vector<lv_obj_t*> objs;
+    collect_focusable(root, objs);
+    const uint32_t count = lv_group_get_obj_count(g);
+    bool same = count == objs.size();
+    for (uint32_t i = 0; same && i < count; ++i) same = lv_group_get_obj_by_index(g, i) == objs[i];
+    // A group left without a focus (nothing was chosen yet, or everything
+    // in scope was disabled) is not done until a key chooses one.
+    if (same && (focused != nullptr || (!by_key && first_choice == nullptr))) return;
+
+    auto in_scope = [&](lv_obj_t* obj) {
+        return obj != nullptr && std::find(objs.begin(), objs.end(), obj) != objs.end();
+    };
+    const bool keep = in_scope(focused);
+    // Kept, it is never defocused: no FOCUSED/DEFOCUSED events (a
+    // textarea's would show and hide the keyboard) and its key focus
+    // stays as it was.
+    if (keep) g->obj_focus = nullptr;
+    if (!same) {
+        lv_group_remove_all_objs(g);
+        // Frozen, the first object added is not focused on its own.
+        lv_group_focus_freeze(g, true);
+        for (lv_obj_t* obj : objs) lv_group_add_obj(g, obj);
+        lv_group_focus_freeze(g, false);
+    }
+    if (keep) {
+        for (auto* node = static_cast<lv_obj_t**>(lv_ll_get_head(&g->obj_ll)); node != nullptr;
+             node = static_cast<lv_obj_t**>(lv_ll_get_next(&g->obj_ll, node))) {
+            if (*node == focused) {
+                g->obj_focus = node;
+                break;
+            }
+        }
+        return;
+    }
+
+    // Also with nothing focused: closing a dialog or the error card deletes
+    // its focused button first, which leaves the group without a focus.
+    drop_held_key(focused);
+    lv_obj_t* target = in_scope(first_choice) ? first_choice : nullptr;
+    bool restored = false;
+    // Focusing scrolls the object into view and tells it (a textarea
+    // brings up the keyboard, a scene hears it): only a key, or a focus a
+    // key chose before, may do that to a list the finger left elsewhere.
+    if (target == nullptr && in_scope(remembered) && (screen_focus_shown_ || by_key)) {
+        target = remembered;
+        restored = true;
+    }
+    if (target == nullptr && by_key) {
+        for (lv_obj_t* obj : objs) {
+            if (!lv_obj_has_state(obj, LV_STATE_DISABLED)) {
+                target = obj;
+                break;
+            }
+        }
+    }
+    if (target == nullptr) return;
+    // LVGL marks it as a key focus when the keypad is the input device at
+    // work, or the only one; else (a touch, or code) it is not shown yet.
+    lv_group_focus_obj(target);
+    if (restored) {
+        if (screen_focus_shown_) {
+            lv_obj_add_state(target, LV_STATE_FOCUS_KEY);
+        } else {
+            lv_obj_remove_state(target, LV_STATE_FOCUS_KEY);
+        }
+    }
 }
 
 // --- Stacking ---

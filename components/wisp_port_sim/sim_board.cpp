@@ -119,6 +119,24 @@ void SimBoard::init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport
         return std::make_shared<SimButton>("button.vol_down", SimButton::Kind::VolDown, input_,
                                            role::kTalk);
     });
+    if (config_.nav_keys) {
+        struct NavKey {
+            const char* id;
+            SimButton::Kind kind;
+            const char* role;
+        };
+        const NavKey nav[] = {
+            {"button.nav_prev", SimButton::Kind::NavPrev, role::kNavPrev},
+            {"button.nav_next", SimButton::Kind::NavNext, role::kNavNext},
+            {"button.nav_ok", SimButton::Kind::NavOk, role::kNavOk},
+            {"button.nav_back", SimButton::Kind::NavBack, role::kNavBack},
+        };
+        for (const auto& key : nav) {
+            make_or_fail(key.id, wisp::hal::DeviceClass::Button, [&] {
+                return std::make_shared<SimButton>(key.id, key.kind, input_, key.role);
+            });
+        }
+    }
     make_or_fail("haptic.main", wisp::hal::DeviceClass::Other,
                  [&] { return std::make_shared<SimHaptic>("haptic.main", role::kMain); });
     make_or_fail("net.wifi", wisp::hal::DeviceClass::Network, [&] {

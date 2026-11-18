@@ -130,7 +130,8 @@ wisp_test(NAME ui_runtime_test SRCS ui/ui_runtime_test.cpp LIBS wisp_ui wisp_por
 wisp_test(NAME ui_cells_test SRCS ui/ui_cells_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME overlay_test SRCS ui/overlay_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME a8_font_test SRCS ui/a8_font_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
-wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME system_layer_test SRCS ui/system_layer_test.cpp
+          LIBS wisp_ui wisp_port_sim_dev wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME system_notice_test SRCS ui/system_notice_test.cpp LIBS wisp_ui wisp_port_sim_os)
 wisp_test(NAME theme_test SRCS ui/theme_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME wisp_model_test SRCS ui/wisp_model_test.cpp LIBS wisp_ui wisp_port_sim_os TIMEOUT 60)
@@ -161,6 +162,8 @@ target_compile_definitions(vector_font_test PRIVATE WISP_FONT_IMAGE="${CMAKE_BIN
 wisp_test(NAME app_boot_test SRCS app/app_boot_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 30)
 target_include_directories(app_boot_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+wisp_test(NAME nav_keys_test SRCS app/nav_keys_test.cpp LIBS wisp_app wisp_port_sim_os TIMEOUT 30)
+target_include_directories(nav_keys_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 wisp_test(NAME power_key_controller_test SRCS app/power_key_controller_test.cpp LIBS wisp_app)
 wisp_test(NAME power_manager_test SRCS app/power_manager_test.cpp
           LIBS wisp_app wisp_ui wisp_core wisp_hal wisp_port_sim_os wisp_port_sim_settings
@@ -398,7 +401,7 @@ wisp_test(NAME shell_history_test SRCS shell/history_test.cpp LIBS wisp_shell wi
 wisp_test(NAME shell_scene_list_test SRCS shell/scene_list_test.cpp shell/scene_recents_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME shell_settings_page_test SRCS shell/settings_page_test.cpp shell/connections_page_test.cpp
-          LIBS wisp_shell wisp_port_sim_os TIMEOUT 60)
+          LIBS wisp_shell wisp_port_sim_dev wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME shell_subpage_shapes_test SRCS shell/subpage_shapes_test.cpp
           LIBS wisp_shell wisp_port_sim_os TIMEOUT 90)
 wisp_test(NAME shell_page_drag_test SRCS shell/page_drag_test.cpp LIBS wisp_shell wisp_port_sim_os

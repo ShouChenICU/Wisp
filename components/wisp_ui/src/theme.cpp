@@ -63,6 +63,11 @@ struct Styles {
     // A dropdown list's highlighted row (pressed or selected).
     lv_style_t list_row;
     lv_style_t chart;
+    // Key focus (wisp/ui/key_nav.hpp): a ring just outside a widget, and
+    // the fill (on a two-tone panel the outline) of a focusable row.
+    lv_style_t focus_ring;
+    lv_style_t focus_row;
+    lv_style_t focus_row_mono;
 };
 
 // The theme's state. lv_init() starts each UiRuntime run with no theme,
@@ -178,14 +183,32 @@ void init_styles(Styles& s) {
     lv_style_set_bg_opa(&s.list_row, LV_OPA_COVER);
     lv_style_set_text_color(&s.list_row, col(kText));
     lv_style_set_line_color(&s.chart, col(kBorder));
+
+    // Drawn outside the widget, so a filled button keeps its own colours;
+    // the pad leaves a gap that tells the ring from the fill.
+    lv_style_set_outline_width(&s.focus_ring, kFocusRingWidth);
+    lv_style_set_outline_pad(&s.focus_ring, kFocusRingPad);
+    lv_style_set_outline_color(&s.focus_ring, col(kAccentStrong));
+    lv_style_set_outline_opa(&s.focus_ring, LV_OPA_COVER);
+    lv_style_set_bg_color(&s.focus_row, col(kSurface3));
+    lv_style_set_bg_opa(&s.focus_row, LV_OPA_COVER);
+    lv_style_set_radius(&s.focus_row, kRadius);
+    // A two-tone panel draws kSurface3 like the background around it.
+    lv_style_set_border_width(&s.focus_row_mono, 2);
+    lv_style_set_border_color(&s.focus_row_mono, col(kText));
 }
 
 void add_scrollbar(lv_obj_t* obj) { lv_obj_add_style(obj, &g_styles.scrollbar, LV_PART_SCROLLBAR); }
+
+void add_focus_ring(lv_obj_t* obj) {
+    lv_obj_add_style(obj, &g_styles.focus_ring, LV_STATE_FOCUS_KEY);
+}
 
 void style_as_button(lv_obj_t* obj) {
     lv_obj_add_style(obj, &g_styles.btn, 0);
     lv_obj_add_style(obj, &g_styles.btn_checked, LV_STATE_CHECKED);
     lv_obj_add_style(obj, &g_styles.btn_pressed, LV_STATE_PRESSED);
+    add_focus_ring(obj);
 }
 
 // Mirrors the class checks of LVGL's default theme (lv_theme_default.c)
@@ -220,10 +243,12 @@ void apply_cb(lv_theme_t*, lv_obj_t* obj) {
         lv_obj_add_style(obj, &s.track, 0);
         lv_obj_add_style(obj, &s.indicator, LV_PART_INDICATOR);
         lv_obj_add_style(obj, &s.knob, LV_PART_KNOB);
+        if (lv_obj_check_type(obj, &lv_slider_class)) add_focus_ring(obj);
     } else if (lv_obj_check_type(obj, &lv_switch_class)) {
         lv_obj_add_style(obj, &s.track, 0);
         lv_obj_add_style(obj, &s.indicator, sel(LV_PART_INDICATOR, LV_STATE_CHECKED));
         lv_obj_add_style(obj, &s.knob, LV_PART_KNOB);
+        add_focus_ring(obj);
     } else if (lv_obj_check_type(obj, &lv_arc_class) || lv_obj_check_type(obj, &lv_spinner_class)) {
         lv_obj_add_style(obj, &s.arc_track, 0);
         lv_obj_add_style(obj, &s.arc_indicator, LV_PART_INDICATOR);
@@ -231,15 +256,18 @@ void apply_cb(lv_theme_t*, lv_obj_t* obj) {
     } else if (lv_obj_check_type(obj, &lv_checkbox_class)) {
         lv_obj_add_style(obj, &s.cb_marker, LV_PART_INDICATOR);
         lv_obj_add_style(obj, &s.cb_checked, sel(LV_PART_INDICATOR, LV_STATE_CHECKED));
+        add_focus_ring(obj);
     } else if (lv_obj_check_type(obj, &lv_textarea_class)) {
         lv_obj_add_style(obj, &s.field, 0);
         lv_obj_add_style(obj, &s.field_focused, LV_STATE_FOCUSED);
         lv_obj_add_style(obj, &s.placeholder, LV_PART_TEXTAREA_PLACEHOLDER);
         lv_obj_add_style(obj, &s.cursor, sel(LV_PART_CURSOR, LV_STATE_FOCUSED));
         add_scrollbar(obj);
+        add_focus_ring(obj);
     } else if (lv_obj_check_type(obj, &lv_dropdown_class)) {
         lv_obj_add_style(obj, &s.field, 0);
         lv_obj_add_style(obj, &s.field_focused, LV_STATE_PRESSED);
+        add_focus_ring(obj);
     } else if (lv_obj_check_type(obj, &lv_dropdownlist_class)) {
         lv_obj_add_style(obj, &s.field, 0);
         lv_obj_add_style(obj, &s.list_row, LV_PART_SELECTED);
@@ -249,6 +277,7 @@ void apply_cb(lv_theme_t*, lv_obj_t* obj) {
     } else if (lv_obj_check_type(obj, &lv_roller_class)) {
         lv_obj_add_style(obj, &s.field, 0);
         lv_obj_add_style(obj, &s.selected, LV_PART_SELECTED);
+        add_focus_ring(obj);
     } else if (lv_obj_check_type(obj, &lv_msgbox_class)) {
         lv_obj_add_style(obj, &s.msgbox, 0);
     } else if (lv_obj_check_type(obj, &lv_msgbox_backdrop_class)) {
@@ -316,6 +345,10 @@ lv_theme_t* install_theme(lv_display_t* disp, const lv_font_t* font) {
         lv_theme_set_apply_cb(g_theme, &apply_cb);
     }
     return g_theme;
+}
+
+lv_style_t* focus_row_style(bool colour) {
+    return colour ? &g_styles.focus_row : &g_styles.focus_row_mono;
 }
 
 void release_theme() {

@@ -17,6 +17,7 @@
 // "lvgl.h" itself is fine: LVGL itself is portable, and wisp_ui's whole
 // purpose is to be the portable LVGL wrapper.
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -30,6 +31,7 @@
 #include "wisp/hal/display_geometry.hpp"
 #include "wisp/hal/touch.hpp"
 #include "wisp/ui/fonts.hpp"
+#include "wisp/ui/key_nav.hpp"
 
 namespace wisp::ui {
 
@@ -67,6 +69,10 @@ struct UiConfig {
     // reused when a later start() gets the same bytes.
     std::span<const uint8_t> glyph_image;
     bool builtin_glyphs = true;
+    // Creates LVGL's keypad input device, fed by UiRuntime::push_key(),
+    // and its focus group (UiRuntime::nav_group()). Set when the board has
+    // a nav key.
+    bool keypad = false;
 };
 
 // A thread-safe snapshot of the UI task's activity. `fps`, `cpu_percent`
@@ -111,13 +117,17 @@ public:
     // installs default_font() as the theme font, registers the
     // LV_EVENT_INVALIDATE_AREA handler that aligns flush areas to the
     // display's caps "area_align" (default 1, i.e. unaligned), wires up
-    // the pointer input device if `touch` is non-null, and starts the UI
-    // task. Fails with Busy if another UiRuntime in this process is
-    // already started (LVGL 9.5 has only one global instance under
+    // the pointer input device if `touch` is non-null and the keypad
+    // input device with its group if config.keypad is set (the pointer
+    // stays first in lv_indev_get_next()), and starts the UI task. Fails
+    // with Busy if another UiRuntime in this process is already started
+    // (LVGL 9.5 has only one global instance under
     // LV_USE_OS == LV_OS_NONE); fails with InvalidArgument if `display`'s
-    // caps don't carry a usable width/height; fails with NoMemory if the
-    // draw buffers, the LVGL display, or (when `touch` is non-null) the
-    // LVGL input device can't be allocated.
+    // caps don't carry a usable width/height; fails with Unsupported if
+    // its caps "pixel_format" is anything but rgb565 (checked before
+    // lv_init(), so nothing is left behind); fails with NoMemory if the
+    // draw buffers, the LVGL display, or an input device or group it
+    // wires up can't be allocated.
     Result<void> start();
 
     // Stops the UI task -- after it finishes draining any in-flight
@@ -201,6 +211,38 @@ public:
     // `touch == nullptr`). Thread-safe; pass an empty std::function to
     // remove a previously installed callback.
     void set_touch_activity_cb(std::function<void()> cb);
+
+    // The keypad's ring of key entries waiting for LVGL to read them.
+    static constexpr size_t kKeyRing = 8;
+
+    // Queues a nav key's press or release for the keypad input device.
+    // Safe from any thread; never blocks on the UI task and never
+    // allocates. Returns false, queueing nothing, when:
+    //  - there is no keypad (config.keypad unset, or not started);
+    //  - the UI is paused: the press that wakes the screen must not also
+    //    act once the UI resumes;
+    //  - it is a press while a nav key is down: LVGL's keypad handles one
+    //    key at a time;
+    //  - it is a press with fewer than two free slots, so every accepted
+    //    press leaves room for its release and no key stays down;
+    //  - it is a release of a key that is not down.
+    // A refused press leaves the key up, so its release is refused too.
+    // set_paused(true) drops the queued entries and the keys that are down,
+    // and LVGL forgets a key it saw pressed before it reads the next one.
+    bool push_key(NavKey key, bool pressed);
+
+    // Sees each queued key entry on the UI task, in the keypad's read
+    // callback, before LVGL does; returning true consumes the entry. Back
+    // never reaches LVGL, consumed or not. Thread-safe; an empty function
+    // removes the hook. The hook is copied out under a lock and called
+    // outside it, so it may replace itself.
+    using NavKeyHook = std::function<bool(NavKey key, bool pressed)>;
+    void set_nav_key_hook(NavKeyHook hook);
+
+    // The keypad's focus group; nullptr without a keypad and after stop().
+    // Not LVGL's default group: widgets do not join it on creation, its
+    // owner fills it with what is in front. UI thread only.
+    lv_group_t* nav_group() const;
 
     // Installs `hook`, run on the UI task once per loop iteration, after
     // the post()'d work is drained and before lv_timer_handler(). That is
