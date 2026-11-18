@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-14-device-model-design.md` (approved 2026-11-14, section 20): sections 9.1 and 9.2, the H3 part of section 13, the keypad lines of 14.1 and 14.4, 19 ("With nav roles on two simulator keys, a system dialog is answered without the pointer"). Section 10 (headless agent) was removed at approval and is not implemented. The roadmap's section H line "keypad/encoder group" is narrowed by the spec to keypad only; the encoder stays deferred (spec 17.2 item 7).
 
+**Owner decisions (2026-11-18):** the 2.16 nav-role test uses the local patch in the device checks (no build flag); simulator nav keys stay off unless `--nav-keys`; Home-to-page navigation, history, scene list, on-screen keyboard and sliders by keys are left to phase M (backlog); `pixel_format` is the flush buffer format, e-paper/monochrome go to roadmap phase N.
+
 ## Global Constraints
 
 - Branch: `feat/keypad-input` (worktree `.superpowers/worktrees/keypad-input`). No commits on `main`, no push.
