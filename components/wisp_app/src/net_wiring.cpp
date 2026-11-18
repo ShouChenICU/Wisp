@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "wisp/app/ram_budget.hpp"
+#include "wisp/app/system_notices.hpp"
 #include "wisp/base/json.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/hal/clock.hpp"
@@ -339,7 +340,7 @@ void NetWiring::reconcile_external_power() {
     }
     if (deps_.wakelocks == nullptr || plugged == powered_lock_.held()) return;
     if (plugged) {
-        powered_lock_ = core::WakeLock(*deps_.wakelocks, "system.powered_wifi",
+        powered_lock_ = core::WakeLock(*deps_.wakelocks, kPoweredWifiHolder,
                                        core::WakeLockKind::Network, "external power");
     } else
         powered_lock_.release();

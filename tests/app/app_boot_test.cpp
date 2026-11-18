@@ -957,6 +957,9 @@ TEST(AppNotifications, WakeLockReminderPosts) {
     // A scene's screen lock only exists while that scene is in the
     // foreground, so the user can already see it: no reminder for it.
     locks.acquire("scene.clock", WakeLockKind::Screen, "keep_screen_on");
+    // Wi-Fi held on by policy while on external power costs no battery:
+    // no reminder for it either (scene-device spec 4.3).
+    locks.acquire(wisp::app::kPoweredWifiHolder, WakeLockKind::Network, "external power");
 
     // Not yet due.
     wisp::app::post_wakelock_reminders(locks, *notes, wisp::os::now_ms());
@@ -976,6 +979,7 @@ TEST(AppNotifications, WakeLockReminderPosts) {
     EXPECT_EQ(system->action, "");
     EXPECT_EQ(system->action_arg, "");
     EXPECT_FALSE(notes->find("system", "wakelock_long:scene.clock").has_value());
+    EXPECT_FALSE(notes->find("system", "wakelock_long:system.powered_wifi").has_value());
     EXPECT_EQ(notes->unread_count(), 2u);
 }
 

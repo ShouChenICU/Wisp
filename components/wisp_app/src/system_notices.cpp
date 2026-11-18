@@ -13,6 +13,9 @@ void post_wakelock_reminders(core::WakeLockRegistry& locks, core::NotificationSe
         // 4.3). A reminder would only get in the way, e.g. for a desk
         // clock.
         if (lock.kind == core::WakeLockKind::Screen) continue;
+        // Held on purpose while external power is there, and released as
+        // soon as it goes: no battery to warn about.
+        if (lock.holder == kPoweredWifiHolder) continue;
         if (lock.holder.rfind("scene.", 0) == 0) {
             notes.post_system(core::notice::kWakeLockLong, lock.holder,
                               core::notice::kActionReleaseLock, std::to_string(lock.id));
