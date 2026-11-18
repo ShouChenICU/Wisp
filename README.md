@@ -190,10 +190,10 @@ Wisp is not tied to one board. Everything board-specific lives in `boards/<board
 
 | Step | What to do |
 | --- | --- |
-| 1. Describe the hardware | Write the board, buses and pins in esp_board_manager YAML; the display, touch, audio and SD card are declared here |
-| 2. Add drivers | For chips esp_board_manager does not support (IMU, PMU, RTC, …), write a C component under `drivers/<chip>/` |
-| 3. Write `board.cpp` | Wrap each device as a `hal::Device`, register it with `DeviceRegistry`, and declare its role and capabilities as caps: screen shape, safe area, whether there is a microphone, and so on. A peripheral no service knows, such as a vibration motor, describes its properties and commands, and the agent and scenes can then use it |
-| 4. Partitions and config | Write `partitions.csv` to the conventions (OTA, `fonts`, `glyphs`, storage) and the board's sdkconfig |
+| 1. Describe the hardware | Write the board, buses and pins in esp_board_manager YAML; the display, touch, audio, SD card and buttons are declared here, and it is the only place pins are written |
+| 2. Add drivers | For chips esp_board_manager does not support (IMU, PMU, RTC, …), write a C component under `drivers/<chip>/` with its Wisp adapter, and list the board's drivers in `board.cmake` |
+| 3. Write `board.cpp` | Describe the board as a `BoardSpec`: the board kit (`boards/common/`) wraps each device as a `hal::Device` and registers it with `DeviceRegistry`; the spec gives each device its id and role and the facts behind its caps: screen shape, corner radius, microphone channels, and so on. The board brings up its own chips (IMU, PMU, RTC) with their drivers. A peripheral no service knows, such as a vibration motor, describes its properties and commands, and the agent and scenes can then use it |
+| 4. Partitions and config | Choose the shared partition table for the flash size in `boards/common/partitions/` (or write the board's own `partitions.csv` to the conventions for special needs) and write the board's sdkconfig |
 | 5. Build and verify | Build with `-DWISP_BOARD=<board>`, then check the boot report, the device manifest and the diagnostics page item by item |
 
 > [!TIP]

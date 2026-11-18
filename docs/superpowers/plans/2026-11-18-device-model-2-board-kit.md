@@ -455,3 +455,20 @@ Both boards were built from a fresh `build-<B>/sdkconfig`; the baseline files ar
 | 2.16 | 0x38d580 (3,724,672 B) | 0x480000 | 78.9% (21% free) | `b36c4bd8a170942f37688a3bf5cee8c1420f32b52ae4949b9e56696c2f1c659a` |
 | 1.75C | 0x37cb70 (3,656,560 B) | 0x5f0000 | 58.7% (41% free) | `5fa9b1c82c2cfe7fc2dc8643b7a9dd8247d4f1c75d94459fc631c90bc9f2cba2` |
 
+
+### Tasks 2-9: image sizes
+
+`wisp.bin` per board after each firmware-touching task (smallest app slot 0x480000 on the 2.16, 0x5f0000 on the 1.75C); every change against Task 1's baseline is under the 4 KiB threshold.
+
+| Task | 2.16 | 1.75C | Note |
+|---|---|---|---|
+| 2 | 0x38d2c0 (78.92%, -704 B) | 0x37c990 (58.72%, -480 B) | |
+| 3 | 0x38d400 (78.93%, -384 B) | 0x37cac0 (58.73%, -176 B) | |
+| 4 | 0x38d0d0 (78.91%, -1,200 B) | 0x37c7a0 (58.72%, -976 B) | fresh sdkconfig of both boards identical to the baseline |
+| 5 | 0x38d320 (78.92%, -608 B) | 0x37c9e0 (58.72%, -400 B) | |
+| 6 | 0x38d910 (78.96%, +912 B) | 0x37c9e0 (58.72%, -400 B) | |
+| 7 | 0x38d910 (78.96%, +912 B) | 0x37ceb0 (58.74%, +832 B) | |
+| 8 | unchanged | unchanged | partition-table sha256 identical to the baseline on both boards |
+| 9 | 0x38db40 (78.97%, +1,472 B) | 0x37d150 (58.76%, +1,504 B) | |
+
+Task 10 changed documents only. During this branch `SceneBackground.ErrorInBackgroundStopsAndNotifies` failed once in `tools/ci.sh` and passed on rerun; it is unrelated to these changes and is tracked in `docs/backlog.md`.

@@ -11,6 +11,24 @@ A board consists of the following parts:
 3. **`board.cpp`**: a `wisp::board_kit::BoardSpec` constant and `create_board()`, which returns `wisp::board_kit::make_board(spec)`. The board kit (`boards/common/board_kit.hpp`) wraps the device handles bmgr has created (display, touch, audio, SD card) and the buttons in `wisp::hal::Device` objects, adds internal storage and Wi-Fi, and registers them in `DeviceRegistry`; the board's own `bring_up_chips()` brings up the chips bmgr does not manage (IMU, PMU, RTC and so on) with Wisp's drivers, on the buses bmgr exposes.
 4. **`sdkconfig.defaults.board`** (and, only for special needs, `partitions.csv`): the board-level sdkconfig, which names the partition table (a shared table by flash size) (see "Partitions and board configuration" and "Firmware and partitions" below).
 5. **`board.cmake`**: the driver components (`drivers/<chip>/`) that `board.cpp` uses, as `WISP_BOARD_REQUIRES` (see "Step 2" below).
+6. **`README.md`**: what the board is and where its hardware document lives.
+
+Nothing else: no pin constants, no `gpio_config()` calls and no copy of the bring-up sequence. The shared parts live beside the boards in `boards/common/` (the board kit `board_kit.{hpp,cpp}` and the partition tables `partitions/<flash size>.csv`); `boards/common/` has no bmgr YAML, so bmgr neither treats it as a board nor compiles it, and `firmware/main` compiles the kit.
+
+## Support matrix
+
+What a board must have for each feature. Both reference boards meet every row.
+
+| Feature | Requirement | Evidence |
+|---|---|---|
+| Boot, self-check, serial console | an ESP-IDF target within the pinned range (`idf:` in `firmware/main/idf_component.yml`) | — |
+| Admin console, OTA | Wi-Fi; flash with two OTA slots of at least 1.25× the image (image about 3.56 MB, `wisp.bin` 0x38DB40 on 2026-11-18, 78.97% of the 2.16's 0x480000 slot) | 80% slot budget |
+| Large text, CJK body text | `fonts` and `glyphs` partitions (2.81 MB and 1.125 MB in `16mb.csv`); PSRAM for the glyph cache | "Partition conventions" below |
+| Recommended flash | 16 MB | both boards |
+| PSRAM | 8 MB or more, required; with less the boot report records the note `psram` ("Scene runtime" below) | both boards have 8 MB (idle free 6.76 MB, `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`) |
+| UI | a `Display` with role `main` (RGB565) and a `Touch` with role `main` | — |
+| Voice | `AudioIn` 16 kHz mono, `AudioOut` mono at the TTS rate ("Voice and the talk key" below) | — |
+| Internal RAM | the budget in `wisp/app/ram_budget.hpp` (worst case 40 KB free / 16 KB block) | `docs/hardware/<board>.md` |
 
 ## Step 1: Write the bmgr YAML
 
@@ -266,12 +284,21 @@ No chip name appears in the portable layers. Things that vary by chip are concen
 | Task stacks in internal RAM or PSRAM | Tasks only declare `flash_access` and `hot_stack` (AGENTS.md section 5); the ESP port's `wisp/port/esp/stack_placement.hpp` decides by target. Currently every target follows "PSRAM is possible only when both are false", i.e. for tasks that neither access flash nor are on a hot path |
 | Whether DMA can read PSRAM directly | The board declares it through the Display caps `draw_buf_mem` (see the capability field table above); on chips where `SOC_PSRAM_DMA_CAPABLE` is false, `Mem::DmaLarge` always fails to allocate and the UI falls back to internal DMA RAM |
 | Instruction cache size and CPU frequency | `firmware/sdkconfig.defaults.<target>` (`sdkconfig.defaults.esp32s3` today; ESP-IDF reads it right after `sdkconfig.defaults` for that target, also with an explicit `SDKCONFIG_DEFAULTS`). It sets `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB` and the 240 MHz default (the option names carry the chip, so another chip needs its own file). Code runs from flash, and the cache size sets the rendering speed: 16 KB → 32 KB took the diagnostics scroll from about 12.5 to 22 fps on both reference boards, for 16 KB of internal RAM (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`, "Code from flash") |
-| Executing code from PSRAM (XIP) | Board-level sdkconfig: `CONFIG_SPIRAM_XIP_FROM_PSRAM` in `boards/<board>/sdkconfig.defaults.board`. No board enables it now: with the 32 KB instruction cache it adds about 3 fps but costs a PSRAM copy of the image (~3.5 MB). Without XIP, still enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` when the flash supports it: otherwise ESP-IDF turns the cache off for every erase/write and the UI nearly stops during an OTA upload It does not relax the stack rules. With XIP on, you must also enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` and confirm that the flash supports suspend: the `fonts`/`glyphs` partitions, the final OTA verification and otadata are all read through run-time mappings ("Font partitions" above) |
+| Executing code from PSRAM (XIP) | Board-level sdkconfig: `CONFIG_SPIRAM_XIP_FROM_PSRAM` in `boards/<board>/sdkconfig.defaults.board`. No board enables it now: with the 32 KB instruction cache it adds about 3 fps but costs a PSRAM copy of the image (~3.5 MB). Without XIP, still enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` when the flash supports it: otherwise ESP-IDF turns the cache off for every erase/write and the UI nearly stops during an OTA upload. It does not relax the stack rules. With XIP on, you must also enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` and confirm that the flash supports suspend: the `fonts`/`glyphs` partitions, the final OTA verification and otadata are all read through run-time mappings ("Font partitions" above) |
 | DFS minimum frequency, Wi-Fi model string | One row per target in `kTargetFacts` (`wisp/port/esp/target_facts.hpp`); `target.hpp` fails the build with a hint when the target has no row |
 | Wi-Fi bands | `net.wifi` always reports 2.4 GHz and adds 5 GHz when `SOC_WIFI_SUPPORT_5G` is set in `soc/soc_caps.h`; boards pass nothing |
 | Minimum ESP-IDF version | One range for the whole project, in `idf:` of `firmware/main/idf_component.yml` (currently `>=6.0.3,<6.1`); a chip that needs a newer IDF must first get this range and `dependencies.lock` upgraded on their own |
 | JPEG decoding | esp_new_jpeg links the matching precompiled library by `IDF_TARGET` (1.0.2 provides esp32, esp32s2, esp32s3, esp32p4, esp32c2/c3/c5/c6/c61, esp32h4, esp32s31); `firmware/main/esp_new_jpeg.lf` moves the assembly it places in IRAM to flash for all of them. A chip with JPEG hardware can switch to a hardware decoder in `wisp_port_esp/ui/`, behind the same `install_image_decoders()` interface |
 | Internal SRAM budget | Measured on each board with the `mem` command and recorded in `docs/hardware/<board>.md`; the budget minimums are in `wisp/app/ram_budget.hpp` (AGENTS.md section 5) |
+
+**What a new target touches** (device-model spec 8.5); nothing else, since no portable file names a chip:
+
+1. `firmware/sdkconfig.defaults.<target>`: its cache size, CPU frequency and any other option whose name carries the chip.
+2. `components/wisp_port_esp/lv_blend/<target>/`: optional; without it LVGL's C path renders.
+3. `components/wisp_port_esp/include/wisp/port/esp/stack_placement.hpp`: only if the target's flash/PSRAM rules for task stacks differ.
+4. `components/wisp_port_esp/include/wisp/port/esp/target_facts.hpp`: a `kTargetFacts` row (DFS minimum, Wi-Fi model string); the build fails without one.
+5. The ESP-IDF range in `firmware/main/idf_component.yml`, when the target needs a newer IDF: a separate, project-wide change with `dependencies.lock`.
+6. This section.
 
 **Planned target: ESP32-S31** (not verified; to be checked once hardware is available). What is known: RISC-V cores (the SIMD routines in `lv_blend/esp32s3/` cannot be used; they need rewriting, or the C path first); flash and PSRAM are on separate buses, with PSRAM as 250 MHz octal DDR; it has PPA, 2D-DMA and JPEG codec hardware; it needs ESP-IDF ≥ 6.1, beyond the currently pinned range. When executing from PSRAM with XIP, flash operations no longer stop the cache, but the ESP-IDF documentation still says external RAM cannot be accessed while the cache is disabled and task stacks default to internal RAM, so the stack placement policy stays as it is until measured.
 
@@ -284,7 +311,7 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
     && idf.py build -DWISP_BOARD=<board>'
 ```
 
-The `WISP_BOARD` cache variable of `firmware/CMakeLists.txt` decides which `boards/<name>/board.cpp` is compiled (default `waveshare_esp32_s3_touch_amoled_2_16`); override it with `-DWISP_BOARD=<board>`. As long as the board YAML has not changed, later `idf.py build` runs do not need set-target/bmgr again. For the debug build command, see "Build configurations: release and debug" above.
+The `WISP_BOARD` cache variable of `firmware/CMakeLists.txt` decides which `boards/<name>/board.cpp` is compiled, together with the board kit, and which `boards/<name>/board.cmake` is read for the board's driver components (default `waveshare_esp32_s3_touch_amoled_2_16`); override it with `-DWISP_BOARD=<board>`. As long as the board YAML has not changed, later `idf.py build` runs do not need set-target/bmgr again. For the debug build command, see "Build configurations: release and debug" above.
 
 A board whose bmgr YAML declares no `fs_fat` device (no SD slot) gets no `dev_fs_fat.h`; `wisp_port_esp`'s SD code compiles without it (`CONFIG_ESP_BOARD_DEV_FS_FAT_SUPPORT`), and the board simply never constructs an `EspSdStorage`.
 

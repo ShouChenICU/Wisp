@@ -45,6 +45,7 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 
 - I2C bus: SDA 15, SCL 14, 400 kHz; every I2C device shares this one bus.
 - I2S: MCLK 42, BCLK 9, LRCK/WS 45, DOUT 8, DIN 10.
+- Every pin above is written once, in the bmgr YAML (`board_peripherals.yaml`, `board_devices.yaml`); `board.cpp` holds none. The three keys are bmgr `gpio` peripherals: `btn_power` (GPIO16, pull-down, active high), `btn_vol_up` (GPIO18, pull-up) and `btn_vol_down` (GPIO0, pull-up); bmgr configures them in `esp_board_manager_init()` and the board kit reads their pins back. Touch reset/interrupt levels and orientation are `lcd_touch` YAML keys too, so `setup_device.c` holds only the panel's init table.
 
 ## Known errata and notes
 
