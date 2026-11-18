@@ -37,7 +37,7 @@ devices:
         frequency: 400000
 
   # ES7210 dual microphone capture path. The channel layout (two mics)
-  # is declared in board.cpp's EspAudioInConfig::channels, which
+  # is declared in board.cpp's AudioInSpec::channels, which
   # wisp::port::esp::EspAudioIn turns into esp_codec_dev_open()'s channel
   # count/mask and downmixes to mono; init gain is a post-open
   # esp_codec_dev_set_in_gain() call.
@@ -127,6 +127,14 @@ devices:
         y_max: 480
         rst_gpio_num: 40
         int_gpio_num: 11
+        # Both lines active-low; the orientation matches the panel's
+        # swap_xy/mirror_y above.
+        levels:
+          reset: 0
+          interrupt: 0
+        flags:
+          swap_xy: true
+          mirror_y: true
     peripherals:
       - name: i2c_master
         i2c_addr: [0xB4]

@@ -7,18 +7,18 @@
  * application/edge_agent/boards/waveshare/waveshare_ESP32_S3_Touch_AMOLED_2_16/setup_device.c
  * (https://github.com/espressif/esp-claw, commit
  * 36b377f0a46688916e4f6458a87dd92bee42aa92; see docs/references.md and
- * THIRD_PARTY_NOTICES.md). Wisp changes: log TAG renamed to "wisp_board".
+ * THIRD_PARTY_NOTICES.md). Wisp changes: log TAG renamed to "wisp_board";
+ * the touch pins, levels and orientation come from board_devices.yaml.
  *
  * esp_board_manager calls these factory entries while bringing up the
- * display_lcd / lcd_touch devices declared in board_devices.yaml: they
- * plug in this board's CO5300 vendor init sequence and the CST9217
- * reset/interrupt wiring plus the touch orientation that matches the
- * panel's swap_xy/mirror_y.
+ * display_lcd / lcd_touch devices declared in board_devices.yaml: the
+ * panel entry plugs in this board's CO5300 vendor init sequence, and the
+ * touch entry passes bmgr's config (pins, levels and flags from the YAML)
+ * straight to the CST9217 driver.
  */
 
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_lcd_co5300.h"
 #include "esp_lcd_touch_cst9217.h"
@@ -74,17 +74,7 @@ esp_err_t lcd_panel_factory_entry_t(esp_lcd_panel_io_handle_t io,
 esp_err_t lcd_touch_factory_entry_t(esp_lcd_panel_io_handle_t io,
                                     const esp_lcd_touch_config_t* touch_dev_config,
                                     esp_lcd_touch_handle_t* ret_touch) {
-    esp_lcd_touch_config_t touch_cfg = {0};
-    memcpy(&touch_cfg, touch_dev_config, sizeof(touch_cfg));
-
-    touch_cfg.rst_gpio_num = GPIO_NUM_40;
-    touch_cfg.int_gpio_num = GPIO_NUM_11;
-    touch_cfg.levels.reset = 0;
-    touch_cfg.levels.interrupt = 0;
-    touch_cfg.flags.swap_xy = 1;
-    touch_cfg.flags.mirror_y = 1;
-
-    esp_err_t ret = esp_lcd_touch_new_i2c_cst9217(io, &touch_cfg, ret_touch);
+    esp_err_t ret = esp_lcd_touch_new_i2c_cst9217(io, touch_dev_config, ret_touch);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create CST9217 touch: %s", esp_err_to_name(ret));
     }

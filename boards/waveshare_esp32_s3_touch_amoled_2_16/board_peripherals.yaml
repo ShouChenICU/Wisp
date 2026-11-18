@@ -71,3 +71,32 @@ peripherals:
       pin: 46
       mode: GPIO_MODE_OUTPUT
       default_level: 0
+
+  # Buttons (board.cpp's ButtonSpec names them). GPIO16 follows the PWR
+  # key, driven low while released and high while held (measured; it is
+  # not the AXP2101 IRQ output): the pull-down only keeps it defined
+  # should the driver ever release the line. Vol+ and Vol- (Vol- is the
+  # BOOT key) are active-low with no external pull-up.
+  - name: btn_power
+    type: gpio
+    role: io
+    config:
+      pin: 16
+      mode: GPIO_MODE_INPUT
+      pull_down: true
+
+  - name: btn_vol_up
+    type: gpio
+    role: io
+    config:
+      pin: 18
+      mode: GPIO_MODE_INPUT
+      pull_up: true
+
+  - name: btn_vol_down
+    type: gpio
+    role: io
+    config:
+      pin: 0
+      mode: GPIO_MODE_INPUT
+      pull_up: true

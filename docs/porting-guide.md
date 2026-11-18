@@ -6,9 +6,9 @@ This document describes what it takes to add an ESP32 development board on top o
 
 A board consists of the following parts:
 
-1. **esp_board_manager YAML** (`boards/<board>/board_info.yaml`, `board_peripherals.yaml`, `board_devices.yaml`): describes the board model, the buses (I2C/I2S/SPI/GPIO) and the devices esp_board_manager already supports (display, touch, audio codec, SD card and so on). It only connects the chips to the buses and assigns pins; it does **not** fill in Wisp's capability list.
-2. **`setup_device.c`** (optional; needed only when the board has a device type that esp_board_manager has no built-in factory function for): gives bmgr the constructor entry point for the custom device.
-3. **`board.cpp`**: implements `wisp::board::create_board()`, which returns a `wisp::app::Board`. Its `init()` wraps the device handles bmgr has already created (display, touch, audio, SD card) in the `wisp::hal::Device` interface, brings up the devices bmgr does not manage (IMU, PMU, RTC, buttons and so on) with Wisp's own drivers (through the buses bmgr exposes), and registers all of them in `DeviceRegistry`.
+1. **esp_board_manager YAML** (`boards/<board>/board_info.yaml`, `board_peripherals.yaml`, `board_devices.yaml`): describes the board model, the buses (I2C/I2S/SPI/GPIO), the buttons (as `gpio` peripherals) and the devices esp_board_manager already supports (display, touch, audio codec, SD card and so on). It connects the chips to the buses and is the **only** place pins are written; it does **not** fill in Wisp's capability list.
+2. **`setup_device.c`** (optional): custom bmgr factory functions, such as a panel's vendor init table. Touch pins, levels and orientation are YAML keys, so a touch factory only passes bmgr's config through.
+3. **`board.cpp`**: a `wisp::board_kit::BoardSpec` constant and `create_board()`, which returns `wisp::board_kit::make_board(spec)`. The board kit (`boards/common/board_kit.hpp`) wraps the device handles bmgr has created (display, touch, audio, SD card) and the buttons in `wisp::hal::Device` objects, adds internal storage and Wi-Fi, and registers them in `DeviceRegistry`; the board's own `bring_up_chips()` brings up the chips bmgr does not manage (IMU, PMU, RTC and so on) with Wisp's drivers, on the buses bmgr exposes.
 4. **`partitions.csv` and `sdkconfig.defaults.board`**: the board's partition table and board-level sdkconfig (see "Partitions and board configuration" and "Firmware and partitions" below).
 5. **`board.cmake`**: the driver components (`drivers/<chip>/`) that `board.cpp` uses, as `WISP_BOARD_REQUIRES` (see "Step 2" below).
 
@@ -16,7 +16,20 @@ A board consists of the following parts:
 
 1. Create `boards/<board>/` and write the three YAML files, following the esp_board_manager documentation and the fields of an existing board (`boards/waveshare_esp32_s3_touch_amoled_2_16/`). When you can reuse another public board definition directly (such as ESP-Claw), state its source in the file header and register it in `docs/references.md` and `THIRD_PARTY_NOTICES.md`, as AGENTS.md section 6 requires.
 2. Declare in the YAML only device types that esp_board_manager supports natively (`display_lcd`, `lcd_touch`, `audio_codec`, `fs_fat`/SDMMC, bare GPIO/I2C/I2S/SPI buses and so on). Do **not** put custom chips such as the IMU, PMU or RTC into the YAML as `custom` devices: Wisp initialises them with its own drivers in `board.cpp`, on the same bus that bmgr exposes.
-3. Generate the code with `idf.py bmgr -c ../boards -b <board>` (the output goes to `firmware/components/gen_bmgr_codes/`, which is git-ignored; rerun this step after changing the YAML; do not edit the generated code by hand).
+3. Declare each button as a `gpio` peripheral with its pull, for example:
+
+   ```yaml
+     - name: btn_vol_up
+       type: gpio
+       role: io
+       config:
+         pin: 18
+         mode: GPIO_MODE_INPUT
+         pull_up: true      # or pull_down: true; neither for an external pull network
+   ```
+
+   bmgr configures the pin during `esp_board_manager_init()`; the kit reads the pin back from bmgr (`esp_board_manager_get_periph_config()`). Touch levels and orientation go under `lcd_touch`'s `config.touch_config` as `levels: {reset, interrupt}` and `flags: {swap_xy, mirror_x, mirror_y}`.
+4. Generate the code with `idf.py bmgr -c ../boards -b <board>` (the output goes to `firmware/components/gen_bmgr_codes/`, which is git-ignored; rerun this step after changing the YAML; do not edit the generated code by hand).
 
 ### Board naming rules
 
@@ -45,27 +58,39 @@ set(WISP_BOARD_REQUIRES axp2101 pcf85063 qmi8658)
 
 ## Step 3: Write `board.cpp`
 
-Implement `wisp::app::Board` (`components/wisp_app/include/wisp/app/board.hpp`):
+A board is a `wisp::board_kit::BoardSpec` constant (`boards/common/board_kit.hpp`) plus the bring-up of the chips bmgr does not manage. The kit implements `wisp::app::Board` (`components/wisp_app/include/wisp/app/board.hpp`) for it; `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` is the example to copy:
 
 ```cpp
-class Board : public wisp::app::Board {
-public:
-    std::string name() const override { return "<board>"; }
-    void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) override {
-        // 1. Take the handles bmgr has already created (display/touch/audio/SD), wrap each in a hal::Device subclass, add() it to registry.
-        // 2. With the drivers in drivers/, initialise the IMU/PMU/RTC/buttons on the I2C bus bmgr exposes, add() them to registry.
-        // 3. If the chip has built-in Wi-Fi: wisp::port::esp::EspWifi::create() registers net.wifi. Do it last (after the display,
-        //    so that the Wi-Fi driver does not first take the internal RAM the display DMA buffers need), and also call it on the
-        //    early-return path when bmgr fails: the radio being on is what lets Platform::random (esp_fill_random) give true random numbers.
-        // 4. If any step fails: report.record({id, class, DeviceState::Failed, "reason"}), do not add() that device,
-        //    and do not let init() itself fail or abort -- a missing device only degrades the system, it does not block boot (AGENTS.md section 3 "Device model").
-    }
+const wisp::board_kit::ButtonSpec kButtons[] = {
+    {.slot = {"button.power", DeviceClass::Button, role::kPower}, .bmgr_gpio = "btn_power", .active_low = false},
+};
+constexpr Slot kChips[] = {{"imu.main", DeviceClass::Imu, role::kMain}};
+
+void bring_up_chips(Kit& kit) {
+    i2c_master_bus_handle_t bus = kit.i2c("i2c_master");   // null (logged) when bmgr has no such bus
+    kit.add(kChips[0], wisp::drivers::Qmi8658Imu::create(bus, {.id = kChips[0].id, .role = kChips[0].role}));
+}
+
+const wisp::board_kit::BoardSpec kSpec{
+    .name = "<board>",
+    .display = wisp::board_kit::DisplaySpec{.model = "CO5300", .shape = "rounded_rect", .corner_radius = 70, .panel = "amoled"},
+    .touch = wisp::board_kit::TouchSpec{.model = "CST9217"},
+    .buttons = kButtons,
+    .chips = kChips,
+    .bring_up_chips = &bring_up_chips,
 };
 
 namespace wisp::board {
-std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* the class above */>(); }
+std::unique_ptr<wisp::app::Board> create_board() { return wisp::board_kit::make_board(kSpec); }
 }
 ```
+
+The kit's `init()` runs one sequence for every board: internal storage (before bmgr, which it does not need); `esp_board_manager_init()`; display; touch; `bring_up_chips()`; the system clock from the RTC with role `main`; buttons; audio out and in; SD card; the outputs held through light sleep; Wi-Fi last. Wi-Fi comes after the display so that the Wi-Fi driver does not first take the internal RAM the display DMA buffers need, and it also starts when bmgr fails, since the radio being on is what lets Platform::random (esp_fill_random) give true random numbers. When bmgr fails, every declared slot (display, touch, `chips`, buttons, audio, SD) is recorded failed with the bmgr error.
+
+- **What the spec carries**: the device ids and roles (`Slot`), the bmgr names (defaulting to `display_lcd`, `lcd_touch`, `audio_dac`, `audio_adc`, `fs_sdcard`), and the facts bmgr does not carry: models, the panel's `shape`, measured `corner_radius`, `panel`, `area_align` and sleep method, the capture channel roles. Width, height, QSPI framing and byte order come from bmgr's display config, the SD mount point from the `fs_sdcard` config.
+- **Pins**: none in `board.cpp`. A button names its `gpio` peripheral (`bmgr_gpio`) and its polarity; the outputs held through light sleep (display reset and CS, touch reset, the PA enable of `audio_dac`) are read from bmgr's device configs, skipping a pin the YAML leaves at -1 or names twice.
+- **Failures**: `bring_up_chips()` registers through `kit.add(slot, result)`, which records an error result or a registry refusal as failed; `kit.failed()`/`kit.missing()` record the rest (`missing` for an absent optional chip, such as a board without an RTC). Never let a step abort: a missing device only degrades the system, it does not block boot (AGENTS.md section 3 "Device model").
+- **A button with a fallback**: `ButtonSpec::fallback` names a function the kit calls when the GPIO path is unavailable (the peripheral failed, or the GPIO edge service cannot be installed), for example a power key read from the PMU instead. A button without a fallback whose peripheral failed is recorded failed.
 
 After `init()`, `App::start()` automatically adds a `DeviceState::Ok` for every device in the registry that has not been reported, so `init()` only needs to record failures and missing devices.
 
