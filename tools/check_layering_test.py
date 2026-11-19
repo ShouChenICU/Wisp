@@ -270,6 +270,16 @@ class CheckLayeringTest(unittest.TestCase):
         self.assertTrue(any("wisp/admin/admin_server.hpp" in e for e in errors), errors)
         self.assertEqual(sum("forbidden REQUIRES <wisp_admin>" in e for e in errors), 1, errors)
 
+    def test_media_sits_between_voice_and_admin(self):
+        write(self.root, "components/wisp_media/src/ok.cpp", '#include "wisp/core/settings.hpp"\n')
+        write(self.root, "components/wisp_admin/src/ok.cpp", '#include "wisp/media/path.hpp"\n')
+        self.assertEqual(check_layering.run(self.root), [])
+
+        write(self.root, "components/wisp_voice/src/bad.cpp", '#include "wisp/media/path.hpp"\n')
+        write(self.root, "components/wisp_media/src/bad.cpp", '#include "wisp/admin/admin_server.hpp"\n')
+        errors = check_layering.run(self.root)
+        self.assertEqual(sum("reverse dependency" in e for e in errors), 2, errors)
+
     def test_admin_platform_include_is_flagged(self):
         write(self.root, "components/wisp_admin/src/p.cpp", '#include "esp_http_server.h"\n')
         errors = check_layering.run(self.root)

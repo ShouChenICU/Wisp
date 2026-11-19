@@ -21,6 +21,7 @@ enum class ErrorCode {
     Busy,
     PermissionDenied,
     RateLimited,
+    Corrupt,
 };
 
 // Returns the snake_case name of `code`, e.g. ErrorCode::InvalidArgument ->
