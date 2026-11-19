@@ -152,3 +152,170 @@ TEST_F(AudioArbiterTest, VoiceGivesUpBehindAnAlarm) {
     EXPECT_FALSE(arb.held(AudioKind::Voice));
     EXPECT_TRUE(arb.held(AudioKind::Alarm));
 }
+
+TEST_F(AudioArbiterTest, MusicIsPreemptedByEachHigherKind) {
+    for (int k = 0; k < 4; ++k) {
+        SCOPED_TRACE(k);
+        std::atomic<int> preempts{0};
+        Lease music = arb.try_acquire_music([&] {
+            ++preempts;
+            // The player drops its lease once it has closed the output.
+            music.release();
+        });
+        ASSERT_TRUE(music.valid());
+        EXPECT_EQ(music.kind(), AudioKind::Music);
+        EXPECT_TRUE(arb.held(AudioKind::Music));
+        Lease higher = k == 3 ? arb.acquire_input()
+                              : arb.acquire(k == 0   ? AudioKind::Tone
+                                            : k == 1 ? AudioKind::Voice
+                                                     : AudioKind::Alarm);
+        ASSERT_TRUE(higher.valid());
+        EXPECT_EQ(preempts.load(), 1);
+        EXPECT_FALSE(music.valid());
+        EXPECT_FALSE(arb.held(AudioKind::Music));
+        // Granted without waiting for the grant time.
+        EXPECT_EQ(now.load(), 1000u);
+    }
+}
+
+TEST_F(AudioArbiterTest, StuckMusicIsGrantedPastAfter200ms) {
+    std::atomic<int> preempts{0};
+    Lease music = arb.try_acquire_music([&] { ++preempts; });
+    ASSERT_TRUE(music.valid());
+    auto voice = acquire_async(AudioKind::Voice);
+    ASSERT_TRUE(wait_until([&] { return preempts.load() == 1; }, 1000));
+    // Told to stop: no longer valid, so it does not open the output again.
+    EXPECT_FALSE(music.valid());
+    advance(199);
+    wisp::os::sleep_ms(kSettleMs);
+    EXPECT_FALSE(voice->done.load());
+    advance(1);
+    ASSERT_TRUE(wait_until([&] { return voice->done.load(); }, 1000));
+    EXPECT_TRUE(voice->lease.valid());
+    EXPECT_FALSE(arb.held(AudioKind::Music));
+    // The late release changes nothing.
+    music.release();
+    EXPECT_TRUE(arb.held(AudioKind::Voice));
+    EXPECT_FALSE(arb.try_acquire_music([] {}).valid());
+    EXPECT_EQ(preempts.load(), 1);
+}
+
+TEST_F(AudioArbiterTest, ResumeAfter800msWithoutHigher) {
+    std::atomic<int> resumes{0};
+    arb.set_resume_listener([&] { ++resumes; });
+    Lease music = arb.try_acquire_music([&] { music.release(); });
+    ASSERT_TRUE(music.valid());
+    {
+        Lease tone = arb.acquire(AudioKind::Tone);
+        ASSERT_TRUE(tone.valid());
+        arb.tick();
+        advance(1000);
+        arb.tick();  // still held
+        EXPECT_EQ(resumes.load(), 0);
+    }
+    advance(799);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 0);
+    advance(1);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 1);
+    advance(5000);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 1);
+    // The player takes the output back.
+    EXPECT_TRUE(arb.try_acquire_music([] {}).valid());
+}
+
+TEST_F(AudioArbiterTest, NewHigherLeaseRestartsTheResumeDelay) {
+    std::atomic<int> resumes{0};
+    arb.set_resume_listener([&] { ++resumes; });
+    Lease music = arb.try_acquire_music([&] { music.release(); });
+    arb.acquire(AudioKind::Voice).release();  // one sentence
+    advance(500);
+    arb.tick();
+    {
+        Lease voice = arb.acquire(AudioKind::Voice);  // the next one
+        advance(400);
+        arb.tick();
+        EXPECT_EQ(resumes.load(), 0);
+        advance(600);
+    }
+    advance(799);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 0);
+    advance(1);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 1);
+}
+
+TEST_F(AudioArbiterTest, MusicRefusedWhileHigherIsHeldThenResumed) {
+    std::atomic<int> resumes{0}, preempts{0};
+    arb.set_resume_listener([&] { ++resumes; });
+    {
+        Lease mic = arb.acquire_input();
+        Lease music = arb.try_acquire_music([&] { ++preempts; });
+        EXPECT_FALSE(music.valid());
+        EXPECT_FALSE(arb.held(AudioKind::Music));
+        advance(1000);
+        arb.tick();
+        EXPECT_EQ(resumes.load(), 0);
+    }
+    advance(799);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 0);
+    advance(1);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 1);
+    EXPECT_EQ(preempts.load(), 0);
+}
+
+TEST_F(AudioArbiterTest, NoResumeWithoutAPreemption) {
+    std::atomic<int> resumes{0};
+    arb.set_resume_listener([&] { ++resumes; });
+    arb.acquire(AudioKind::Tone).release();
+    advance(1000);
+    arb.tick();
+    // Music that ends on its own (a user pause, the end of the queue).
+    arb.try_acquire_music([] {}).release();
+    arb.acquire(AudioKind::Voice).release();
+    advance(1000);
+    arb.tick();
+    EXPECT_EQ(resumes.load(), 0);
+}
+
+TEST_F(AudioArbiterTest, UserPauseDuringSystemPauseIsNotResumed) {
+    // A stand-in for the player: a user pause is final, whatever the
+    // arbiter says afterwards.
+    std::atomic<int> resumes{0};
+    std::atomic<bool> user_paused{false};
+    Lease music;
+    arb.set_resume_listener([&] {
+        ++resumes;
+        if (!user_paused.load()) music = arb.try_acquire_music([&] { music.release(); });
+    });
+    music = arb.try_acquire_music([&] { music.release(); });
+    {
+        Lease voice = arb.acquire(AudioKind::Voice);
+        EXPECT_FALSE(music.valid());
+        user_paused = true;
+    }
+    for (int i = 0; i < 30; ++i) {
+        advance(100);
+        arb.tick();
+    }
+    EXPECT_EQ(resumes.load(), 1);
+    EXPECT_FALSE(music.valid());
+    EXPECT_FALSE(arb.held(AudioKind::Music));
+}
+
+TEST_F(AudioArbiterTest, TheTimerDrivesTheResume) {
+    AudioArbiter real(AudioArbiter::Config{.resume_delay_ms = 50});
+    std::atomic<int> resumes{0};
+    real.set_resume_listener([&] { ++resumes; });
+    real.start();
+    Lease music = real.try_acquire_music([&] { music.release(); });
+    real.acquire(AudioKind::Tone).release();
+    EXPECT_TRUE(wait_until([&] { return resumes.load() == 1; }, 2000));
+    real.stop();
+    real.set_resume_listener(nullptr);
+}

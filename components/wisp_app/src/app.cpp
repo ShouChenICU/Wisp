@@ -482,6 +482,7 @@ Result<void> App::start() {
     // Who may have the main speaker (media-library spec 5), before every
     // sound source that takes its leases, and reset after them.
     impl_->audio_arbiter = std::make_unique<core::AudioArbiter>();
+    impl_->audio_arbiter->start();
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
     impl_->tones = std::make_unique<core::TonePlayer>(
