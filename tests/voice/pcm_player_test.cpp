@@ -13,6 +13,7 @@
 
 #include "support/fake_audio.hpp"
 #include "support/wait.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 #include "wisp/voice/limits.hpp"
@@ -139,6 +140,35 @@ TEST_F(PcmPlayerTest, StopUnblocksAPush) {
     pusher.join();
     out->open_gate();
     EXPECT_TRUE(wait_until([&] { return !player.active(); }, 500));
+}
+
+// The lease handed to begin() goes when the output has closed, on the
+// player's task, whatever the producer is doing.
+TEST(PcmPlayerLease, GoesWithTheOutput) {
+    wisp::core::AudioArbiter arbiter;
+    auto out = std::make_shared<FakeAudioOut>();
+    PcmPlayer player{out};
+    ASSERT_TRUE(player.start());
+    using wisp::core::AudioKind;
+    ASSERT_TRUE(player.begin(16000, 100, arbiter.acquire(AudioKind::Voice)));
+    EXPECT_TRUE(arbiter.held(AudioKind::Voice));
+    player.stop();
+    ASSERT_TRUE(wait_until([&] { return !player.active(); }, 1000));
+    EXPECT_FALSE(arbiter.held(AudioKind::Voice));
+
+    // Drained to the end.
+    ASSERT_TRUE(player.begin(16000, 100, arbiter.acquire(AudioKind::Voice)));
+    const auto pcm = ramp(1600);
+    EXPECT_EQ(player.push(pcm, 1000), pcm.size());
+    player.end_of_stream();
+    ASSERT_TRUE(wait_until([&] { return !arbiter.held(AudioKind::Voice); }, 2000));
+    EXPECT_FALSE(player.active());
+
+    // A begin() that fails gives it back at once.
+    PcmPlayer no_task{out};
+    EXPECT_FALSE(no_task.begin(16000, 100, arbiter.acquire(AudioKind::Voice)));
+    EXPECT_FALSE(arbiter.held(AudioKind::Voice));
+    player.stop_task();
 }
 
 TEST(PcmPlayerConfig, PlayTaskOutranksUi) {

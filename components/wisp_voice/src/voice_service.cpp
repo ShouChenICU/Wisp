@@ -354,28 +354,22 @@ void VoiceService::set_llm_busy(bool busy) {
 }
 
 bool VoiceService::begin_output(uint32_t rate, const std::function<bool()>& stopped) {
-    // The last stream closing: its lease goes with it (settle_output()).
+    // The last stream closing, outside the arbiter: an alarm must not
+    // wait behind it.
     wait_for([this] { return !deps_.player.active(); }, PcmPlayer::kBeginWaitMs);
-    // Taken before the output opens and kept until it has closed again;
-    // the arbiter makes this wait out a tone or an alarm (up to its
-    // tone_wait_ms), and this turn's speech gives way past it.
+    // The arbiter makes this wait out a tone or an alarm (up to its
+    // tone_wait_ms), and this turn's speech gives way past it. The player
+    // keeps the lease until it has closed the output again.
     core::AudioArbiter::Lease lease;
     if (deps_.arbiter != nullptr) {
         lease = deps_.arbiter->acquire(core::AudioKind::Voice, stopped);
         if (!lease.valid()) return false;
     }
-    if (auto r = deps_.player.begin(rate, volume_of(deps_)); !r) {
+    if (auto r = deps_.player.begin(rate, volume_of(deps_), std::move(lease)); !r) {
         WLOG_W(kTag, "no speech output: %s", r.error().message.c_str());
         return false;
     }
-    // Replaces a lease still held for a stream that did not close in time
-    // only now, so that output is never left without one meanwhile.
-    out_lease_ = std::move(lease);
     return true;
-}
-
-void VoiceService::settle_output() {
-    if (out_lease_.valid() && !player_begun_ && !deps_.player.active()) out_lease_.release();
 }
 
 Result<void> VoiceService::open_mic() {
@@ -520,14 +514,11 @@ void VoiceService::run() {
             if (quit_.load()) break;
         }
         more = pump_speech();
-        settle_output();
         if (player_begun_) publish_level(VoiceState::Speaking, deps_.player.level());
         check_backstop();
     }
     if (player_begun_ && end_playback(true)) publish(VoiceState::Idle);
-    // stop() stopped the player; the arbiter gets the leases back before
-    // the task ends.
-    out_lease_.release();
+    // The arbiter gets the mic's lease back before the task ends.
     mic_lease_.release();
 }
 
@@ -908,12 +899,6 @@ bool VoiceService::end_playback(bool stop_player) {
     if (stop_player) deps_.player.stop();
     player_begun_ = false;
     draining_ = false;
-    // The lease outlives the output (see settle_output()): wait out the
-    // chunk being written, so an alarm waiting for it gets the output now.
-    if (out_lease_.valid()) {
-        wait_for([this] { return !deps_.player.active(); }, PcmPlayer::kBeginWaitMs);
-        settle_output();
-    }
     return state_.load() == VoiceState::Speaking;
 }
 

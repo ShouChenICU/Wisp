@@ -93,10 +93,23 @@ AudioArbiter::Lease AudioArbiter::acquire(AudioKind kind, const std::function<bo
             // Always, as the speech may be on its way to the output
             // (synthesizing its first sentence) without a lease yet.
             call(&AudioArbiter::voice_stop_);
-            preempt_music();
-            wait_until([this] { return voice_out_ == 0; }, stopped, config_.alarm_wait_ms);
+            // One wait for both, so stuck music and stuck speech together
+            // still hold the alarm back alarm_wait_ms at most; the music
+            // keeps its own preempt_grant_ms within it.
+            const uint32_t music = ask_music_to_stop();
+            const uint64_t music_deadline = now_ms_() + config_.preempt_grant_ms;
+            wait_until(
+                [&] {
+                    const bool music_gone =
+                        music == 0 || music_id_ != music || now_ms_() >= music_deadline;
+                    return voice_out_ == 0 && music_gone;
+                },
+                stopped, config_.alarm_wait_ms);
+            revoke_music(music);
+            // Outside mu_, like every callback of the caller's.
+            const bool gave_up = stopped && stopped();
             std::lock_guard<os::Mutex> lock(mu_);
-            if (stopped && stopped()) {
+            if (gave_up) {
                 others_dropped(alarm_pending_);
                 return {};
             }
@@ -278,6 +291,13 @@ bool AudioArbiter::wait_until(const std::function<bool()>& done,
 }
 
 void AudioArbiter::preempt_music() {
+    const uint32_t id = ask_music_to_stop();
+    if (id == 0) return;
+    wait_until([this, id] { return music_id_ != id; }, {}, config_.preempt_grant_ms);
+    revoke_music(id);
+}
+
+uint32_t AudioArbiter::ask_music_to_stop() {
     uint32_t id = 0;
     {
         // call_mu_ before the lease is looked at: it cannot be released
@@ -286,7 +306,7 @@ void AudioArbiter::preempt_music() {
         std::function<void()> preempt;
         {
             std::lock_guard<os::Mutex> lock(mu_);
-            if (music_id_ == 0) return;
+            if (music_id_ == 0) return 0;
             id = music_id_;
             if (!music_preempted_) {
                 music_preempted_ = true;
@@ -303,7 +323,11 @@ void AudioArbiter::preempt_music() {
         }
     }
     arm();
-    if (wait_until([this, id] { return music_id_ != id; }, {}, config_.preempt_grant_ms)) return;
+    return id;
+}
+
+void AudioArbiter::revoke_music(uint32_t id) {
+    if (id == 0) return;
     std::function<void()> gone;  // destroyed outside mu_
     std::lock_guard<os::Mutex> lock(mu_);
     if (music_id_ != id) return;

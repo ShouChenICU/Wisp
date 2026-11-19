@@ -16,7 +16,10 @@
 // VoiceService made them itself):
 //   - An Alarm always wins: acquire(Alarm) calls the voice stop (see
 //     set_voice_stop()), then waits up to alarm_wait_ms for the Voice
-//     output leases to be released, and is granted either way.
+//     output leases to be released, and is granted either way. The
+//     speech's lease goes when its player has closed the output
+//     (voice::PcmPlayer), so this is the wait for the output itself.
+//     A Music lease is preempted within the same alarm_wait_ms.
 //   - A Tone while a Voice output lease or an Alarm is held (or an Alarm
 //     is being acquired) is refused at once.
 //   - A Voice output lease waits up to tone_wait_ms while a Tone or an
@@ -171,6 +174,11 @@ private:
     // Asks the Music lease to go and waits for it up to preempt_grant_ms
     // (see the file header). The caller's own lease is counted already.
     void preempt_music();
+    // Calls the Music lease's preempt (once per lease) and returns its id;
+    // 0 without one.
+    uint32_t ask_music_to_stop();
+    // Revokes Music lease `id` if it is still held (0: nothing).
+    void revoke_music(uint32_t id);
     // Starts the timer when a resume is armed (no lock held).
     void arm();
     // The timer's callback: tick(), or the timer stops when nothing is

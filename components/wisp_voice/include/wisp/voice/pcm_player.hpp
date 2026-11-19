@@ -4,7 +4,9 @@
 // time through a hal::AudioOut, from a ring buffer of kRingMs, on a task
 // of its own ("wisp.play").
 //
-// One stream: begin() opens the output at the stream's sample rate;
+// One stream: begin() opens the output at the stream's sample rate (and
+// keeps the AudioArbiter lease it is handed until this task has closed
+// the output again, so the lease follows the output, not the producer);
 // push() appends samples, blocking while the ring is full (the producer,
 // TtsClient's on_pcm on wisp.voice, is paced by playback that way);
 // end_of_stream() lets the ring drain and then closes the output; stop()
@@ -34,6 +36,7 @@
 #include <span>
 
 #include "wisp/base/result.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -74,8 +77,10 @@ public:
     // at `volume` percent. Unsupported without an output or a task, Busy
     // if the last stream's output did not close within kBeginWaitMs,
     // NoMemory if the ring cannot be allocated, the output's own error if
-    // open() fails.
-    Result<void> begin(uint32_t sample_rate, uint8_t volume);
+    // open() fails. `lease` (the caller's Voice lease, or none) is
+    // released when the output closes; on a failure, before begin()
+    // returns.
+    Result<void> begin(uint32_t sample_rate, uint8_t volume, core::AudioArbiter::Lease lease = {});
     // Appends what fits, waiting up to `timeout_ms` in all for room;
     // returns how many samples were taken. 0 when no stream is open, after
     // end_of_stream() or once stop() was called.
@@ -114,6 +119,7 @@ private:
     bool eos_ = false;
     bool quit_ = false;
     uint8_t volume_ = 100;
+    core::AudioArbiter::Lease lease_;  // the open stream's
 
     std::atomic<uint8_t> level_{0};
     // The task waits on data_ for samples (or a phase change); a blocked

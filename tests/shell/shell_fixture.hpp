@@ -282,8 +282,8 @@ protected:
     std::shared_ptr<audio::FakeAudioIn> mic =
         std::make_shared<audio::FakeAudioIn>(std::vector<audio::Segment>{}, order, &virtual_ms);
     std::shared_ptr<audio::FakeAudioOut> out = std::make_shared<audio::FakeAudioOut>(order);
-    voice::PcmPlayer player{out};
     core::AudioArbiter arbiter;
+    voice::PcmPlayer player{out};
     core::TonePlayer tones{out, nullptr};
     std::unique_ptr<agent::AgentService> agent;
     uint32_t agent_listener = 0;

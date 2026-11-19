@@ -320,10 +320,11 @@ struct VoiceServiceTest : ::testing::Test {
     std::shared_ptr<FakeAudioIn> mic = std::make_shared<FakeAudioIn>(
         std::vector<wisp::test::audio::Segment>{}, order, &virtual_ms);
     std::shared_ptr<FakeAudioOut> out = std::make_shared<FakeAudioOut>(order);
+    // Shares the output between the speech and the tones, as in App;
+    // outlives the players, which hold its leases.
+    wisp::core::AudioArbiter arbiter;
     wisp::voice::PcmPlayer player{out};
     wisp::core::WakeLockRegistry locks{bus};
-    // Shares the output between the speech and the tones, as in App.
-    wisp::core::AudioArbiter arbiter;
     wisp::core::TonePlayer tones{out, nullptr};
     std::atomic<bool> net_up{true};
     std::atomic<bool> net_expected{false};
@@ -1215,6 +1216,39 @@ TEST_F(VoiceServiceTest, AlarmPreemptsSpeech) {
     ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
     EXPECT_EQ(out->overlapping_opens(), 0);
     EXPECT_EQ(count(kTtsPath), 1u);
+}
+
+// The speech's lease goes with its output, not with the voice task: an
+// alarm sounds as soon as the stopped player has closed, and a tone after
+// it plays, while wisp.voice is still stuck in a TTS request.
+TEST_F(VoiceServiceTest, AlarmAndToneFollowTheClosedOutputNotTheVoiceTask) {
+    add_tts();
+    make();
+    FakeTtsReply reply = pcm_reply(ramp(4800), /*hold_after=*/1);
+    reply.deaf = true;
+    server.push_tts(reply);
+    voice->begin_speech();
+    voice->speak("一。二。");
+    ASSERT_TRUE(wait_until([&] { return voice->speaking() && server.held() == 1; }, 2000));
+    ASSERT_EQ(out->opens(), 1);
+
+    out->set_write_ms(5);
+    const uint64_t t0 = wisp::os::now_ms();
+    tones.play(ToneKind::Alarm, 60);
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 2; }, 1000));
+    EXPECT_LT(wisp::os::now_ms() - t0, 250u);
+    EXPECT_EQ(server.held(), 1);  // the voice task has not moved on
+    tones.silence();
+    ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
+
+    tones.play(ToneKind::Tone, 60);
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 3; }, 1000));
+    ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
+    EXPECT_EQ(server.held(), 1);
+
+    server.release();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(out->overlapping_opens(), 0);
 }
 
 TEST_F(VoiceServiceTest, TaskAndLogs) {

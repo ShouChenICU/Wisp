@@ -73,7 +73,8 @@ void PcmPlayer::stop_task() {
     task_.reset();
 }
 
-Result<void> PcmPlayer::begin(uint32_t sample_rate, uint8_t volume) {
+Result<void> PcmPlayer::begin(uint32_t sample_rate, uint8_t volume,
+                              core::AudioArbiter::Lease lease) {
     if (!out_ || !task_) return Result<void>::err(ErrorCode::Unsupported, "no audio output");
     if (sample_rate == 0) return Result<void>::err(ErrorCode::InvalidArgument, "sample rate 0");
     const uint64_t deadline = os::now_ms() + kBeginWaitMs;
@@ -105,6 +106,7 @@ Result<void> PcmPlayer::begin(uint32_t sample_rate, uint8_t volume) {
         eos_ = false;
         volume_ = std::min<uint8_t>(volume, 100);
         phase_ = Phase::Open;
+        lease_ = std::move(lease);
     }
     // A give left over from the last stream must not let push() through.
     space_.take(0);
@@ -193,13 +195,18 @@ void PcmPlayer::run() {
             out_->close();
             level_.store(0);
             bool quit = false;
+            core::AudioArbiter::Lease lease;
             {
                 std::lock_guard<os::Mutex> lock(mu_);
                 phase_ = Phase::Closed;
                 size_ = 0;
                 eos_ = false;
                 quit = quit_;
+                lease = std::move(lease_);
             }
+            // Only now, with the output closed and active() false: the
+            // next sound may open it.
+            lease.release();
             if (quit) return;
             continue;
         }

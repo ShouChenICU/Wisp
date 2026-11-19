@@ -81,10 +81,10 @@
 //
 // Sharing the output (spec 4.4, media-library spec 5). With an
 // AudioArbiter in the deps, the speech takes a Voice lease before
-// player.begin() and keeps it until the player has closed the output
-// again (an end_playback() waits out the chunk being written; otherwise
-// the task drops it at its next pass), so TonePlayer and the media player
-// never have the AudioOut open with it. The arbiter makes the rules: a
+// player.begin() and hands it to the player, which releases it right
+// after it has closed the output (wherever the task is meanwhile, even
+// stuck in a TTS request), so TonePlayer and the media player never have
+// the AudioOut open with it and get it as soon as it is closed. The arbiter makes the rules: a
 // tone or an alarm sounding holds the speech back up to its tone_wait_ms
 // (then the turn's speech gives way), and an alarm stops the speech
 // through the voice stop this service registers from start() to stop()
@@ -346,8 +346,6 @@ private:
     // Takes the output lease and opens the player for the turn's first
     // PCM; false when the arbiter refused or the player did not open.
     bool begin_output(uint32_t rate, const std::function<bool()>& stopped);
-    // Drops the output lease once the player has closed the output.
-    void settle_output();
     // The mic, with its input lease.
     Result<void> open_mic();
     void close_mic();
@@ -404,10 +402,9 @@ private:
     bool llm_busy_ = false;  // speech_mu_
     std::atomic<uint32_t> speech_gen_{0};
 
-    // Task only: the speech it is playing, and the arbiter's leases (see
-    // the file header).
+    // Task only: the speech it is playing, and the mic's lease (see the
+    // file header).
     uint32_t playing_gen_ = 0;
-    core::AudioArbiter::Lease out_lease_;
     core::AudioArbiter::Lease mic_lease_;
     bool player_begun_ = false;
     bool draining_ = false;

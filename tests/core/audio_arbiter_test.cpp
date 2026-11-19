@@ -319,3 +319,29 @@ TEST_F(AudioArbiterTest, TheTimerDrivesTheResume) {
     real.stop();
     real.set_resume_listener(nullptr);
 }
+
+TEST_F(AudioArbiterTest, AlarmWaitsAtMostAlarmWaitMsInAll) {
+    // Music that does not stop, and speech that will not close once it
+    // has the output: the alarm still waits alarm_wait_ms at most.
+    std::atomic<int> stops{0};
+    arb.set_voice_stop([&] { ++stops; });
+    Lease music = arb.try_acquire_music([] {});
+    ASSERT_TRUE(music.valid());
+    auto voice = acquire_async(AudioKind::Voice);  // waits for the music
+    ASSERT_TRUE(wait_until([&] { return !music.valid(); }, 1000));
+    auto alarm = acquire_async(AudioKind::Alarm);
+    ASSERT_TRUE(wait_until([&] { return stops.load() == 1; }, 1000));
+    advance(499);
+    ASSERT_TRUE(wait_until([&] { return voice->done.load(); }, 1000));
+    EXPECT_TRUE(voice->lease.valid());
+    wisp::os::sleep_ms(kSettleMs);
+    EXPECT_FALSE(alarm->done.load());
+    advance(1);
+    ASSERT_TRUE(wait_until([&] { return alarm->done.load(); }, 1000));
+    EXPECT_TRUE(alarm->lease.valid());
+    voice->t.join();
+    alarm->t.join();
+    voice->lease.release();
+    alarm->lease.release();
+    arb.set_voice_stop(nullptr);
+}

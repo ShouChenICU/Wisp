@@ -25,7 +25,7 @@
 // holds it until the output is closed again: a refused Tone is skipped,
 // an Alarm waits there while the arbiter stops the speech. play() never
 // waits for it.
-
+//
 // Threads: play(), silence() and playing() may be called from any thread,
 // and never wait, but not while start() or stop() runs: whoever calls them
 // stops calling before stop() (App stops the router and PowerManager, the
