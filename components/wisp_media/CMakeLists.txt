@@ -11,6 +11,7 @@ wisp_component(
     NAME wisp_media
     SRCS src/path.cpp src/errors.cpp src/id3.cpp src/mp3_info.cpp src/wav.cpp src/decoder.cpp
          src/wav_decoder.cpp src/index_store.cpp src/library.cpp src/play_queue.cpp
+         src/item_reader.cpp src/player.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core
 )
