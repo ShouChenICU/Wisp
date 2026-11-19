@@ -15,6 +15,7 @@ TESTS = {
     "check_layering_test": (),
     "check_topics_test": (),
     "check_settings_test": (),
+    "check_deps_test": ("firmware/main/idf_component.yml", "firmware/dependencies.lock"),
     "pack_assets_test": ("web/*", "tests/net/fixtures/*"),
     "wisp_scene_test": ("tests/smoke/*",),
     "check_i18n_test": ("web/app/i18n/*",),

@@ -21,8 +21,14 @@ Both firmware board builds remain required.
 Firmware CI also requires the final `firmware/dependencies.lock` to remain
 unchanged after initial configuration and both board builds. The first
 configuration runs before bmgr generates its dependency manifest and therefore
-resolves a smaller graph. Pin USB in `firmware/main/idf_component.yml` as well as
-the lock file so this bootstrap step cannot upgrade usb_host_uac's dependency.
+resolves a smaller graph, and a clean checkout resolves every version range
+afresh, taking the newest matching release. So every registry component in the
+lock, including those that only arrive through another component's range, is
+pinned to its locked version in `firmware/main/idf_component.yml`.
+`tools/check_deps.py` (offline, part of `tools/ci.sh`) fails when one is not, so
+a new dependency's unpinned transitive components show up locally instead of as
+a changed lock in firmware CI. A local firmware build that changes the lock is
+the same failure: pin the component rather than restoring the file.
 
 Tool self-tests can be selected with `WISP_CI_BASE=<revision> bash tools/ci.sh`.
 The selector compares the merge base with HEAD and local tracked edits, and

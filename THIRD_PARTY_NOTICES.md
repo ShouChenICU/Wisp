@@ -858,11 +858,11 @@ license file under `firmware/managed_components/`:
 | `espressif/esp_lcd_co5300` | 2.2.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `espressif/esp_lcd_touch` | 1.2.1 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `waveshare/esp_lcd_touch_cst9217` | 2.0.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
-| `espressif/esp_lcd_panel_io_additions` | 1.0.1~1 | esp_board_manager, gen_bmgr_codes | Apache-2.0 |
-| `espressif/esp_io_expander` | 1.2.1 | esp_lcd_panel_io_additions | Apache-2.0 |
+| `espressif/esp_lcd_panel_io_additions` | 1.0.1~1 | `firmware/main` (pinned), esp_board_manager, gen_bmgr_codes | Apache-2.0 |
+| `espressif/esp_io_expander` | 1.2.1 | `firmware/main` (pinned), esp_lcd_panel_io_additions | Apache-2.0 |
 | `espressif/usb` | 1.6.0 | `firmware/main` (pinned to keep initial configuration reproducible), usb_host_uac | Apache-2.0 |
-| `espressif/usb_host_uac` | 1.5.0 | esp_board_manager | Apache-2.0 |
-| `espressif/cmake_utilities` | 0.5.3 | esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
+| `espressif/usb_host_uac` | 1.5.0 | `firmware/main` (pinned), esp_board_manager | Apache-2.0 |
+| `espressif/cmake_utilities` | 0.5.3 | `firmware/main` (pinned), esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
 | `espressif/mdns` | 1.14.0 | `firmware/main` (direct dependency; the `wisp.local` responder started by `wisp::port::esp::EspWifi`, `components/wisp_port_esp/net/esp_wifi.cpp`) | Apache-2.0 |
 | `espressif/esp_new_jpeg` | 1.0.2 | `firmware/main` (direct dependency; baseline JPEG for `ui.image`, decoded by `wisp::port::esp::install_image_decoders()`, `components/wisp_port_esp/ui/esp_jpeg_decoder.cpp`; a prebuilt library) | ESPRESSIF MIT License (below) |
 | `joltwallet/littlefs` | 1.23.1 | `firmware/main` (direct dependency, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |

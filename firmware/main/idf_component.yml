@@ -39,6 +39,15 @@ dependencies:
   # esp_board_manager accepts an esp_boards range ("~0.7.1"); a fresh
   # resolve (CI) would take the newest release and rewrite the lock.
   espressif/esp_boards: "0.7.2"
+  # Every other registry component the lock holds, pinned for the same
+  # reason: each arrives only through a range (cmake_utilities "0.*",
+  # esp_io_expander "^1", usb_host_uac "^1.5.0", and the bmgr-generated
+  # manifest's esp_lcd_panel_io_additions "^1"). tools/check_deps.py
+  # fails CI when a locked component is not pinned here.
+  espressif/cmake_utilities: "0.5.3"
+  espressif/esp_io_expander: "1.2.1"
+  espressif/esp_lcd_panel_io_additions: "1.0.1~1"
+  espressif/usb_host_uac: "1.5.0"
   # mDNS responder for wisp.local (wisp::port::esp::EspWifi,
   # components/wisp_port_esp/net/esp_wifi.cpp; connectivity spec 2.1).
   # Pinned to an exact release (THIRD_PARTY_NOTICES.md).
