@@ -232,3 +232,17 @@ TEST(PlayQueue, RemovePrefixEmptiesTheQueue) {
     EXPECT_FALSE(q.next().has_value());
     EXPECT_EQ(q.remove_prefix("scene:a/"), 0u);
 }
+
+// A queue whose current item ran out in Sequence mode stays without one
+// when a later removal happens in Shuffle mode.
+TEST(PlayQueue, RemovePrefixKeepsAnEndedQueueEnded) {
+    PlayQueue q;
+    q.set({"music/a.mp3", "music/b.mp3", "scene:x/1.mp3", "scene:y/1.mp3"}, 3);
+    EXPECT_EQ(q.remove_prefix("scene:y/"), 1u);
+    EXPECT_FALSE(q.current().has_value());
+    q.set_mode(PlayMode::Shuffle, lcg());
+    EXPECT_EQ(q.remove_prefix("scene:x/"), 1u);
+    EXPECT_EQ(q.size(), 2u);
+    EXPECT_FALSE(q.current().has_value());
+    EXPECT_FALSE(q.next().has_value());
+}

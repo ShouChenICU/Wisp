@@ -189,6 +189,13 @@ size_t PlayQueue::remove_prefix(std::string_view prefix) {
         perm_pos_ = 0;
         return removed;
     }
+    // A queue that had already run out stays so: a shuffle must not pick a
+    // new current item out of the remaining ones.
+    if (!cur_) {
+        perm_.clear();
+        perm_pos_ = 0;
+        return removed;
+    }
     if (mode_ == PlayMode::Shuffle) {
         os::LargeVector<uint32_t> np;
         np.reserve(items_.size());
@@ -214,9 +221,6 @@ size_t PlayQueue::remove_prefix(std::string_view prefix) {
             draw_perm(std::nullopt, std::nullopt);
             cur_ = perm_[0];
         }
-        return removed;
-    }
-    if (!cur_) {
         return removed;
     }
     if (!cur_removed) {
