@@ -42,6 +42,7 @@
 #include "wisp/port/esp/esp_http_client.hpp"
 #include "wisp/port/esp/esp_http_server.hpp"
 #include "wisp/port/esp/esp_jpeg_decoder.hpp"
+#include "wisp/port/esp/esp_mp3_decoder.hpp"
 #include "wisp/port/esp/esp_sntp.hpp"
 #include "wisp/port/esp/log_esp.hpp"
 #include "wisp/port/esp/mem_report.hpp"
@@ -198,6 +199,11 @@ extern "C" void app_main() {
     // has to enable that source itself.
     platform.random = [](uint8_t* out, size_t len) { esp_fill_random(out, len); };
     platform.reboot = [] { esp_restart(); };
+    // MP3 through esp_audio_codec; App adds the WAV decoder (media spec 4.3).
+    platform.audio_decoder = [](wisp::media::Format f) -> std::unique_ptr<wisp::media::Decoder> {
+        if (f == wisp::media::Format::Mp3) return wisp::port::esp::make_esp_mp3_decoder();
+        return nullptr;
+    };
     // Serial console (connectivity spec 8.2). Created before App::start(),
     // and so before any task logs heavily: the stdio VFS switches to the
     // console driver here.
