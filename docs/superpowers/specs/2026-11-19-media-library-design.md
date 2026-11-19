@@ -33,7 +33,7 @@ Cover art, lyrics, AAC/FLAC/OGG, Bluetooth audio, persisted playlists, resuming 
 | Session | One session with a queue; modes sequence, repeat-all, repeat-one, shuffle. A new `play` replaces the queue. Playback continues after the starting scene closes. |
 | Coexistence | Music pauses for alarms, speech (TTS, recording) and tones, and resumes on its own. A pause by the user is never resumed automatically. |
 | Permissions | A scene declares `"media": "read"` or `"write"` in `scene.json` `permissions`, confirmed once at install like HTTP hosts. Controlling playback needs no permission; a scene can always play its own files. The agent has read/write by default without confirmation. |
-| Screen off | Playback holds a `cpu` and a new `audio` wake lock; the audio output stays powered in standby. |
+| Screen off | Playback holds a `cpu` and a new `audio` wake lock; the audio output stays powered in standby. Keys behave as today (no screen-off volume keys: on the 2.16 `vol_down` is the talk key and the 1.75C has no volume keys); volume changes by voice through the agent, in settings or in a scene. |
 | Architecture | Approach 1: a new portable component `wisp_media` plus `core::AudioArbiter`. |
 | Decoder | Behind a portable `media::Decoder` interface: `esp_audio_codec` on the device (performance), minimp3 in the simulator and host tests. WAV is a portable parser shared by both. |
 | Volume | Music shares `audio/volume` with speech. |
@@ -241,7 +241,7 @@ using DecoderFactory = std::function<std::unique_ptr<Decoder>(Format)>;  // null
 - **The player holds** `cpu` and `audio`, both with holder `system.media`, while `playing` and while `paused`/`system`. After a user pause, a stop or the end of the queue it keeps them for **10 s** more (no power-down pop when the user resumes right away), then releases them.
 - **The 30-minute reminder** (`wakelock_long`) is not posted for holder `system.media`: long music is expected and audible.
 - **Wi-Fi** follows `deep_standby` as today (off); local playback needs no network. The SD card is not a standby device and stays mounted.
-- **Volume keys with the screen off**: while an `audio` lock is held and the level is `standby` or `deep_standby`, a volume key edge changes `audio/volume` by the existing step and does not wake the screen. Every other key and touch wakes as today; without an `audio` lock nothing changes.
+- **Keys with the screen off** behave as today: every key and touch wakes the screen. There is no screen-off volume key (the 2.16's `vol_down` is the talk key, `vol_up` has no handler, the 1.75C has no volume keys); with the screen off the user changes the volume by voice (the agent's `settings.set`), or after waking, in settings or a scene.
 - **Notifications**: a tone without `wake` while the screen is off is still dropped (so it does not interrupt music in standby). An alarm turns the screen on, preempts music through the arbiter, and music resumes after the alarm is silenced.
 
 ---
@@ -267,7 +267,7 @@ Without the permission a call fails with `permission_denied` (no prompt). The ge
 ### 7.2 Permission
 
 - `scene.json`: `"permissions": {"http": [...], "media": "read" | "write"}`; anything else is a manifest error.
-- The install/update confirmation lists it as one line ("Read the media library" / "Read and write the media library", zh/ja/en) next to the HTTP hosts. An update that adds `media` or raises `read` to `write` counts as a new permission and is confirmed again, like a new host.
+- Confirmed where HTTP hosts are confirmed today: when the agent installs or updates a scene (`scene_workspace.cpp`), the confirmation text gains one line ("Read the media library" / "Read and write the media library", zh/ja/en) next to the new hosts. An update that adds `media` or raises `read` to `write` counts as new, like a new host. A scene installed through the admin console is the user's own action and is not confirmed (as for hosts); the admin scene list shows the `media` level next to the hosts.
 
 ### 7.3 Agent tools
 
@@ -326,7 +326,7 @@ Host (GoogleTest, TDD):
 - **Library**: path normalization (every rejection in 3.2); scan, incremental rescan, entry update on write/remove; index rebuild from a missing/corrupt/old-version file; ID3v2 (each encoding, the UTF-8-in-Latin-1 and non-UTF-8 cases), ID3v1 fallback, file-name fallback; MP3 duration from Xing, VBRI and estimate; WAV header parsing and rejection of unsupported sample formats; `media_unavailable` without a card.
 - **Player** (minimp3 decoding generated test files: a few seconds of sine wave as MP3 and WAV, committed under the tests' data, no copyrighted material): each mode; `prev`'s 3-second rule; shuffle plays each item once per cycle; `seek`; a sample-rate change between items; skipping a bad item; stopping after three; card removal; queue truncation at 1000; removal of a scene's items on uninstall.
 - **Arbiter**: the existing alarm/voice/tone behaviour (the current tests move with it); music preemption, the 200 ms grant, the 800 ms resume delay, no resume after a user pause, a failed `Music` acquire waiting for the notification; on a fake clock.
-- **Power**: an `audio` lock keeps audio outputs powered in standby; acquiring and releasing it during standby; volume keys do not wake while it is held and do otherwise; no `wakelock_long` for `system.media`.
+- **Power**: an `audio` lock keeps audio outputs powered in standby; acquiring and releasing it during standby; no `wakelock_long` for `system.media`.
 - **Scene API**: with and without each permission level; `{file = …}` resolves to the calling scene only; `on_media`; manifest parsing and the confirmation lines.
 - **Agent tools and REST**: the existing tool and admin test harnesses.
 - **Panel row**: layout tests on the three shapes; screenshot previews run manually.
@@ -336,7 +336,7 @@ Device checks (handed to the owner; not claimed as verified):
 1. MP3 at 44.1 kHz and 48 kHz and a WAV play correctly on both boards.
 2. `esp_audio_codec` CPU load while playing.
 3. Ten minutes of screen-off playback without dropouts; current draw with the screen off.
-4. Volume keys change the volume with the screen off.
+4. The talk key with the screen off still wakes and talks while music plays (music pauses, then resumes).
 5. TTS, tones and an alarm interrupt music, and music resumes without pops.
 6. Removing the card while playing leaves the system responsive.
 7. Internal RAM budget re-measured (`mem`), per AGENTS.md section 5.
