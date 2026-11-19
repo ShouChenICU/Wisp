@@ -51,6 +51,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 | `--data-dir <dir>` | 数据目录，默认 `./sim-data` |
 | `--web-dir <dir>` | 直接从源码目录提供后台网页，改完刷新即可 |
 | `--no-sd` / `--disable <id>` / `--wifi-fail` | 模拟没插卡、某个设备坏了、连不上路由器 |
+| `--nav-keys` | 增加四个键盘按键用于按键导航：Page Up / Page Down 或 Tab / Return / Escape 或 Backspace |
 | `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | 在指定时间点击或滑动 |
 
 </details>
@@ -190,10 +191,10 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 
 | 步骤 | 做什么 |
 | --- | --- |
-| 1. 描述硬件 | 用 esp_board_manager 的 YAML 写板型、总线和引脚，屏幕、触摸、音频、SD 卡都在这里声明 |
-| 2. 补驱动 | esp_board_manager 不支持的芯片（IMU、PMU、RTC 等），在 `drivers/<芯片>/` 下写一个 C 组件 |
-| 3. 写 `board.cpp` | 把各个设备包成 `hal::Device`，注册到 `DeviceRegistry`，并通过 caps 声明用途（role）和能力，比如屏幕形状、安全区、有没有麦克风。振动马达这类没有对应服务的外设，自己描述属性和命令，Agent 和场景就能使用它 |
-| 4. 分区与配置 | 按约定写 `partitions.csv`（OTA、`fonts`、`glyphs`、存储）和板级 sdkconfig |
+| 1. 描述硬件 | 用 esp_board_manager 的 YAML 写板型、总线和引脚，屏幕、触摸、音频、SD 卡和按键都在这里声明，引脚只写在这里 |
+| 2. 补驱动 | esp_board_manager 不支持的芯片（IMU、PMU、RTC 等），在 `drivers/<芯片>/` 下写一个 C 组件并附上它的 Wisp 适配器，再在 `board.cmake` 里列出本板用到的驱动 |
+| 3. 写 `board.cpp` | 用一个 `BoardSpec` 描述本板：板级套件（`boards/common/`）把各个设备包成 `hal::Device` 并注册到 `DeviceRegistry`；spec 给出每个设备的 id、用途（role）以及 caps 依据的事实，比如屏幕形状、圆角半径、麦克风声道。本板自己的芯片（IMU、PMU、RTC）用各自的驱动初始化。振动马达这类没有对应服务的外设，自己描述属性和命令，Agent 和场景就能使用它 |
+| 4. 分区与配置 | 在 `boards/common/partitions/` 中选用对应 flash 容量的共享分区表（有特殊需要时按约定为本板单独写 `partitions.csv`），并写板级 sdkconfig |
 | 5. 构建与验收 | 用 `-DWISP_BOARD=<板名>` 构建，再对照启动报告、设备清单和硬件诊断页逐项核对 |
 
 > [!TIP]

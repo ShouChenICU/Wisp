@@ -14,6 +14,7 @@
 // DeviceRegistry::manifest()/the self-check screen).
 
 #include <cstdint>
+#include <string>
 
 #include "wisp/base/result.hpp"
 #include "wisp/base/value.hpp"
@@ -106,5 +107,12 @@ enum class PanelKind { Lcd, Amoled, Mono, EPaper };
 PanelKind panel_kind(const Properties& caps);
 // Lcd and Amoled.
 inline bool panel_is_colour(PanelKind k) { return k == PanelKind::Lcd || k == PanelKind::Amoled; }
+
+// The format of the buffers Display::flush() receives, from caps
+// "pixel_format"; not the panel's native format, which the driver converts
+// from. The caps value when it is a string, kPixelFormatRgb565 when the key
+// is absent, "" for any other type.
+inline constexpr const char* kPixelFormatRgb565 = "rgb565";
+std::string pixel_format(const Properties& caps);
 
 }  // namespace wisp::hal

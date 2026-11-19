@@ -87,7 +87,7 @@ TEST(Axp2101Conv, IprechgCodeClampsAboveMax) { EXPECT_EQ(axp2101_iprechg_code(10
 // empty battery and would spuriously fire wisp::core::PowerMonitor's
 // power.battery.low. Downgrading axp2101_status_t::battery_present to
 // false on that failure routes it through the same "no battery" path
-// wisp::port::esp::EspPower::status() already maps to
+// wisp::drivers::Axp2101Power::status() already maps to
 // PowerStatus::battery_percent == -1 (unknown), rather than leaving
 // battery_percent at whatever axp2101_read_status() memset it to (0).
 TEST(Axp2101Conv, BatteryPresentAfterPctReadIsTrueOnlyWhenBothHold) {

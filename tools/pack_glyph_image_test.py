@@ -25,7 +25,7 @@ SCRIPT = TOOLS / "pack_glyph_image.py"
 COMMITTED_FONT_C = ROOT / "components" / "wisp_ui" / "fonts" / "lv_font_cjk_16.c"
 sys.path.insert(0, str(TOOLS))
 
-# The reference board's glyphs partition (boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv).
+# The reference board's glyphs partition (boards/common/partitions/16mb.csv).
 REFERENCE_GLYPHS_PARTITION = 0x120000
 
 HEADER = struct.Struct("<4sHHII16x")

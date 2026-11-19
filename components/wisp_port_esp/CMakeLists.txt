@@ -1,11 +1,10 @@
 # ESP-IDF-only platform port: implements wisp::os on FreeRTOS/esp_timer/
 # heap_caps (os/os_esp.cpp), wisp::port::esp::EspLogSink (log_esp.cpp) and
 # wisp::port::esp::NvsSettingsBackend (settings_nvs.cpp, backed by NVS),
-# plus the HAL devices boards construct from esp_board_manager's handles
-# and drivers/'s AXP2101/PCF85063/QMI8658 handles: wisp::port::esp::
-# EspDisplay (dev/esp_display.cpp), EspTouch (dev/esp_touch.cpp), EspPower
-# (dev/esp_power.cpp), EspClock (dev/esp_clock.cpp), EspImu
-# (dev/esp_imu.cpp), EspGpioButton (dev/esp_button.cpp), EspAudioOut/
+# plus the bus-level HAL devices boards construct from esp_board_manager's
+# handles, which work for any chip behind an IDF driver: wisp::port::esp::
+# EspDisplay (dev/esp_display.cpp), EspTouch (dev/esp_touch.cpp),
+# EspGpioButton (dev/esp_button.cpp), EspAudioOut/
 # EspAudioIn (dev/esp_audio.cpp) and EspInternalStorage/
 # EspSdStorage (dev/esp_storage.cpp), plus the serial console input
 # wisp::port::esp::EspConsole (console_esp.cpp) and the networking
@@ -28,6 +27,11 @@
 # component's include/ directly rather than depending on this whole
 # component.)
 #
+# No chip adapters: a chip's Wisp adapter lives in its driver component
+# (drivers/<chip>/wisp/), which the board names in boards/<board>/
+# board.cmake, so this component requires nothing under drivers/
+# (tools/check_layering.py, AGENTS.md section 3).
+#
 # Self-contained include -- see cmake/wisp_component.cmake's header
 # comment.
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
@@ -35,7 +39,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 wisp_component(
     NAME wisp_port_esp
     SRCS os/os_esp.cpp os/isr_queue_esp.cpp log_esp.cpp settings_nvs.cpp dev/esp_display.cpp dev/esp_touch.cpp
-         dev/esp_power.cpp dev/esp_clock.cpp dev/esp_imu.cpp dev/esp_button.cpp dev/esp_audio.cpp
+         dev/esp_button.cpp dev/esp_audio.cpp
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
          net/esp_http_server.cpp net/esp_http_client.cpp net/esp_sntp.cpp esp_firmware.cpp
          mem_report.cpp sleep_stats.cpp
@@ -43,7 +47,7 @@ wisp_component(
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
     IDF_REQUIRES freertos esp_timer heap log esp_lcd esp_lcd_touch esp_driver_i2c esp_driver_gpio
-                 axp2101 pcf85063 qmi8658 esp_codec_dev esp_driver_i2s nvs_flash fatfs sdmmc esp_driver_sdmmc
+                 esp_codec_dev esp_driver_i2s nvs_flash fatfs sdmmc esp_driver_sdmmc
                  littlefs esp_board_manager esp_driver_usb_serial_jtag esp_driver_uart
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
                  mbedtls mdns app_update esp_partition esp_pm lvgl__lvgl espressif__esp_new_jpeg

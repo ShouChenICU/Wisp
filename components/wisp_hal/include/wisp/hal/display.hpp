@@ -24,6 +24,11 @@ struct Area {
 // a ScreenShape/safe area), "corner_radius" (int), "panel" (string,
 // "lcd"/"amoled"/"mono"/"epaper"; see panel_kind() in
 // wisp/hal/display_geometry.hpp),
+// "pixel_format" (string, optional, default "rgb565"; the format of the
+// buffers flush() receives, not the panel's native format: a panel with
+// another native format, such as RGB888, declares "rgb565" and converts in
+// its driver. rgb565 is the only buffer format the UI renders today;
+// UiRuntime::start() returns Unsupported for any other),
 // "brightness" (bool, true if set_brightness() is supported),
 // "area_align" (int, flush()'s required alignment -- see
 // wisp::ui::align_area()), "rgb565_be" (bool, optional, default false:

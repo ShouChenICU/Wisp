@@ -18,6 +18,11 @@ namespace wisp::ui::theme {
 // Badges, chips and toggles.
 inline constexpr int32_t kRadiusPill = LV_RADIUS_CIRCLE;
 
+// The ring around a widget a key focuses (wisp/ui/key_nav.hpp): its
+// width and its gap to the widget. It is drawn outside the widget, so
+// whatever holds focusable widgets leaves this much room around them.
+inline constexpr int32_t kFocusRingWidth = 2, kFocusRingPad = 2;
+
 }  // namespace wisp::ui::theme
 
 namespace wisp::ui {

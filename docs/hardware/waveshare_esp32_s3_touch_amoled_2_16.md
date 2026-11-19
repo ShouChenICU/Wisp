@@ -7,7 +7,7 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 ## SoC and storage
 
 - ESP32-S3R8: 16 MB QIO flash, 8 MB octal PSRAM (80 MHz)
-- For the partition table, see `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` (for the board-level sdkconfig of flash, PSRAM, the console and so on, see `sdkconfig.defaults.board` in the same directory):
+- For the partition table, see `boards/common/partitions/16mb.csv` (for the board-level sdkconfig of flash, PSRAM, the console and so on, see `sdkconfig.defaults.board` in the same directory):
 
   | Partition | Offset | Size |
   |---|---|---|
@@ -45,6 +45,7 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 
 - I2C bus: SDA 15, SCL 14, 400 kHz; every I2C device shares this one bus.
 - I2S: MCLK 42, BCLK 9, LRCK/WS 45, DOUT 8, DIN 10.
+- Every pin above is written once, in the bmgr YAML (`board_peripherals.yaml`, `board_devices.yaml`); `board.cpp` holds none. The three keys are bmgr `gpio` peripherals: `btn_power` (GPIO16, pull-down, active high), `btn_vol_up` (GPIO18, pull-up) and `btn_vol_down` (GPIO0, pull-up); bmgr configures them in `esp_board_manager_init()` and the board kit reads their pins back. Touch reset/interrupt levels and orientation are `lcd_touch` YAML keys too, so `setup_device.c` holds only the panel's init table.
 
 ## Known errata and notes
 
@@ -52,7 +53,7 @@ Sources: the MyOS project (MIT, by ShouChen, read-only reference; **its code is 
 - The SD card uses SDMMC, not SPI.
 - Where a swipe in from the bezel first lands (2026-11-09, logging the first point of each press): a finger sliding down over the top edge is first reported at y = 9-26, never at the very edge, because the CST9217 reports the centre of the contact. With the top-edge swipe's zone at a fixed 16 px about half of such swipes started below it and went to the history page instead of opening the pull-down panel. The top and left edge zones are now 8% of the screen's shorter side, 38 px on this 480 px panel (`ui::SystemLayer::kTopZonePercent`/`kBackZonePercent`).
 - The display's partial refresh areas must be aligned to 2 pixels (`area_align = 2`).
-- The panel's actual corner radius is much larger than the 40 in the vendor's documentation. Separately from the self-check screen, we wrote a calibration scene that draws quarter-circle arcs of radius 40, 50, 60, 70 and 80 in the four corners of the screen (centred at `(R,R)`), and checked by eye, one by one, which arcs could still be seen along the diagonal and which had been clipped by the real rounded corner. The result: the 60 px arc is completely invisible along the diagonal and the 70 px arc is only partly visible, from which the visible boundary on the diagonal works out at about 20 px from the corner, corresponding to a radius of about 70 (`kCornerRadius` in `board.cpp`). Computing the safe area from the datasheet's 40 clips the corners of text or controls. On a new board, always measure with this arc comparison; do not use the datasheet value directly (see `docs/porting-guide.md`).
+- The panel's actual corner radius is much larger than the 40 in the vendor's documentation. Separately from the self-check screen, we wrote a calibration scene that draws quarter-circle arcs of radius 40, 50, 60, 70 and 80 in the four corners of the screen (centred at `(R,R)`), and checked by eye, one by one, which arcs could still be seen along the diagonal and which had been clipped by the real rounded corner. The result: the 60 px arc is completely invisible along the diagonal and the 70 px arc is only partly visible, from which the visible boundary on the diagonal works out at about 20 px from the corner, corresponding to a radius of about 70 (`corner_radius` in `board.cpp`'s `BoardSpec`). Computing the safe area from the datasheet's 40 clips the corners of text or controls. On a new board, always measure with this arc comparison; do not use the datasheet value directly (see `docs/porting-guide.md`).
 - When initialising the AXP2101, do not change the voltage or on/off state of any power rail.
 - GPIO16 reflects the PWR key state: it is driven low when released and high when held (measured; the official documentation only labels it `SYS_OUT`). It is not the AXP2101's interrupt output; read it as an ordinary button, with short and long presses timed by `ButtonService`, and there is no need to read the AXP2101's IRQ registers. In the measurements, the AXP2101's PWRON long-press IRQ also happened to set at 1 s of holding, consistent with the level of GPIO16.
 - Holding the PWR key for several seconds (the AXP2101's OFFLEVEL) triggers the chip's hardware forced power-off, independently of software.
@@ -204,8 +205,8 @@ The device boots into the home screen (black background, wisp in the centre). "H
     wake was expected to take **~1.36 s**, far beyond the acceptance item 5 target of "screen on within 300 ms of
     pressing the power key". Worse, the hard reset clears GRAM, and the initialisation sequence sends DISPON on
     line 45 (and then still waits 600 ms), so uninitialised GRAM is shown first (garbled or black screen).
-  - It now uses `EspDisplayConfig::PanelSleep::DcsSleep` (`components/wisp_port_esp/dev/esp_display.cpp`, enabled by
-    `kDisplaySleepOutSettleMs` in `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`): it never calls
+  - It now uses `EspDisplayConfig::PanelSleep::DcsSleep` (`components/wisp_port_esp/dev/esp_display.cpp`, selected by the
+    `DisplaySpec` in `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp`): it never calls
     `esp_lcd_panel_disp_sleep()`/`disp_on_off()`, and instead uses `esp_lcd_panel_io_tx_param()` (the same path as
     `set_brightness()`) to send standard MIPI DCS commands directly. To sleep: `DISPOFF`(0x28) +
     `SLPIN`(0x10); to wake: `SLPOUT`(0x11) + a wait of `sleep_out_settle_ms` (120 ms on this board, the lower
@@ -243,9 +244,10 @@ The device boots into the home screen (black background, wisp in the centre). "H
   above, that would directly undo the very reinitialisation it is meant to avoid); a floating CS may also make the
   panel sample random levels on the bus during light sleep and take unrelated SPI data as commands meant for it;
   and a floating amplifier enable risks pops or leakage.
-  `hold_outputs_during_light_sleep()` in `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` (called at the
-  end of the board's `init()`) calls `gpio_sleep_sel_dis()` on each of these four pins, so they keep their
-  configured level and direction during light sleep. **To be verified**: after many consecutive automatic
+  The board kit's `hold_outputs()` (`boards/common/board_kit.cpp`, run near the end of the board's `init()`)
+  reads these four pins from the bmgr device configs (`board_devices.yaml`, `board_peripherals.yaml`), calls
+  `gpio_sleep_sel_dis()` on each, so they keep their configured level and direction during light sleep, and
+  logs `held through light sleep: GPIO39 GPIO40 GPIO46 GPIO12`. **To be verified**: after many consecutive automatic
   light-sleep/wake cycles on the device (for example more than 10 minutes in standby, making sure dozens of
   automatic light-sleep/wake cycles have happened), confirm that the panel picture is normal (no garbling, no
   signs of an unexpected reset such as the brightness being reset; see "Lost brightness" above), that touch still

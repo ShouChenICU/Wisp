@@ -1219,3 +1219,25 @@ TEST_F(ConversationTest, HoldWorksWithoutTts) {
     ASSERT_TRUE(settled());
     EXPECT_EQ(begins().at(0).text, "你好");
 }
+
+TEST_F(ConversationTest, ANewConversationClearsTheView) {
+    start();
+    std::atomic<int> notified{0};
+    conv->add_listener([&](const TurnView&) { notified.fetch_add(1); });
+    server.llm().push(llm_text("<say>嗯。</say>正文"));
+    ASSERT_TRUE(agent->submit("hi", Source::Web));
+    ASSERT_TRUE(wait_turns(1));
+    ASSERT_TRUE(settled());
+    ASSERT_EQ(conv->current().heard, "hi");
+    const int before = notified.load();
+
+    ASSERT_TRUE(agent->new_conversation());
+    ASSERT_TRUE(wait_until([&] { return conv->current().heard.empty(); }, 3000));
+    const TurnView v = conv->current();
+    EXPECT_EQ(v.turn, 0u);
+    EXPECT_TRUE(text(v.say).empty());
+    EXPECT_TRUE(text(v.body).empty());
+    EXPECT_FALSE(v.running);
+    EXPECT_EQ(v.ended_ms, 0u);
+    EXPECT_GT(notified.load(), before);
+}

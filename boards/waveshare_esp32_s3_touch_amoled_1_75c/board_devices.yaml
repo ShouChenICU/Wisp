@@ -30,7 +30,9 @@ devices:
         address: 0x30
         frequency: 400000
 
-  # ES7210 dual microphone capture path (EspAudioIn downmixes to mono).
+  # ES7210 dual microphone capture path; the channel layout (two mics) is
+  # declared in board.cpp's AudioInSpec::channels, and EspAudioIn
+  # downmixes the mics to mono.
   - name: audio_adc
     chip: es7210
     type: audio_codec
@@ -101,6 +103,15 @@ devices:
         y_max: 466
         rst_gpio_num: 2
         int_gpio_num: 11
+        # Both lines active-low; the orientation (mirror X and Y, no swap)
+        # is the BSP's bsp_display_start() default.
+        levels:
+          reset: 0
+          interrupt: 0
+        flags:
+          swap_xy: false
+          mirror_x: true
+          mirror_y: true
     peripherals:
       - name: i2c_master
         i2c_addr: [0xB4]

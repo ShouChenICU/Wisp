@@ -562,6 +562,9 @@ void Home::refresh() {
             fade_.turn_ended(now);
             was_running_ = false;
         }
+        // An empty view is a new conversation (ConversationController on
+        // Cleared): the last turn's outcome is not about anything shown.
+        if (!has_turn && view_.ended_ms == 0) hint_turn_.reset();
         // The hint follows the last error or "not heard" from when it is
         // first seen, or why a turn that ended after it did not end "done".
         if (view_.error != hint_error_ || view_.not_heard != hint_not_heard_) {

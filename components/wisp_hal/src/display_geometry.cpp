@@ -34,6 +34,13 @@ PanelKind panel_kind(const Properties& caps) {
     return PanelKind::Lcd;
 }
 
+std::string pixel_format(const Properties& caps) {
+    const Value* f = find_cap(caps, "pixel_format");
+    if (f == nullptr) return kPixelFormatRgb565;
+    if (f->type() != Value::Type::String) return {};
+    return f->as_string();
+}
+
 Result<ScreenShape> screen_shape_from_caps(const Properties& caps) {
     const Value* width = find_cap(caps, "width");
     const Value* height = find_cap(caps, "height");

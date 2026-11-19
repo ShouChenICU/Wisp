@@ -110,9 +110,10 @@
 //
 // Threading: every member is UI thread only, like every lv_* call. A back
 // swipe's work is posted (it arrives from inside the pointer's read
-// callback, where the screen under the finger must not be deleted), and a
-// drag's end runs on its slide's animation, never inside the release's
-// event; a post still queued after stop() does nothing.
+// callback, where the screen under the finger must not be deleted), and so
+// is a back key's (from inside the keypad's read callback); a drag's end
+// runs on its slide's animation, never inside the release's event; a post
+// still queued after stop() does nothing.
 
 #include <atomic>
 #include <cstdint>
@@ -290,6 +291,12 @@ public:
     // a scene in front back (refused, nothing changes). Any page closes
     // the diagnostics if they are open; Home deletes a sub-page's screen.
     void show(Page p);
+    // The back key's page back (the layer's nav-back fallback, set while
+    // started): the first of the Wi-Fi password form or a connection's
+    // detail (ConnectionsPage::back()), a choice or connections page,
+    // a sub-page (to Home). False on Home, and while a page drag or its
+    // slide runs (the press is the drag's).
+    bool back();
     Page page() const { return page_; }
     const hal::ScreenShape& shape() const { return deps_.shape; }
     // From a page drag's start until its slide is over.

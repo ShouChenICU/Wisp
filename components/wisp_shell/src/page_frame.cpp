@@ -4,12 +4,17 @@
 #include <vector>
 
 #include "wisp/ui/fonts.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 #include "wisp/ui/wisp_view.hpp"
 
 namespace wisp::shell::detail {
+
+// All are LVGL user flags; a row may carry all of them.
+static_assert(kNoSwipe != ui::kKeyFocusable && kNoSwipe != ui::kFocusRow &&
+              ui::kKeyFocusable != ui::kFocusRow);
 
 namespace {
 // Between the list's rows, the title and the first row too.
@@ -209,6 +214,8 @@ lv_obj_t* make_row_box(lv_obj_t* card) {
     lv_obj_t* box = make_box(card);
     lv_obj_set_style_pad_hor(box, kRowPadX, 0);
     lv_obj_set_style_pad_ver(box, kRowPadY, 0);
+    // A key focus on its control shows the row's name and value too.
+    lv_obj_add_flag(box, ui::kFocusRow);
     return box;
 }
 
@@ -235,6 +242,7 @@ ListRow make_list_row(lv_obj_t* card, const char* icon, const char* name, bool c
     const bool first = lv_obj_get_child_count(card) == 0;
     r.row = make_box(card);
     lv_obj_t* row = r.row;
+    lv_obj_add_flag(row, ui::kFocusRow);
     lv_obj_set_style_min_height(row, kMinTouchPx, 0);
     lv_obj_set_style_pad_hor(row, kRowPadX, 0);
     fit_row(row, line_height(card));
@@ -244,6 +252,9 @@ ListRow make_list_row(lv_obj_t* card, const char* icon, const char* name, bool c
     if (!first) add_divider(row);
     if (clickable) {
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        // A plain lv_obj is no class LVGL puts in a group: the keys reach
+        // it only by the flag (device-model spec 9.1).
+        ui::make_key_focusable(row);
         // Two-tone panels have no grey to press with.
         if (colour_panel(card)) {
             lv_obj_set_style_radius(row, ui::theme::kRadius, 0);

@@ -11,16 +11,18 @@
  * esp32_s3_touch_amoled_1_75c.c, lcd_init_cmds; Waveshare-ESP32-components
  * commit 010c5fb39ea7f0e996efd1f8e162cc70e569e57f, Apache-2.0; the BSP
  * ships the license text without a copyright line), as are the
- * esp_lcd_panel_set_gap(6, 0) column offset and the touch flips. See
- * docs/references.md and THIRD_PARTY_NOTICES.md.
+ * esp_lcd_panel_set_gap(6, 0) column offset. See docs/references.md and
+ * THIRD_PARTY_NOTICES.md.
  *
  * esp_board_manager calls these while bringing up the display_lcd /
- * lcd_touch devices declared in board_devices.yaml.
+ * lcd_touch devices declared in board_devices.yaml: the panel entry plugs
+ * in the CO5300 init table and column offset, and the touch entry passes
+ * bmgr's config (pins, levels and orientation from the YAML) straight to
+ * the CST9217 driver.
  */
 
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_lcd_co5300.h"
 #include "esp_lcd_panel_ops.h"
@@ -33,17 +35,6 @@ static const char* TAG = "wisp_board";
  * driver adds this to every draw_bitmap() window. */
 #define LCD_X_GAP 6
 #define LCD_Y_GAP 0
-
-/* Touch orientation, from the BSP's bsp_display_start() defaults. To be
- * confirmed on the device (the hardware doc's acceptance checklist: the
- * touch point follows the finger in all four quadrants); flip a 1/0 here
- * if one axis comes out mirrored. */
-#define TOUCH_SWAP_XY 0
-#define TOUCH_MIRROR_X 1
-#define TOUCH_MIRROR_Y 1
-
-#define TOUCH_RST_GPIO GPIO_NUM_2
-#define TOUCH_INT_GPIO GPIO_NUM_11
 
 static const co5300_lcd_init_cmd_t s_lcd_init_cmds[] = {
     {0xFE, (uint8_t[]){0x20}, 1, 0},
@@ -99,18 +90,7 @@ esp_err_t lcd_panel_factory_entry_t(esp_lcd_panel_io_handle_t io,
 esp_err_t lcd_touch_factory_entry_t(esp_lcd_panel_io_handle_t io,
                                     const esp_lcd_touch_config_t* touch_dev_config,
                                     esp_lcd_touch_handle_t* ret_touch) {
-    esp_lcd_touch_config_t touch_cfg = {0};
-    memcpy(&touch_cfg, touch_dev_config, sizeof(touch_cfg));
-
-    touch_cfg.rst_gpio_num = TOUCH_RST_GPIO;
-    touch_cfg.int_gpio_num = TOUCH_INT_GPIO;
-    touch_cfg.levels.reset = 0;
-    touch_cfg.levels.interrupt = 0;
-    touch_cfg.flags.swap_xy = TOUCH_SWAP_XY;
-    touch_cfg.flags.mirror_x = TOUCH_MIRROR_X;
-    touch_cfg.flags.mirror_y = TOUCH_MIRROR_Y;
-
-    esp_err_t ret = esp_lcd_touch_new_i2c_cst9217(io, &touch_cfg, ret_touch);
+    esp_err_t ret = esp_lcd_touch_new_i2c_cst9217(io, touch_dev_config, ret_touch);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create CST9217 touch: %s", esp_err_to_name(ret));
     }

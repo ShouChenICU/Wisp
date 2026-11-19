@@ -92,6 +92,13 @@ struct MakeAppOptions {
     bool count_lang_reads = false;
     // The internal storage's root; empty: a fresh temporary directory.
     std::string internal_root;
+    // Platform::psram_bytes; -1 is not measured.
+    int64_t psram_bytes = -1;
+    // Registers "button.nav_next", "button.nav_ok" and "button.nav_back"
+    // with those roles (a keys-only board: no touch panel).
+    bool nav_keys = false;
+    // Platform::request_power_off counts its calls in Harness::power_offs.
+    bool count_power_off = false;
 };
 
 // The simulator's JSON file backend, with writes slowed down so a test can
@@ -197,6 +204,15 @@ public:
             maybe_register(registry, report,
                            std::make_shared<wisp::test::FakeTouch>("touch.panel"));
         }
+        if (opts_.nav_keys) {
+            for (const char* role :
+                 {wisp::hal::role::kNavNext, wisp::hal::role::kNavOk, wisp::hal::role::kNavBack}) {
+                maybe_register(
+                    registry, report,
+                    std::make_shared<FakeButton>(std::string("button.") + role,
+                                                 wisp::Properties{{"role", wisp::Value(role)}}));
+            }
+        }
     }
 
 private:
@@ -226,6 +242,8 @@ struct Harness {
     std::atomic<int> lang_reads{0};
     // Platform::reboot calls it.
     std::function<void()> on_reboot;
+    // Platform::request_power_off's calls, with MakeAppOptions::count_power_off.
+    std::atomic<int> power_offs{0};
     wisp::app::App app;
 
     explicit Harness(const MakeAppOptions& opts)
@@ -256,6 +274,8 @@ private:
             if (on_reboot) on_reboot();
         };
         platform.font_image = opts.font_image;
+        platform.psram_bytes = opts.psram_bytes;
+        if (opts.count_power_off) platform.request_power_off = [this] { power_offs.fetch_add(1); };
         return platform;
     }
 };
@@ -263,6 +283,50 @@ private:
 Harness make_app(MakeAppOptions opts) { return Harness(opts); }
 
 }  // namespace
+
+namespace {
+// The boot report's "psram" note, or empty when there is none.
+std::string psram_note(Harness& h) {
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* v = rep.find("notes")->find("psram");
+    return v ? v->as_string() : std::string();
+}
+constexpr int64_t kMiB = 1024 * 1024;
+}  // namespace
+
+TEST(AppBoot, NoPsramIsNoted) {
+    auto h = make_app({.with_display = false, .psram_bytes = 0});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "none");
+}
+
+TEST(AppBoot, SmallPsramIsNoted) {
+    {
+        auto h = make_app({.with_display = false, .psram_bytes = 4 * kMiB});
+        ASSERT_TRUE(h.app.start());
+        EXPECT_EQ(psram_note(h), "4MB");
+    }
+    auto h = make_app({.with_display = false, .psram_bytes = 8 * kMiB - 1});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "7MB");
+}
+
+TEST(AppBoot, EightMegabytesHasNoNote) {
+    {
+        auto h = make_app({.with_display = false, .psram_bytes = 8 * kMiB});
+        ASSERT_TRUE(h.app.start());
+        EXPECT_EQ(psram_note(h), "");
+    }
+    auto h = make_app({.with_display = false, .psram_bytes = 16 * kMiB});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "");
+}
+
+TEST(AppBoot, UnmeasuredPsramHasNoNote) {
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    EXPECT_EQ(psram_note(h), "");
+}
 
 TEST(AppBoot, EmitsReportAndManifest) {
     auto h = make_app({.with_display = false});
@@ -304,6 +368,7 @@ TEST(AppBoot, DevicesAreFoundByRoleNotById) {
     ASSERT_NE(notes, nullptr);
     EXPECT_EQ(notes->find("mode"), nullptr);
     EXPECT_EQ(notes->find("storage"), nullptr);
+    EXPECT_EQ(notes->find("display"), nullptr);
 
     // The touch panel: the UI reads it as its pointer.
     bool pointer = false;
@@ -441,6 +506,22 @@ TEST(AppBoot, DeviceServiceFollowsThePowerState) {
     h.app.bus().unsubscribe(dim_event_sub);
     h.app.stop();
     EXPECT_EQ(h.app.devices(), nullptr);
+}
+
+// A buffer format the UI cannot render leaves the display dark, with the
+// reason in the boot report.
+TEST(AppBoot, UnsupportedPixelFormatBootsHeadlessWithANote) {
+    auto h = make_app({});
+    h.display->set_cap("pixel_format", wisp::Value("i1"));
+    ASSERT_TRUE(h.app.start());
+    auto rep = wisp::from_json(h.lines[0].substr(17)).value();
+    const wisp::Value* notes = rep.find("notes");
+    ASSERT_NE(notes, nullptr);
+    ASSERT_NE(notes->find("mode"), nullptr);
+    EXPECT_EQ(notes->find("mode")->as_string(), "headless");
+    ASSERT_NE(notes->find("display"), nullptr);
+    EXPECT_EQ(notes->find("display")->as_string(), "unsupported_pixel_format");
+    EXPECT_EQ(h.app.ui(), nullptr);
 }
 
 // A display that does not declare the role is not the main display: the
@@ -1509,4 +1590,121 @@ TEST(AppBoot, StopReleasesEverySubscription) {
     h.app->stop();
     EXPECT_EQ(bus.cell_subscriptions(), 0u);
     EXPECT_EQ(bus.attached(), 0u);
+}
+
+// Nav-role buttons drive the system UI (device-model spec 9.1). The fake
+// board has no touch panel, so a focus set in code is shown at once.
+namespace {
+
+void press(Harness& h, const char* id) {
+    h.app.buttons().emit_for_test(id, wisp::core::ButtonEdge::Kind::Down, wisp::os::now_us());
+    h.app.buttons().emit_for_test(id, wisp::core::ButtonEdge::Kind::Up, wisp::os::now_us());
+}
+
+bool confirm_open(Harness& h) {
+    bool open = false;
+    run_on_ui_blocking(h.app.ui(), [&] { open = h.app.system_layer()->confirm_open(); });
+    return open;
+}
+
+// The power-off dialog's button labelled `label` ("是", "否"; the default
+// language) is the nav group's focused object.
+bool focused_is(Harness& h, const char* label) {
+    bool is = false;
+    run_on_ui_blocking(h.app.ui(), [&] {
+        lv_obj_t* btn = wisp::test::find_button_with_label(lv_layer_top(), label);
+        is = btn != nullptr && lv_group_get_focused(h.app.ui()->nav_group()) == btn;
+    });
+    return is;
+}
+
+void open_power_off_dialog(Harness& h) {
+    h.app.buttons().emit_for_test("button.power", wisp::core::ButtonEdge::Kind::Long,
+                                  wisp::os::now_us());
+    ASSERT_TRUE(wait_until([&] { return confirm_open(h); }, 3000));
+}
+
+MakeAppOptions nav_opts() {
+    MakeAppOptions opts;
+    opts.nav_keys = true;
+    opts.count_power_off = true;
+    return opts;
+}
+
+}  // namespace
+
+TEST(AppBoot, PowerOffDialogIsAnsweredByKeys) {
+    auto h = make_app(nav_opts());
+    ASSERT_TRUE(h.app.start());
+    ASSERT_NE(h.app.ui(), nullptr);
+
+    open_power_off_dialog(h);
+    ASSERT_TRUE(focused_is(h, "否"));
+    press(h, "button.nav_ok");
+    ASSERT_TRUE(wait_until([&] { return !confirm_open(h); }, 3000));
+    EXPECT_EQ(h.power_offs.load(), 0);
+
+    open_power_off_dialog(h);
+    press(h, "button.nav_next");
+    ASSERT_TRUE(wait_until([&] { return focused_is(h, "是"); }, 3000));
+    press(h, "button.nav_ok");
+    EXPECT_TRUE(wait_until([&] { return h.power_offs.load() == 1; }, 3000));
+    h.app.stop();
+}
+
+TEST(AppBoot, BackKeyClosesTheDiagnostics) {
+    auto h = make_app(nav_opts());
+    ASSERT_TRUE(h.app.start());
+    run_on_ui_blocking(h.app.ui(), [&] { h.app.shell()->open_diagnostics(); });
+    bool open = false;
+    run_on_ui_blocking(h.app.ui(), [&] { open = h.app.shell()->diagnostics_open(); });
+    ASSERT_TRUE(open);
+    press(h, "button.nav_back");
+    EXPECT_TRUE(wait_until(
+        [&] {
+            run_on_ui_blocking(h.app.ui(), [&] { open = h.app.shell()->diagnostics_open(); });
+            return !open;
+        },
+        3000));
+    h.app.stop();
+}
+
+// A press that wakes the screen does not also act, through the real path: the waking OK
+// meets a paused UI (PowerManager resumes it only once the panel is on),
+// so it is refused, and its release with it.
+TEST(AppBoot, AWakingPressDoesNotAnswerTheDialog) {
+    auto h = make_app(nav_opts());
+    ASSERT_TRUE(h.app.start());
+    wisp::ui::UiRuntime* ui = h.app.ui();
+    wisp::app::PowerManager* pm = h.app.power_manager();
+    ASSERT_NE(ui, nullptr);
+    ASSERT_NE(pm, nullptr);
+
+    open_power_off_dialog(h);
+    press(h, "button.nav_next");
+    ASSERT_TRUE(wait_until([&] { return focused_is(h, "是"); }, 3000));
+
+    ASSERT_TRUE(confirm_open(h));
+    run_on_ui_blocking(ui, [pm] { pm->enter_standby(); });
+    ASSERT_TRUE(pm->standby());
+    ASSERT_TRUE(ui->paused());
+
+    press(h, "button.nav_ok");
+    ASSERT_TRUE(wait_until([&] { return pm->level() == wisp::hal::PowerLevel::Active; }, 3000));
+    ASSERT_TRUE(wait_until([&] { return !ui->paused(); }, 3000));
+    // Long enough for a key that got through to reach the dialog.
+    wisp::os::sleep_ms(300);
+    EXPECT_EQ(h.power_offs.load(), 0);
+    ASSERT_TRUE(confirm_open(h));
+    EXPECT_TRUE(focused_is(h, "是"));
+    h.app.stop();
+}
+
+TEST(AppBoot, NoKeypadWithoutNavRoles) {
+    auto h = make_app({});
+    ASSERT_TRUE(h.app.start());
+    lv_group_t* group = reinterpret_cast<lv_group_t*>(1);
+    run_on_ui_blocking(h.app.ui(), [&] { group = h.app.ui()->nav_group(); });
+    EXPECT_EQ(group, nullptr);
+    h.app.stop();
 }

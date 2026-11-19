@@ -19,6 +19,8 @@
 namespace wisp::port::esp {
 
 struct EspTouchConfig {
+    std::string id;     // DeviceInfo::id, chosen by the board
+    std::string role;   // caps "role"; empty writes none
     std::string model;  // DeviceInfo::model, e.g. the touch controller chip
     // Reported x/y are clamped to [0, width - 1] x [0, height - 1]; a
     // non-positive width/height means "range unknown" (no clamping).

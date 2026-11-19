@@ -1,19 +1,10 @@
-# Wisp firmware defaults shared by every board: board-independent settings
-# only. Flash size/mode, PSRAM, console and the partition table belong to the
-# board and live in boards/<board>/sdkconfig.defaults.board (merged in by
+# Wisp firmware defaults shared by every board: board- and chip-independent
+# settings only (options that name a chip are in sdkconfig.defaults.<target>).
+# Flash size/mode, PSRAM, console and the partition table belong to the board
+# and live in boards/<board>/sdkconfig.defaults.board (merged in by
 # `idf.py bmgr`). Committed (unlike sdkconfig/sdkconfig.old, which idf.py
 # generates and which are gitignored); idf.py regenerates the real sdkconfig
 # from these files plus Kconfig defaults only when sdkconfig does not exist.
-
-# CPU frequency.
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-
-# Instruction cache 32 KB (ESP-IDF default 16 KB). Code runs from flash (no
-# board enables XIP from PSRAM), so every miss is a QSPI flash read, and one
-# frame's rendering code is far larger than the cache. Measured on both
-# reference boards: the diagnostics scroll went from about 12.5 to 22 fps,
-# for 16 KB of internal RAM (docs/hardware/*.md).
-CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 
 # LVGL must use wisp_ui's own lv_conf.h (see firmware/CMakeLists.txt's
 # LV_CONF_PATH wiring and AGENTS.md's "LVGL configuration" pitfall), not LVGL's

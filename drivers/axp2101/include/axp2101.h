@@ -16,9 +16,9 @@
 // cold-boot press-on threshold, both of which MyOS's init() already
 // verified work without touching rails.
 //
-// Not a wisp_* portable component: this is a pure-C ESP-IDF component
-// (drivers/), consumed only by wisp::port::esp::EspPower
-// (components/wisp_port_esp/dev/esp_power.cpp).
+// Not a wisp_* portable component: this is a pure-C driver in an ESP-IDF
+// component (drivers/), consumed by its Wisp adapter wisp::drivers::
+// Axp2101Power (wisp/axp2101_power.cpp in the same component).
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -68,7 +68,7 @@ esp_err_t axp2101_init(i2c_master_bus_handle_t bus, axp2101_handle_t* out);
 // Reads battery percentage/voltage and charging/VBUS status.
 // `out->battery_present` distinguishes "no battery wired to this PMU"
 // (battery_percent is then 0 and not meaningful) from an actual reading;
-// see EspPower::status() (wisp/hal/power.hpp's PowerStatus::
+// see Axp2101Power::status() (wisp/hal/power.hpp's PowerStatus::
 // battery_percent contract: -1 when unknown/no battery). A failed
 // REG_BAT_PCT read is also reported as !battery_present (not as
 // battery_percent == 0) -- see axp2101_conv.h's
@@ -82,7 +82,7 @@ esp_err_t axp2101_read_status(axp2101_handle_t handle, axp2101_status_t* out);
 // it failed with. Always ESP_OK for a handle axp2101_init() never
 // returned (i.e. callers only need this after a successful init). The
 // device is registered either way; this is purely diagnostic -- the
-// caller (wisp::port::esp::EspPower, then the board) decides whether and
+// caller (wisp::drivers::Axp2101Power, then the board) decides whether and
 // how to surface it, e.g. via a WLOG_W instead of failing the device.
 esp_err_t axp2101_charging_config_status(axp2101_handle_t handle);
 

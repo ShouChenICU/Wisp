@@ -30,17 +30,15 @@
 // to raise, not a setting. set_volume() still keeps its value for every
 // later open().
 //
-// EspAudioIn always opens the ES7210 codec with 2 physical channels
-// (channel_mask 0x3 -- the board wires two analog mics, migrated from
-// board_devices.yaml's legacy `adc_channel_mask: "0011"`) and downmixes
-// every read() to mono with wisp/port/esp/audio_downmix.hpp before
-// handing samples back: wisp::hal::AudioIn's contract (and loopback.cpp's
-// only caller) is mono (AudioFormat::channels == 1) -- see that header's
-// comment. Both open()s below validate that the *caller's* requested
-// format.channels is 1 and fail with ErrorCode::InvalidArgument
-// otherwise -- the 2-physical-channel ES7210 open above is
-// this class's own internal implementation detail, never something a
-// caller can ask to change.
+// EspAudioIn opens the capture codec with every physical channel the
+// board declares (EspAudioInConfig::channels, one role per channel, spec
+// section 11) and downmixes every read() to mono with
+// wisp/port/esp/audio_downmix.hpp before handing samples back:
+// wisp::hal::AudioIn's contract (and loopback.cpp's only caller) is mono
+// (AudioFormat::channels == 1) -- see that header's comment. Both open()s
+// below validate that the *caller's* requested format.channels is 1 and
+// fail with ErrorCode::InvalidArgument otherwise -- the physical channel
+// layout is the board's, never something a caller can ask to change.
 //
 // EspAudioOut::close() drains before calling esp_codec_dev_close():
 // esp_codec_dev_write()/i2s_channel_write() returns as soon as
@@ -76,13 +74,32 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "driver/i2s_types.h"
 #include "esp_codec_dev.h"
 #include "wisp/base/result.hpp"
 #include "wisp/hal/audio.hpp"
+#include "wisp/port/esp/audio_downmix.hpp"
 
 namespace wisp::port::esp {
+
+// DeviceInfo id/model and caps "role" (empty writes none), all chosen by
+// the board.
+struct EspAudioOutConfig {
+    std::string id;
+    std::string role;
+    std::string model;
+};
+
+// `channels`: one role per physical capture channel, in the codec's
+// interleaving order (published as caps "channels").
+struct EspAudioInConfig {
+    std::string id;
+    std::string role;
+    std::string model;
+    std::vector<AudioChannel> channels;
+};
 
 class EspAudioOut : public wisp::hal::AudioOut {
 public:
@@ -92,7 +109,7 @@ public:
     // null.
     static Result<std::shared_ptr<EspAudioOut>> create(esp_codec_dev_handle_t codec_dev,
                                                        i2s_chan_handle_t i2s_channel,
-                                                       std::string model);
+                                                       EspAudioOutConfig config);
 
     ~EspAudioOut() override;
 
@@ -129,7 +146,8 @@ public:
     Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
-    EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel, std::string model);
+    EspAudioOut(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
+                EspAudioOutConfig config);
 
     // Writes enough silence to flush any real audio out of the I2S DMA
     // ring before close() actually closes the codec device -- see file
@@ -148,10 +166,11 @@ public:
     // Wraps an already-constructed esp_codec_dev_handle_t and the I2S RX
     // channel it records through (both owned by bmgr; this class never
     // deletes them). Fails with ErrorCode::InvalidArgument if either is
-    // null.
+    // null, or if config.channels is empty, longer than
+    // kMaxCaptureChannels or names no Mic.
     static Result<std::shared_ptr<EspAudioIn>> create(esp_codec_dev_handle_t codec_dev,
                                                       i2s_chan_handle_t i2s_channel,
-                                                      std::string model);
+                                                      EspAudioInConfig config);
 
     ~EspAudioIn() override;
 
@@ -161,19 +180,19 @@ public:
     const wisp::hal::DeviceInfo& info() const override { return info_; }
 
     // Fails with ErrorCode::InvalidArgument if format.channels != 1 (see
-    // file comment -- the caller-facing contract is still mono even
-    // though the codec itself is always opened with 2 physical
-    // channels). Otherwise, esp_codec_dev_open() with
-    // {bits_per_sample=16, channel=2, channel_mask=0x3,
-    // sample_rate=format.sample_rate}. Fails with
+    // file comment -- the caller-facing contract is still mono whatever
+    // the board's physical channels). Otherwise, esp_codec_dev_open()
+    // with {bits_per_sample=16, channel=n, channel_mask=(1 << n) - 1,
+    // sample_rate=format.sample_rate} for the board's n channels. Fails with
     // ErrorCode::AlreadyExists if already open, or
     // ErrorCode::DeviceFailure if esp_codec_dev_open() fails. Re-applies
     // the current mic gain (see set_gain()) immediately after a
     // successful open, for the same reason as EspAudioOut::open().
     Result<void> open(const wisp::hal::AudioFormat& format) override;
-    // Reads in fixed-size internal chunks (kScratchFrames stereo frames
-    // at a time, downmixed into `frames` as each chunk completes) rather
-    // than one `count`-sized stereo allocation, so a large `count` (e.g.
+    // Reads in fixed-size internal chunks (capture_chunk_frames(): as
+    // many n-channel frames as kScratchSamples holds, downmixed into
+    // `frames` as each chunk completes) rather than one `count`-sized
+    // interleaved allocation, so a large `count` (e.g.
     // loopback.cpp's 48000-frame/3s capture) never needs a correspondingly
     // large scratch buffer. Blocking: either reads all `count` frames
     // (returned as ok(count)) or fails -- esp_codec_dev_read() has no
@@ -189,19 +208,25 @@ public:
     Result<void> set_power(wisp::hal::PowerLevel level) override;
 
 private:
-    // 30ms at 16kHz; small enough to keep as a fixed member array (no
-    // heap allocation on the read() hot path), large enough that a 3s
-    // capture only needs ~100 esp_codec_dev_read() calls.
-    static constexpr size_t kScratchFrames = 480;
+    // 30ms of two channels at 16kHz; small enough to keep as a fixed
+    // member array (no heap allocation on the read() hot path), large
+    // enough that a 3s capture only needs ~100 esp_codec_dev_read() calls
+    // with two channels (~150 with three, ~200 with four). More channels mean shorter
+    // chunks, not a larger buffer.
+    static constexpr size_t kScratchSamples = 960;
 
-    EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel, std::string model);
+    EspAudioIn(esp_codec_dev_handle_t codec_dev, i2s_chan_handle_t i2s_channel,
+               EspAudioInConfig config);
 
     wisp::hal::DeviceInfo info_;
     esp_codec_dev_handle_t codec_dev_;
     i2s_chan_handle_t i2s_channel_;
     std::atomic<bool> open_{false};
     std::atomic<float> mic_gain_db_;
-    int16_t scratch_[kScratchFrames * 2];  // interleaved stereo
+    // A fixed array rather than the config's vector: no heap allocation.
+    AudioChannel channels_[kMaxCaptureChannels] = {};
+    uint8_t channel_count_ = 0;
+    int16_t scratch_[kScratchSamples];  // interleaved, channel_count_ per frame
 };
 
 }  // namespace wisp::port::esp

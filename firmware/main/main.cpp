@@ -21,6 +21,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
+#include "esp_psram.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -46,6 +47,7 @@
 #include "wisp/port/esp/mem_report.hpp"
 #include "wisp/port/esp/settings_nvs.hpp"
 #include "wisp/port/esp/sleep_stats.hpp"
+#include "wisp/port/esp/target.hpp"
 #include "wisp/port/esp/wall_clock.hpp"
 #include "wisp_board_desc.h"
 
@@ -75,7 +77,7 @@ void apply_pm_config(bool light_sleep_enable) {
     // this stayed hard-coded to 240. CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ is
     // each target's own Kconfig-validated default max frequency.
     cfg.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    cfg.min_freq_mhz = 80;
+    cfg.min_freq_mhz = wisp::port::esp::kTarget.dfs_min_mhz;
     cfg.light_sleep_enable = light_sleep_enable;
     esp_err_t err = esp_pm_configure(&cfg);
     if (err != ESP_OK) {
@@ -138,6 +140,10 @@ extern "C" void app_main() {
         std::printf("%s\n", line.c_str());
         std::fflush(stdout);
     };
+    // The chip's size, not the free heap: the boot report checks it
+    // against the 8 MB support floor.
+    platform.psram_bytes =
+        esp_psram_is_initialized() ? static_cast<int64_t>(esp_psram_get_size()) : 0;
     // Fallback for the self-check UI's power-off confirm dialog (see
     // self_check_screen.cpp's do_power_off()): reached only when the
     // board's own Power::power_off() either doesn't exist or just

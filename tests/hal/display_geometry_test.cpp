@@ -172,6 +172,13 @@ TEST(DisplayGeometry, PanelKind) {
     EXPECT_FALSE(panel_is_colour(PanelKind::EPaper));
 }
 
+TEST(DisplayGeometry, PixelFormatDefaultsToRgb565) {
+    EXPECT_EQ(pixel_format(wisp::Properties{}), "rgb565");
+    EXPECT_EQ(pixel_format(wisp::Properties{{"pixel_format", wisp::Value("rgb565")}}), "rgb565");
+    EXPECT_EQ(pixel_format(wisp::Properties{{"pixel_format", wisp::Value("l8")}}), "l8");
+    EXPECT_EQ(pixel_format(wisp::Properties{{"pixel_format", wisp::Value(int64_t{16})}}), "");
+}
+
 // Touch distances scale with the screen: a share of its shorter side,
 // rounded to the nearest pixel, whatever its shape.
 TEST(DisplayGeometry, ShareOfScreen) {

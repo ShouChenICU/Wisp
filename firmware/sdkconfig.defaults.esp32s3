@@ -1,0 +1,14 @@
+# Options that exist only on the ESP32-S3. ESP-IDF reads this file right after
+# sdkconfig.defaults when building for this target, also when the build passes
+# an explicit SDKCONFIG_DEFAULTS list. Another chip gets its own
+# sdkconfig.defaults.<target> with the equivalent options.
+
+# CPU frequency.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Instruction cache 32 KB (ESP-IDF default 16 KB). Code runs from flash (no
+# board enables XIP from PSRAM), so every miss is a QSPI flash read, and one
+# frame's rendering code is far larger than the cache. Measured on both
+# reference boards: the diagnostics scroll went from about 12.5 to 22 fps,
+# for 16 KB of internal RAM (docs/hardware/*.md).
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y

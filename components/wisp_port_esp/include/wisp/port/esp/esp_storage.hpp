@@ -4,11 +4,10 @@
 //
 //   - EspInternalStorage ("storage.int"/"littlefs", caps removable=false,
 //     fs="littlefs"): mounts the "storage" flash partition (see
-//     boards/<board>/partitions.csv, docs/porting-guide.md) with esp_vfs_littlefs_register()
-//     directly -- this is *not* a bmgr device (board_devices.yaml has no
-//     fs_littlefs entry): EspInternalStorage::create() calls
-//     esp_vfs_littlefs_register() directly instead of going through
-//     bmgr. Always mounted at
+//     boards/common/partitions/<flash size>.csv, docs/porting-guide.md) with
+//     esp_vfs_littlefs_register() directly -- this is *not* a bmgr device (board_devices.yaml has
+//     no fs_littlefs entry): EspInternalStorage::create() calls esp_vfs_littlefs_register()
+//     directly instead of going through bmgr. Always mounted at
 //     "/int"; never removable, so online() is always true once
 //     constructed. A mount failure (even after esp_littlefs's own
 //     internal format-and-retry, format_if_mount_failed=true) means this
@@ -20,8 +19,8 @@
 //
 //   - EspSdStorage ("storage.sd", caps removable=true, fs="fat"): wraps
 //     bmgr's SDMMC fs_fat device (name/model passed in by board.cpp --
-//     see the constructor; AGENTS.md's "Board independence" rule keeps the actual
-//     bmgr device name/chip model string out of this ESP-only *portable*
+//     see EspSdStorageConfig; AGENTS.md's "Board independence" rule keeps
+//     the actual bmgr device name/chip model string out of this platform
 //     component). Always registered, even when no card is present at
 //     boot (board.cpp then records DeviceState::Missing/"no card").
 //
@@ -119,13 +118,28 @@
 
 namespace wisp::port::esp {
 
+// `mount_point` is the fs_sdcard bmgr device's configured mount point
+// ("/sd" -- board_devices.yaml). `id`, `role` (caps "role"; empty writes
+// none), `bmgr_device` and `model` are board-specific facts board.cpp
+// passes in (AGENTS.md's "Board independence" rule: this platform
+// component must not itself name a specific board's device id, bmgr
+// device or chip model).
+struct EspSdStorageConfig {
+    std::string id;
+    std::string role;
+    std::string mount_point;
+    std::string bmgr_device;
+    std::string model;
+};
+
 class EspInternalStorage : public wisp::hal::Storage {
 public:
     // esp_vfs_littlefs_register({base_path="/int",
     // partition_label="storage", format_if_mount_failed=true}). Fails
     // with ErrorCode::DeviceFailure if that returns anything other than
-    // ESP_OK.
-    static Result<std::shared_ptr<EspInternalStorage>> create();
+    // ESP_OK. `id` and `role` (caps "role"; empty writes none) are the
+    // board's.
+    static Result<std::shared_ptr<EspInternalStorage>> create(std::string id, std::string role);
 
     // No esp_vfs_littlefs_unregister(): this device lives for the
     // process's lifetime, like every other ESP HAL device Wisp registers.
@@ -140,25 +154,19 @@ public:
     Result<wisp::hal::Capacity> capacity() override;
 
 private:
-    EspInternalStorage();
+    EspInternalStorage(std::string id, std::string role);
 
     wisp::hal::DeviceInfo info_;
 };
 
 class EspSdStorage : public wisp::hal::Storage {
 public:
-    // `mount_point` is the fs_sdcard bmgr device's configured mount point
-    // ("/sd" -- board_devices.yaml). `bmgr_device_name`/`model` are
-    // board-specific facts board.cpp passes in (AGENTS.md's "Board independence"
-    // rule: this ESP-only *portable* component must not itself name a
-    // specific board's bmgr device or chip model). `already_mounted`/
-    // `card` reflect
+    // `config` is described above. `already_mounted`/`card` reflect
     // whether esp_board_manager_init() (called by board.cpp before
     // constructing this device) already succeeded in mounting the device
     // at boot; `card` must be non-null whenever `already_mounted` is
     // true, and is ignored otherwise.
-    EspSdStorage(std::string mount_point, std::string bmgr_device_name, std::string model,
-                 bool already_mounted, sdmmc_card_t* card);
+    EspSdStorage(EspSdStorageConfig config, bool already_mounted, sdmmc_card_t* card);
 
     // Stops and joins the worker task (see the file comment) before
     // destroying anything the worker might still touch.

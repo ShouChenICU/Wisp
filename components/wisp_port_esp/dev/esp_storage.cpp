@@ -20,7 +20,6 @@
 #include "wisp/base/error.hpp"
 #include "wisp/base/value.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/hal/roles.hpp"
 #include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
@@ -29,7 +28,7 @@ namespace {
 
 constexpr const char* kTag = "esp_storage";
 
-// Must match the "storage" partition label in boards/<board>/partitions.csv
+// Must match the "storage" partition label in boards/common/partitions/<flash size>.csv
 // (a required partition name -- docs/porting-guide.md). Unlike
 // EspSdStorage's bmgr device name/model (passed in by board.cpp -- see
 // esp_storage.hpp's comment), this is not a board-specific fact: every
@@ -105,7 +104,8 @@ private:
 // EspInternalStorage
 // ---------------------------------------------------------------------
 
-Result<std::shared_ptr<EspInternalStorage>> EspInternalStorage::create() {
+Result<std::shared_ptr<EspInternalStorage>> EspInternalStorage::create(std::string id,
+                                                                       std::string role) {
     using R = Result<std::shared_ptr<EspInternalStorage>>;
 
     esp_vfs_littlefs_conf_t conf = {};
@@ -118,16 +118,17 @@ Result<std::shared_ptr<EspInternalStorage>> EspInternalStorage::create() {
         return R::err(ErrorCode::DeviceFailure,
                       std::string("esp_vfs_littlefs_register: ") + esp_err_to_name(err));
     }
-    return R::ok(std::shared_ptr<EspInternalStorage>(new EspInternalStorage()));
+    return R::ok(std::shared_ptr<EspInternalStorage>(
+        new EspInternalStorage(std::move(id), std::move(role))));
 }
 
-EspInternalStorage::EspInternalStorage() {
-    info_.id = "storage.int";
+EspInternalStorage::EspInternalStorage(std::string id, std::string role) {
+    info_.id = std::move(id);
     info_.cls = kClass;
     info_.model = "littlefs";
     info_.caps =
         wisp::Properties{{"removable", false}, {"fs", wisp::Value(std::string("littlefs"))}};
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kInternal);
+    if (!role.empty()) info_.caps["role"] = wisp::Value(std::move(role));
 }
 
 Result<wisp::hal::Capacity> EspInternalStorage::capacity() {
@@ -148,16 +149,15 @@ Result<wisp::hal::Capacity> EspInternalStorage::capacity() {
 // EspSdStorage
 // ---------------------------------------------------------------------
 
-EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name, std::string model,
-                           bool already_mounted, sdmmc_card_t* card)
-    : mount_point_(std::move(mount_point)),
-      bmgr_device_name_(std::move(bmgr_device_name)),
+EspSdStorage::EspSdStorage(EspSdStorageConfig config, bool already_mounted, sdmmc_card_t* card)
+    : mount_point_(std::move(config.mount_point)),
+      bmgr_device_name_(std::move(config.bmgr_device)),
       retry_(kRetryIntervalMs) {
-    info_.id = "storage.sd";
+    info_.id = std::move(config.id);
     info_.cls = kClass;
-    info_.model = std::move(model);
+    info_.model = std::move(config.model);
     info_.caps = wisp::Properties{{"removable", true}, {"fs", wisp::Value(std::string("fat"))}};
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kRemovable);
+    if (!config.role.empty()) info_.caps["role"] = wisp::Value(std::move(config.role));
 
     if (already_mounted && card != nullptr) {
         card_ = card;
@@ -170,22 +170,23 @@ EspSdStorage::EspSdStorage(std::string mount_point, std::string bmgr_device_name
         retry_.mark_unmounted(wisp::os::now_ms());
     }
 
-    wisp::os::TaskConfig config;
-    config.name = "wisp.sd";
+    wisp::os::TaskConfig task_config;
+    task_config.name = "wisp.sd";
     // Default stack_bytes (4096): bmgr/sdmmc/fatfs call chains (mount,
     // CMD13, f_getfree) are deep enough that a smaller custom stack isn't
     // worth the risk for what is otherwise meant to be a "modest"/low
     // -priority worker.
-    config.priority = 2;  // low: this never blocks anything else on it
+    task_config.priority = 2;  // low: this never blocks anything else on it
     EspSdStorage* self = this;
-    worker_ = wisp::os::Task::spawn(config, [self] { self->worker_main(); });
+    worker_ = wisp::os::Task::spawn(task_config, [self] { self->worker_main(); });
     if (!worker_) {
         // Without this log line, a failed spawn leaves online()/
         // capacity() permanently reporting "no card" (retry_ stuck at
         // Unmounted, nothing ever calls try_mount() again) with no
         // indication why -- hot-plug (and the very first mount attempt)
         // would just never happen.
-        WLOG_E(kTag, "storage.sd: failed to spawn worker task; hot-plug detection disabled");
+        WLOG_E(kTag, "%s: failed to spawn worker task; hot-plug detection disabled",
+               info_.id.c_str());
     }
 }
 
@@ -213,7 +214,8 @@ bool EspSdStorage::online() {
         // comment.
         esp_err_t err = esp_board_manager_deinit_device_by_name(bmgr_device_name_.c_str());
         if (err != ESP_OK) {
-            WLOG_W(kTag, "storage.sd: deinit after card removal failed: %s", esp_err_to_name(err));
+            WLOG_W(kTag, "%s: deinit after card removal failed: %s", info_.id.c_str(),
+                   esp_err_to_name(err));
         }
         card_ = nullptr;
         capacity_valid_ = false;
@@ -251,7 +253,7 @@ bool EspSdStorage::try_mount(uint64_t now) {
         std::lock_guard<wisp::os::Mutex> lock(state_mutex_);
         retry_.mark_unmounted(now);
         if (!logged_absent_) {
-            WLOG_I(kTag, "storage.sd: no card (bmgr init: %s)", esp_err_to_name(err));
+            WLOG_I(kTag, "%s: no card (bmgr init: %s)", info_.id.c_str(), esp_err_to_name(err));
             logged_absent_ = true;
         }
         return false;
@@ -276,7 +278,7 @@ bool EspSdStorage::try_mount(uint64_t now) {
         retry_.mark_mounted();
         logged_absent_ = false;
     }
-    WLOG_I(kTag, "storage.sd: card mounted at %s", mount_point_.c_str());
+    WLOG_I(kTag, "%s: card mounted at %s", info_.id.c_str(), mount_point_.c_str());
     refresh_capacity_cache();
     return true;
 }
@@ -298,7 +300,7 @@ void EspSdStorage::refresh_capacity_cache() {
         cached_capacity_.free_bytes = free;
         capacity_valid_ = true;
     } else {
-        WLOG_W(kTag, "storage.sd: esp_vfs_fat_info failed: %s", esp_err_to_name(err));
+        WLOG_W(kTag, "%s: esp_vfs_fat_info failed: %s", info_.id.c_str(), esp_err_to_name(err));
         capacity_valid_ = false;
     }
 }
@@ -363,7 +365,7 @@ void EspSdStorage::worker_main() {
                     std::lock_guard<wisp::os::Mutex> lock(state_mutex_);
                     if (retry_.state() == SdCardState::Mounted) {
                         retry_.mark_removed();
-                        WLOG_W(kTag, "storage.sd: card lost (status probe: %s)",
+                        WLOG_W(kTag, "%s: card lost (status probe: %s)", info_.id.c_str(),
                                esp_err_to_name(err));
                     }
                 } else {

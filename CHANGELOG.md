@@ -2,6 +2,29 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## Unreleased
+
+### Features
+
+- Boards with navigation keys (roles `nav_prev`/`nav_next`/`nav_ok`/`nav_back`) answer system dialogs, go back and walk the settings list without touch; the simulator has them with `--nav-keys`.
+- A display whose buffer format the UI cannot render yet (anything but RGB565) is left dark and the boot report notes `display`; the rest of the device keeps working.
+
+### Changes
+
+- Chip adapters live with their drivers: the AXP2101, PCF85063 and QMI8658 Wisp devices moved from the ESP port into `drivers/<chip>/wisp/` (namespace `wisp::drivers`), and each board lists its drivers in `boards/<board>/board.cmake`. The ESP port requires no driver and names no device id; the board passes every id and role.
+- The board kit (`boards/common/board_kit.{hpp,cpp}`): one shared bring-up sequence driven by a declarative `BoardSpec` per board. Both boards now use it; a board's `board.cpp` is its spec plus the bring-up of the chips bmgr does not manage.
+- Pins are written only in the bmgr YAML: the buttons are bmgr `gpio` peripherals, the pins held through light sleep and the SD mount point are read from bmgr's configs, and touch levels and orientation are YAML keys, so `setup_device.c` keeps only the panel init tables.
+- S3-only sdkconfig options (the 32 KB instruction cache, 240 MHz) moved to `firmware/sdkconfig.defaults.esp32s3`; the DFS minimum and the Wi-Fi model and bands come from per-target facts in the port (`target_facts.hpp`).
+- Partition tables are shared by flash size (`boards/common/partitions/16mb.csv`, `32mb.csv`), byte for byte the boards' former tables.
+- The boot report records the note `psram` (`"<N>MB"` or `"none"`) when the PSRAM is below 8 MB, the minimum every board needs; both current boards have 8 MB and show no note.
+- `audio_in.main` declares caps `channels`, one role per capture channel (`["mic", "mic"]` on both boards); the mono output averages the mic channels.
+- `docs/porting-guide.md` gains a support matrix and the list of what a new chip target touches.
+
+### Fixes
+
+- Starting a new conversation (or deleting all of them) clears Home: the last turn's text and the reason it failed no longer stay on screen.
+- A back swipe from the left edge (or a page drag from near the top) that turns downwards part-way no longer opens the pull-down panel instead; on a round screen this caught most back swipes from the upper half.
+
 ## 0.6.0 — 2026-11-16
 
 ### Features

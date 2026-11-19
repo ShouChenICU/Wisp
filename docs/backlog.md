@@ -408,13 +408,47 @@ Source: `docs/superpowers/plans/2026-11-14-device-model-1-identity-and-generic-p
 ## Device model
 
 - A key that holds both roles `power` and `talk` (device-model spec 2.3) gets no gesture arbitration: holding it to talk also triggers the power key's long press (the power-off dialog after a second). It needs arbitration where talk owns the hold and the power key keeps only a short press; that belongs to the input-generality work of the device-model spec's part 3. Until then `App` warns about such a board at boot (`core::power_key_also_talks()`).
-- Next parts of the device-model work: the ESP devices' ids move into the board configs (`BoardSpec` slots, spec part 2); the install-time prompt for `permissions.device` comes with phase I's general permission mechanism (until then a declared permission is honoured).
+- Next parts of the device-model work: H3 (keypad input for system UI and the `pixel_format` cap, spec 9); the install-time prompt for `permissions.device` comes with phase I's general permission mechanism (until then a declared permission is honoured). The ESP ids moved into the board configs with H2 (see below).
 - Parked: the device routes and `DeviceRegistry::manifest()` build their JSON as a `Value` tree and a `std::string` in internal RAM (about 10 KB transient for a dozen devices of which three describe themselves); render into `os::LargeString` instead.
 - Parked: the admin device page shows `caps.schema` as one JSON blob.
 - Parked: a per-holder call budget in `DeviceService` for scenes: a scene can call a granted device's `get()`, or a command without `min_interval_ms`, as fast as its callbacks run, which contends for the bus and writes one log line per state-changing call.
 - Parked: the agent's `lua.run` reaches devices as holder `agent` without leaving a conversation note, unlike `device.call`.
 - Parked: the `device.call` activity line carries no device identity (it would need a per-tool key preference in `activity_target()`).
 - Parked: `tools/check_layering.py`'s comment stripper can report a false positive on a line with a digit separator and an apostrophe in its comment.
+
+## Device model H2 (board kit): device checks not run
+
+Source: `docs/superpowers/plans/2026-11-18-device-model-2-board-kit.md`, "Device checks for the owner". Both boards build (2026-11-18, `wisp.bin` 2.16 0x38db40, 78.97% of its slot; 1.75C 0x37d150, 58.76%) and the host tests pass; nothing has run on a device. Flash each board with `idf.py -p <port> flash` from the branch's last commit (the partition table file moved but is byte-identical, so `app-flash` also works); check the MAC before flashing, one board connected at a time.
+
+1. `WISP_BOOT_REPORT` and `WISP_MANIFEST`: the same devices, ids, classes, models and caps as before H2, plus `channels: ["mic","mic"]` on `audio_in.main`; no new `failed`; no `psram` note; on the 1.75C `clock.main` still `missing` ("no RTC").
+2. Hardware diagnostics (`diag`): every device green; touch, button and microphone tests pass; touch follows the finger in all four corners (orientation now from YAML).
+3. Voice: hold the talk key (2.16 Vol-, 1.75C BOOT), speak, hear the answer.
+4. Standby and wake: power key short press turns the screen off and on; the power key wakes from deep standby.
+5. Light sleep: the boot log shows `held through light sleep: GPIO39 GPIO40 GPIO46 GPIO12` (2.16) / `GPIO1 GPIO2 GPIO46 GPIO12` (1.75C); after 10 minutes of standby, wake shows no panel re-init and the speaker does not pop (2.16 checklist item 29).
+6. `mem` idle and the worst case of AGENTS.md section 5: unchanged against `wisp/app/ram_budget.hpp`.
+7. `diag` then `bench scroll 10`: `WISP_PERF` frame rate at the boards' baselines (the 32 KB instruction cache still applies).
+8. OTA: upload `build-<board>/wisp.bin` on the admin "System" page, confirm; the device runs it.
+9. 1.75C: `button.power` is `gpio-button` on GPIO3; IMU orientation unchanged (tilt test in diagnostics).
+
+## Device model H2 parked findings
+
+- `SceneBackground.ErrorInBackgroundStopsAndNotifies` failed once in `tools/ci.sh` during the H2 branch and passed on rerun; unrelated to the board kit, and the same test as the load-sensitive failure under "Settings schema parked review findings". Needs a look.
+
+## ESP32-S31: facts needed before its port plan (device-model spec 17.1)
+
+Open questions for the owner; the project's notes on this chip are unverified (`docs/porting-guide.md`, "Planned target"). H2 left defined places for each answer (porting guide, "What a new target touches").
+
+1. The ESP-IDF target name (the `idf.py set-target` argument) and the first ESP-IDF release that supports it; whether that release is stable.
+2. CPU: architecture, number of cores, maximum and minimum DFS frequencies (for its `kTargetFacts` row, `wisp/port/esp/target_facts.hpp`).
+3. Internal SRAM size, and how much ESP-IDF and Wi-Fi leave free (for `ram_budget.hpp`).
+4. PSRAM on the target board: size, type and speed; whether DMA can read it (`SOC_PSRAM_DMA_CAPABLE`, for `draw_buf_mem: "large"`); whether task stacks in PSRAM are allowed during flash operations (for `stack_placement.hpp`).
+5. Flash on the target board: size, vendor/ID, and whether ESP-IDF supports suspend for it (XIP and auto-suspend, porting guide "Font partitions").
+6. Instruction/data cache size options (the S3 sets 32 KB in `firmware/sdkconfig.defaults.esp32s3`).
+7. Radio: on-chip Wi-Fi or a co-processor (esp-hosted would change `EspWifi`); bands (2.4 or 2.4 + 5 GHz); SoftAP support (the setup hotspot).
+8. Sleep: light-sleep support with PSRAM, wake sources, which GPIOs can wake (RTC IO or equivalent).
+9. Console: USB-Serial-JTAG or UART on the target board.
+10. The first target board: name (bmgr/`esp_boards` naming), its display interface (QSPI, MIPI-DSI, RGB), touch, audio codec, PMU, buttons, SD.
+11. Versions of esp_board_manager, esp_lcd drivers, LVGL, littlefs and mdns that support the target.
 
 ## Settings schema: device checks not run
 
@@ -469,3 +503,13 @@ Source: branch `perf/firmware-size` (2026-11-16). `wisp/base/number_text.hpp` re
 - The admin web page, now served minified: every page loads and works as before.
 - The `wisp.agent` stack high-water mark in `mem` after a `docs.read`: `inflate_raw()` now runs there and takes about 2 KB of stack (its decoder and code-length tables); before, only the zip reader ran it.
 - Playback and recording on both boards after the codec trim: after a full flash built from a regenerated `sdkconfig`, play speech and record from the microphone, and check that the boot report shows `audio_out` and `audio_in` initialised. An existing build directory keeps its old `sdkconfig`, and with it all the codecs (about 32 KB more image), until that file is deleted or `idf.py fullclean` runs.
+
+## Keypad input: not done and device checks not run
+
+Source: branch `feat/keypad-input` (2026-11-18).
+
+- Keys from Home to the sub-pages and on the history and scene list pages (phase M's `PageStack`).
+- The on-screen keyboard and sliders by key; scene key input (`wisp.input.on("key")`, phase I).
+- Device checks on the 2.16 with the local volume-key patch (plan `docs/superpowers/plans/2026-11-18-device-model-3-keypad-input.md`, device checks): dialogs by keys, settings rows walked and wrapped, back from choice pages, scenes, diagnostics and the panel, waking by a key press clicks nothing. Not run yet.
+- A nav key pressed in deep standby wakes the device (depends on `ButtonService` standby polling reporting nav keys).
+- The interactive simulator check with `--nav-keys` (Page Up/Page Down/Tab/Return/Escape on a real window) was not run: no display where it was written.

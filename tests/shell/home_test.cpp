@@ -1952,3 +1952,26 @@ TEST_F(HomeTest, SpokenReplyWithoutStepsShowsStop) {
     ASSERT_TRUE(settled());
     ASSERT_TRUE(ui_until([&] { return hidden(home().stop_button()); }));
 }
+
+// A new conversation hands Home an empty view: the last turn's text and the
+// reason it failed both go, as after boot.
+TEST_F(HomeTest, AnEmptyViewClearsTheTurnAndItsHint) {
+    boot();
+    uint64_t t = 0;
+    on_ui([&] {
+        t = wisp::os::now_ms() + home_ms.load();
+        TurnView v;
+        v.turn = 3;
+        v.heard = "念一下";
+        v.end_reason = "server";
+        v.end_note.assign("N");
+        v.started_ms = t - 500;
+        v.ended_ms = t;
+        home().show_view(v);
+    });
+    home_ms.fetch_add(1000);
+    ASSERT_EQ(hint_shown(), wisp::ui::tr(wisp::ui::StrId::HomeTurnServer));
+    on_ui([&] { home().show_view(TurnView{}); });
+    EXPECT_EQ(hint_shown(), "");
+    ASSERT_TRUE(ui_until([&] { return !home().in_turn() && hidden(home().heard_label()); }));
+}

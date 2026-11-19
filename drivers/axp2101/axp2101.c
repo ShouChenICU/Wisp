@@ -206,7 +206,7 @@ esp_err_t axp2101_init(i2c_master_bus_handle_t bus, axp2101_handle_t* out) {
     if (h->charging_cfg_err != ESP_OK) {
         /* Non-fatal: the device still registers (AGENTS.md's device-model
          * rule -- init failures degrade, they don't block boot). The
-         * caller (EspPower, then board.cpp) surfaces this via
+         * caller (Axp2101Power, then board.cpp) surfaces this via
          * axp2101_charging_config_status(). */
         ESP_LOGE(TAG, "charging configuration failed: %s", esp_err_to_name(h->charging_cfg_err));
     }
@@ -252,7 +252,7 @@ esp_err_t axp2101_read_status(axp2101_handle_t handle, axp2101_status_t* out) {
 
     /* No battery wired to this PMU (or the read otherwise failed to show
      * one): battery_percent/battery_mv stay 0 and are not meaningful --
-     * EspPower::status() maps this to PowerStatus::battery_percent == -1
+     * Axp2101Power::status() maps this to PowerStatus::battery_percent == -1
      * (wisp/hal/power.hpp's "unknown" contract). */
     bool preliminary_present = battery_connected || out->battery_mv != 0;
     if (!preliminary_present) {

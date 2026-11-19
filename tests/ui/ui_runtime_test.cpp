@@ -57,6 +57,29 @@ TEST(UiRuntime, RendersPostedContentWithAlignedFlushes) {
     ui.stop();
 }
 
+TEST(UiRuntime, StartRefusesAnotherPixelFormat) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    disp->set_cap("pixel_format", wisp::Value("l8"));
+    {
+        wisp::ui::UiRuntime ui(disp, nullptr);
+        auto r = ui.start();
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, wisp::ErrorCode::Unsupported);
+        EXPECT_NE(r.error().message.find("l8"), std::string::npos);
+        EXPECT_FALSE(lv_is_initialized());
+    }
+    auto plain = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    wisp::ui::UiRuntime ui(plain, nullptr);
+    EXPECT_TRUE(ui.start());
+}
+
+TEST(UiRuntime, StartAcceptsAnExplicitRgb565) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    disp->set_cap("pixel_format", wisp::Value("rgb565"));
+    wisp::ui::UiRuntime ui(disp, nullptr);
+    EXPECT_TRUE(ui.start());
+}
+
 TEST(UiRuntime, PerfCountsFramesUnderAnimation) {
     auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
     wisp::ui::UiRuntime ui(disp, nullptr);
@@ -1184,4 +1207,221 @@ TEST(UiRuntime, PausedLoopPacesAReArmingSlot) {
     EXPECT_LE(static_cast<uint64_t>(runs_2 - runs_1), elapsed / 2 + 10)
         << "over " << elapsed << " ms";
     ui.stop();
+}
+
+namespace {
+
+using wisp::ui::NavKey;
+
+// Counts the LVGL events a test button receives. Bumped on the UI task,
+// read from the test thread.
+struct KeyButton {
+    lv_obj_t* obj = nullptr;
+    std::atomic<int> clicked{0};
+    std::atomic<int> long_pressed{0};
+    std::atomic<int> keys{0};
+};
+
+void count_events(lv_event_t* e) {
+    auto* b = static_cast<KeyButton*>(lv_event_get_user_data(e));
+    switch (lv_event_get_code(e)) {
+        case LV_EVENT_CLICKED:
+            ++b->clicked;
+            break;
+        case LV_EVENT_LONG_PRESSED:
+            ++b->long_pressed;
+            break;
+        case LV_EVENT_KEY:
+            ++b->keys;
+            break;
+        default:
+            break;
+    }
+}
+
+// A UiRuntime with the keypad, and `n` buttons on the active screen in its
+// group, the first focused.
+struct KeypadRig {
+    std::shared_ptr<FakeDisplay> disp =
+        std::make_shared<FakeDisplay>("display.main", 480, 480, /*area_align=*/2);
+    wisp::ui::UiRuntime ui{disp, nullptr, wisp::ui::UiConfig{.keypad = true}};
+    std::vector<std::unique_ptr<KeyButton>> buttons;
+
+    explicit KeypadRig(int n) {
+        EXPECT_TRUE(ui.start());
+        for (int i = 0; i < n; ++i) buttons.push_back(std::make_unique<KeyButton>());
+        ui.run_blocking([&] {
+            for (auto& b : buttons) {
+                b->obj = lv_button_create(lv_screen_active());
+                lv_obj_add_event_cb(b->obj, count_events, LV_EVENT_ALL, b.get());
+                lv_group_add_obj(ui.nav_group(), b->obj);
+            }
+            if (!buttons.empty()) lv_group_focus_obj(buttons.front()->obj);
+        });
+    }
+    ~KeypadRig() { ui.stop(); }
+
+    lv_obj_t* focused() {
+        lv_obj_t* f = nullptr;
+        ui.run_blocking([&] { f = lv_group_get_focused(ui.nav_group()); });
+        return f;
+    }
+    bool press(NavKey key) { return ui.push_key(key, true) && ui.push_key(key, false); }
+};
+
+}  // namespace
+
+TEST(UiRuntime, NoKeypadWithoutTheFlag) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    auto touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
+    wisp::ui::UiRuntime ui(disp, touch);
+    ASSERT_TRUE(ui.start());
+    EXPECT_FALSE(ui.push_key(NavKey::Next, true));
+    lv_group_t* group = reinterpret_cast<lv_group_t*>(1);
+    int indevs = 0;
+    ui.run_blocking([&] {
+        group = ui.nav_group();
+        for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i))
+            ++indevs;
+    });
+    EXPECT_EQ(group, nullptr);
+    EXPECT_EQ(indevs, 1);
+    ui.stop();
+}
+
+TEST(UiRuntime, KeypadMovesFocusAndClicks) {
+    KeypadRig rig(2);
+    auto& a = *rig.buttons[0];
+    auto& b = *rig.buttons[1];
+    ASSERT_TRUE(rig.press(NavKey::Next));
+    EXPECT_TRUE(wait_until([&] { return rig.focused() == b.obj; }, 2000));
+    ASSERT_TRUE(rig.press(NavKey::Ok));
+    EXPECT_TRUE(wait_until([&] { return b.clicked.load() == 1; }, 2000));
+    EXPECT_EQ(a.clicked.load(), 0);
+}
+
+TEST(UiRuntime, ThePointerIsStillTheFirstIndev) {
+    auto disp = std::make_shared<FakeDisplay>("display.main", 480, 480, 2);
+    auto touch = std::make_shared<wisp::test::FakeTouch>("touch.main");
+    wisp::ui::UiRuntime ui(disp, touch, wisp::ui::UiConfig{.keypad = true});
+    ASSERT_TRUE(ui.start());
+    lv_indev_type_t first = LV_INDEV_TYPE_NONE;
+    int keypads = 0;
+    ui.run_blocking([&] {
+        first = lv_indev_get_type(lv_indev_get_next(nullptr));
+        for (lv_indev_t* i = lv_indev_get_next(nullptr); i != nullptr; i = lv_indev_get_next(i))
+            if (lv_indev_get_type(i) == LV_INDEV_TYPE_KEYPAD) ++keypads;
+    });
+    EXPECT_EQ(first, LV_INDEV_TYPE_POINTER);
+    EXPECT_EQ(keypads, 1);
+    ui.stop();
+}
+
+TEST(UiRuntime, OneKeyAtATime) {
+    KeypadRig rig(2);
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Next, true));
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Ok, true));
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Ok, false));
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Next, false));
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Ok, true));
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Ok, false));
+}
+
+TEST(UiRuntime, RingKeepsRoomForTheRelease) {
+    static_assert(wisp::ui::UiRuntime::kKeyRing == 8);
+    KeypadRig rig(3);
+    wisp::os::Semaphore gate(1, 0);
+    std::atomic<bool> holding{false};
+    ASSERT_TRUE(rig.ui.post([&] {
+        holding = true;
+        gate.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(wait_until([&] { return holding.load(); }, 2000));
+
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(rig.press(NavKey::Next)) << i;
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Next, true));   // exactly two slots free
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Next, false));  // the ring is full now
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Next, true));
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Next, false));
+
+    gate.give();
+    ASSERT_TRUE(wait_until([&] { return rig.ui.push_key(NavKey::Ok, true); }, 2000));
+    EXPECT_TRUE(rig.ui.push_key(NavKey::Ok, false));
+    EXPECT_TRUE(wait_until([&] { return rig.buttons[1]->clicked.load() == 1; }, 2000));
+    EXPECT_EQ(rig.focused(), rig.buttons[4 % 3]->obj);
+}
+
+TEST(UiRuntime, HookSeesEveryEntryAndCanConsumeIt) {
+    KeypadRig rig(2);
+    std::mutex mutex;
+    std::vector<std::pair<NavKey, bool>> seen;
+    rig.ui.set_nav_key_hook([&](NavKey key, bool pressed) {
+        std::lock_guard<std::mutex> lock(mutex);
+        seen.emplace_back(key, pressed);
+        return key == NavKey::Next;
+    });
+    ASSERT_TRUE(rig.press(NavKey::Next));
+    ASSERT_TRUE(rig.press(NavKey::Ok));
+    EXPECT_TRUE(wait_until([&] { return rig.buttons[0]->clicked.load() == 1; }, 2000));
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const std::vector<std::pair<NavKey, bool>> want{
+            {NavKey::Next, true}, {NavKey::Next, false}, {NavKey::Ok, true}, {NavKey::Ok, false}};
+        EXPECT_EQ(seen, want);
+    }
+    EXPECT_EQ(rig.focused(), rig.buttons[0]->obj);
+    EXPECT_EQ(rig.buttons[1]->clicked.load(), 0);
+    rig.ui.set_nav_key_hook(nullptr);
+}
+
+TEST(UiRuntime, BackNeverReachesLvgl) {
+    KeypadRig rig(1);
+    std::atomic<int> backs{0};
+    rig.ui.set_nav_key_hook([&](NavKey key, bool) {
+        if (key == NavKey::Back) ++backs;
+        return false;
+    });
+    ASSERT_TRUE(rig.press(NavKey::Back));
+    ASSERT_TRUE(wait_until([&] { return backs.load() == 2; }, 2000));
+    // The read that handed the entries over has finished once this runs.
+    rig.ui.run_blocking([] {});
+    EXPECT_EQ(rig.buttons[0]->keys.load(), 0);
+    EXPECT_EQ(rig.buttons[0]->clicked.load(), 0);
+    rig.ui.set_nav_key_hook(nullptr);
+}
+
+TEST(UiRuntime, KeysAreRefusedWhilePaused) {
+    KeypadRig rig(1);
+    rig.ui.set_paused(true);
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Next, true));
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Next, false));
+    rig.ui.set_paused(false);
+    EXPECT_TRUE(rig.press(NavKey::Next));
+}
+
+// The pause and resume follow each other closely enough that the UI task
+// may never reach its paused branch; the key must not stay down in LVGL
+// either way (no click on a later read, no long press).
+TEST(UiRuntime, AKeyHeldAcrossAPauseDoesNotClick) {
+    KeypadRig rig(1);
+    auto& a = *rig.buttons[0];
+    std::atomic<bool> took{false};
+    rig.ui.set_nav_key_hook([&](NavKey key, bool pressed) {
+        if (key == NavKey::Ok && pressed) took = true;
+        return false;
+    });
+    ASSERT_TRUE(rig.ui.push_key(NavKey::Ok, true));
+    ASSERT_TRUE(wait_until([&] { return took.load(); }, 2000));
+    rig.ui.set_paused(true);
+    rig.ui.set_paused(false);
+    EXPECT_FALSE(rig.ui.push_key(NavKey::Ok, false));
+    // Longer than LVGL's long-press time (400 ms), so a key left down
+    // would show as a long press.
+    wisp::os::sleep_ms(600);
+    EXPECT_EQ(a.clicked.load(), 0);
+    EXPECT_EQ(a.long_pressed.load(), 0);
+    // The keypad still works afterwards.
+    ASSERT_TRUE(rig.press(NavKey::Ok));
+    EXPECT_TRUE(wait_until([&] { return a.clicked.load() == 1; }, 2000));
+    rig.ui.set_nav_key_hook(nullptr);
 }

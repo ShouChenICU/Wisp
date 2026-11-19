@@ -36,6 +36,10 @@
 // reads) are turned off. The handler is one-shot: a second signal while
 // shutting down kills the process the default way.
 //
+// Keys: with --nav-keys Page Up / Page Down (or Tab) / Return (or keypad
+// Enter) / Escape (or Backspace) are the nav_prev / nav_next / nav_ok /
+// nav_back buttons, which make the app's keypad (device model spec 9.1).
+//
 // Debug commands: with WISP_SIM_DEBUG_COMMANDS (defined for the wisp_sim
 // target only, never in a portable component or the firmware) the console
 // gains "debug pair-code", which prints the active pairing code as
@@ -102,6 +106,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <span>
 #include <string>
@@ -301,6 +306,7 @@ wisp::port::sim::SimBoardConfig to_board_config(const SimOptions& opts) {
     config.no_sd = opts.no_sd;
     config.data_dir = opts.data_dir;
     config.wifi_fail = opts.wifi_fail;
+    config.nav_keys = opts.nav_keys;
     return config;
 }
 
@@ -572,6 +578,26 @@ void run_headless(wisp::app::App& app, const SimOptions& opts,
     }
 }
 
+// The keyboard keys behind --nav-keys' four buttons; the arrow keys stay the tilt.
+std::optional<wisp::port::sim::SimButtonKind> nav_kind(SDL_Keycode key) {
+    using Kind = wisp::port::sim::SimButtonKind;
+    switch (key) {
+        case SDLK_PAGEUP:
+            return Kind::NavPrev;
+        case SDLK_PAGEDOWN:
+        case SDLK_TAB:
+            return Kind::NavNext;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+            return Kind::NavOk;
+        case SDLK_ESCAPE:
+        case SDLK_BACKSPACE:
+            return Kind::NavBack;
+        default:
+            return std::nullopt;
+    }
+}
+
 // Translates one SDL event into SimInput state. Mouse motion only
 // updates the touch point while a button is held (dragging); key repeat
 // events are ignored (SimInput only cares about down/up transitions).
@@ -631,6 +657,7 @@ void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& r
                         input.toggle_sd();
                         break;
                     default:
+                        if (const auto nav = nav_kind(ev.key.keysym.sym)) input.key_nav(*nav, true);
                         break;
                 }
             }
@@ -650,6 +677,7 @@ void handle_event(const SDL_Event& ev, wisp::port::sim::SimInput& input, bool& r
                     input.key_vol_down(false);
                     break;
                 default:
+                    if (const auto nav = nav_kind(ev.key.keysym.sym)) input.key_nav(*nav, false);
                     break;
             }
             break;

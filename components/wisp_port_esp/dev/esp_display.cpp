@@ -10,7 +10,6 @@
 #include "esp_lcd_panel_ops.h"
 #include "wisp/base/error.hpp"
 #include "wisp/core/log.hpp"
-#include "wisp/hal/roles.hpp"
 
 namespace wisp::port::esp {
 
@@ -75,7 +74,7 @@ Result<std::shared_ptr<EspDisplay>> EspDisplay::create(esp_lcd_panel_handle_t pa
 EspDisplay::EspDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t io,
                        EspDisplayConfig config, SemaphoreHandle_t done)
     : panel_(panel), io_(io), config_(std::move(config)), done_(done) {
-    info_.id = "display.main";
+    info_.id = config_.id;
     info_.cls = kClass;
     info_.model = config_.model;
     info_.caps = wisp::Properties{
@@ -89,7 +88,7 @@ EspDisplay::EspDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t i
         {"rgb565_be", config_.rgb565_be},
         {"standby", wisp::Value("off")},
     };
-    info_.caps["role"] = wisp::Value(wisp::hal::role::kMain);
+    if (!config_.role.empty()) info_.caps["role"] = wisp::Value(config_.role);
     if (config_.draw_buf_lines > 0) info_.caps["draw_buf_lines"] = config_.draw_buf_lines;
     if (!config_.draw_buf_mem.empty())
         info_.caps["draw_buf_mem"] = wisp::Value(config_.draw_buf_mem);

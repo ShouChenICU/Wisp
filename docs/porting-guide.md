@@ -6,16 +6,48 @@ This document describes what it takes to add an ESP32 development board on top o
 
 A board consists of the following parts:
 
-1. **esp_board_manager YAML** (`boards/<board>/board_info.yaml`, `board_peripherals.yaml`, `board_devices.yaml`): describes the board model, the buses (I2C/I2S/SPI/GPIO) and the devices esp_board_manager already supports (display, touch, audio codec, SD card and so on). It only connects the chips to the buses and assigns pins; it does **not** fill in Wisp's capability list.
-2. **`setup_device.c`** (optional; needed only when the board has a device type that esp_board_manager has no built-in factory function for): gives bmgr the constructor entry point for the custom device.
-3. **`board.cpp`**: implements `wisp::board::create_board()`, which returns a `wisp::app::Board`. Its `init()` wraps the device handles bmgr has already created (display, touch, audio, SD card) in the `wisp::hal::Device` interface, brings up the devices bmgr does not manage (IMU, PMU, RTC, buttons and so on) with Wisp's own drivers (through the buses bmgr exposes), and registers all of them in `DeviceRegistry`.
-4. **`partitions.csv` and `sdkconfig.defaults.board`**: the board's partition table and board-level sdkconfig (see "Partitions and board configuration" and "Firmware and partitions" below).
+1. **esp_board_manager YAML** (`boards/<board>/board_info.yaml`, `board_peripherals.yaml`, `board_devices.yaml`): describes the board model, the buses (I2C/I2S/SPI/GPIO), the buttons (as `gpio` peripherals) and the devices esp_board_manager already supports (display, touch, audio codec, SD card and so on). It connects the chips to the buses and is the **only** place pins are written; it does **not** fill in Wisp's capability list.
+2. **`setup_device.c`** (optional): custom bmgr factory functions, such as a panel's vendor init table. Touch pins, levels and orientation are YAML keys, so a touch factory only passes bmgr's config through.
+3. **`board.cpp`**: a `wisp::board_kit::BoardSpec` constant and `create_board()`, which returns `wisp::board_kit::make_board(spec)`. The board kit (`boards/common/board_kit.hpp`) wraps the device handles bmgr has created (display, touch, audio, SD card) and the buttons in `wisp::hal::Device` objects, adds internal storage and Wi-Fi, and registers them in `DeviceRegistry`; the board's own `bring_up_chips()` brings up the chips bmgr does not manage (IMU, PMU, RTC and so on) with Wisp's drivers, on the buses bmgr exposes.
+4. **`sdkconfig.defaults.board`** (and, only for special needs, `partitions.csv`): the board-level sdkconfig, which names the partition table (a shared table by flash size) (see "Partitions and board configuration" and "Firmware and partitions" below).
+5. **`board.cmake`**: the driver components (`drivers/<chip>/`) that `board.cpp` uses, as `WISP_BOARD_REQUIRES` (see "Step 2" below).
+6. **`README.md`**: what the board is and where its hardware document lives.
+
+Nothing else: no pin constants, no `gpio_config()` calls and no copy of the bring-up sequence. The shared parts live beside the boards in `boards/common/` (the board kit `board_kit.{hpp,cpp}` and the partition tables `partitions/<flash size>.csv`); `boards/common/` has no bmgr YAML, so bmgr neither treats it as a board nor compiles it, and `firmware/main` compiles the kit.
+
+## Support matrix
+
+What a board must have for each feature. Both reference boards meet every row.
+
+| Feature | Requirement | Evidence |
+|---|---|---|
+| Boot, self-check, serial console | an ESP-IDF target within the pinned range (`idf:` in `firmware/main/idf_component.yml`) | — |
+| Admin console, OTA | Wi-Fi; flash with two OTA slots of at least 1.25× the image (image about 3.56 MB, `wisp.bin` 0x38DB40 on 2026-11-18, 78.97% of the 2.16's 0x480000 slot) | 80% slot budget |
+| Large text, CJK body text | `fonts` and `glyphs` partitions (2.81 MB and 1.125 MB in `16mb.csv`); PSRAM for the glyph cache | "Partition conventions" below |
+| Recommended flash | 16 MB | both boards |
+| PSRAM | 8 MB or more, required; with less the boot report records the note `psram` ("Scene runtime" below) | both boards have 8 MB (idle free 6.76 MB, `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`) |
+| UI | a `Display` with role `main` and caps `pixel_format: rgb565` (the default), and a `Touch` with role `main` or buttons with the nav roles `nav_next` and `nav_ok` (see "Navigation keys") | — |
+| Voice | `AudioIn` 16 kHz mono, `AudioOut` mono at the TTS rate ("Voice and the talk key" below) | — |
+| Internal RAM | the budget in `wisp/app/ram_budget.hpp` (worst case 40 KB free / 16 KB block) | `docs/hardware/<board>.md` |
 
 ## Step 1: Write the bmgr YAML
 
 1. Create `boards/<board>/` and write the three YAML files, following the esp_board_manager documentation and the fields of an existing board (`boards/waveshare_esp32_s3_touch_amoled_2_16/`). When you can reuse another public board definition directly (such as ESP-Claw), state its source in the file header and register it in `docs/references.md` and `THIRD_PARTY_NOTICES.md`, as AGENTS.md section 6 requires.
 2. Declare in the YAML only device types that esp_board_manager supports natively (`display_lcd`, `lcd_touch`, `audio_codec`, `fs_fat`/SDMMC, bare GPIO/I2C/I2S/SPI buses and so on). Do **not** put custom chips such as the IMU, PMU or RTC into the YAML as `custom` devices: Wisp initialises them with its own drivers in `board.cpp`, on the same bus that bmgr exposes.
-3. Generate the code with `idf.py bmgr -c ../boards -b <board>` (the output goes to `firmware/components/gen_bmgr_codes/`, which is git-ignored; rerun this step after changing the YAML; do not edit the generated code by hand).
+3. Declare each button as a `gpio` peripheral with its pull, for example:
+
+   ```yaml
+     - name: btn_vol_up
+       type: gpio
+       role: io
+       config:
+         pin: 18
+         mode: GPIO_MODE_INPUT
+         pull_up: true      # or pull_down: true; neither for an external pull network
+   ```
+
+   bmgr configures the pin during `esp_board_manager_init()`; the kit reads the pin back from bmgr (`esp_board_manager_get_periph_config()`). Touch levels and orientation go under `lcd_touch`'s `config.touch_config` as `levels: {reset, interrupt}` and `flags: {swap_xy, mirror_x, mirror_y}`.
+4. Generate the code with `idf.py bmgr -c ../boards -b <board>` (the output goes to `firmware/components/gen_bmgr_codes/`, which is git-ignored; rerun this step after changing the YAML; do not edit the generated code by hand).
 
 ### Board naming rules
 
@@ -34,31 +66,60 @@ Renaming a board changes the board name descriptor in the image: a device runnin
 
 For a chip that the esp_board_manager component library does not have, create a plain-C ESP-IDF component under `drivers/<chip>/`. Its CMakeLists uses `idf_component_register(...)` directly, not `wisp_component()` from `cmake/wisp_component.cmake`: that macro exists so that the portable layers (`wisp_base`/`os`/`hal`/`core`/`ui`/`app`) work under both the `idf.py` build and the host simulator build, while a driver is compiled only in the `idf.py` firmware build and uses ESP-IDF's `driver/*` headers directly, so it does not need that dual-build switch. If the MyOS project (MIT, by ShouChen) already has a driver for the chip, port it first: keep the register sequences and conversion formulas, and remove MyOS-specific logic that is irrelevant to the board, such as sleep and power-rail control. State "Ported from MyOS (MIT, Copyright (c) 2026 ShouChen)" in the file header and register it in `docs/references.md`. A completely new register configuration (a feature MyOS never drove, such as the gyroscope) must say "newly written, not verified" in the file header, and get an item in the device acceptance checklist that checks it specifically.
 
+The chip's Wisp adapter (the `hal::Device` subclass that wraps the C driver, such as `wisp::drivers::Qmi8658Imu`) lives in the same component, under `drivers/<chip>/wisp/<chip>_<role>.cpp`, with its header at `drivers/<chip>/include/wisp/drivers/<chip>_<role>.hpp` and namespace `wisp::drivers`. Add the source to `SRCS`, add `wisp_hal wisp_os wisp_core` to `REQUIRES`, and pin `target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_20)`; the C driver stays usable on its own. The adapter takes a config aggregate (`id`, `role`, a `model` defaulting to the chip's name, plus whatever the chip needs, such as an I2C address or an axis map), so the board names the device and the adapter names the chip. `wisp_port_esp` never requires a driver component (`tools/check_layering.py`); instead the board lists the drivers its `board.cpp` uses in `boards/<board>/board.cmake`:
+
+```cmake
+set(WISP_BOARD_REQUIRES axp2101 pcf85063 qmi8658)
+```
+
+`firmware/CMakeLists.txt` includes that file before `project()` and publishes the list as a build property, which `firmware/main` adds to its requirements.
+
 ## Step 3: Write `board.cpp`
 
-Implement `wisp::app::Board` (`components/wisp_app/include/wisp/app/board.hpp`):
+A board is a `wisp::board_kit::BoardSpec` constant (`boards/common/board_kit.hpp`) plus the bring-up of the chips bmgr does not manage. The kit implements `wisp::app::Board` (`components/wisp_app/include/wisp/app/board.hpp`) for it; `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` is the example to copy:
 
 ```cpp
-class Board : public wisp::app::Board {
-public:
-    std::string name() const override { return "<board>"; }
-    void init(wisp::core::DeviceRegistry& registry, wisp::core::BootReport& report) override {
-        // 1. Take the handles bmgr has already created (display/touch/audio/SD), wrap each in a hal::Device subclass, add() it to registry.
-        // 2. With the drivers in drivers/, initialise the IMU/PMU/RTC/buttons on the I2C bus bmgr exposes, add() them to registry.
-        // 3. If the chip has built-in Wi-Fi: wisp::port::esp::EspWifi::create() registers net.wifi. Do it last (after the display,
-        //    so that the Wi-Fi driver does not first take the internal RAM the display DMA buffers need), and also call it on the
-        //    early-return path when bmgr fails: the radio being on is what lets Platform::random (esp_fill_random) give true random numbers.
-        // 4. If any step fails: report.record({id, class, DeviceState::Failed, "reason"}), do not add() that device,
-        //    and do not let init() itself fail or abort -- a missing device only degrades the system, it does not block boot (AGENTS.md section 3 "Device model").
-    }
+const wisp::board_kit::ButtonSpec kButtons[] = {
+    {.slot = {"button.power", DeviceClass::Button, role::kPower}, .bmgr_gpio = "btn_power", .active_low = false},
+};
+constexpr Slot kChips[] = {{"imu.main", DeviceClass::Imu, role::kMain}};
+// One role per physical capture channel, in the codec's order.
+constexpr wisp::port::esp::AudioChannel kMics[] = {wisp::port::esp::AudioChannel::Mic,
+                                                   wisp::port::esp::AudioChannel::Mic};
+
+void bring_up_chips(Kit& kit) {
+    i2c_master_bus_handle_t bus = kit.i2c("i2c_master");   // null (logged) when bmgr has no such bus
+    kit.add(kChips[0], wisp::drivers::Qmi8658Imu::create(bus, {.id = kChips[0].id, .role = kChips[0].role}));
+}
+
+const wisp::board_kit::BoardSpec kSpec{
+    .name = "<board>",
+    .display = wisp::board_kit::DisplaySpec{.model = "CO5300", .shape = "rounded_rect", .corner_radius = 70, .panel = "amoled"},
+    .touch = wisp::board_kit::TouchSpec{.model = "CST9217"},
+    .audio_out = wisp::board_kit::AudioOutSpec{.model = "ES8311"},
+    .audio_in = wisp::board_kit::AudioInSpec{.model = "ES7210", .channels = kMics},
+    .buttons = kButtons,
+    .chips = kChips,
+    .bring_up_chips = &bring_up_chips,
 };
 
 namespace wisp::board {
-std::unique_ptr<wisp::app::Board> create_board() { return std::make_unique</* the class above */>(); }
+std::unique_ptr<wisp::app::Board> create_board() { return wisp::board_kit::make_board(kSpec); }
 }
 ```
 
+The kit's `init()` runs one sequence for every board: internal storage (before bmgr, which it does not need); `esp_board_manager_init()`; display; touch; `bring_up_chips()`; the system clock from the RTC with role `main`; buttons; audio out and in; SD card; the outputs held through light sleep; Wi-Fi last. Wi-Fi comes after the display so that the Wi-Fi driver does not first take the internal RAM the display DMA buffers need, and it also starts when bmgr fails, since the radio being on is what lets Platform::random (esp_fill_random) give true random numbers. When bmgr fails, every declared slot (display, touch, `chips`, buttons, audio, SD) is recorded failed with the bmgr error.
+
+- **What the spec carries**: the device ids and roles (`Slot`), the bmgr names (defaulting to `display_lcd`, `lcd_touch`, `audio_dac`, `audio_adc`, `fs_sdcard`), and the facts bmgr does not carry: models, the panel's `shape`, measured `corner_radius`, `panel`, `area_align` and sleep method, the capture channel roles. Width, height, QSPI framing and byte order come from bmgr's display config, the SD mount point from the `fs_sdcard` config.
+- **Pins**: none in `board.cpp`. A button names its `gpio` peripheral (`bmgr_gpio`) and its polarity; the outputs held through light sleep (display reset and CS, touch reset, the PA enable of `audio_dac`) are read from bmgr's device configs, skipping a pin the YAML leaves at -1 or names twice.
+- **Defaults**: a field the initializer leaves out takes its default (`shape = "rect"`, `panel = "lcd"`, an empty model), never a null string; a slot with an empty id is refused by the registry and recorded failed.
+- **Device types the build lacks**: bmgr compiles a device type only when the YAML declares one, and the kit compiles its use of each type behind bmgr's symbol (`CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT`, `..._LCD_TOUCH_SUPPORT`, `..._AUDIO_CODEC_SUPPORT`, `..._FS_FAT_SUPPORT`, `CONFIG_ESP_BOARD_PERIPH_GPIO_SUPPORT`). A board without touch or audio leaves that spec out (`std::nullopt`); a spec whose type the build lacks is recorded failed ("no lcd_touch device in this build"), and the outputs held through light sleep skip it.
+- **Failures**: `bring_up_chips()` registers through `kit.add(slot, result)`, which records an error result or a registry refusal as failed; `kit.failed()`/`kit.missing()` record the rest (`missing` for an absent optional chip, such as a board without an RTC). Never let a step abort: a missing device only degrades the system, it does not block boot (AGENTS.md section 3 "Device model").
+- **A button with a fallback**: `ButtonSpec::fallback` names a function the kit calls when the GPIO path is unavailable (the peripheral failed, or the GPIO edge service cannot be installed), for example a power key read from the PMU instead. A button without a fallback whose peripheral failed is recorded failed.
+
 After `init()`, `App::start()` automatically adds a `DeviceState::Ok` for every device in the registry that has not been reported, so `init()` only needs to record failures and missing devices.
+
+The ESP port's devices name no id or role of their own; the board passes both, so `components/wisp_port_esp/` holds no device id (`tools/check_layering.py` enforces this). `EspDisplayConfig`, `EspTouchConfig`, `EspWifiConfig`, `EspAudioOutConfig`, `EspAudioInConfig` and `EspSdStorageConfig` (which also takes the mount point, the bmgr device name and the model) carry `id` and `role`; `EspInternalStorage::create(id, role)` and `EspGpioButton` take them as arguments, as do the drivers' adapters through their configs. An empty role writes no caps `role`.
 
 **Device id convention**: `<class>.<name>`, where the class is the lower-case name matching `wisp::hal::DeviceClass` (`display`/`touch`/`imu`/`power`/`clock`/`button`/`audio_out`/`audio_in`/`storage`/`network`/`other`; `other` is a generic device, see "Adding a generic device" below, whose id prefix names its kind instead: `haptic.main`, `led.status`). The exception is the Wi-Fi device, which sub-project 2's spec fixes as `net.wifi` (class `network`). The ids used on the reference board: `display.main`, `touch.main`, `imu.main`, `power.main`, `clock.main`, `button.power`/`button.vol_up`/`button.vol_down`, `audio_out.main`, `audio_in.main`, `storage.int`, `storage.sd`. A button's id must be `button.<name>` (`<name>` from `[a-z0-9_]`, the id at most 32 bytes): its events are `<id>.<edge>` (an observable bus copy; the system's key handlers listen to `ButtonService`, which hands them the id), and `DeviceRegistry::add()` refuses a Button under any other id. An id is a name the board chooses (it appears in event topics, the boot report and the manifest); code finds devices by interface and role (below), never by id. Reusing the reference ids where they fit keeps logs and documents comparable, but a device may be named after what it is on the board: a BOOT key that is not also a volume key is `button.boot` (as on `waveshare_esp32_s3_touch_amoled_1_75c`). A board without an RTC records `clock.main` as `missing` ("no RTC") rather than `failed`; a board without an SD slot registers no `storage.sd`.
 
@@ -66,14 +127,14 @@ After `init()`, `App::start()` automatically adds a `DeviceState::Ok` for every 
 
 | Class | Required caps |
 |---|---|
-| `Display` | `width`, `height`, `shape` (`rect`/`rounded_rect`/`circle`), `corner_radius` (for `rounded_rect`), `panel`, `brightness`, `area_align`; optional `rgb565_be` (true when the panel wants RGB565 high byte first; the UI renders directly in that byte order); optional draw-buffer policy, which defaults to two 24-line buffers in internal DMA RAM with partial refresh: `draw_buf_lines` (lines per buffer, default 24, capped at the screen height), `draw_buf_mem` (`"dma"`, the default, is internal DMA RAM; `"large"` is DMA-readable PSRAM, i.e. `Mem::DmaLarge`, declared only when the chip's DMA can read PSRAM and the display driver can also send from PSRAM; falls back to `"dma"` when the allocation fails), `render_mode` (only `"partial"` is implemented; `"full"`/`"direct"` are reserved names that currently log a warning and are treated as `"partial"`). An invalid value logs a warning and uses the default, without blocking boot (`wisp/hal/draw_buf_policy.hpp`). The ESP port publishes these through the fields of the same names in `EspDisplayConfig` |
+| `Display` | `width`, `height`, `shape` (`rect`/`rounded_rect`/`circle`), `corner_radius` (for `rounded_rect`), `panel`, `brightness`, `area_align`; optional `pixel_format` (only `"rgb565"`; absent means `rgb565`; it is the buffer format `flush()` receives, so a panel whose native format differs, such as RGB888, declares `rgb565` and converts in its driver's `flush()`, which costs a conversion buffer and more bus bandwidth; any other value leaves the display dark and the boot report notes `display`; e-paper and monochrome panels need roadmap phase N); optional `rgb565_be` (true when the panel wants RGB565 high byte first; the UI renders directly in that byte order); optional draw-buffer policy, which defaults to two 24-line buffers in internal DMA RAM with partial refresh: `draw_buf_lines` (lines per buffer, default 24, capped at the screen height), `draw_buf_mem` (`"dma"`, the default, is internal DMA RAM; `"large"` is DMA-readable PSRAM, i.e. `Mem::DmaLarge`, declared only when the chip's DMA can read PSRAM and the display driver can also send from PSRAM; falls back to `"dma"` when the allocation fails), `render_mode` (only `"partial"` is implemented; `"full"`/`"direct"` are reserved names that currently log a warning and are treated as `"partial"`). An invalid value logs a warning and uses the default, without blocking boot (`wisp/hal/draw_buf_policy.hpp`). The ESP port publishes these through the fields of the same names in `EspDisplayConfig` |
 | `Touch` | `max_points` |
 | `Imu` | `accel`, `gyro`, `magnetometer`, `max_rate_hz` |
 | `Power` | `battery`, `charging_status` |
 | `Storage` | `removable`, `fs` |
 | `Network` | `ap` (bool, whether the hotspot `start_ap()` is supported; when false, `WifiService` does not open the setup hotspot), `bands` (list of bands, such as `["2.4GHz"]`) |
-| `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below); other keys need nothing |
-| `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"` |
+| `Button` | `role` on the keys portable code uses: `"power"` for the power key, `"talk"` for the talk key (see "Voice and the talk key" below), the `nav_*` roles for navigation keys (see "Navigation keys"); other keys need nothing |
+| `AudioIn`/`AudioOut` | Nothing required; those that turn off with the power level add `standby: "off"`. `AudioIn` may declare `channels`, one role per physical capture channel (`"mic"`, or `"ref"` for the speaker signal looped back), such as `["mic", "mic"]`. On the ESP port it is required: the board kit's `AudioInSpec::channels` (passed on as `EspAudioInConfig::channels`) must list 1 to 4 channels with at least one mic, or `audio_in.main` is recorded failed; the port delivers the mono mean of the mic channels. A 3- or 4-channel layout also needs the board's I2S (TDM slots) and codec configuration in the YAML to deliver that many slots |
 
 In addition, every device that switches on and off with the power level declares `standby` (see "Standby and power levels" below), and every device portable code looks up declares `role` in its caps.
 
@@ -85,7 +146,7 @@ In addition, every device that switches on and off with the power level declares
 | Storage | `internal`, `removable` | `StorageManager` (the internal flash and the SD card), self-check |
 | Button | `power` | standby polling, `PowerManager`, the power key's short and long press |
 | Button | `talk` | push-to-talk (see "Voice and the talk key" below) |
-| Button | `nav_prev`, `nav_next`, `nav_ok`, `nav_back` | reserved for keypad navigation |
+| Button | `nav_prev`, `nav_next`, `nav_ok`, `nav_back` | keypad navigation of the system UI (see "Navigation keys") |
 
 A board gives role `main` to its display, touch, power, clock, IMU, Wi-Fi and both audio devices, `internal`/`removable` to its storage, `power` to its power key and `talk` to its talk key; other keys need no role. One interface has at most one device per role (a generic device: one per kind and role); `DeviceRegistry::add()` refuses a second one, and the board records it as failed. What a missing role costs:
 
@@ -110,7 +171,7 @@ Bringing a new board onto the scene runtime (scene spec 2.1/2.3) needs no board-
 
 Prerequisites (already in the shared configuration; new boards do not change them):
 
-- PSRAM: the Lua heap (the allocator in `components/wisp_scene/src/vm.cpp`) and the LVGL heap (`components/wisp_ui/src/lv_mem_wisp.cpp`) are both on `os::alloc(Mem::Large)`, and fall back to internal RAM without PSRAM (much smaller; a few example scenes running together probably will not fit; see the internal RAM budget in AGENTS.md section 5).
+- PSRAM: the Lua heap (the allocator in `components/wisp_scene/src/vm.cpp`) and the LVGL heap (`components/wisp_ui/src/lv_mem_wisp.cpp`) are both on `os::alloc(Mem::Large)`, and nothing falls back to internal RAM. A board needs PSRAM of 8 MB or more (`kMinPsramBytes`, `wisp/app/ram_budget.hpp`). With less, or none, the boot report records the note `psram` and nothing else is promised (see the internal RAM budget in AGENTS.md section 5).
 - `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` is already in `firmware/sdkconfig.defaults`; putting the 128 KB stack of `wisp.scene` into PSRAM depends on it.
 
 For acceptance, besides the "Scenes card" item of the hardware diagnostics checklist in Step 5 below, also run the scene-related rows of the board hardware document's "Device acceptance checklist" (following `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`).
@@ -141,9 +202,9 @@ Light sleep must be verified on the device; the simulator cannot test it (it onl
 
 `firmware/sdkconfig.defaults` holds only shared configuration that does not depend on the board. Everything that belongs to a particular board goes in the board directory:
 
-- `boards/<board>/partitions.csv`: the board's partition table, and the only copy of it.
+- `boards/common/partitions/<flash size>.csv` (`16mb.csv`, `32mb.csv`): the partition tables shared by every board with that flash size. A shipped table is frozen, because devices in the field hold data at those offsets: a layout change is a new file (for example `16mb-v2.csv`), never an edit. A board with special needs keeps its own `boards/<board>/partitions.csv` instead.
 - `boards/<board>/sdkconfig.defaults.board`: flash size, mode and frequency, PSRAM, the console, and
-  `CONFIG_PARTITION_TABLE_CUSTOM=y` and `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/<board>/partitions.csv"` (ESP-IDF resolves relative paths against the project directory `firmware/`). `idf.py bmgr -b <board>` merges it into the generated `board_manager.defaults`, which takes priority over `firmware/sdkconfig.defaults`.
+  `CONFIG_PARTITION_TABLE_CUSTOM=y` and `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../boards/common/partitions/<flash size>.csv"` (ESP-IDF resolves relative paths against the project directory `firmware/`). `idf.py bmgr -b <board>` merges it into the generated `board_manager.defaults`, which takes priority over `firmware/sdkconfig.defaults`.
 
 sdkconfig defaults take effect only when `firmware/sdkconfig` does not exist. After changing `sdkconfig.defaults.board`, delete `firmware/sdkconfig` first, then run `idf.py bmgr` and `idf.py build`. When `idf.py bmgr -b` names a different board from the last run, bmgr itself deletes `firmware/sdkconfig` (backing it up as `components/gen_bmgr_codes/sdkconfig.bmgr_board.old`, overwritten by the next switch) and `firmware/build/CMakeCache.txt`, so local menuconfig changes there are lost; keep settings you need in the defaults files, or use a per-board build directory ("Building several boards" below).
 
@@ -160,7 +221,7 @@ The code looks up partitions only by **partition name**; it does not depend on o
 | `fonts` | Optional (large vector text) | The vector font image used for text at 20 px and above (vector font spec 3.2–3.4). Without this partition, large text falls back to the 16 px bitmap font and `UiRuntime::start()` still succeeds. Do not add it on a board without PSRAM: the glyph cache lives in PSRAM, and without PSRAM that memory would squeeze internal RAM |
 | `glyphs` | Optional (16 px body-text bitmap font, glyph partition spec) | The bitmap font image used for body text, kept out of the app image. Without this partition, the firmware has no packaged bitmap body text and falls back to vector 16 px, and failing that only the Montserrat placeholder remains (glyph partition spec 4.3). Like `fonts`, it is read through a mapping, and `UiRuntime::start()` still succeeds |
 
-There is no separate `assets` partition: the web asset pack (WispPack, ≤ 256 KiB) is linked into the app image (see "Firmware and partitions" below). Each board decides its own partition sizes; for example, a 32 MB board can give the extra space to `storage`. On flash larger than 16 MB, everything read through the cache (the app slots and the mapped `fonts`/`glyphs` partitions) must lie entirely below 16 MB: the bootloader and cache address only the first 16 MB unless the experimental `CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH` is on, which Wisp does not use. `storage` (LittleFS, never mapped) can sit above 16 MB, provided ESP-IDF's driver for that flash part reports 32-bit address support (`SPI_FLASH_CHIP_CAP_32MB_SUPPORT` in `spi_flash_chip_<vendor>.c`; otherwise it warns at boot and caps the flash at 16 MB). See `boards/waveshare_esp32_s3_touch_amoled_1_75c/partitions.csv`. For the reference board's partition table, see `boards/waveshare_esp32_s3_touch_amoled_2_16/partitions.csv` and `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`.
+There is no separate `assets` partition: the web asset pack (WispPack, ≤ 256 KiB) is linked into the app image (see "Firmware and partitions" below). Each flash size has its own table; for example, the 32 MB table gives the extra space to `storage`. On flash larger than 16 MB, everything read through the cache (the app slots and the mapped `fonts`/`glyphs` partitions) must lie entirely below 16 MB: the bootloader and cache address only the first 16 MB unless the experimental `CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH` is on, which Wisp does not use. `storage` (LittleFS, never mapped) can sit above 16 MB, provided ESP-IDF's driver for that flash part reports 32-bit address support (`SPI_FLASH_CHIP_CAP_32MB_SUPPORT` in `spi_flash_chip_<vendor>.c`; otherwise it warns at boot and caps the flash at 16 MB). See `boards/common/partitions/32mb.csv`. For the reference board's partition table, see `boards/common/partitions/16mb.csv` and `docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`.
 
 **Rules for changing the partition table**: when you change the partition table of a board that has already shipped, keep `nvs` and `storage` at their original offsets and sizes, so that settings and data survive. The partition table and the bootloader are outside OTA; a web upload replaces only the app image. So after changing the partition table (or enabling rollback for the first time, or changing the bootloader), you must do one full flash over USB (`idf.py flash`, which writes the bootloader, the partition table, `otadata` and `ota_0`) before web uploads work. Shrinking `storage` (for example to make room for a new `fonts` partition) also counts as changing the partition table: the LittleFS superblock records the block count, so once the partition size changes the mount fails, `format_if_mount_failed` reformats it, and all data in `/int` (installed scenes, scene data, files) is erased. Such a change must be announced to the user in advance; it must not be treated silently as an ordinary "grow a partition".
 
@@ -229,13 +290,26 @@ No chip name appears in the portable layers. Things that vary by chip are concen
 | SIMD / 2D rendering acceleration | `wisp_port_esp/lv_blend/<chip>/`, selected by `IDF_TARGET` in `firmware/CMakeLists.txt` and `components/wisp_port_esp/CMakeLists.txt` (see "Rendering acceleration is chosen per chip" above); chips without a matching directory take LVGL's C path |
 | Task stacks in internal RAM or PSRAM | Tasks only declare `flash_access` and `hot_stack` (AGENTS.md section 5); the ESP port's `wisp/port/esp/stack_placement.hpp` decides by target. Currently every target follows "PSRAM is possible only when both are false", i.e. for tasks that neither access flash nor are on a hot path |
 | Whether DMA can read PSRAM directly | The board declares it through the Display caps `draw_buf_mem` (see the capability field table above); on chips where `SOC_PSRAM_DMA_CAPABLE` is false, `Mem::DmaLarge` always fails to allocate and the UI falls back to internal DMA RAM |
-| Instruction cache size | `firmware/sdkconfig.defaults` sets `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB` (the option names carry the chip, so another chip needs its own line). Code runs from flash, and the cache size sets the rendering speed: 16 KB → 32 KB took the diagnostics scroll from about 12.5 to 22 fps on both reference boards, for 16 KB of internal RAM (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`, "Code from flash") |
-| Executing code from PSRAM (XIP) | Board-level sdkconfig: `CONFIG_SPIRAM_XIP_FROM_PSRAM` in `boards/<board>/sdkconfig.defaults.board`. No board enables it now: with the 32 KB instruction cache it adds about 3 fps but costs a PSRAM copy of the image (~3.5 MB). Without XIP, still enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` when the flash supports it: otherwise ESP-IDF turns the cache off for every erase/write and the UI nearly stops during an OTA upload It does not relax the stack rules. With XIP on, you must also enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` and confirm that the flash supports suspend: the `fonts`/`glyphs` partitions, the final OTA verification and otadata are all read through run-time mappings ("Font partitions" above) |
+| Instruction cache size and CPU frequency | `firmware/sdkconfig.defaults.<target>` (`sdkconfig.defaults.esp32s3` today; ESP-IDF reads it right after `sdkconfig.defaults` for that target, also with an explicit `SDKCONFIG_DEFAULTS`). It sets `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB` and the 240 MHz default (the option names carry the chip, so another chip needs its own file). Code runs from flash, and the cache size sets the rendering speed: 16 KB → 32 KB took the diagnostics scroll from about 12.5 to 22 fps on both reference boards, for 16 KB of internal RAM (`docs/hardware/waveshare_esp32_s3_touch_amoled_2_16.md`, "Code from flash") |
+| Executing code from PSRAM (XIP) | Board-level sdkconfig: `CONFIG_SPIRAM_XIP_FROM_PSRAM` in `boards/<board>/sdkconfig.defaults.board`. No board enables it now: with the 32 KB instruction cache it adds about 3 fps but costs a PSRAM copy of the image (~3.5 MB). Without XIP, still enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` when the flash supports it: otherwise ESP-IDF turns the cache off for every erase/write and the UI nearly stops during an OTA upload. It does not relax the stack rules. With XIP on, you must also enable `CONFIG_SPI_FLASH_AUTO_SUSPEND` and confirm that the flash supports suspend: the `fonts`/`glyphs` partitions, the final OTA verification and otadata are all read through run-time mappings ("Font partitions" above) |
+| DFS minimum frequency, Wi-Fi model string | One row per target in `kTargetFacts` (`wisp/port/esp/target_facts.hpp`); `target.hpp` fails the build with a hint when the target has no row |
+| Wi-Fi bands | `net.wifi` always reports 2.4 GHz and adds 5 GHz when `SOC_WIFI_SUPPORT_5G` is set in `soc/soc_caps.h`; boards pass nothing |
 | Minimum ESP-IDF version | One range for the whole project, in `idf:` of `firmware/main/idf_component.yml` (currently `>=6.0.3,<6.1`); a chip that needs a newer IDF must first get this range and `dependencies.lock` upgraded on their own |
 | JPEG decoding | esp_new_jpeg links the matching precompiled library by `IDF_TARGET` (1.0.2 provides esp32, esp32s2, esp32s3, esp32p4, esp32c2/c3/c5/c6/c61, esp32h4, esp32s31); `firmware/main/esp_new_jpeg.lf` moves the assembly it places in IRAM to flash for all of them. A chip with JPEG hardware can switch to a hardware decoder in `wisp_port_esp/ui/`, behind the same `install_image_decoders()` interface |
 | Internal SRAM budget | Measured on each board with the `mem` command and recorded in `docs/hardware/<board>.md`; the budget minimums are in `wisp/app/ram_budget.hpp` (AGENTS.md section 5) |
 
+**What a new target touches** (device-model spec 8.5); nothing else, since no portable file names a chip:
+
+1. `firmware/sdkconfig.defaults.<target>`: its cache size, CPU frequency and any other option whose name carries the chip.
+2. `components/wisp_port_esp/lv_blend/<target>/`: optional; without it LVGL's C path renders.
+3. `components/wisp_port_esp/include/wisp/port/esp/stack_placement.hpp`: only if the target's flash/PSRAM rules for task stacks differ.
+4. `components/wisp_port_esp/include/wisp/port/esp/target_facts.hpp`: a `kTargetFacts` row (DFS minimum, Wi-Fi model string); the build fails without one.
+5. The ESP-IDF range in `firmware/main/idf_component.yml`, when the target needs a newer IDF: a separate, project-wide change with `dependencies.lock`.
+6. This section.
+
 **Planned target: ESP32-S31** (not verified; to be checked once hardware is available). What is known: RISC-V cores (the SIMD routines in `lv_blend/esp32s3/` cannot be used; they need rewriting, or the C path first); flash and PSRAM are on separate buses, with PSRAM as 250 MHz octal DDR; it has PPA, 2D-DMA and JPEG codec hardware; it needs ESP-IDF ≥ 6.1, beyond the currently pinned range. When executing from PSRAM with XIP, flash operations no longer stop the cache, but the ESP-IDF documentation still says external RAM cannot be accessed while the cache is disabled and task stacks default to internal RAM, so the stack placement policy stays as it is until measured.
+
+**Navigation keys**: give `nav_next` and `nav_ok` (and optionally `nav_prev` and `nav_back`) to keys no other role uses; the system UI then works without touch. `nav_next`/`nav_prev` move the focus ring (the first press only shows it on a board with touch), `nav_ok` presses the focused control, `nav_back` goes back (closes a dialog or the panel, leaves a scene, a choice page or a sub-page). `nav_back` alone works; without `nav_next` and `nav_ok` the focus cannot move, and `App` logs a warning at boot. In this version keys answer system dialogs, go back and walk the settings rows; they do not yet move from Home to a sub-page, drive the history and scene list pages, the on-screen keyboard or sliders, and scenes get no key events.
 
 ## Step 4: Build
 
@@ -246,7 +320,7 @@ bash -c '. ~/esp/esp-idf-v6.0.3/export.sh && cd firmware \
     && idf.py build -DWISP_BOARD=<board>'
 ```
 
-The `WISP_BOARD` cache variable of `firmware/CMakeLists.txt` decides which `boards/<name>/board.cpp` is compiled (default `waveshare_esp32_s3_touch_amoled_2_16`); override it with `-DWISP_BOARD=<board>`. As long as the board YAML has not changed, later `idf.py build` runs do not need set-target/bmgr again. For the debug build command, see "Build configurations: release and debug" above.
+The `WISP_BOARD` cache variable of `firmware/CMakeLists.txt` decides which `boards/<name>/board.cpp` is compiled, together with the board kit, and which `boards/<name>/board.cmake` is read for the board's driver components (default `waveshare_esp32_s3_touch_amoled_2_16`); override it with `-DWISP_BOARD=<board>`. As long as the board YAML has not changed, later `idf.py build` runs do not need set-target/bmgr again. For the debug build command, see "Build configurations: release and debug" above.
 
 A board whose bmgr YAML declares no `fs_fat` device (no SD slot) gets no `dev_fs_fat.h`; `wisp_port_esp`'s SD code compiles without it (`CONFIG_ESP_BOARD_DEV_FS_FAT_SUPPORT`), and the board simply never constructs an `EspSdStorage`.
 

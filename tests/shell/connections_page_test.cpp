@@ -20,16 +20,19 @@ TEST(ConnectionsPage, MissingServicesAndBackNavigation) {
     EXPECT_EQ(h.shell().page(), wisp::shell::Page::Settings);
 }
 
+#include <algorithm>
 #include <cstdlib>
 #include <deque>
 #include <fstream>
 #include <mutex>
+#include <vector>
 
 #include "support/fake_wifi.hpp"
 #include "support/temp_dir.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/storage_worker.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/symbols.hpp"
 #include "wisp/ui/theme.hpp"
 
@@ -545,6 +548,28 @@ TEST_F(ConnectionsTest, InfoTouchIsIndependentAndPasswordActionFollowsInput) {
     });
     click(LV_SYMBOL_CLOSE);
     EXPECT_TRUE(wifi->saved_networks().empty());
+}
+
+// A network row and the info button inside it are both reached by the
+// keys (device-model spec 9.1): the row joins, the button opens the details.
+TEST_F(ConnectionsTest, NetworkRowAndItsInfoButtonAreKeyReachable) {
+    boot();
+    open(wisp::shell::ConnectionKind::Wifi);
+    finish();
+    h->on_ui([&] {
+        auto* name = wisp::test::find_label_containing(page()->list(), "Locked");
+        ASSERT_NE(name, nullptr);
+        auto* row = lv_obj_get_parent(lv_obj_get_parent(name));
+        auto* info = wisp::test::find_label_containing(row, WISP_SYMBOL_INFO);
+        ASSERT_NE(info, nullptr);
+        std::vector<lv_obj_t*> reach;
+        wisp::ui::collect_focusable(page()->list(), reach);
+        const auto row_at = std::find(reach.begin(), reach.end(), row);
+        const auto info_at = std::find(reach.begin(), reach.end(), lv_obj_get_parent(info));
+        EXPECT_NE(row_at, reach.end());
+        EXPECT_NE(info_at, reach.end());
+        EXPECT_LT(row_at, info_at);
+    });
 }
 
 TEST_F(ConnectionsTest, ScanKeepsRefreshIconAndPhoneSetupHasGroupSpacing) {

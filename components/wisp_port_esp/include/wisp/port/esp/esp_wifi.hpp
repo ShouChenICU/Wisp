@@ -60,11 +60,11 @@
 namespace wisp::port::esp {
 
 struct EspWifiConfig {
-    // DeviceInfo id/model (board-provided; e.g. "net.wifi", the chip name).
-    std::string id = "net.wifi";
-    std::string model;
-    // The caps "bands" list: what the chip's radio supports.
-    std::vector<std::string> bands = {"2.4GHz"};
+    // DeviceInfo id (board-provided; e.g. "net.wifi"). The model and the
+    // supported bands come from the build target (target.hpp, SOC caps).
+    std::string id;
+    // caps "role"; empty writes none.
+    std::string role;
     // DHCP and mDNS host name (http://wisp.local:8900, spec 6.1).
     std::string hostname = "wisp";
     // The admin backend's port, advertised over mDNS

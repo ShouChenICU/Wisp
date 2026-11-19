@@ -248,7 +248,9 @@ Such a swipe never reaches `on_swipe`.
 
 A swipe down that starts within 8% (38 px) of the top of the visible screen
 (measured from the first visible pixel of the column it starts in) is the
-system's pull-down gesture, at any angle: the touch reaches the scene like
+system's pull-down gesture, at any angle, unless its first 2% (10 px) of
+movement went more sideways than down (then it is a back swipe or a
+sideways drag, however far down it goes after): the touch reaches the scene like
 any other until it has moved 5% (24 px) down, when the system opens its
 pull-down panel and the widget under the finger gets no click
 (`PRESS_LOST`). It never starts while the keyboard, the error panel or a

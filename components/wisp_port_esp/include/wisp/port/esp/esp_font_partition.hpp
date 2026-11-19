@@ -4,7 +4,7 @@
 // 2.3) and glyph_image (glyph-partition spec 4.2): the "fonts" and
 // "glyphs" data partitions, mapped into the data address space so
 // wisp_ui reads the fonts straight from flash. Found by name only; their
-// offsets and sizes live in the board's partitions.csv. The images are
+// offsets and sizes live in the board's partition table. The images are
 // not parsed here: wisp_ui checks them when the UI starts.
 
 #include <cstdint>

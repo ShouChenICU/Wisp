@@ -21,7 +21,7 @@ static const char* TAG = "qmi8658";
  * pdMS_TO_TICKS() converts once, at this macro's expansion site. */
 #define QMI8658_I2C_TIMEOUT_TICKS pdMS_TO_TICKS(20)
 
-/* qmi8658_set_odr()/the HAL's EspImu::set_rate() clamp requested rates to
+/* qmi8658_set_odr()/Qmi8658Imu::set_rate() clamp requested rates to
  * this; see qmi8658_conv.h's ODR table comment for why the nominal code
  * doesn't always mean an exact Hz in this driver's always-6DOF mode. */
 #define QMI8658_MAX_ODR_HZ 1000

@@ -205,7 +205,7 @@ public:
         if (next_error_) {
             return wisp::Result<wisp::hal::ImuSample>::err(*next_error_, next_error_message_);
         }
-        // Mirrors wisp::port::esp::EspImu's real contract (IMU power-down
+        // Mirrors wisp::drivers::Qmi8658Imu's real contract (IMU power-down
         // stopgap): reading while powered off must fail, not return a
         // stale/frozen sample.
         if (!powered_.load()) {

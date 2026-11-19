@@ -226,6 +226,8 @@ A CI grep guard (in `tools/ci.sh`) fails on a literal `"<class>.main"`, `"net.wi
 
 > In the code: the guard is in `tools/check_layering.py` (run by `tools/ci.sh`, comments stripped, with a self-test). It rejects `"<kind>.main"`, `"net.wifi"`, `"button.<name>"`, `"storage.int"` and `"storage.sd"` in the portable components and in `simulator/*.cpp`; ports, boards, drivers and tests may name ids.
 
+> In the code (H2): the ESP devices take `id` and `role` from their configs (`EspDisplayConfig` ... `EspSdStorageConfig`; `EspInternalStorage::create(id, role)` and `EspGpioButton` as arguments), filled from the board kit's `Slot`s, so the port holds no id and the guard now covers `wisp_port_esp` too (plan H2 deviation 9); only the simulator port, boards, drivers and tests may name ids.
+
 ---
 
 ## 3. The generic access path
@@ -439,6 +441,8 @@ An RGB LED would be the same shape: a driver over the port's generic LEDC or RMT
 
 `EspPower`, `EspPmuPowerKey`, `EspClock` and `EspImu` move into their driver components as `drivers/axp2101/wisp/axp2101_power.cpp` (with the power key), `drivers/pcf85063/wisp/pcf85063_clock.cpp`, `drivers/qmi8658/wisp/qmi8658_imu.cpp`, with headers `include/wisp/drivers/<chip>_<role>.hpp` and namespace `wisp::drivers`. Each driver component then `REQUIRES wisp_hal wisp_os` in addition to its IDF dependencies; the dependency points down the layers, so no layering rule changes. The C driver stays usable on its own.
 
+> In the code: each driver also requires `wisp_core` (for `WLOG_*`), and `axp2101` requires `wisp_port_esp` for `kButtonStandbyPollMs` (`wisp/port/esp/button_input.hpp`), the standby read interval its power key shares with `EspGpioButton`; the dependency points from the driver to the port, and `tools/check_layering.py` rejects the reverse (plan H2 deviation 3). The adapter configs default `model` to the chip's name, so boards stop repeating it (deviation 5).
+
 Alternatives considered:
 
 - **A separate component per adapter** (`drivers/axp2101_wisp/`). Rejected: twice the directories for no isolation gain; ESP-IDF's component discovery only scans direct subdirectories of `EXTRA_COMPONENT_DIRS` (`firmware/CMakeLists.txt:26-30`), so a nested adapter component would need extra CMake.
@@ -450,9 +454,13 @@ Everything that is SoC- or IDF-generic: `os`, logging, NVS settings, console, Wi
 
 The `EspAudioIn` channel count becomes configuration (section 11). The Wi-Fi model and bands become target facts in the port (`EspWifi` defaults from `CONFIG_IDF_TARGET` and `SOC_WIFI_SUPPORT_5G`), so boards stop writing `"ESP32-S3"`.
 
+> In the code: no GPIO helpers were added to the port (plan H2 deviation 4): bmgr configures the button inputs from their `gpio` peripherals, and the kit is the only code that holds outputs through light sleep, so that loop stays in `boards/common/board_kit.cpp`. The target facts are `kTargetFacts` in `wisp/port/esp/target_facts.hpp` (DFS minimum, Wi-Fi model); `target.hpp` fails the build for a target without a row, and the 5 GHz band follows `SOC_WIFI_SUPPORT_5G`.
+
 ### 6.3 How a board selects drivers
 
 `boards/<board>/board.cmake` sets `WISP_BOARD_REQUIRES` (for the two current boards: `axp2101 pcf85063 qmi8658`). `firmware/main/CMakeLists.txt` includes it and appends the list to its `REQUIRES` (it compiles `board.cpp` today, `firmware/main/CMakeLists.txt:7-9`). A `.cmake` file in the board directory is not compiled by bmgr's `SRC_DIRS` scan (AGENTS.md section 8 concerns `.c`/`.cpp`).
+
+> In the code: ESP-IDF expands component requirements in a separate CMake run that sees build properties but no cache variables, so `firmware/main` cannot include `boards/${WISP_BOARD}/board.cmake` (`WISP_BOARD` is empty there). `firmware/CMakeLists.txt` includes it before `project()` and publishes the list with `idf_build_set_property(WISP_BOARD_REQUIRES ...)`; `firmware/main/CMakeLists.txt` reads it with `idf_build_get_property()` (plan H2 deviation 1).
 
 ---
 
@@ -521,6 +529,8 @@ void init(const BoardSpec&, core::DeviceRegistry&, core::BootReport&);
 
 Afterwards the 2.16's `board.cpp` is a `BoardSpec` constant plus a `bring_up_chips()` of three calls (PMU, RTC, IMU), about 60 lines; the 1.75C's adds its RTC probe, IMU address probe and power-key fallback, about 120 lines.
 
+> In the code: `boards/common/board_kit.hpp` also offers `make_board(spec)`, the `app::Board` a board's `create_board()` returns. `DisplaySpec` has no draw-buffer fields, since neither board sets them; the first board that needs them adds the fields, which map one to one onto `EspDisplayConfig` (plan H2 deviation 6). `ButtonSpec` carries `model` (default `"gpio-button"`) and an optional `fallback`, a function the board supplies that the kit registers once when the GPIO path is unavailable (the peripheral failed, or the edge service cannot be installed); it replaces the 1.75C's hand-written PMU power-key fallback, and the 1.75C's boot-time GPIO3 warning is dropped, its electrical checks being tracked in its hardware document (deviation 7, owner decision).
+
 ### 7.3 Pins: the YAML is the only source
 
 - **Display reset and CS, touch reset**: read from the bmgr device configs the kit already fetches (`dev_display_lcd_config_t`, `dev_lcd_touch_config_t`; the boards already read fields of both, `2_16/board.cpp:213-224,266-268`). The kit computes the "hold during light sleep" list from them; `kPinDisplayReset/TouchReset/DisplayCs` disappear.
@@ -532,6 +542,8 @@ Afterwards the 2.16's `board.cpp` is a `BoardSpec` constant plus a `bring_up_chi
 To verify first in the plan: the bmgr call that returns a peripheral's config (the boards use only `esp_board_periph_get_handle` and `esp_board_manager_get_device_config` today, `2_16/board.cpp:201-207,288,456`). If bmgr exposes no peripheral config for `gpio`, the fallback is: buttons and the PA pin stay as constants, but only in the `BoardSpec` (one place), and the duplicated hold-list constants still go away because the display and touch pins come from device configs.
 
 Panel facts that bmgr does not carry (model string, shape, measured corner radius, area alignment, DCS sleep) stay in `BoardSpec`: they are Wisp caps, not wiring.
+
+> In the code: the bmgr facts were confirmed on a real run before the move (`esp_board_manager_get_periph_config()` returns a `gpio` peripheral's `periph_gpio_config_t`), so no fallback was needed. Touch `levels` and `flags` (`swap_xy`, `mirror_x`, `mirror_y`) moved into the YAML as well, since the same `setup_device.c` factories overrode them; both touch factories are now plain pass-throughs and `setup_device.c` holds only the panel init tables (plan H2 deviation 8, owner decision; device check: touch follows the finger in all four corners).
 
 ### 7.4 What a board directory contains afterwards
 
@@ -560,6 +572,8 @@ Alternative considered: keep one copy per board. Rejected only mildly: it works,
 Owner's ruling at approval: PSRAM of at least 8 MB is a requirement of every supported board. No fallback is designed: `Mem::Large` keeps mapping to `MALLOC_CAP_SPIRAM` (`os_esp.cpp:97-98`) and the Lua allocator keeps using `Mem::Large` only (`vm.cpp:666,879,889`).
 
 At boot the ESP platform reads the PSRAM size it found (`heap_caps_get_total_size(MALLOC_CAP_SPIRAM)`). With less than 8 MB, or none, `App` records the boot-report note `"psram": "<N>MB"` (`"none"` without PSRAM) and logs one `WLOG_E`; with 8 MB or more there is no note. The device then keeps booting, so the serial log and the boot report stay readable; nothing else is promised to work, and the build does not try to work around it.
+
+> In the code: the size is `esp_psram_get_size()`, the detected chip size (0 when PSRAM did not initialise), passed to `App` as `Platform::psram_bytes` (-1, unmeasured, in the simulator). `heap_caps_get_total_size(MALLOC_CAP_SPIRAM)` is the PSRAM heap, about 5 MB on an 8 MB board, so it would have flagged both boards (plan H2 deviation 2). N is the size in whole MiB, truncated; the threshold is `kMinPsramBytes` in `wisp/app/ram_budget.hpp`.
 
 `docs/porting-guide.md` ("Scene runtime") states the requirement instead of its wrong claim that the Lua heap falls back.
 
@@ -596,11 +610,26 @@ Scope in this phase, system UI only:
 
 Not in scope: focus order on every shell page (phase M's `PageStack` owns pages), scene key input (phase I's `wisp.input.on("key")`), the on-screen keyboard.
 
+> In the code (how H3 differs from the wording above):
+>
+> 1. The focus group is not LVGL's default group. With `lv_group_set_default()` LVGL adds every button, switch and textarea of every screen to it when created, and `lv_group_focus_next()` does not skip objects on screens that are not loaded. `UiRuntime` creates one group for the keypad only, and `SystemLayer` fills it with what is in front (the focus scope), rebuilding it when that changes.
+> 2. Any nav role creates the keypad. `nav_prev` and `nav_back` are optional; `nav_next` and `nav_ok` are needed to move focus and to answer (the group wraps, so `nav_next` alone reaches every item). `nav_back` alone works, since it needs no focus. `App` logs a warning at boot when a nav key exists without `nav_next` or `nav_ok`. The keypad indev is created before the pointer, so the pointer stays first in `lv_indev_get_next(nullptr)` (LVGL inserts at the list head).
+> 3. The ring of 8 takes one key at a time: LVGL's keypad handles one key, and a second key's press would count as the first one still pressing. A press is accepted only while no nav key is down and two slots are free (the press and its release), so a release always fits; the release of a key that is not down is ignored.
+> 4. Keys are refused while the UI is paused. Any button already wakes the screen; without this the waking press would also act on whatever is focused after the resume. After a pause, the keypad's LVGL state (including `keypad.last_state`) is reset on the next keypad read, not in the resume branch, so a key held across standby neither clicks nor repeats.
+> 5. On a board with touch the first key only shows the focus. LVGL sets `LV_STATE_FOCUS_KEY` only when the focusing input device is a keypad, and a focus set in code is attributed to the pointer when there is one. Whenever the focused object lacks `LV_STATE_FOCUS_KEY`, a Next/Prev/OK press only adds it (no move, no click). On a keys-only board a focus set in code is already shown. Code sets a focus only on a dialog's safe answer and the error card's Back when they open, and gives back a screen focus a key had shown when the piece over it closes; anything else (the screen, the panel) is focused only by a key, because focusing scrolls a list to the object and tells it (a textarea brings up the keyboard, a scene hears it). So a screen reached by touch stays unfocused, and keeps its scroll position, when a dialog, the error card or the panel over it closes; the next key focuses the first enabled object and only shows it.
+> 6. `nav_back` acts on the press and does, first that applies: answers an open confirm dialog "no"; the error card's Back; hides the keyboard; closes the panel; calls the back handler (scene or diagnostics); otherwise `Shell::back()` (Wi-Fi password form or detail, choice page, sub-page to Home). On the home screen it does nothing. The back gesture alone would not cover shell pages, which go back by page drags.
+> 7. Settings rows are plain clickable objects, not LVGL widget classes, so `shell::detail::make_list_row()` (`page_frame.cpp`) marks them `ui::kKeyFocusable` (`ui::make_key_focusable()`), and `collect_focusable()` descends into such rows so a control inside one (a network row's info button) stays reachable. Key focus brings the focused object's whole row into `hal::row_span()` (`ui::show_focus`, `kFocusRow` on list rows and row boxes); focusing the group's first or last object scrolls the list to its top or bottom, so the ends stay fully visible. A key held while focus moves (a dialog opens or closes by code) is dropped with `lv_indev_wait_release`: it acts on neither object. Other shell pages stay with phase M's `PageStack`.
+> 8. The focus scope is the active screen, whatever it is, so the widgets of a scene in front are reachable like any other; scenes get no key events (phase I).
+>
+> The simulator has the keys with `--nav-keys` (Page Up = prev, Page Down or Tab = next, Return or keypad Enter = OK, Escape or Backspace = back).
+
 **Encoder**: deferred. No current board has one. When one does, it gets a typed interface `hal::Encoder` (`read_delta()`, `pressed()`) and an LVGL encoder input device on the same group; the design above does not change.
 
 ### 9.2 Pixel format
 
 `Display` caps gain `pixel_format` (`"rgb565"`; absent means `rgb565`, so current boards need no change). `rgb565_be` keeps its meaning. `UiRuntime::start()` fails with `Unsupported` for any other format; `App` then takes the existing headless path (`app.cpp:367-371`) and records the note `"display": "unsupported_pixel_format"`. `lv_conf.h` keeps `LV_COLOR_DEPTH 16`.
+
+> In the code: a `pixel_format` that is present but is not the string `"rgb565"` (another string, a number) is unsupported; absent is `rgb565`. The boot report keeps `"mode": "headless"` beside `"display": "unsupported_pixel_format"`.
 
 What an e-paper or monochrome panel would still need (out of scope): an LVGL colour depth or a conversion in `flush()` to 1/2/4-bit; a full-refresh render mode (the reserved `render_mode: "full"`, `docs/porting-guide.md` capability table); refresh pacing and ghosting control (partial versus full updates); a theme without animations or grey levels; standby semantics for a panel that keeps its image unpowered; separate `WISP_PERF` baselines.
 
@@ -660,6 +689,8 @@ Delivers: no fixed ids in portable code; generic devices usable by the agent and
 7. Porting guide: support matrix, new board steps, actuator guideline.
 Delivers: a third S3 board is a `BoardSpec`; the port is board-independent; the S31 port has defined places to go.
 
+> In the code: H2 is done (plan `docs/superpowers/plans/2026-11-18-device-model-2-board-kit.md`, which records its deviations): drivers carry their adapters, both boards are `BoardSpec`s on the board kit with pins only in the YAML, S3 options are in `firmware/sdkconfig.defaults.esp32s3`, the target facts in `target_facts.hpp`, the partition tables shared by flash size, the boot report records a PSRAM below 8 MB, and `AudioIn` declares `channels`. The device checks of section 14.4 are the owner's to run (`docs/backlog.md`). Step 7's actuator guideline already matched section 3.5 from H1.
+
 **Plan H3: keypad input for system UI and the pixel-format cap** (host-testable, plus device checks). Depends on H1 only; can run in parallel with H2.
 1. `pixel_format` caps and check.
 2. Keypad input device, `push_key()`, default group, dialogs, back; simulator keys for the nav roles.
@@ -710,6 +741,8 @@ On both boards, after H2:
 9. 1.75C: RTC still reported `missing`, IMU orientation unchanged, power key on GPIO3.
 
 After H3, on a board with keys (or the 2.16 with nav roles assigned to its volume keys for the test): dialogs answerable by keys; back works.
+
+> In the code: no board change is committed for this. The nav-role assignment on the 2.16's volume keys is a local, uncommitted patch to `boards/waveshare_esp32_s3_touch_amoled_2_16/board.cpp` for the check, so H2 (which moves ids and roles into `BoardSpec`) has nothing to merge. A nav key pressed in deep standby is expected to wake the device; that depends on `ButtonService`'s standby polling reporting nav keys.
 
 ---
 

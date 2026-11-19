@@ -473,6 +473,15 @@ void ConversationController::on_agent(const agent::AgentEvent& e) {
                 view_.end_note.assign(e.note);
                 break;
             }
+            case Kind::Cleared:
+                // The conversation the view came from is archived or
+                // deleted: Home starts empty, as after boot. Not while a
+                // turn runs or a voice text waits (a rollover archives
+                // before its TurnBegin), and not when nothing changed.
+                if (!e.ok || turn_running_ || submitted_) return;
+                view_ = TurnView{};
+                tool_step_ = 0;
+                break;
             default:
                 return;
         }

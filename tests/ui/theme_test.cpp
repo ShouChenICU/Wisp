@@ -13,6 +13,7 @@
 #include "support/fake_devices.hpp"
 #include "support/lvgl_probe.hpp"
 #include "support/wait.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/lv_heap.hpp"
 #include "wisp/ui/theme_tokens.hpp"
 #include "wisp/ui/ui_runtime.hpp"
@@ -143,8 +144,9 @@ class ThemeTest : public ::testing::Test {
 protected:
     void SetUp() override { start(); }
 
-    void start() {
+    void start(const char* panel = "amoled") {
         display = std::make_shared<FakeDisplay>("display.main", 480, 480);
+        display->set_cap("panel", wisp::Value(panel));
         ui = std::make_unique<wisp::ui::UiRuntime>(display, nullptr);
         ASSERT_TRUE(ui->start());
     }
@@ -427,6 +429,71 @@ TEST_F(ThemeTest, KeyboardUsesTheSurfaces) {
         EXPECT_EQ(bg(kb, LV_PART_ITEMS), theme::kSurface3);
         EXPECT_EQ(fg(kb, LV_PART_ITEMS), theme::kText);
         lv_obj_delete(kb);
+    });
+}
+
+// What LVGL sets on an object a keypad focuses.
+constexpr auto kKeyFocus = static_cast<lv_state_t>(LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+
+// A widget focused by a key gets an accent ring just outside its edge,
+// drawn by the theme for every widget class a key can reach; nothing
+// without the key focus.
+TEST_F(ThemeTest, KeyFocusRingOnButtons) {
+    on_ui([&] {
+        lv_obj_t* scr = lv_screen_active();
+        lv_obj_t* box = lv_msgbox_create(nullptr);
+        lv_obj_t* footer_btn = lv_msgbox_add_footer_button(box, "OK");
+        lv_obj_t* widgets[] = {lv_button_create(scr),   footer_btn,
+                               lv_switch_create(scr),   lv_slider_create(scr),
+                               lv_checkbox_create(scr), lv_dropdown_create(scr),
+                               lv_roller_create(scr),   lv_textarea_create(scr)};
+        for (lv_obj_t* w : widgets) {
+            SCOPED_TRACE(lv_obj_get_class(w)->name);
+            EXPECT_EQ(lv_obj_get_style_outline_width(w, LV_PART_MAIN), 0);
+            lv_obj_add_state(w, kKeyFocus);
+            EXPECT_EQ(lv_obj_get_style_outline_width(w, LV_PART_MAIN), 2);
+            EXPECT_EQ(lv_obj_get_style_outline_pad(w, LV_PART_MAIN), 2);
+            EXPECT_EQ(rgb_of(lv_obj_get_style_outline_color(w, LV_PART_MAIN)),
+                      theme::kAccentStrong);
+            EXPECT_EQ(lv_obj_get_style_outline_opa(w, LV_PART_MAIN), LV_OPA_COVER);
+            lv_obj_remove_state(w, kKeyFocus);
+            EXPECT_EQ(lv_obj_get_style_outline_width(w, LV_PART_MAIN), 0);
+        }
+        lv_msgbox_close(box);
+        for (lv_obj_t* w : widgets) {
+            if (w != footer_btn) lv_obj_delete(w);
+        }
+    });
+}
+
+// A row made key focusable fills with the raised surface while focused by
+// a key; a two-tone panel, which cannot show that fill, outlines it.
+TEST_F(ThemeTest, KeyFocusableRowFillsOnFocus) {
+    on_ui([&] {
+        lv_obj_t* row = lv_obj_create(lv_screen_active());
+        wisp::ui::make_key_focusable(row);
+        EXPECT_TRUE(lv_obj_has_flag(row, wisp::ui::kKeyFocusable));
+        EXPECT_TRUE(wisp::ui::key_focusable(row));
+        EXPECT_EQ(bg(row), theme::kSurface);
+        lv_obj_add_state(row, kKeyFocus);
+        EXPECT_EQ(bg(row), theme::kSurface3);
+        EXPECT_EQ(lv_obj_get_style_bg_opa(row, LV_PART_MAIN), LV_OPA_COVER);
+        EXPECT_EQ(lv_obj_get_style_radius(row, LV_PART_MAIN), theme::kRadius);
+        lv_obj_delete(row);
+    });
+    ui->stop();
+    ui.reset();
+    start("mono");
+    on_ui([&] {
+        lv_obj_t* row = lv_obj_create(lv_screen_active());
+        wisp::ui::make_key_focusable(row);
+        EXPECT_TRUE(lv_obj_has_flag(row, wisp::ui::kKeyFocusable));
+        const uint32_t fill = bg(row);
+        lv_obj_add_state(row, kKeyFocus);
+        EXPECT_EQ(bg(row), fill);
+        EXPECT_EQ(lv_obj_get_style_border_width(row, LV_PART_MAIN), 2);
+        EXPECT_EQ(rgb_of(lv_obj_get_style_border_color(row, LV_PART_MAIN)), theme::kText);
+        lv_obj_delete(row);
     });
 }
 

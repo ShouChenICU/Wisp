@@ -222,6 +222,54 @@ TEST_F(SimBoard, VolDownIsTheTalkKey) {
               std::optional<std::string>("button.vol_down"));
 }
 
+TEST_F(SimBoard, NoNavButtonsByDefault) {
+    EXPECT_EQ(registry_->list<wisp::hal::Button>().size(), 3u);
+    for (const char* role : {wisp::hal::role::kNavPrev, wisp::hal::role::kNavNext,
+                             wisp::hal::role::kNavOk, wisp::hal::role::kNavBack}) {
+        EXPECT_EQ(registry_->by_role<wisp::hal::Button>(role), nullptr) << role;
+    }
+}
+
+TEST(SimBoardNav, NavKeysAreButtonsWithNavRoles) {
+    SDL_SetHint(SDL_HINT_AUDIODRIVER, "dummy");
+    ASSERT_EQ(SDL_Init(SDL_INIT_AUDIO), 0) << SDL_GetError();
+    {
+        auto input = std::make_shared<wisp::port::sim::SimInput>(true);
+        wisp::port::sim::SimBoardConfig config;
+        config.nav_keys = true;
+        config.data_dir =
+            (std::filesystem::temp_directory_path() / "wisp_sim_board_nav_test").string();
+        wisp::port::sim::SimBoard board(config, input, [] {});
+        wisp::core::DeviceRegistry registry;
+        wisp::core::BootReport report;
+        board.init(registry, report);
+        EXPECT_EQ(registry.list<wisp::hal::Button>().size(), 7u);
+        struct Case {
+            const char* role;
+            const char* id;
+            wisp::port::sim::SimButtonKind kind;
+        };
+        const Case cases[] = {
+            {wisp::hal::role::kNavPrev, "button.nav_prev", wisp::port::sim::SimButtonKind::NavPrev},
+            {wisp::hal::role::kNavNext, "button.nav_next", wisp::port::sim::SimButtonKind::NavNext},
+            {wisp::hal::role::kNavOk, "button.nav_ok", wisp::port::sim::SimButtonKind::NavOk},
+            {wisp::hal::role::kNavBack, "button.nav_back", wisp::port::sim::SimButtonKind::NavBack},
+        };
+        for (const auto& c : cases) {
+            auto button = registry.by_role<wisp::hal::Button>(c.role);
+            ASSERT_NE(button, nullptr) << c.role;
+            EXPECT_EQ(button->info().id, c.id);
+            EXPECT_EQ(button->input_mode(), wisp::hal::ButtonInputMode::EdgeEvent);
+            EXPECT_FALSE(button->pressed());
+            input->key_nav(c.kind, true);
+            EXPECT_TRUE(button->pressed()) << c.role;
+            input->key_nav(c.kind, false);
+            EXPECT_FALSE(button->pressed()) << c.role;
+        }
+    }
+    SDL_Quit();
+}
+
 TEST(SimButton, EdgeSourcePreservesActualTransitionsAndTimestamps) {
     using namespace wisp::port::sim;
     auto input = std::make_shared<SimInput>();

@@ -51,6 +51,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 | `--data-dir <dir>` | データディレクトリ（既定は `./sim-data`） |
 | `--web-dir <dir>` | ソースツリーから直接管理画面を配信。編集後はリロードするだけ |
 | `--no-sd` / `--disable <id>` / `--wifi-fail` | SD カードなし、デバイスの故障、ルーターに届かない状態を再現 |
+| `--nav-keys` | キー操作用に 4 つのキーボードボタンを追加: Page Up / Page Down または Tab / Return / Escape または Backspace |
 | `--tap X,Y@MS` / `--swipe X1,Y1,X2,Y2@MS` | 指定時刻にタップ・スワイプ |
 
 </details>
@@ -190,10 +191,10 @@ Wisp は特定のボードに縛られません。ボード固有のものは `b
 
 | 手順 | 内容 |
 | --- | --- |
-| 1. ハードウェアを記述 | esp_board_manager の YAML にボード、バス、ピンを書きます。画面・タッチ・オーディオ・SD カードはここで宣言します |
-| 2. ドライバーを追加 | esp_board_manager が対応していないチップ（IMU、PMU、RTC など）は `drivers/<チップ>/` に C コンポーネントとして書きます |
-| 3. `board.cpp` を書く | 各デバイスを `hal::Device` で包んで `DeviceRegistry` に登録し、役割（role）と、画面の形・セーフエリア・マイクの有無などの能力を caps で宣言します。振動モーターのように対応するサービスがない周辺機器は、自分のプロパティとコマンドを記述すれば、エージェントやシーンから使えます |
-| 4. パーティションと設定 | 規約どおりに `partitions.csv`（OTA、`fonts`、`glyphs`、ストレージ）とボード用の sdkconfig を書きます |
+| 1. ハードウェアを記述 | esp_board_manager の YAML にボード、バス、ピンを書きます。画面・タッチ・オーディオ・SD カード・ボタンはここで宣言し、ピンを書くのはここだけです |
+| 2. ドライバーを追加 | esp_board_manager が対応していないチップ（IMU、PMU、RTC など）は `drivers/<チップ>/` に C コンポーネントとして Wisp アダプターと一緒に書き、ボードが使うドライバーを `board.cmake` に列挙します |
+| 3. `board.cpp` を書く | ボードを `BoardSpec` で記述します。ボードキット（`boards/common/`）が各デバイスを `hal::Device` で包んで `DeviceRegistry` に登録し、spec は各デバイスの id と役割（role）、そして画面の形・角の半径・マイクのチャンネルなど caps の元になる事実を与えます。ボード独自のチップ（IMU、PMU、RTC）はそれぞれのドライバーで初期化します。振動モーターのように対応するサービスがない周辺機器は、自分のプロパティとコマンドを記述すれば、エージェントやシーンから使えます |
+| 4. パーティションと設定 | `boards/common/partitions/` からフラッシュ容量に合う共有パーティションテーブルを選び（特別な事情があれば規約どおりにボード専用の `partitions.csv` を書き）、ボード用の sdkconfig を書きます |
 | 5. ビルドと検証 | `-DWISP_BOARD=<ボード名>` でビルドし、起動レポート・デバイス一覧・診断画面を一項目ずつ確認します |
 
 > [!TIP]

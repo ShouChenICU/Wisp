@@ -503,10 +503,11 @@ def strip_comments_keep_strings(text):
 
 
 def check_device_id_literals(root, errors):
-    """Portable code (every wisp_* component but the two ports) and the
+    """Portable code (every wisp_* component but the two ports), the ESP
+    port (its devices take their ids from configs the board fills) and the
     simulator's own sources find devices by role, never by id literal."""
     paths = []
-    for component in COMPONENTS:
+    for component in (*COMPONENTS, "wisp_port_esp"):
         paths.extend(iter_source_files(root, component))
     sim_dir = root / "simulator"
     if sim_dir.is_dir():
@@ -519,6 +520,28 @@ def check_device_id_literals(root, errors):
                     f"{path}:{lineno}: device id literal {match.group(0)}: "
                     "look the device up by role (AGENTS.md section 3)"
                 )
+
+
+def check_port_requires_no_drivers(root, errors):
+    """A chip's Wisp adapter lives in its driver component and the board
+    names its drivers (boards/<board>/board.cmake), so the ESP port stays
+    free of every chip: it may require no component under drivers/."""
+    path = root / "components" / "wisp_port_esp" / "CMakeLists.txt"
+    drivers_dir = root / "drivers"
+    if not path.is_file() or not drivers_dir.is_dir():
+        return
+    args_text = _extract_wisp_component_call(
+        strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+    )
+    if args_text is None:
+        return
+    lists = _parse_keyword_lists(args_text, CMAKE_LIST_KEYWORDS)
+    for name in lists["REQUIRES"] + lists["IDF_REQUIRES"]:
+        if (drivers_dir / name).is_dir():
+            errors.append(
+                f"{path}: wisp_port_esp must not require the chip driver {name} "
+                "(AGENTS.md section 3)"
+            )
 
 
 def run(root):
@@ -537,6 +560,7 @@ def run(root):
         check_flash_api(root, path, errors)
         check_flash_access_true(root, path, errors)
     check_device_id_literals(root, errors)
+    check_port_requires_no_drivers(root, errors)
     return errors
 
 
