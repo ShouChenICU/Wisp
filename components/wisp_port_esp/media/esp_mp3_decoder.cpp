@@ -53,9 +53,13 @@ public:
         }
         esp_audio_simple_dec_cfg_t cfg = {};
         cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
-        if (esp_audio_simple_dec_open(&cfg, &handle_) != ESP_AUDIO_ERR_OK) {
+        if (const esp_audio_err_t ret = esp_audio_simple_dec_open(&cfg, &handle_);
+            ret != ESP_AUDIO_ERR_OK) {
             handle_ = nullptr;
-            return Result<media::StreamInfo>::err(ErrorCode::NoMemory, "MP3 decoder");
+            const ErrorCode code = ret == ESP_AUDIO_ERR_MEM_LACK      ? ErrorCode::NoMemory
+                                   : ret == ESP_AUDIO_ERR_NOT_SUPPORT ? ErrorCode::Unsupported
+                                                                      : ErrorCode::DeviceFailure;
+            return Result<media::StreamInfo>::err(code, "MP3 decoder");
         }
         // The ID3v2 tag may be far larger than the window (cover art), so
         // only its header is read and the tag itself skipped.
@@ -141,10 +145,9 @@ private:
     // the parser holds of the old position.
     Result<void> restart(uint64_t offset) {
         WISP_TRY(src_->seek(offset));
-        if (esp_audio_simple_dec_reset(handle_) != ESP_AUDIO_ERR_OK) {
-            return Result<void>::err(ErrorCode::DeviceFailure, "MP3 decoder reset");
-        }
+        WISP_TRY(reset_codec());
         base_ = offset;
+        last_frame_at_ = offset;
         drop_before_ = 0;
         in_pos_ = in_len_ = 0;
         eof_ = false;
@@ -172,19 +175,34 @@ private:
         return Result<void>::ok();
     }
 
-    // Skips input the codec cannot use and starts its parser afresh, so
-    // that damage costs at most the frames it touches.
-    void skip(size_t n) {
-        in_pos_ += std::min(n, in_len_ - in_pos_);
-        esp_audio_simple_dec_reset(handle_);
+    // Starts the codec's parser and decoder afresh, dropping what they hold
+    // (the bit reservoir included).
+    Result<void> reset_codec() {
+        if (esp_audio_simple_dec_reset(handle_) != ESP_AUDIO_ERR_OK) {
+            return Result<void>::err(ErrorCode::DeviceFailure, "MP3 decoder reset");
+        }
+        return Result<void>::ok();
     }
 
     // Decodes the next frame with audio into out_; false at the end.
+    //
+    // The simple decoder documents only OK ("decode success or data fed
+    // into the cached buffer"), INVALID_PARAMETER, BUFF_NOT_ENOUGH and
+    // NOT_SUPPORT for process(); its MP3 parser resyncs on frame headers
+    // itself. So, as with minimp3, a damaged frame is only stepped over:
+    // a reset would drop the bit reservoir and cost the next frames too
+    // (after a seek, the lead-in exists to rebuild it). The codec is reset
+    // only when it has made no frame over a whole window.
     Result<bool> next_frame() {
         for (;;) {
             if (!eof_ && in_len_ - in_pos_ < kWindow / 2) WISP_TRY(refill());
-            if (!decoded_any_ && base_ + in_pos_ - scan_from_ > kCorruptScanBytes) {
+            const uint64_t at = base_ + in_pos_;
+            if (!decoded_any_ && at - scan_from_ > kCorruptScanBytes) {
                 return Result<bool>::err(ErrorCode::Corrupt, "no decodable MP3 frame");
+            }
+            if (at - last_frame_at_ > kWindow) {
+                WISP_TRY(reset_codec());
+                last_frame_at_ = at;
             }
             const size_t avail = in_len_ - in_pos_;
             if (avail == 0) return Result<bool>::ok(false);
@@ -209,25 +227,37 @@ private:
                 return Result<bool>::err(ErrorCode::NoMemory, "MP3 decoder");
             }
             if (ret != ESP_AUDIO_ERR_OK && ret != ESP_AUDIO_ERR_DATA_LACK) {
-                // A damaged frame: skip what the parser took, at least a
-                // byte, and resync on the next header.
-                skip(std::max<size_t>(raw.consumed, 1));
+                // A damaged frame: step past what the parser took, at least
+                // a byte, and let it resync on the next header.
+                in_pos_ += std::min(std::max<size_t>(raw.consumed, 1), avail);
                 continue;
             }
-            const size_t used = ret == ESP_AUDIO_ERR_OK ? std::min<size_t>(raw.consumed, avail) : 0;
+            const size_t used = std::min<size_t>(raw.consumed, avail);
             in_pos_ += used;
             if (ret != ESP_AUDIO_ERR_OK || frame.decoded_size == 0) {
                 if (used > 0) continue;
-                // The parser wants more than the window holds: at the end
-                // that is a cut-off frame or trailing junk; before it, the
-                // window holds no frame, but its tail may start one.
+                // No progress: the parser wants more input than it was
+                // given. At the end that is a cut-off frame or trailing
+                // junk. Before it, more input is read; only a full window
+                // the parser cannot use is dropped, keeping the tail, which
+                // may start a frame.
                 if (eof_) return Result<bool>::ok(false);
-                skip(avail > kKeepTail ? avail - kKeepTail : avail);
+                if (in_pos_ > 0) {
+                    WISP_TRY(refill());
+                } else {
+                    in_pos_ = avail > kKeepTail ? avail - kKeepTail : avail;
+                }
                 continue;
             }
+            last_frame_at_ = base_ + in_pos_;
             esp_audio_simple_dec_info_t fi = {};
             if (esp_audio_simple_dec_get_info(handle_, &fi) != ESP_AUDIO_ERR_OK ||
                 fi.channel == 0 || fi.channel > 2) {
+                if (!warned_info_) {
+                    WLOG_W(kTag, "frame without usable info (%u channels); skipped",
+                           unsigned(fi.channel));
+                    warned_info_ = true;
+                }
                 continue;
             }
             if (fi.bits_per_sample != 16) {
@@ -270,9 +300,10 @@ private:
     os::LargeBuffer out_;  // one decoded frame, interleaved int16
     media::Source* src_ = nullptr;
     media::Mp3Info info_;
-    uint64_t base_ = 0;         // file offset of window_[0]
-    uint64_t drop_before_ = 0;  // frames ending at or before this offset are not output
-    uint64_t scan_from_ = 0;    // where decoding from the start began (corrupt limit)
+    uint64_t base_ = 0;           // file offset of window_[0]
+    uint64_t drop_before_ = 0;    // frames ending at or before this offset are not output
+    uint64_t scan_from_ = 0;      // where decoding from the start began (corrupt limit)
+    uint64_t last_frame_at_ = 0;  // input offset after the last frame (or restart)
     size_t in_pos_ = 0;
     size_t in_len_ = 0;
     bool eof_ = false;
@@ -280,6 +311,7 @@ private:
     size_t pending_at_ = 0;
     uint8_t pending_channels_ = 0;
     bool decoded_any_ = false;
+    bool warned_info_ = false;
 };
 
 }  // namespace
