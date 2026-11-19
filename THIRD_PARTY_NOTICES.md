@@ -853,7 +853,7 @@ license file under `firmware/managed_components/`:
 | `lvgl/lvgl` | 9.5.0 | `firmware/main` (see the LVGL section above) | MIT |
 | `bblanchon/arduinojson` | 7.4.3 | `firmware/main` (see the ArduinoJson section below) | MIT |
 | `espressif/esp_board_manager` | 0.7.5 | `firmware/main` | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, below) |
-| `espressif/esp_boards` | 0.7.2 | esp_board_manager | Espressif Modified MIT License (same text, copyright 2026) |
+| `espressif/esp_boards` | 0.7.2 | `firmware/main` (pinned to keep fresh resolves reproducible), esp_board_manager | Espressif Modified MIT License (same text, copyright 2026) |
 | `espressif/esp_codec_dev` | 2.0.0-beta5 | `firmware/main` (direct dependency -- esp_board_manager only pulls this in conditionally on a Kconfig option that doesn't exist yet on a from-scratch configure, the same bootstrap issue esp_lcd_touch/esp_lcd_co5300 below also avoid by depending on it directly; used directly by `wisp::port::esp::EspAudioOut`/`EspAudioIn`, `components/wisp_port_esp/dev/esp_audio.cpp`) | Espressif Modified MIT License (same text, copyright 2023-2026) |
 | `espressif/esp_lcd_co5300` | 2.2.0 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |
 | `espressif/esp_lcd_touch` | 1.2.1 | `firmware/main`, gen_bmgr_codes | Apache-2.0 |

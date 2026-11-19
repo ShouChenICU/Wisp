@@ -36,6 +36,9 @@ dependencies:
   # usb_host_uac accepts a USB version range. Pin it here so the initial
   # configure, before bmgr generates its manifest, cannot upgrade the lock.
   espressif/usb: "1.6.0"
+  # esp_board_manager accepts an esp_boards range ("~0.7.1"); a fresh
+  # resolve (CI) would take the newest release and rewrite the lock.
+  espressif/esp_boards: "0.7.2"
   # mDNS responder for wisp.local (wisp::port::esp::EspWifi,
   # components/wisp_port_esp/net/esp_wifi.cpp; connectivity spec 2.1).
   # Pinned to an exact release (THIRD_PARTY_NOTICES.md).
