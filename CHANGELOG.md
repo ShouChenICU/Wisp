@@ -2,6 +2,13 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## 0.7.1 — 2026-11-19
+
+### Fixes
+
+- Firmware CI no longer fails on a changed `dependencies.lock`: every registry component the lock holds, transitive ones included, is pinned in `firmware/main/idf_component.yml`, so a fresh resolve cannot pick a newer release (esp_boards 0.7.3 had broken the 0.6.0 and 0.7.0 runs).
+- `tools/ci.sh` runs `tools/check_deps.py`, which fails offline when a locked component is not pinned.
+
 ## 0.7.0 — 2026-11-18
 
 ### Features
