@@ -368,6 +368,22 @@ TEST(AdminScenes, ListShowsBackground) {
     EXPECT_EQ(at(list, "sd_card"), Value(false));
 }
 
+// Media spec 7.2: the list shows each scene's media level next to its
+// hosts ("none" without the permission).
+TEST(AdminScenes, ListShowsMedia) {
+    ScenesFixture fx;
+    Files files = todo_files();
+    files[0].second = R"({"id":"todo","name":"待办","version":"1.0.0","schema_version":1,)"
+                      R"("permissions":{"http":["api.example.com"],"media":"write"}})";
+    ASSERT_TRUE(fx.repo->install(zip_of(files), {}));
+    const Value list = body_json(fx.call(Method::Get, kScenes));
+    EXPECT_EQ(at(at(list, "scenes").as_list()[0], "media"), Value("write"));
+
+    ASSERT_TRUE(fx.repo->install(zip_of(todo_files("1.0.1")), {}));
+    const Value again = body_json(fx.call(Method::Get, kScenes));
+    EXPECT_EQ(at(at(again, "scenes").as_list()[0], "media"), Value("none"));
+}
+
 TEST(AdminScenes, ListWithoutRepositoryIsUnavailable) {
     ScenesFixture fx(ScenesFixture::Options{.with_host = false, .with_repo = false});
     HttpResponse res = fx.call(Method::Get, kScenes);

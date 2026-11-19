@@ -299,6 +299,10 @@ const char* strings_en(StrId id) {
             return "\"{}\" will be able to reach ";
         case StrId::AgentListSep:
             return ", ";
+        case StrId::AgentConfirmMediaRead:
+            return "\"{}\" will be able to read the media library";
+        case StrId::AgentConfirmMediaWrite:
+            return "\"{}\" will be able to read and write the media library";
         case StrId::AgentNoteOpened:
             return "Opened \"{}\"";
         case StrId::AgentNoteClosed:

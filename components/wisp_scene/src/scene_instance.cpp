@@ -49,6 +49,17 @@ int call_hook(lua_State* L) {
     return 0;
 }
 
+// call_media(state): scene.on_media(state) if the scene set it.
+int call_media(lua_State* L) {
+    const auto* state = static_cast<const media::PlayerState*>(lua_touserdata(L, 1));
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kSceneTableKey) != LUA_TTABLE) return 0;
+    lua_pushliteral(L, "on_media");
+    if (lua_rawget(L, -2) != LUA_TFUNCTION) return 0;
+    detail::push_media_state(L, *state);
+    lua_call(L, 1, 0);
+    return 0;
+}
+
 // call_migrate(old): scene.migrate(old) if the scene set one.
 int call_migrate(lua_State* L) {
     const lua_Integer old = lua_tointeger(L, 1);
@@ -302,6 +313,14 @@ std::optional<ScriptError> SceneInstance::sensor(uint32_t id, const core::Sensor
 std::optional<ScriptError> SceneInstance::device(DeviceEvent ev, const DeviceInfo& info) {
     if (!api_.wants(ev)) return std::nullopt;
     return flush(run_device_handlers(*vm_, ev, info));
+}
+
+std::optional<ScriptError> SceneInstance::media(const media::PlayerState& state) {
+    lua_State* L = vm_->L();
+    if (!lua_checkstack(L, 2)) return ScriptError{ScriptFault::Memory, "", 0, "stack overflow"};
+    lua_pushcfunction(L, call_media);
+    lua_pushlightuserdata(L, const_cast<media::PlayerState*>(&state));
+    return flush(vm_->call(1, 0));
 }
 
 std::optional<ScriptError> SceneInstance::eval(std::string_view lua, uint32_t budget_ms,

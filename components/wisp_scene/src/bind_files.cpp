@@ -213,6 +213,8 @@ int push_payload(lua_State* L, const FilesPayload& p) {
         set_int(L, t, "size", static_cast<int64_t>(dl->size));
         lua_pushboolean(L, dl->deferred ? 1 : 0);
         lua_setfield(L, t, "deferred");
+    } else if (const int n = detail::push_media_payload(L, p); n > 0) {
+        return n;
     } else {
         lua_pushnil(L);
     }

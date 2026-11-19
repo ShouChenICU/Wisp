@@ -152,8 +152,9 @@ public:
     // that failed in the background, ...) become system notifications in
     // `notices`. Either may be null; both must outlive the runtime.
     // `supply` and `settings` are SceneRuntimeDeps::supply and ::settings
-    // (null: none). Needs start_storage() to have made a repository;
-    // without one, or without the memory for it, there is no runtime.
+    // (null: none). `media_library` and `media_player` back wisp.media
+    // (SceneRuntimeDeps; null: none) and must outlive the runtime. Needs start_storage() to have
+    // made a repository; without one, or without the memory for it, there is no runtime.
     void build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system, const hal::ScreenShape& shape,
                        std::function<Value()> device_status, std::function<void()> wake,
                        core::WakeLockRegistry* locks = nullptr,
@@ -161,7 +162,9 @@ public:
                        core::SensorService* sensors = nullptr,
                        const core::StateCell<core::PowerSupply>* supply = nullptr,
                        const core::StateCell<core::SettingsSnapshot>* settings = nullptr,
-                       core::DeviceService* devices = nullptr);
+                       core::DeviceService* devices = nullptr,
+                       media::MediaLibrary* media_library = nullptr,
+                       media::MediaPlayer* media_player = nullptr);
     // Starts the proxy and the runtime and follows the power level
     // (PowerManager::level_cell()): Standby and below hide the scene.
     // `power` must outlive stop_runtime(); null (no PowerManager) keeps the

@@ -559,6 +559,8 @@ void append_device_api(std::string& out) {
         "- `permissions.http`: the hosts `wisp.http` may reach, at most 16.\n"
         "- `permissions.device`: the device ids `wisp.device.get` and `wisp.device.call` may "
         "use, at most 8.\n"
+        "- `permissions.media`: `\"read\"` or `\"write\"`, what `wisp.media` may do with the\n"
+        "  media library (see wisp.media); any other value refuses the install.\n"
         "- `background` (default `false`): going back sends the scene to the background\n"
         "  instead of closing it (see Background scenes).\n"
         "- `files` (default `\"auto\"`): where `wisp.files` keeps the scene's files: `\"auto\"`,\n"
@@ -589,7 +591,9 @@ void append_device_api(std::string& out) {
         "- `scene.on_notification(id)`: the user tapped the scene's notification `id`. It is\n"
         "  called once the scene is in front: one in the background comes forward first, and\n"
         "  one that is not running is opened first (`wisp.scene.launch()` is then\n"
-        "  `\"notification\"`).\n";
+        "  `\"notification\"`).\n"
+        "- `scene.on_media(state)`: the music player's state changed (see wisp.media); the\n"
+        "  position changes at most once a second.\n";
     out += "- `scene.migrate(old_version)`: see Data migration; it may run for " + num(kMigrateMs) +
            " ms.\n";
     out +=
@@ -782,6 +786,60 @@ void append_device_api(std::string& out) {
            "  arrives (its callback runs, or a waiting task resumes).\n";
     out +=
         "\n"
+        "## wisp.media\n"
+        "\n"
+        "The device has one music player and, on the SD card, a media library shared by\n"
+        "every scene, the agent and the admin page: the folders `music/`, `download/` and\n"
+        "`document/`. The tracks under `music/` (MP3 and WAV) are indexed. Playback goes on\n"
+        "after the scene that started it closes.\n"
+        "\n"
+        "```lua\n"
+        "wisp.media.play(items, opts, cb)   -- cb(err, {truncated =}); opts and cb may be left "
+        "out\n"
+        "wisp.media.pause()  wisp.media.resume()  wisp.media.next()  wisp.media.prev()\n"
+        "wisp.media.seek(sec)  wisp.media.set_mode(mode)  wisp.media.stop()\n"
+        "wisp.media.state()                 -- {status, pause_reason, id, title, artist, album,\n"
+        "                                   --  duration, position, index, length, mode}\n"
+        "wisp.media.tracks(query, cb)       -- cb(err, {items = { {id, title, artist, album,\n"
+        "                                   --  duration, size, mtime}, ... }, total})\n"
+        "wisp.media.list(dir, cb)           -- cb(err, { {name, dir, size, mtime}, ... })\n"
+        "wisp.media.stat(path, cb)          -- cb(err, {name, dir, size, mtime})\n"
+        "wisp.media.read(path, offset, len, cb)  -- cb(err, data)\n"
+        "wisp.media.write(path, data, cb)   -- cb(err, true)\n"
+        "wisp.media.remove(path, cb)        -- cb(err, true)\n"
+        "wisp.media.mkdir(path, cb)         -- cb(err, true)\n"
+        "```\n"
+        "\n"
+        "- Playback needs no permission. `items` lists library paths (`\"music/a.mp3\"`, a\n"
+        "  track's `id`) and `{file = name}` for one of the scene's own `wisp.files`; a scene\n"
+        "  can play no other scene's files. `opts.start` is the 1-based item to start with,\n"
+        "  `opts.mode` one of `sequence`, `repeat_all`, `repeat_one`, `shuffle`. A new `play`\n";
+    out += "  replaces the queue; it holds at most " + num(media::kMaxQueue) +
+           " items (`truncated` is `true` when more were\n"
+           "  given). The controls return `true`, or `nil, \"media_unavailable\"` without a\n"
+           "  speaker.\n";
+    out +=
+        "- `state()`: `status` is `idle`, `playing` or `paused`; `pause_reason` `none`,\n"
+        "  `user` or `system` (an alarm, speech or a tone holds the speaker; playback comes\n"
+        "  back by itself); `duration` and `position` are in seconds; `index` is 1-based and\n"
+        "  `length` the queue's length. `scene.on_media(state)` gets the same table on every\n"
+        "  change.\n"
+        "- The library calls need `\"media\": \"read\"` (or `\"write\"`) in `permissions`;\n"
+        "  `write`, `remove`, `mkdir` and downloads into the library need `\"write\"`.\n"
+        "  Without it a call answers `permission_denied`. Paths are relative to the library\n"
+        "  (`\"music/x.mp3\"`, `\"\"` for its root in `list`); writes go inside one of the three\n"
+        "  folders. `remove` takes a file or an empty folder.\n";
+    out +=
+        "- `tracks`: `query` is `{q =, artist =, album =, offset =, limit =}` (all optional;\n"
+        "  `q` matches title, artist or album without case; `limit` at most " +
+        num(media::kMaxTrackPage) + ", default 50). `read`\n  gives at most " +
+        num(media::kMaxReadBytes / 1024) + " KB per call.\n";
+    out +=
+        "- Errors: `media_unavailable` (no card), `not_found`, `invalid_path`,\n"
+        "  `permission_denied`, `unsupported_format`, `decode_error`, `busy`, `io_error`.\n"
+        "  The library calls count towards the calls that may wait for their results, with\n"
+        "  `wisp.http` and `wisp.files`, and in a task they may leave out `cb` and wait.\n"
+        "\n"
         "## wisp.http.download and deep standby\n"
         "\n"
         "- `wisp.http.download(url, name, opts, cb)` GETs `url` (a host from\n"
@@ -791,6 +849,10 @@ void append_device_api(std::string& out) {
         "  scene's quota. `cb(err, res)`: `res = {status, size, deferred}`. A response that\n"
         "  is not 2xx leaves the file as it was and gives `size = 0`. Errors are those of\n"
         "  `wisp.http` and of `wisp.files`.\n"
+        "- With `opts.media = \"<path>\"` the body goes into that media library file instead\n"
+        "  (`name` is then not used): it needs `\"media\": \"write\"`, no quota applies, only\n"
+        "  the card's free space, and a track under `music/` is indexed once it is complete.\n"
+        "  Errors are then those of `wisp.http` and of `wisp.media`.\n"
         "- At most 2 downloads wait device-wide (`download_queue`); one more is answered\n"
         "  `rate_limited`. A download and an ordinary request of one scene may complete in\n"
         "  either order.\n"

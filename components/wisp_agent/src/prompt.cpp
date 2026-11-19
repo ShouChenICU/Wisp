@@ -168,7 +168,7 @@ std::string system_prompt(const DeviceSnapshot& d, core::LlmSystemMsgs system_ms
     p += ".\n"
          "- Reactive values: state, computed, bind; helpers ui.show_if, ui.ref.\n"
          "- Lua modules: wisp.device, wisp.store, wisp.timer, wisp.http, wisp.scene, wisp.log, "
-         "wisp.notify, wisp.power, wisp.sensor, wisp.files.\n"
+         "wisp.notify, wisp.power, wisp.sensor, wisp.files, wisp.media.\n"
          "- Look details up with docs_read instead of guessing. Topics: widgets, "
          "widget/<name>, lua, lua/<module>, screen, examples, example/<id>. Long topics come "
          "in pages; pass next_offset to read on.\n"

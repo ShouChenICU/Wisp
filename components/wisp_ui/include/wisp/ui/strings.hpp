@@ -247,6 +247,10 @@ enum class StrId : uint16_t {
     // hosts, joined with AgentListSep.
     AgentConfirmHosts,
     AgentListSep,
+    // The line of that question when a scene gets the media permission
+    // or has it raised (media spec 7.2), "{}" the scene's name.
+    AgentConfirmMediaRead,
+    AgentConfirmMediaWrite,
     // Scene operation notes (agent-core spec 4.2), "{}" the scene's name;
     // AgentNoteDataWritten and AgentNoteFileRemoved have a second "{}",
     // the key or the file name (tr_fill_n()).

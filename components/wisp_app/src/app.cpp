@@ -629,7 +629,8 @@ Result<void> App::start() {
             },
             &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get(),
             impl_->power_monitor ? &impl_->power_monitor->supply() : nullptr,
-            &impl_->system_settings.cell(), impl_->devices.get());
+            &impl_->system_settings.cell(), impl_->devices.get(), impl_->media_library.get(),
+            impl_->media_player.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {

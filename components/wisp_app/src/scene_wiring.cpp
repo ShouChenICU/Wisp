@@ -187,7 +187,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 core::NotificationService* notices, core::SensorService* sensors,
                                 const core::StateCell<core::PowerSupply>* supply,
                                 const core::StateCell<core::SettingsSnapshot>* settings,
-                                core::DeviceService* devices) {
+                                core::DeviceService* devices, media::MediaLibrary* media_library,
+                                media::MediaPlayer* media_player) {
     if (!repo_) return;
     if (deps_.platform.http_client) {
         http_ = os::make_large<net::SceneHttp>(*deps_.platform.http_client);
@@ -209,6 +210,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .background_list_path = {},
                                .sensors = sensors,
                                .files = files_.get(),
+                               .media_library = media_library,
+                               .media_player = media_player,
                                .supply = supply,
                                .settings = settings,
                                .devices = devices,

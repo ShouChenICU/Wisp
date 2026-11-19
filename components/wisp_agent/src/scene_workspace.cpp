@@ -495,10 +495,13 @@ ToolOutput SceneWorkspace::install(const std::string& id, ToolCtx& ctx) {
     if (!has_icon) errors.push_back({m.icon, 0, "the icon file is missing", ""});
     if (!errors.empty()) return check_failed(std::move(errors));
 
-    // 3. New http hosts need the user's yes.
+    // 3. New http hosts, and the media permission when it is new or
+    // raised (media spec 7.2), need the user's yes: one question.
     std::vector<std::string> added;
+    core::MediaAccess old_media = core::MediaAccess::None;
     {
         auto old = deps_.repo.manifest(id);
+        if (old) old_media = old.value().media;
         for (const std::string& h : m.http_hosts) {
             const bool known =
                 old && std::find(old.value().http_hosts.begin(), old.value().http_hosts.end(), h) !=
@@ -506,15 +509,30 @@ ToolOutput SceneWorkspace::install(const std::string& id, ToolCtx& ctx) {
             if (!known) added.push_back(h);
         }
     }
-    if (!added.empty()) {
+    const bool media_raised = static_cast<uint8_t>(m.media) > static_cast<uint8_t>(old_media);
+    if (!added.empty() || media_raised) {
         const ui::Lang lang = lang_of(ctx);
-        std::string text = ui::tr_fill(ui::StrId::AgentConfirmHosts, lang, m.name);
-        for (size_t i = 0; i < added.size(); ++i) {
-            if (i > 0) text += ui::tr(ui::StrId::AgentListSep, lang);
-            text += added[i];
+        std::string text;
+        if (!added.empty()) {
+            text = ui::tr_fill(ui::StrId::AgentConfirmHosts, lang, m.name);
+            for (size_t i = 0; i < added.size(); ++i) {
+                if (i > 0) text += ui::tr(ui::StrId::AgentListSep, lang);
+                text += added[i];
+            }
+        }
+        if (media_raised) {
+            if (!text.empty()) text += "\n";
+            text +=
+                ui::tr_fill(m.media == core::MediaAccess::Write ? ui::StrId::AgentConfirmMediaWrite
+                                                                : ui::StrId::AgentConfirmMediaRead,
+                            lang, m.name);
         }
         if (!deps_.confirm || !deps_.confirm(text, ctx))
-            return tool_error("denied", "the user did not allow the new http hosts");
+            return tool_error("denied", added.empty() ? "the user did not allow the media access"
+                                        : media_raised
+                                            ? "the user did not allow the new http "
+                                              "hosts and media access"
+                                            : "the user did not allow the new http hosts");
     }
 
     // 4. Every .lua file compiles.

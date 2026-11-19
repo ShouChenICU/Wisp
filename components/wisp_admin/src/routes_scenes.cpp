@@ -106,6 +106,7 @@ Value scene_item(const core::SceneInfo& info, const core::SceneHost* host) {
         {"state", Value(core::to_string(status.state))},
         {"hosts", Value(std::move(hosts))},
         {"files", Value(core::to_string(m.files))},
+        {"media", Value(core::to_string(m.media))},
         {"error", status.error.empty() ? Value() : Value(status.error)},
     });
 }

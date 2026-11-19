@@ -4,7 +4,8 @@
 //
 //   {"id": "todo", "name": "待办", "version": "1.0.0", "schema_version": 1,
 //    "entry": "main.lua", "icon": "assets/icon.png",
-//    "permissions": {"http": ["api.example.com"], "device": ["haptic.main"]},
+//    "permissions": {"http": ["api.example.com"], "device": ["haptic.main"],
+//                    "media": "read"},
 //    "background": true,
 //    "files": "auto",
 //    "tools": [
@@ -44,6 +45,14 @@ enum class FilesWant { Auto, Sd, Int };
 // "auto", "sd" or "int".
 const char* to_string(FilesWant w);
 
+// What a scene may do with the media library (media spec 7.2):
+// permissions.media "read" or "write"; absent is None. Controlling
+// playback and playing the scene's own files need none.
+enum class MediaAccess : uint8_t { None, Read, Write };
+
+// "none", "read" or "write".
+const char* to_string(MediaAccess a);
+
 // One entry of scene.json's "tools" array (agent-tools spec 5.1): a scene
 // tool a scene's main.lua binds a function to with wisp.tools.register and
 // the agent calls by its full name "<scene id>.<name>".
@@ -74,6 +83,7 @@ struct SceneManifest {
     // and at most 32 bytes. Whether such a device exists is decided at
     // call time; a repeated id is kept and harmless.
     std::vector<std::string> devices;
+    MediaAccess media = MediaAccess::None;  // permissions.media
     // Going back sends the scene to the background instead of closing it
     // (scene-device spec 3.2).
     bool background = false;

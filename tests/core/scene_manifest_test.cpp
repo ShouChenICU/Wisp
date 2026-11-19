@@ -373,3 +373,33 @@ TEST(SceneManifest, RejectsBadDevicePermissions) {
     EXPECT_EQ(refused(R"(["haptic."])"), not_ids);
     EXPECT_EQ(refused("[\"a." + std::string(31, 'b') + "\"]"), not_ids);  // 33 bytes
 }
+
+// Media spec 7.2: permissions.media is "read" or "write"; anything else,
+// "rw" among it, is a manifest error. Absent means no access.
+TEST(SceneManifest, MediaPermission) {
+    using wisp::core::MediaAccess;
+    auto media = [](const std::string& value) {
+        return parse_scene_manifest(
+            manifest("todo", "x", "1.0.0", R"(,"permissions":{"media":)" + value + "}"));
+    };
+    auto none = parse_scene_manifest(manifest());
+    ASSERT_TRUE(none);
+    EXPECT_EQ(none.value().media, MediaAccess::None);
+    auto read = media(R"("read")");
+    ASSERT_TRUE(read) << read.error().message;
+    EXPECT_EQ(read.value().media, MediaAccess::Read);
+    auto write = media(R"("write")");
+    ASSERT_TRUE(write) << write.error().message;
+    EXPECT_EQ(write.value().media, MediaAccess::Write);
+    EXPECT_STREQ(wisp::core::to_string(MediaAccess::None), "none");
+    EXPECT_STREQ(wisp::core::to_string(MediaAccess::Read), "read");
+    EXPECT_STREQ(wisp::core::to_string(MediaAccess::Write), "write");
+    for (const std::string& bad :
+         {std::string(R"("rw")"), std::string(R"("none")"), std::string(R"("Read")"),
+          std::string("true"), std::string(R"(["read"])")}) {
+        auto r = media(bad);
+        ASSERT_FALSE(r) << bad;
+        EXPECT_EQ(r.error().code, ErrorCode::InvalidArgument);
+        EXPECT_EQ(r.error().message, "scene.json: permissions.media must be \"read\" or \"write\"");
+    }
+}

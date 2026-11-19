@@ -198,6 +198,12 @@
 // already applied), so a change made while the queue is full waits there
 // instead of being lost, and several changes between two steps are one
 // check.
+// scene.on_media(state) (media spec 7.1) comes the same way from the
+// music player's state cell (SceneRuntimeDeps::media_player): each step
+// that finds the bit runs it in every scene that set it, with the state
+// as it is then, if it differs from the one last delivered (so several
+// changes between two steps are one call; the player publishes position
+// at most once per second).
 // "battery" fires when the percentage or charging differ from what the
 // scene last saw, checked on each change of the supply's charging or USB
 // state and each minute (a percent step alone waits for the minute);
@@ -345,6 +351,8 @@
 #include "wisp/core/time_sync_result.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/media/library.hpp"
+#include "wisp/media/player.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 #include "wisp/os/queue.hpp"
@@ -544,6 +552,12 @@ struct SceneRuntimeDeps {
     // they raise. Its jobs run on `worker`. Must outlive the runtime and
     // the worker's last job.
     core::SceneFiles* files = nullptr;
+    // wisp.media and wisp.http.download into the media library (media spec
+    // 7.1); null: their calls answer "media_unavailable". The player's
+    // state cell is followed from start() to stop() for scene.on_media.
+    // Both must outlive the runtime; a library download also needs `http`.
+    media::MediaLibrary* media_library = nullptr;
+    media::MediaPlayer* media_player = nullptr;
     // PowerMonitor::supply(): a change of charging or USB checks "battery"
     // (file header). null: the minute checks only. Followed from start()
     // to stop(); must outlive that.
@@ -941,6 +955,15 @@ private:
                         const std::shared_ptr<CompletionBox>& box,
                         const std::shared_ptr<FilesGate>& gate,
                         const std::vector<std::string>* hosts);
+    // wisp.media's player, library, permission and replies on `api`, and
+    // with `http` its downloads into the library, tracked by `gate` (made
+    // if null) and checked against `hosts` as wire_files_api()'s.
+    void wire_media_api(SceneApi& api, const std::string& id, uint32_t instance,
+                        const std::shared_ptr<CompletionBox>& box, std::shared_ptr<FilesGate>& gate,
+                        const std::vector<std::string>* hosts, core::MediaAccess access);
+    // The player's state to every scene that set scene.on_media, if it
+    // changed since the last delivery.
+    void media_changed();
     // cancel_files()'s work on a gate.
     void close_gate(const std::shared_ptr<FilesGate>& gate);
     // Gives the scene's wisp.sensor the service, and batches that come
@@ -1179,7 +1202,7 @@ private:
     // The device checks the cells asked for and the scene task has not
     // run yet (file header): set by the cells' callbacks on wisp.bus,
     // taken whole by take_device_changes().
-    static constexpr uint8_t kBattery = 1, kMinute = 2, kLang = 4, kClockSet = 8;
+    static constexpr uint8_t kBattery = 1, kMinute = 2, kLang = 4, kClockSet = 8, kMedia = 16;
     std::atomic<uint8_t> pending_device_{0};
     // Sets `bits` and wakes the scene task. Any thread; never waits.
     void note_device(uint8_t bits);
@@ -1191,6 +1214,9 @@ private:
     core::CellSubscription supply_sub_;
     core::CellSubscription settings_sub_;
     core::CellSubscription time_sub_;
+    core::CellSubscription media_sub_;
+    // The player's state scene.on_media last delivered (scene task only).
+    media::PlayerState media_seen_;
 
     // UI thread only.
     struct UiSide;

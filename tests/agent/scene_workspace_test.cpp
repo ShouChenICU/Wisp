@@ -416,6 +416,57 @@ TEST_F(SceneWorkspaceTest, SameHostsDoNotAsk) {
     EXPECT_TRUE(confirms.empty());
 }
 
+// Media spec 7.2: the media permission is confirmed where hosts are,
+// one line next to them; an update that adds it or raises read to write
+// counts as new.
+std::string counter_media(const std::string& version, const std::string& media,
+                          const std::string& hosts = "") {
+    std::string perms = R"("media":")" + media + "\"";
+    if (!hosts.empty()) perms = R"("http":)" + hosts + "," + perms;
+    return R"({"id":"counter","name":"计数器","version":")" + version +
+           R"(","schema_version":1,"permissions":{)" + perms + "}}";
+}
+
+TEST_F(SceneWorkspaceTest, ConfirmsNewMediaPermission) {
+    begin();
+    write("counter", "scene.json", counter_media("2.0.0", "read", R"(["api.example.com"])"));
+    answer = false;
+    ToolOutput no = ws->install("counter", ctx);
+    ASSERT_FALSE(no.ok);
+    EXPECT_EQ(str(no.result, "error"), "denied");
+    ASSERT_EQ(confirms.size(), 1u);
+    // One question: the hosts, then the media line.
+    EXPECT_EQ(confirms[0], "「计数器」将可以访问 api.example.com\n「计数器」将可以读取媒体库");
+    EXPECT_EQ(repo->info("counter").value().manifest.version, "1.0.0");
+    answer = true;
+    ToolOutput yes = ws->install("counter", ctx);
+    ASSERT_TRUE(yes.ok) << wisp::to_json(yes.result);
+    EXPECT_EQ(repo->info("counter").value().manifest.media, wisp::core::MediaAccess::Read);
+}
+
+TEST_F(SceneWorkspaceTest, ConfirmsNewMediaPermissionRaisedToWrite) {
+    install("counter", kCounter, {{"scene.json", counter_media("1.0.0", "read")}});
+    begin(false);
+    write("counter", "scene.json", counter_media("2.0.0", "write"));
+    ToolOutput out = ws->install("counter", ctx);
+    ASSERT_TRUE(out.ok) << wisp::to_json(out.result);
+    ASSERT_EQ(confirms.size(), 1u);
+    EXPECT_EQ(confirms[0], "「计数器」将可以读写媒体库");
+}
+
+TEST_F(SceneWorkspaceTest, ConfirmsNewMediaPermissionUnchangedIsNotAsked) {
+    install("counter", kCounter, {{"scene.json", counter_media("1.0.0", "write")}});
+    begin(false);
+    // Lowered to read is not new either.
+    write("counter", "scene.json", counter_media("2.0.0", "read"));
+    ToolOutput lowered = ws->install("counter", ctx);
+    ASSERT_TRUE(lowered.ok) << wisp::to_json(lowered.result);
+    write("counter", "scene.json", counter_media("3.0.0", "read"));
+    ToolOutput same = ws->install("counter", ctx);
+    ASSERT_TRUE(same.ok) << wisp::to_json(same.result);
+    EXPECT_TRUE(confirms.empty());
+}
+
 TEST_F(SceneWorkspaceTest, RollbackSwapsWithPrev) {
     begin();
     write("counter", "scene.json", counter_json("2.0.0"));

@@ -605,7 +605,7 @@ TEST_F(AgentTurnGolden, ContextSourceBody) {
         R"(scroll, label, icon, image, button, checkbox, switch, slider, input, bar, arc, chart)"
         R"(, list, canvas.\n- Reactive values: state, computed, bind; helpers ui.show_if, ui.re)"
         R"(f.\n- Lua modules: wisp.device, wisp.store, wisp.timer, wisp.http, wisp.scene, wisp.)"
-        R"(log, wisp.notify, wisp.power, wisp.sensor, wisp.files.\n- Look details up with docs_)"
+        R"(log, wisp.notify, wisp.power, wisp.sensor, wisp.files, wisp.media.\n- Look details up with docs_)"
         R"(read instead of guessing. Topics: widgets, widget/<name>, lua, lua/<module>, screen,)"
         R"( examples, example/<id>. Long topics come in pages; pass next_offset to read on.\n- )"
         R"(Work on a draft: scene_list, scene_read_file, then scene_write_file or scene_edit_fi)"

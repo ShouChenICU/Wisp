@@ -443,6 +443,8 @@ install is refused.
   scene's data (see `scene.migrate` below).
 - `permissions.http`: the hosts `wisp.http` may reach, at most 16.
 - `permissions.device`: the device ids `wisp.device.get` and `wisp.device.call` may use, at most 8.
+- `permissions.media`: `"read"` or `"write"`, what `wisp.media` may do with the
+  media library (see wisp.media); any other value refuses the install.
 - `background` (default `false`): going back sends the scene to the background
   instead of closing it (see Background scenes).
 - `files` (default `"auto"`): where `wisp.files` keeps the scene's files: `"auto"`,
@@ -473,6 +475,8 @@ as a message of its own, within the usual 200 ms:
   called once the scene is in front: one in the background comes forward first, and
   one that is not running is opened first (`wisp.scene.launch()` is then
   `"notification"`).
+- `scene.on_media(state)`: the music player's state changed (see wisp.media); the
+  position changes at most once a second.
 - `scene.migrate(old_version)`: see Data migration; it may run for 2000 ms.
 
 ## wisp.scene
@@ -625,6 +629,54 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
   which `pcall` can catch. A place is free again as soon as a call's result
   arrives (its callback runs, or a waiting task resumes).
 
+## wisp.media
+
+The device has one music player and, on the SD card, a media library shared by
+every scene, the agent and the admin page: the folders `music/`, `download/` and
+`document/`. The tracks under `music/` (MP3 and WAV) are indexed. Playback goes on
+after the scene that started it closes.
+
+```lua
+wisp.media.play(items, opts, cb)   -- cb(err, {truncated =}); opts and cb may be left out
+wisp.media.pause()  wisp.media.resume()  wisp.media.next()  wisp.media.prev()
+wisp.media.seek(sec)  wisp.media.set_mode(mode)  wisp.media.stop()
+wisp.media.state()                 -- {status, pause_reason, id, title, artist, album,
+                                   --  duration, position, index, length, mode}
+wisp.media.tracks(query, cb)       -- cb(err, {items = { {id, title, artist, album,
+                                   --  duration, size, mtime}, ... }, total})
+wisp.media.list(dir, cb)           -- cb(err, { {name, dir, size, mtime}, ... })
+wisp.media.stat(path, cb)          -- cb(err, {name, dir, size, mtime})
+wisp.media.read(path, offset, len, cb)  -- cb(err, data)
+wisp.media.write(path, data, cb)   -- cb(err, true)
+wisp.media.remove(path, cb)        -- cb(err, true)
+wisp.media.mkdir(path, cb)         -- cb(err, true)
+```
+
+- Playback needs no permission. `items` lists library paths (`"music/a.mp3"`, a
+  track's `id`) and `{file = name}` for one of the scene's own `wisp.files`; a scene
+  can play no other scene's files. `opts.start` is the 1-based item to start with,
+  `opts.mode` one of `sequence`, `repeat_all`, `repeat_one`, `shuffle`. A new `play`
+  replaces the queue; it holds at most 1000 items (`truncated` is `true` when more were
+  given). The controls return `true`, or `nil, "media_unavailable"` without a
+  speaker.
+- `state()`: `status` is `idle`, `playing` or `paused`; `pause_reason` `none`,
+  `user` or `system` (an alarm, speech or a tone holds the speaker; playback comes
+  back by itself); `duration` and `position` are in seconds; `index` is 1-based and
+  `length` the queue's length. `scene.on_media(state)` gets the same table on every
+  change.
+- The library calls need `"media": "read"` (or `"write"`) in `permissions`;
+  `write`, `remove`, `mkdir` and downloads into the library need `"write"`.
+  Without it a call answers `permission_denied`. Paths are relative to the library
+  (`"music/x.mp3"`, `""` for its root in `list`); writes go inside one of the three
+  folders. `remove` takes a file or an empty folder.
+- `tracks`: `query` is `{q =, artist =, album =, offset =, limit =}` (all optional;
+  `q` matches title, artist or album without case; `limit` at most 200, default 50). `read`
+  gives at most 64 KB per call.
+- Errors: `media_unavailable` (no card), `not_found`, `invalid_path`,
+  `permission_denied`, `unsupported_format`, `decode_error`, `busy`, `io_error`.
+  The library calls count towards the calls that may wait for their results, with
+  `wisp.http` and `wisp.files`, and in a task they may leave out `cb` and wait.
+
 ## wisp.http.download and deep standby
 
 - `wisp.http.download(url, name, opts, cb)` GETs `url` (a host from
@@ -634,6 +686,10 @@ wisp.files.info(cb)                       -- cb(err, { location =, want =, quota
   scene's quota. `cb(err, res)`: `res = {status, size, deferred}`. A response that
   is not 2xx leaves the file as it was and gives `size = 0`. Errors are those of
   `wisp.http` and of `wisp.files`.
+- With `opts.media = "<path>"` the body goes into that media library file instead
+  (`name` is then not used): it needs `"media": "write"`, no quota applies, only
+  the card's free space, and a track under `music/` is indexed once it is complete.
+  Errors are then those of `wisp.http` and of `wisp.media`.
 - At most 2 downloads wait device-wide (`download_queue`); one more is answered
   `rate_limited`. A download and an ordinary request of one scene may complete in
   either order.

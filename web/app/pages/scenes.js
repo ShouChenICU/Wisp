@@ -54,6 +54,7 @@ import {
  * @property {string[]} hosts   permissions.http from scene.json
  * @property {string|null} error  the last error while state is "error"
  * @property {'auto'|'sd'|'int'} files  where scene.json wants its files
+ * @property {'none'|'read'|'write'} media  permissions.media from scene.json
  *
  * @typedef {Object} SceneFiles  GET /scenes/{id}/files
  * @property {'sd'|'int'|null} location  null until the scene first writes
@@ -377,6 +378,12 @@ function SceneItem({ scene, sdCard, open, onToggle, onChanged }) {
                 ${hosts.length
                   ? html`<span class="chips">${hosts.map((h) => html`<span key=${h} class="chip mono"><${IconGlobe} size=${12} /> ${h}</span>`)}</span>`
                   : html`<span class="muted">${t('scenes.no_hosts')}</span>`}
+              </dd>
+            </div>
+            <div>
+              <dt>${t('scenes.media')}</dt>
+              <dd class=${scene.media === 'read' || scene.media === 'write' ? '' : 'muted'}>
+                ${t('scenes.media.' + (scene.media === 'read' || scene.media === 'write' ? scene.media : 'none'))}
               </dd>
             </div>
           </dl>
