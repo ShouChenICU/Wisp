@@ -184,6 +184,7 @@ public:
     // On wisp.sd.io (or wisp.fs without it) only.
     Result<std::unique_ptr<Writer>> begin_write(std::string path);
     Result<os::LargeBuffer> read_now(const std::string& path, uint64_t off, size_t len);
+    Result<MediaEntry> stat_now(const std::string& path);
 
     // Memory only.
     std::optional<Track> track(const std::string& id) const;

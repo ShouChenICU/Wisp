@@ -86,6 +86,8 @@ struct MediaPlayer::Command {
     std::optional<PlayMode> mode;
     uint32_t value = 0;
     std::string text;
+    // Posted by post(): counted in pending_cmds_ until the task takes it.
+    bool counted = false;
 };
 
 // Everything the task owns. Only the task touches it, so it needs no lock.
@@ -99,7 +101,20 @@ struct MediaPlayer::Session {
     std::unique_ptr<ItemReader> reader;
     std::unique_ptr<Decoder> decoder;
     StreamInfo info{};
+    Format format = Format::Wav;
     uint64_t frames = 0;  // played (or sought to) in the current item
+    // A wait for the card was cut short so the task could take a command or
+    // a preemption (interrupt_wait()):
+    //   pending_open  the current item's open was; it is opened again
+    //                 before it plays;
+    //   resync        a decode or seek was, leaving the decoder mid-frame;
+    //                 a new one is opened and sought to `frames`;
+    //   held          frames decoded but not written yet (a preemption came
+    //                 during the decode); written first on resume.
+    bool pending_open = false;
+    bool resync = false;
+    size_t held = 0;
+    bool interrupted = false;
     TrackInfo track;
     PlayerStatus status = PlayerStatus::Idle;
     PauseReason reason = PauseReason::None;
@@ -177,6 +192,9 @@ struct MediaPlayer::Session {
             out_open = false;
         }
         lease.release();
+        // A released lease's preempt never runs again, so a flag it left
+        // now is stale and must not cut a later wait short.
+        p.preempted_.store(false);
     }
 
     Output open_output() {
@@ -195,7 +213,7 @@ struct MediaPlayer::Session {
         if (Result<void> r = p.deps_.out->open(hal::AudioFormat{info.sample_rate, 1}); !r) {
             WLOG_W(kTag, "output refused %u Hz: %s", static_cast<unsigned>(info.sample_rate),
                    r.error().message.c_str());
-            lease.release();
+            close_output();
             return Output::Failed;
         }
         out_open = true;
@@ -209,6 +227,31 @@ struct MediaPlayer::Session {
         reader.reset();
         info = {};
         frames = 0;
+        pending_open = false;
+        resync = false;
+        held = 0;
+        interrupted = false;
+    }
+
+    // The reader's abort hook, called on this task while it waits for the
+    // card (wisp/media/item_reader.hpp): a preemption or a command cuts the
+    // wait short, so neither waits for a slow card (spec 4.4, within one
+    // chunk); the task then takes it in run().
+    bool interrupt_wait() {
+        if (p.quit_.load()) return true;
+        if (p.preempted_.load() || p.pending_cmds_.load() > 0) {
+            interrupted = true;
+            return true;
+        }
+        return false;
+    }
+
+    // The call that just failed was a wait cut short, not a failure of the
+    // item.
+    bool was_aborted() {
+        const bool a = interrupted || p.quit_.load();
+        interrupted = false;
+        return a;
     }
 
     void go_idle() {
@@ -266,7 +309,7 @@ struct MediaPlayer::Session {
         d.router = p.deps_.router;
         d.ring_bytes = p.config_.ring_bytes;
         d.read_bytes = p.config_.read_bytes;
-        d.abort = [&player = p] { return player.quit_.load(); };
+        d.abort = [this] { return interrupt_wait(); };
         auto rd = ItemReader::open(item, d);
         if (!rd) return Result<void>::err(rd.error().code, rd.error().message);
         reader = std::move(rd.value());
@@ -281,7 +324,8 @@ struct MediaPlayer::Session {
         }
         auto fmt = probe({pcm.data(), got});
         if (!fmt) return Result<void>::err(fmt.error().code, fmt.error().message);
-        decoder = p.deps_.decoders ? p.deps_.decoders(fmt.value()) : nullptr;
+        format = fmt.value();
+        decoder = p.deps_.decoders ? p.deps_.decoders(format) : nullptr;
         if (!decoder) return Result<void>::err(ErrorCode::Unsupported, "no decoder");
         WISP_TRY(reader->seek(0));
         auto si = decoder->open(*reader);
@@ -320,8 +364,23 @@ struct MediaPlayer::Session {
                 return;
             }
             item = std::string(queue.item(*cur));
+            interrupted = false;
             Result<void> opened = open_item();
-            if (!opened && p.quit_.load()) return;
+            if (!opened && was_aborted()) {
+                if (p.quit_.load()) return;
+                drop_item();
+                pending_open = true;
+                if (play) {
+                    status = PlayerStatus::Playing;
+                    reason = PauseReason::None;
+                }
+                track = {};
+                track.id = item;
+                track.title = std::string(base_name(item));
+                sync_locks();
+                publish();
+                return;
+            }
             if (opened && play) {
                 switch (open_output()) {
                     case Output::Ok:
@@ -353,7 +412,12 @@ struct MediaPlayer::Session {
 
     // resume() and the arbiter's notification.
     void resume_play() {
-        if (status != PlayerStatus::Paused || !decoder) return;
+        if (status != PlayerStatus::Paused) return;
+        if (pending_open) {
+            start_current(true);
+            return;
+        }
+        if (!decoder) return;
         switch (open_output()) {
             case Output::Ok:
                 status = PlayerStatus::Playing;
@@ -386,55 +450,104 @@ struct MediaPlayer::Session {
         start_current(status == PlayerStatus::Playing);
     }
 
+    // A decoder in place of one left mid-frame by an aborted wait, at
+    // `frames`. False when the chunk cannot be played now.
+    bool resync_decoder() {
+        auto d = p.deps_.decoders ? p.deps_.decoders(format) : nullptr;
+        decoder.reset();
+        if (!d) return skip_failed(Error{ErrorCode::Unsupported, "no decoder"});
+        decoder = std::move(d);
+        interrupted = false;
+        Result<void> r = reader->seek(0);
+        if (r) {
+            auto si = decoder->open(*reader);
+            if (!si) r = Result<void>::err(si.error().code, si.error().message);
+        }
+        if (r && frames > 0 && info.sample_rate != 0) {
+            r = decoder->seek_ms(static_cast<uint32_t>(frames * 1000 / info.sample_rate));
+        }
+        if (!r) {
+            if (was_aborted()) return false;  // tried again next time
+            return skip_failed(r.error());
+        }
+        resync = false;
+        return true;
+    }
+
+    // The current item failed while playing: on to the next one.
+    bool skip_failed(const Error& e) {
+        drop_item();
+        if (!fail(e)) moved(queue.next());
+        return false;
+    }
+
     void play_chunk() {
-        auto n = decoder->decode(samples(), kChunkFrames);
-        if (!n) {
-            if (p.quit_.load()) return;
-            drop_item();
-            if (fail(n.error())) return;
-            moved(queue.next());
+        if (pending_open) {
+            start_current(true);
             return;
         }
-        if (n.value() == 0) {
-            failures = 0;
-            moved(queue.advance_auto());
-            return;
-        }
-        const size_t count = n.value();
         int16_t* pcm16 = samples();
-        if (info.channels == 2) {
-            for (size_t i = 0; i < count; ++i) {
-                pcm16[i] = static_cast<int16_t>(
-                    (static_cast<int32_t>(pcm16[2 * i]) + static_cast<int32_t>(pcm16[2 * i + 1])) /
-                    2);
+        if (held == 0) {
+            if (resync && !resync_decoder()) return;
+            interrupted = false;
+            auto n = decoder->decode(pcm16, kChunkFrames);
+            if (!n) {
+                if (was_aborted()) {
+                    resync = true;
+                    return;
+                }
+                skip_failed(n.error());
+                return;
+            }
+            if (n.value() == 0) {
+                failures = 0;
+                moved(queue.advance_auto());
+                return;
+            }
+            held = n.value();
+            if (info.channels == 2) {
+                for (size_t i = 0; i < held; ++i) {
+                    pcm16[i] = static_cast<int16_t>((static_cast<int32_t>(pcm16[2 * i]) +
+                                                     static_cast<int32_t>(pcm16[2 * i + 1])) /
+                                                    2);
+                }
             }
         }
+        // Preempted during the decode: run() pauses first, and the chunk is
+        // written on resume.
+        if (p.preempted_.load()) return;
         size_t done = 0;
-        while (done < count) {
-            auto w = p.deps_.out->write(pcm16 + done, count - done);
+        while (done < held) {
+            auto w = p.deps_.out->write(pcm16 + done, held - done);
             if (!w || w.value() == 0) {
-                drop_item();
                 close_output();
-                if (fail(w ? Error{ErrorCode::IoError, "output wrote nothing"} : w.error())) return;
-                moved(queue.next());
+                skip_failed(w ? Error{ErrorCode::IoError, "output wrote nothing"} : w.error());
                 return;
             }
             done += w.value();
         }
-        frames += count;
+        frames += held;
+        held = 0;
         failures = 0;
         if (position() != published_pos) publish();
     }
 
     void seek(uint32_t s) {
-        if (!decoder) return;
+        if (!decoder && !resync) return;
         uint64_t ms = uint64_t{s} * 1000;
         const uint64_t dur =
             info.duration_ms != 0 ? info.duration_ms : uint64_t{track.duration_s} * 1000;
         if (dur != 0) ms = std::min(ms, dur);
-        if (Result<void> r = decoder->seek_ms(static_cast<uint32_t>(ms)); !r) {
-            WLOG_W(kTag, "seek in %s: %s", item.c_str(), r.error().message.c_str());
-            return;
+        held = 0;
+        if (!resync) {
+            interrupted = false;
+            if (Result<void> r = decoder->seek_ms(static_cast<uint32_t>(ms)); !r) {
+                if (!was_aborted()) {
+                    WLOG_W(kTag, "seek in %s: %s", item.c_str(), r.error().message.c_str());
+                    return;
+                }
+                resync = true;  // the new decoder seeks to `frames`
+            }
         }
         frames = ms * info.sample_rate / 1000;
         publish();
@@ -473,10 +586,8 @@ struct MediaPlayer::Session {
                 resume_play();
                 return;
             case K::ResumeSystem:
-                if (status == PlayerStatus::Paused && reason == PauseReason::System &&
-                    c.value == p.pause_seq_.load()) {
-                    resume_play();
-                }
+                p.resume_pending_.store(false);
+                resume_system();
                 return;
             case K::Next:
                 if (status != PlayerStatus::Idle) moved(queue.next());
@@ -505,7 +616,9 @@ struct MediaPlayer::Session {
                 }
                 return;
             case K::FileRemoved:
-                if (status != PlayerStatus::Idle && c.text == item) {
+                // The file itself, or a folder holding it.
+                if (status != PlayerStatus::Idle &&
+                    (c.text == item || item.compare(0, c.text.size() + 1, c.text + "/") == 0)) {
                     drop_item();
                     moved(queue.next());
                 }
@@ -519,6 +632,15 @@ struct MediaPlayer::Session {
             case K::None:
             case K::Quit:
                 return;
+        }
+    }
+
+    // The arbiter's notification: only a system pause is resumed, and not
+    // when a user pause was posted after it (spec 5.2).
+    void resume_system() {
+        if (status == PlayerStatus::Paused && reason == PauseReason::System &&
+            p.pending_pauses_.load() == 0) {
+            resume_play();
         }
     }
 
@@ -561,13 +683,14 @@ Result<void> MediaPlayer::start() {
         quit_ = true;
         return Result<void>::err(ErrorCode::NoMemory, "media buffers");
     }
-    // Only posts (core::AudioArbiter, Threads); the pause sequence taken
-    // now tells the task whether a user pause came after it.
+    // Only sets a flag and posts (core::AudioArbiter, Threads). The flag
+    // cannot be lost: a paused/system task polls it even when the queue
+    // was too full for the command, which only wakes it sooner.
     deps_.arbiter.set_resume_listener([this] {
+        resume_pending_ = true;
         Command c;
         c.kind = Command::Kind::ResumeSystem;
-        c.value = pause_seq_.load();
-        if (!commands_->push(std::move(c), 0)) WLOG_W(kTag, "resume notification dropped");
+        commands_->push(std::move(c), 0);
     });
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });
     if (!task_) {
@@ -593,7 +716,12 @@ bool MediaPlayer::post(Command&& c) {
     // commands_ is made before the task and never replaced, so a control
     // racing stop() at worst queues a command nobody takes.
     if (!commands_ || !session_ || quit_.load()) return false;
+    // Counted before it is queued, so a wait for the card that the task is
+    // in sees it (Session::interrupt_wait()).
+    c.counted = true;
+    pending_cmds_.fetch_add(1);
     if (!commands_->push(std::move(c), 0)) {
+        pending_cmds_.fetch_sub(1);
         WLOG_W(kTag, "command dropped: queue full");
         return false;
     }
@@ -606,11 +734,16 @@ void MediaPlayer::run() {
         uint32_t wait = os::kForever;
         if (s.status == PlayerStatus::Playing) {
             wait = 0;
-        } else if (s.linger_until) {
+        } else if (s.linger_until ||
+                   (s.status == PlayerStatus::Paused && s.reason == PauseReason::System)) {
+            // The clock for the linger; resume_pending_ when its command
+            // could not be queued.
             wait = kLingerPollMs;
         }
         Command c;
         while (commands_->pop(c, wait)) {
+            if (c.counted) pending_cmds_.fetch_sub(1);
+            if (c.kind == Command::Kind::Pause) pending_pauses_.fetch_sub(1);
             if (c.kind == Command::Kind::Quit || quit_.load()) {
                 s.shutdown();
                 return;
@@ -619,6 +752,7 @@ void MediaPlayer::run() {
             c = Command{};
             wait = 0;
         }
+        if (resume_pending_.exchange(false)) s.resume_system();
         if (quit_.load()) {
             s.shutdown();
             return;
@@ -657,8 +791,10 @@ C simple(typename C::Kind k) {
 }  // namespace
 
 void MediaPlayer::pause() {
-    pause_seq_.fetch_add(1);
-    post(simple<Command>(Command::Kind::Pause));
+    // Counted before it is queued, so a resume notification the task takes
+    // in between sees it; uncounted again if it could not be queued.
+    pending_pauses_.fetch_add(1);
+    if (!post(simple<Command>(Command::Kind::Pause))) pending_pauses_.fetch_sub(1);
 }
 
 void MediaPlayer::resume() { post(simple<Command>(Command::Kind::Resume)); }

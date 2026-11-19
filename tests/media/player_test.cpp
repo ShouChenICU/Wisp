@@ -135,6 +135,11 @@ struct Fixture {
                 refusals.fetch_add(1);
                 return false;
             }
+            if (drop_scene_io.load() > 0) {
+                // Accepted, then destroyed without running.
+                drop_scene_io.fetch_sub(1);
+                return true;
+            }
             return router->submit(m, std::move(job), lane);
         };
         files = std::make_unique<wisp::core::SceneFiles>(*storage, fc);
@@ -147,6 +152,8 @@ struct Fixture {
         copy("sine_44k_stereo_cbr128.mp3", "music/s.mp3");
         put("music/long.wav", make_wav(30));
         put("music/six.wav", make_wav(6));
+        fs::create_directories(fs::path(root()) / "music/sub");
+        put("music/sub/long.wav", make_wav(30));
 
         lib = std::make_unique<MediaLibrary>(wisp::media::MediaLibraryDeps{
             .storage = *storage, .router = router.get(), .bus = bus, .root = root()});
@@ -280,6 +287,7 @@ struct Fixture {
     std::unique_ptr<wisp::core::WakeLockRegistry> locks;
     std::atomic<bool> refuse_scene_io{false};
     std::atomic<int> refusals{0};
+    std::atomic<int> drop_scene_io{0};
     std::unique_ptr<wisp::core::SceneFiles> files;
     std::unique_ptr<MediaLibrary> lib;
     AudioArbiter arbiter;
@@ -577,7 +585,8 @@ TEST(MediaPlayer, PreemptedWhileWriteBlocksNeverReopens) {
     const uint64_t took = wisp::os::now_ms() - t0;
     ASSERT_TRUE(voice.valid());
     EXPECT_GE(took, 190u);
-    EXPECT_LT(took, 400u);  // granted past 200 ms, the write still blocked
+    // Granted at the 200 ms grant, not when the 500 ms write ends.
+    EXPECT_LT(took, 500u);
 
     ASSERT_TRUE(wait_until(
         [&] { return f.st().pause_reason == PauseReason::System && !f.out->is_open(); }, 2000));
@@ -724,6 +733,129 @@ TEST(MediaPlayer, DeletedCurrentFileSkips) {
         wait_until([&] { return f.out->frames() == MediaPlayer::kChunkFrames + 16000u; }, kWaitMs));
     ASSERT_TRUE(f.idle_after_play());
     EXPECT_TRUE(f.errs().empty());
+}
+
+// A folder removed through the library takes the current item with it.
+TEST(MediaPlayer, RemovedFolderOfTheCurrentFileSkips) {
+    Fixture f;
+    f.make_player();
+    f.play_held({"music/sub/long.wav", "music/b16.wav"});
+    f.player->on_file_removed("music/su");  // not its folder
+    f.player->on_file_removed("music/sub");
+    f.out->open_gate();
+    ASSERT_TRUE(
+        wait_until([&] { return f.out->frames() == MediaPlayer::kChunkFrames + 16000u; }, kWaitMs));
+    ASSERT_TRUE(f.idle_after_play());
+    EXPECT_TRUE(f.errs().empty());
+}
+
+// A preemption while the task waits for a refill (the card slow) closes
+// the output at once, so speech can open it; a pause during the same wait
+// takes effect, and playing on later resumes at the same sample.
+TEST(MediaPlayer, PreemptDuringAnUnderrunClosesTheOutput) {
+    Fixture f(/*real_arbiter_clock=*/true);
+    f.out->set_write_ms(1);
+    f.make_player();
+    f.player->play({"music/long.wav"});
+    ASSERT_TRUE(wait_until([&] { return f.out->frames() > 0; }, kWaitMs));
+    wisp::os::Semaphore gate{1, 0}, entered{1, 0};
+    ASSERT_TRUE(f.sd_worker.submit([&] {
+        entered.give();
+        gate.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered.take(kWaitMs));
+    // The ring runs dry behind the held worker: an underrun.
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const size_t n = f.out->frames();
+            wisp::os::sleep_ms(30);
+            return f.router->pending() >= 2 && f.out->frames() == n;
+        },
+        kWaitMs));
+    EXPECT_TRUE(f.out->is_open());
+
+    const uint64_t t0 = wisp::os::now_ms();
+    AudioArbiter::Lease voice = f.arbiter.acquire(AudioKind::Voice);
+    ASSERT_TRUE(voice.valid());
+    EXPECT_LT(wisp::os::now_ms() - t0, 190u);  // released, not revoked
+    // Speech opens the output as PcmPlayer would.
+    EXPECT_TRUE(f.out->open(wisp::hal::AudioFormat{16000, 1}));
+    EXPECT_EQ(f.out->overlapping_opens(), 0);
+    f.out->close();
+    EXPECT_EQ(f.st().pause_reason, PauseReason::System);
+    const uint32_t kept = f.st().position_s;
+
+    // The user pauses while the card is still held.
+    f.player->pause();
+    ASSERT_TRUE(wait_until([&] { return f.st().pause_reason == PauseReason::User; }, kWaitMs));
+    voice.release();
+    gate.give();
+    const size_t before = f.out->frames();
+    f.player->resume();
+    ASSERT_TRUE(wait_until([&] { return f.out->frames() > before + 8000; }, kWaitMs));
+    EXPECT_EQ(f.out->samples()[before], static_cast<int16_t>(100 * (kept + 1)));
+    EXPECT_EQ(f.out->overlapping_opens(), 0);
+}
+
+// A pause while an item's file is being looked up takes effect before the
+// lookup is done; resuming opens and plays it.
+TEST(MediaPlayer, PauseWhileAnItemOpensTakesEffect) {
+    Fixture f;
+    f.make_player();
+    wisp::os::Semaphore gate{1, 0}, entered{1, 0};
+    ASSERT_TRUE(f.sd_worker.submit([&] {
+        entered.give();
+        gate.take(wisp::os::kForever);
+    }));
+    ASSERT_TRUE(entered.take(kWaitMs));
+    f.player->play({"music/a44.wav"});
+    ASSERT_TRUE(wait_until([&] { return f.router->pending() >= 2; }, kWaitMs));
+    f.player->pause();
+    ASSERT_TRUE(wait_until([&] { return f.st().pause_reason == PauseReason::User; }, kWaitMs));
+    EXPECT_EQ(f.st().track.id, "music/a44.wav");
+    EXPECT_EQ(f.out->opens(), 0);
+    gate.give();
+    f.player->resume();
+    ASSERT_TRUE(wait_until([&] { return f.out->frames() == 11025u; }, kWaitMs));
+    ASSERT_TRUE(f.idle_after_play());
+    EXPECT_TRUE(f.errs().empty());
+}
+
+// A storage job dropped without running (the size lookup, a refill) is
+// queued again instead of leaving the task waiting.
+TEST(MediaPlayer, DroppedJobsAreQueuedAgain) {
+    Fixture f;
+    f.put_scene_file("demo", "a.wav", read_file(wisp::test::media_data("sine_16k_mono.wav")));
+    f.make_player();
+    f.drop_scene_io = 3;  // the lookup, then the first refills
+    f.player->play({"scene:demo/a.wav"});
+    ASSERT_TRUE(wait_until([&] { return f.out->frames() == 16000u; }, kWaitMs));
+    ASSERT_TRUE(f.idle_after_play());
+    EXPECT_EQ(f.drop_scene_io.load(), 0);
+    EXPECT_TRUE(f.errs().empty());
+}
+
+// The resume notification still resumes when the command queue was too
+// full to take its command.
+TEST(MediaPlayer, ResumeNotificationSurvivesAFullQueue) {
+    Fixture f;
+    f.out->set_write_ms(5);
+    f.make_player();
+    f.play_held({"music/long.wav"});
+    f.out->open_gate();
+    AudioArbiter::Lease voice = f.arbiter.acquire(AudioKind::Voice);
+    ASSERT_TRUE(wait_until([&] { return f.st().pause_reason == PauseReason::System; }, kWaitMs));
+    voice.release();
+    f.now += 800;
+
+    f.hold_volume = true;
+    const int calls = f.volume_calls.load();
+    f.player->on_volume_changed();
+    ASSERT_TRUE(wait_until([&] { return f.volume_calls.load() > calls; }, kWaitMs));
+    for (int i = 0; i < 40; ++i) f.player->set_mode(PlayMode::Sequence);  // fills the queue
+    f.arbiter.tick();
+    f.hold_volume = false;
+    ASSERT_TRUE(wait_until([&] { return f.st().status == PlayerStatus::Playing; }, kWaitMs));
 }
 
 TEST(MediaPlayer, EveryExitReleasesTheLocks) {

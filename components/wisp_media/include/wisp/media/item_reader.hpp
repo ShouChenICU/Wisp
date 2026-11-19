@@ -2,10 +2,9 @@
 // ItemReader: the media::Source the player decodes from (media spec 4.4).
 // It resolves one queue item to the storage that holds it and keeps a
 // prefetch ring of that file's bytes filled:
-//   "music/..." (any library path)  MediaLibrary::stat() to open, then
-//                                   MediaLibrary::read_now() jobs on the
-//                                   SD I/O worker (StorageRouter,
-//                                   Medium::Sd);
+//   "music/..." (any library path)  MediaLibrary::stat_now() and
+//                                   read_now() jobs on the SD I/O worker
+//                                   (StorageRouter, Medium::Sd);
 //   "scene:<id>/<name>"             SceneFiles::stat() and read() jobs
 //                                   through SceneFiles::submit(), which
 //                                   routes them by the scene's medium.
@@ -19,20 +18,23 @@
 // costs nothing (decoders seek back to the start after probing); any other
 // seek drops the ring and refills from the new offset.
 //
-// The open's size lookup goes through MediaLibrary::stat() (the library's
-// Normal lane) or a SceneFiles job; only the refills use the Interactive
-// lane, which on wisp.sd.io holds one job, so a refill is never queued
-// behind a scan's backlog.
+// Every job, the open's size lookup included, goes on the Interactive
+// lane, which on wisp.sd.io holds one job, so it is never queued behind a
+// scan's backlog on the Normal and Bulk lanes.
 //
 // Failure never hangs the reader:
 //   - a job that fails ends the read with its error (StorageUnavailable
 //     once the card is gone);
 //   - a job refused (a full lane, the SD I/O worker draining for shutdown)
-//     is retried for up to kRefusedGiveUpMs, then the read fails Busy;
-//   - a job destroyed without running is queued again at the next poll;
-//   - `abort` (polled every kPollMs while waiting) ends a wait with
-//     ErrorCode::Timeout ("aborted"), so the player's shutdown joins
-//     promptly whatever the storage workers do.
+//     is retried for up to kRefusedGiveUpMs, then the call fails Busy;
+//   - a job destroyed without running is queued again at the next poll
+//     (the size lookup counts it as refused);
+//   - `abort` (called on the reading thread every kPollMs while waiting)
+//     ends a wait with ErrorCode::Timeout ("aborted"): the player's
+//     shutdown joins promptly whatever the storage workers do, and a
+//     preemption or a command is not held up by a slow card. An aborted
+//     read leaves the ring as it was; a decoder whose read was aborted is
+//     mid-frame, so the player opens a new one and seeks it.
 // A job that runs after its reader is gone does no file work: the reader
 // marks the shared state closed and waits only for a job already in the
 // middle of its read, so neither the library nor SceneFiles is touched

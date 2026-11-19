@@ -27,8 +27,10 @@
 // post a command (core::AudioArbiter, Threads). Preempted, the task closes
 // the output, drops the lease and is paused/system at the same position;
 // the resume listener's command resumes it only if it is still
-// paused/system when the task takes it and no user pause was posted after
-// the notification, so a user pause is final. A refused Music acquire
+// paused/system when the task takes it and no user pause is queued, so a
+// user pause is final. A wait for the card (an
+// underrun, an item's open) is cut short by a preemption or a command, so
+// neither waits for a slow card with the output open. A refused Music acquire
 // leaves it paused/system until that notification.
 //
 // Wake locks (spec 6). `cpu` and `audio` (holder core::kMediaWakeLockHolder)
@@ -103,6 +105,9 @@ struct MediaPlayerDeps {
     core::SceneFiles* scene_files;  // null: scene items fail
     core::StorageRouter* router;    // the library's reads
     DecoderFactory decoders;
+    // Called on wisp.media (on each open and on_volume_changed()), so it
+    // reads memory only (the settings cell), never flash (AGENTS.md
+    // section 5).
     std::function<uint8_t()> volume;
     std::function<uint32_t()> random;
     std::function<uint64_t()> now_ms = os::now_ms;
@@ -191,9 +196,14 @@ private:
     std::unique_ptr<os::Task> task_;
     std::atomic<bool> quit_{false};
     std::atomic<bool> preempted_{false};
-    // Moves on every pause(): a resume notification taken after a user
-    // pause was posted is stale (see the file header).
-    std::atomic<uint32_t> pause_seq_{0};
+    // Pause commands posted and not yet taken: a resume notification the
+    // task takes while one is queued is stale (see the file header).
+    std::atomic<uint32_t> pending_pauses_{0};
+    // Commands posted and not yet taken (Session::interrupt_wait()).
+    std::atomic<uint32_t> pending_cmds_{0};
+    // Set by the resume listener; the task takes it with or without the
+    // command that also wakes it.
+    std::atomic<bool> resume_pending_{false};
     bool started_ = false;
 };
 

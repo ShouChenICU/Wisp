@@ -57,6 +57,19 @@ struct ItemReader::Shared {
     // The first refusal of the current run of refused submissions.
     std::optional<uint64_t> refused_since;
 
+    // The file's size (NotFound for a folder).
+    Result<uint64_t> lookup() {
+        if (library != nullptr) {
+            auto e = library->stat_now(path);
+            if (!e) return Result<uint64_t>::err(e.error().code, e.error().message);
+            if (e.value().dir) return Result<uint64_t>::err(ErrorCode::NotFound, "a folder");
+            return Result<uint64_t>::ok(e.value().size);
+        }
+        auto e = files->stat(scene, name);
+        if (!e) return Result<uint64_t>::err(e.error().code, e.error().message);
+        return Result<uint64_t>::ok(e.value().size);
+    }
+
     Result<os::LargeBuffer> fetch(uint64_t off, size_t n) {
         if (library != nullptr) return library->read_now(path, off, n);
         return files->read(scene, name, off, n);
@@ -121,7 +134,10 @@ std::function<void()> guarded(std::shared_ptr<Shared> sh, std::function<void(Sha
         std::function<void(Shared&)> dropped;
         std::atomic<bool> ran{false};
         ~Guard() {
-            if (!ran.load() && dropped) dropped(*sh);
+            if (!ran.load() && dropped) {
+                dropped(*sh);
+                sh->wake.give();
+            }
         }
     };
     auto g = std::make_shared<Guard>();
@@ -187,52 +203,46 @@ Result<std::unique_ptr<ItemReader>> ItemReader::open(const std::string& item,
     sh->ring = os::LargeBuffer::allocate(std::max(deps.ring_bytes, 2 * read_bytes));
     if (!sh->ring.ok()) return R::err(ErrorCode::NoMemory, "media ring");
 
-    // The file's size, on the storage worker.
+    // The file's size, by a job on the same worker and lane as the
+    // refills: the Interactive lane is never queued behind a scan.
     struct Stat {
         bool done = false;
+        bool dropped = false;  // the job went without running
         std::optional<Result<uint64_t>> size;
     };
     auto st = std::make_shared<Stat>();
-    if (sh->library != nullptr) {
-        sh->library->stat(sh->path, [sh, st](Result<MediaEntry> r) {
-            {
-                std::lock_guard<os::Mutex> lock(sh->mu);
-                if (!r) {
-                    st->size.emplace(Result<uint64_t>::err(r.error().code, r.error().message));
-                } else if (r.value().dir) {
-                    st->size.emplace(Result<uint64_t>::err(ErrorCode::NotFound, "a folder"));
-                } else {
-                    st->size.emplace(Result<uint64_t>::ok(r.value().size));
-                }
+    std::optional<uint64_t> refused_since;
+    for (;;) {
+        st->dropped = false;
+        auto job = guarded(
+            sh,
+            [st](Shared& s) {
+                auto r = s.lookup();
+                std::lock_guard<os::Mutex> lock(s.mu);
+                st->size.emplace(std::move(r));
                 st->done = true;
+            },
+            [st](Shared& s) {
+                std::lock_guard<os::Mutex> lock(s.mu);
+                if (!st->done) st->dropped = true;
+            });
+        if (sh->submit(std::move(job))) {
+            Result<void> waited =
+                wait_for(*sh, [&st] { return st->done || st->dropped; }, deps.abort);
+            if (!waited) {
+                sh->close_and_wait();
+                return R::err(waited.error().code, waited.error().message);
             }
-            sh->wake.give();
-        });
-    } else {
-        const uint64_t first_refusal = os::now_ms();
-        for (;;) {
-            auto job = guarded(
-                sh,
-                [st](Shared& s) {
-                    auto r = s.files->stat(s.scene, s.name);
-                    std::lock_guard<os::Mutex> lock(s.mu);
-                    st->size.emplace(r ? Result<uint64_t>::ok(r.value().size)
-                                       : Result<uint64_t>::err(r.error().code, r.error().message));
-                    st->done = true;
-                },
-                nullptr);
-            if (sh->submit(std::move(job))) break;
-            if (os::now_ms() - first_refusal >= kRefusedGiveUpMs) {
-                return R::err(ErrorCode::Busy, "storage refused the lookup");
-            }
-            if (deps.abort && deps.abort()) return R::err(ErrorCode::Timeout, "aborted");
-            os::sleep_ms(kPollMs);
+            if (st->done) break;
         }
-    }
-    Result<void> waited = wait_for(*sh, [&st] { return st->done; }, deps.abort);
-    if (!waited) {
-        sh->close_and_wait();
-        return R::err(waited.error().code, waited.error().message);
+        // Refused, or dropped unrun: tried again like a refused refill.
+        const uint64_t now = os::now_ms();
+        if (!refused_since) refused_since = now;
+        if (now - *refused_since >= kRefusedGiveUpMs) {
+            return R::err(ErrorCode::Busy, "storage refused the lookup");
+        }
+        if (deps.abort && deps.abort()) return R::err(ErrorCode::Timeout, "aborted");
+        os::sleep_ms(kPollMs);
     }
     Result<uint64_t> size = std::move(*st->size);
     if (!size) return R::err(size.error().code, size.error().message);

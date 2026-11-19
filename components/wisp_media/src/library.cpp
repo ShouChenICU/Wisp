@@ -761,18 +761,26 @@ void MediaLibrary::stat(std::string path, Done<MediaEntry> done) {
     Result<std::string> rel = normalize(path);
     if (!rel) return done(forward<MediaEntry>(rel));
     if (auto a = m.check_available(); !a) return done(forward<MediaEntry>(a));
-    m.call<MediaEntry>(std::move(done), [&m, rel = std::move(rel.value())]() -> R {
-        WISP_TRY(m.check_available());
-        auto [parent, name] = split_parent(rel);
-        auto e = m.entry_of(parent, name);
-        if (!e && e.error().code == ErrorCode::NotFound) {
-            m.resolve_leftovers(rel);
-            e = m.entry_of(parent, name);
-        }
-        if (!e) return forward<MediaEntry>(e);
-        const core::DirEntry& d = e.value();
-        return R::ok(MediaEntry{d.name, d.kind == core::EntryKind::Dir, d.size, d.mtime});
-    });
+    m.call<MediaEntry>(std::move(done),
+                       [this, rel = std::move(rel.value())]() -> R { return stat_now(rel); });
+}
+
+Result<MediaEntry> MediaLibrary::stat_now(const std::string& path) {
+    using R = Result<MediaEntry>;
+    WISP_ASSERT_SD_IO_THREAD("MediaLibrary::stat_now");
+    Impl& m = *impl_;
+    Result<std::string> rel = normalize(path);
+    if (!rel) return forward<MediaEntry>(rel);
+    WISP_TRY(m.check_available());
+    auto [parent, name] = split_parent(rel.value());
+    auto e = m.entry_of(parent, name);
+    if (!e && e.error().code == ErrorCode::NotFound) {
+        m.resolve_leftovers(rel.value());
+        e = m.entry_of(parent, name);
+    }
+    if (!e) return forward<MediaEntry>(e);
+    const core::DirEntry& d = e.value();
+    return R::ok(MediaEntry{d.name, d.kind == core::EntryKind::Dir, d.size, d.mtime});
 }
 
 void MediaLibrary::read(std::string path, uint64_t off, size_t len, Done<os::LargeBuffer> done) {
