@@ -13,7 +13,7 @@ dependencies:
       require: private
       version: '>=4.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
   espressif/esp_board_manager:
@@ -85,7 +85,7 @@ dependencies:
     component_hash: 216e7a5dfe4b9ee53e840fea74dadd7aedf097f6bbb1b60800f2046f3d72d9de
     dependencies: []
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.7.2
   espressif/esp_codec_dev:
@@ -111,7 +111,7 @@ dependencies:
       require: private
       version: '>=4.4.2'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.2.1
   espressif/esp_lcd_co5300:
@@ -220,7 +220,7 @@ dependencies:
       - if: target not in ["linux"]
       version: ^1.0.0
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     targets:
     - esp32s2
@@ -267,18 +267,22 @@ dependencies:
     version: 2.0.0
 direct_dependencies:
 - bblanchon/arduinojson
+- espressif/cmake_utilities
 - espressif/esp_board_manager
+- espressif/esp_boards
 - espressif/esp_codec_dev
+- espressif/esp_io_expander
 - espressif/esp_lcd_co5300
 - espressif/esp_lcd_panel_io_additions
 - espressif/esp_lcd_touch
 - espressif/esp_new_jpeg
 - espressif/mdns
 - espressif/usb
+- espressif/usb_host_uac
 - idf
 - joltwallet/littlefs
 - lvgl/lvgl
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: c7316dfb091b60a16a67dbd0247fa28aceea8ff95c18c176c4569fe1e4f98176
+manifest_hash: 2c011c677b960942ac419d037660b60807ab8022ff6f7bcad75dc037816069ad
 target: esp32s3
 version: 3.0.0

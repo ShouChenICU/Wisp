@@ -143,6 +143,13 @@ python3 tools/check_topics.py
 # Setting defaults and ranges live in the settings schema only
 # (settings-schema spec section 4); prints the count of
 # settings-literal-ok markers so a growing count shows in CI output.
+# Every registry component in the firmware lock is pinned in
+# firmware/main/idf_component.yml, so a fresh resolve cannot move it.
+run_tool_test check_deps_test
+
+echo "==> tools/check_deps.py"
+python3 tools/check_deps.py
+
 run_tool_test check_settings_test
 
 echo "==> tools/check_settings.py"
