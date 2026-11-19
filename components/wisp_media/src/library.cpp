@@ -309,6 +309,9 @@ struct MediaLibrary::Impl {
         scan = os::make_large<Scan>();
         if (!scan) {
             WLOG_W(kTag, "no memory to scan music/");
+            std::lock_guard<os::Mutex> lock(mu);
+            // A rescan queued behind a finished one left `scanning` set.
+            if (gen == g) update_state_locked([](MediaLibraryState& st) { st.scanning = false; });
             return;
         }
         scan->id = ++scan_ids;
@@ -369,7 +372,9 @@ struct MediaLibrary::Impl {
                     s.found.push_back(std::move(*known));
                     continue;
                 }
-                s.found.push_back(read_track(sv(p.rel), p.size, p.mtime));
+                // Gone since its folder was visited: no entry.
+                if (auto e = read_track(sv(p.rel), p.size, p.mtime))
+                    s.found.push_back(std::move(*e));
                 break;  // one tag read per job
             }
             return true;
@@ -434,8 +439,9 @@ struct MediaLibrary::Impl {
     }
 
     // Reads a track's tags and duration; a file that cannot be read or
-    // parsed still becomes a track, titled after its name.
-    IndexEntry read_track(std::string_view rel, uint64_t size, int64_t mtime) {
+    // parsed still becomes a track, titled after its name. None when the
+    // file no longer exists.
+    std::optional<IndexEntry> read_track(std::string_view rel, uint64_t size, int64_t mtime) {
         self.tag_reads_.fetch_add(1, std::memory_order_relaxed);
         IndexEntry e;
         e.id = large(rel);
@@ -476,6 +482,8 @@ struct MediaLibrary::Impl {
                 }
                 if (info) duration_ms = info.value().duration_ms;
             }
+        } else if (head.error().code == ErrorCode::NotFound) {
+            return std::nullopt;
         } else {
             WLOG_W(kTag, "reading %.*s: %s", static_cast<int>(rel.size()), rel.data(),
                    head.error().message.c_str());
@@ -544,7 +552,9 @@ struct MediaLibrary::Impl {
         auto [parent, name] = split_parent(std::string(rel));
         Result<core::DirEntry> e = entry_of(parent, name);
         if (!e || e.value().kind != core::EntryKind::File) return;
-        IndexEntry entry = read_track(rel, e.value().size, e.value().mtime);
+        std::optional<IndexEntry> read = read_track(rel, e.value().size, e.value().mtime);
+        if (!read) return;
+        IndexEntry entry = std::move(*read);
         {
             std::lock_guard<os::Mutex> lock(mu);
             if (gen != g) return;
@@ -580,10 +590,10 @@ struct MediaLibrary::Impl {
                 index_changed_locked();
             }
         }
-        if (changed) {
-            note_touched(rel);
-            save_soon();
-        }
+        // Also when the index had no entry: a running scan may have the file
+        // queued from its folder's visit, and must not add it back.
+        note_touched(rel);
+        if (changed) save_soon();
         std::function<void(const std::string&)> cb;
         {
             std::lock_guard<os::Mutex> lock(mu);
@@ -647,6 +657,33 @@ struct MediaLibrary::Impl {
         WLOG_I(kTag, "recovered %s", rel.c_str());
         auto e = entry_of(dir, target);
         return e ? std::optional<core::DirEntry>(std::move(e.value())) : std::nullopt;
+    }
+
+    // Whether a regular file is at `path`: a zero-length read is a stat
+    // that does not walk the folder.
+    bool file_exists(const std::string& path) {
+        return static_cast<bool>(storage.read_range(path, 0, 0));
+    }
+
+    // walk_dir()'s recovery for the one name `rel`, for the calls that name
+    // a file without listing its folder (AGENTS.md section 8: recover on
+    // read): a ".done" is promoted when the target is missing and dropped
+    // when it is not, so it can never bring back a file removed later.
+    // With `drop_part`, an unowned ".part" goes too (remove()).
+    void resolve_leftovers(const std::string& rel, bool drop_part = false) {
+        if (is_writing(rel)) return;
+        auto [parent, name] = split_parent(rel);
+        const std::string dir = abs(parent);
+        const std::string done = dir + "/." + name + std::string(kDoneSuffix);
+        if (drop_part) (void)storage.remove_tree(dir + "/." + name + std::string(kPartSuffix));
+        if (!file_exists(done)) return;
+        const std::string target = abs(rel);
+        Result<os::LargeBuffer> probe = storage.read_range(target, 0, 0);
+        if (!probe && probe.error().code == ErrorCode::NotFound) {
+            if (storage.rename(done, target)) WLOG_I(kTag, "recovered %s", rel.c_str());
+        } else {
+            (void)storage.remove_tree(done);
+        }
     }
 
     // One entry of `dir`, visited rather than listed: a folder may hold
@@ -728,6 +765,10 @@ void MediaLibrary::stat(std::string path, Done<MediaEntry> done) {
         WISP_TRY(m.check_available());
         auto [parent, name] = split_parent(rel);
         auto e = m.entry_of(parent, name);
+        if (!e && e.error().code == ErrorCode::NotFound) {
+            m.resolve_leftovers(rel);
+            e = m.entry_of(parent, name);
+        }
         if (!e) return forward<MediaEntry>(e);
         const core::DirEntry& d = e.value();
         return R::ok(MediaEntry{d.name, d.kind == core::EntryKind::Dir, d.size, d.mtime});
@@ -751,7 +792,12 @@ Result<os::LargeBuffer> MediaLibrary::read_now(const std::string& path, uint64_t
     Result<std::string> rel = normalize(path);
     if (!rel) return forward<os::LargeBuffer>(rel);
     WISP_TRY(m.check_available());
-    return storage_.read_range(m.abs(rel.value()), off, std::min(len, kMaxReadBytes));
+    const std::string path_abs = m.abs(rel.value());
+    Result<os::LargeBuffer> r = storage_.read_range(path_abs, off, std::min(len, kMaxReadBytes));
+    if (r || r.error().code != ErrorCode::NotFound) return r;
+    // Only a missing file pays for the check: the player reads here often.
+    m.resolve_leftovers(rel.value());
+    return storage_.read_range(path_abs, off, std::min(len, kMaxReadBytes));
 }
 
 void MediaLibrary::write(std::string path, os::LargeBuffer data, Done<void> done) {
@@ -764,6 +810,7 @@ void MediaLibrary::write(std::string path, os::LargeBuffer data, Done<void> done
         const uint32_t g = m.current_gen();
         WISP_TRY(m.check_available());
         if (m.is_writing(rel)) return Result<void>::err(ErrorCode::Busy, "being written");
+        m.resolve_leftovers(rel);
         WISP_TRY(m.storage.write_atomic(m.abs(rel), buf->span()));
         m.after_write(rel, g);
         return Result<void>::ok();
@@ -779,6 +826,9 @@ void MediaLibrary::remove(std::string path, Done<void> done) {
         const uint32_t g = m.current_gen();
         WISP_TRY(m.check_available());
         if (m.is_writing(rel)) return Result<void>::err(ErrorCode::Busy, "being written");
+        // First, so a ".done" of the file being removed cannot be promoted
+        // after it is gone.
+        m.resolve_leftovers(rel, /*drop_part=*/true);
         auto [parent, name] = split_parent(rel);
         auto e = m.entry_of(parent, name);
         if (!e) return forward<void>(e);
@@ -875,6 +925,7 @@ Result<std::unique_ptr<MediaLibrary::Writer>> MediaLibrary::begin_write(std::str
         for (const os::LargeString& w : m.writing)
             if (sv(w) == rel.value()) return R::err(ErrorCode::Busy, "being written");
     }
+    m.resolve_leftovers(rel.value());
     auto [parent, name] = split_parent(rel.value());
     WISP_TRY(storage_.make_dirs(m.abs(parent)));
     std::unique_ptr<Writer> w(new Writer(*this, g, rel.value()));

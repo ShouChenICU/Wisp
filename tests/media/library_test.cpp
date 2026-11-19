@@ -199,6 +199,22 @@ struct Fixture {
         return w.take();
     }
 
+    // Parks wisp.sd.io in a job until the returned gate is released, once
+    // the scan has read at least one file's tags (its folder is visited).
+    // Returns the tag reads done when the worker stopped.
+    uint64_t hold_sd_mid_scan(wisp::os::Semaphore& release) {
+        for (int i = 0; i < 5000 && lib->tag_reads() == 0; ++i) wisp::os::sleep_ms(1);
+        wisp::os::Semaphore started(1, 0);
+        std::atomic<uint64_t> reads{0};
+        EXPECT_TRUE(router->submit(Medium::Sd, [&, this] {
+            reads = lib->tag_reads();
+            started.give();
+            release.take(wisp::os::kForever);
+        }));
+        EXPECT_TRUE(started.take(5000));
+        return reads.load();
+    }
+
     // fn() on wisp.sd.io.
     template <class Fn>
     void on_sd(Fn fn) {
@@ -631,17 +647,33 @@ TEST(MediaLibrary, CardRemovedClearsTheIndex) {
     EXPECT_EQ(f.lib->state().get().track_count, 5u);
 }
 
+// Releases a gate when the test body exits, including by a failed ASSERT,
+// so the workers can join. Declare it after the Fixture.
+struct ReleaseOnExit {
+    wisp::os::Semaphore& sem;
+    ~ReleaseOnExit() { sem.give(); }
+};
+
 TEST(MediaLibrary, CardRemovedMidScanStopsTheScan) {
     Fixture f;
-    for (int i = 0; i < 300; ++i)
+    constexpr uint64_t kFiles = 300;
+    for (uint64_t i = 0; i < kFiles; ++i)
         write_raw(fs::path(f.root()) / "music" / ("t" + std::to_string(i) + ".wav"), "x");
     f.make_library();
     f.lib->start();
-    for (int i = 0; i < 500 && !f.lib->state().get().scanning; ++i) wisp::os::sleep_ms(1);
-    f.set_sd(false);
-    ASSERT_TRUE(f.router->drain(5000));
+    wisp::os::Semaphore release(1, 0);
+    ReleaseOnExit guard{release};
+    const uint64_t reads = f.hold_sd_mid_scan(release);
+    ASSERT_LT(reads, kFiles);
+    ASSERT_TRUE(f.lib->state().get().scanning);
+    // The removal is memory work on the bus; the scan's next job sees it.
+    f.sd_dev->online_flag = false;
+    ASSERT_TRUE(f.flash.submit([&f] { f.storage->refresh(); }));
     for (int i = 0; i < 500 && f.lib->state().get().available; ++i) wisp::os::sleep_ms(10);
+    EXPECT_FALSE(f.lib->state().get().available);
+    release.give();
     ASSERT_TRUE(f.router->drain(5000));
+    EXPECT_LE(f.lib->tag_reads(), reads + 1);  // the step that was queued saw the removal
     MediaLibraryState s = f.lib->state().get();
     EXPECT_FALSE(s.available);
     EXPECT_FALSE(s.scanning);
@@ -664,4 +696,92 @@ TEST(MediaLibrary, StopWaitsForQueuedCalls) {
     f.lib->list("music", w.cb());
     EXPECT_EQ(w.take().error().code, ErrorCode::StorageUnavailable);
     f.lib->stop();  // idempotent
+}
+
+TEST(MediaLibrary, WritesAndRemovesDuringAScanSurviveIt) {
+    Fixture f;
+    constexpr int kFiles = 600;
+    for (int i = 0; i < kFiles; ++i)
+        write_raw(fs::path(f.root()) / "music" / ("t" + std::to_string(i) + ".wav"), "x");
+    f.make_library();
+    f.lib->start();
+    wisp::os::Semaphore release(1, 0);
+    ReleaseOnExit guard{release};
+    // The scan reads the folder from one end, in the order the file system
+    // lists it: the middle of the folder is still waiting for its tag read.
+    ASSERT_LT(f.hold_sd_mid_scan(release), static_cast<uint64_t>(kFiles / 2 - 30));
+    auto name = [](int i) { return "music/t" + std::to_string(i) + ".wav"; };
+    constexpr int kMid = kFiles / 2;
+
+    // Queued behind the gate, so they run while the scan is in progress.
+    std::vector<std::unique_ptr<Wait<void>>> waits;
+    for (int i = kMid; i < kMid + 12; ++i) {
+        waits.push_back(std::make_unique<Wait<void>>());
+        f.lib->remove(name(i), waits.back()->cb());
+    }
+    Wait<void> wrote;
+    f.lib->write("music/new.wav", buffer_of(read_raw(wisp::test::media_data("sine_16k_mono.wav"))),
+                 wrote.cb());
+    // Removed behind the library's back: the scan's tag read finds nothing.
+    for (int i = kMid + 12; i < kMid + 24; ++i) fs::remove(fs::path(f.root()) / name(i));
+    release.give();
+    for (auto& w : waits) EXPECT_TRUE(w->take());
+    EXPECT_TRUE(wrote.take());
+    f.wait_ready();
+
+    const uint32_t expected = kFiles - 24 + 1;
+    EXPECT_EQ(f.all_tracks().total, expected);
+    for (int i = kMid; i < kMid + 24; ++i) EXPECT_FALSE(f.lib->track(name(i))) << i;
+    ASSERT_TRUE(f.lib->track("music/new.wav"));
+    EXPECT_EQ(f.lib->track("music/new.wav")->duration_s, 1u);
+
+    // What was saved matches the card: a reboot reads no tags.
+    f.lib.reset();
+    f.start();
+    EXPECT_EQ(f.lib->tag_reads(), 0u);
+    EXPECT_EQ(f.all_tracks().total, expected);
+}
+
+TEST(MediaLibrary, StaleDoneNeverResurrectsAFile) {
+    Fixture f;
+    f.start();
+    const fs::path dl = fs::path(f.root()) / "download";
+
+    // A commit cut before the old file was removed: both are there. A
+    // remove() without a listing first must not leave the ".done" to come
+    // back later.
+    write_raw(dl / "f.bin", "old");
+    write_raw(dl / ".f.bin.done", "stale");
+    ASSERT_TRUE(f.remove("download/f.bin"));
+    EXPECT_FALSE(on_disk(dl / ".f.bin.done"));
+    EXPECT_TRUE(f.list("download").empty());
+    EXPECT_FALSE(on_disk(dl / "f.bin"));
+
+    // The same leftover is dropped by a listing: the target is kept.
+    write_raw(dl / "h.bin", "old");
+    write_raw(dl / ".h.bin.done", "stale");
+    EXPECT_EQ(names(f.list("download")), (std::vector<std::string>{"h.bin"}));
+    EXPECT_EQ(read_raw(dl / "h.bin"), "old");
+    EXPECT_FALSE(on_disk(dl / ".h.bin.done"));
+
+    // Cut after the old file was removed: stat() and read() recover it.
+    write_raw(dl / ".g.bin.done", "complete");
+    Wait<MediaEntry> st;
+    f.lib->stat("download/g.bin", st.cb());
+    auto e = st.take();
+    ASSERT_TRUE(e) << e.error().message;
+    EXPECT_EQ(e.value().size, 8u);
+    write_raw(dl / ".r.bin.done", "recovered");
+    Wait<wisp::os::LargeBuffer> rd;
+    f.lib->read("download/r.bin", 0, 100, rd.cb());
+    auto r = rd.take();
+    ASSERT_TRUE(r) << r.error().message;
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(r.value().data()), r.value().size()),
+              "recovered");
+    EXPECT_FALSE(on_disk(dl / ".r.bin.done"));
+
+    // remove() also takes a torn ".part" nobody writes.
+    write_raw(dl / ".p.bin.part", "torn");
+    EXPECT_EQ(f.remove("download/p.bin").error().code, ErrorCode::NotFound);
+    EXPECT_FALSE(on_disk(dl / ".p.bin.part"));
 }
