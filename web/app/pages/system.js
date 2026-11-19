@@ -136,7 +136,7 @@ export async function confirmLogout() {
  * @property {'active'|'dim'|'standby'|'deep_standby'} level
  * @property {'on'|'off'|'unsupported'} light_sleep
  * @property {number} deferred  scene requests waiting for the network
- * @property {{id: number, holder: string, kind: 'network'|'cpu'|'screen', reason: string, held_ms: number}[]} locks
+ * @property {{id: number, holder: string, kind: 'network'|'cpu'|'screen'|'audio', reason: string, held_ms: number}[]} locks
  *
  * @typedef {Object} TimeStatus  GET /system/time
  * @property {boolean} synced         a sync succeeded since the device started

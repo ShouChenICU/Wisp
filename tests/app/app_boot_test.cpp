@@ -1064,6 +1064,29 @@ TEST(AppNotifications, WakeLockReminderPosts) {
     EXPECT_EQ(notes->unread_count(), 2u);
 }
 
+// Media spec 6: long music is expected and audible, so the player's locks
+// earn no reminder; another holder's still do.
+TEST(SystemNotices, NoReminderForSystemMedia) {
+    using wisp::core::WakeLockKind;
+    auto h = make_app({.with_display = false});
+    ASSERT_TRUE(h.app.start());
+    wisp::core::NotificationService* notes = h.app.notifications();
+    ASSERT_NE(notes, nullptr);
+    wisp::core::WakeLockRegistry& locks = h.app.wakelocks();
+    locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Cpu, "playing");
+    locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Audio, "playing");
+
+    const uint64_t later = wisp::os::now_ms() + 31 * 60 * 1000;
+    wisp::app::post_wakelock_reminders(locks, *notes, later);
+    EXPECT_EQ(notes->unread_count(), 0u);
+
+    locks.acquire("system.net", WakeLockKind::Cpu, "sync");
+    wisp::app::post_wakelock_reminders(locks, *notes, later + 31 * 60 * 1000);
+    EXPECT_TRUE(notes->find("system", "wakelock_long:system.net").has_value());
+    EXPECT_FALSE(notes->find("system", "wakelock_long:system.media").has_value());
+    EXPECT_EQ(notes->unread_count(), 1u);
+}
+
 TEST(AppNotifications, StopSavesPendingNotices) {
     auto h = make_app({.with_display = false});
     ASSERT_TRUE(h.app.start());

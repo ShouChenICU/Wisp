@@ -62,6 +62,8 @@ TEST(WakeLockRegistry, KindNames) {
     EXPECT_STREQ(wisp::core::to_string(WakeLockKind::Screen), "screen");
 }
 
+TEST(WakeLock, AudioKindName) { EXPECT_STREQ(wisp::core::to_string(WakeLockKind::Audio), "audio"); }
+
 TEST(WakeLockRegistry, AcquireReleaseListAndEvents) {
     Fixture f;
     int changes = 0;

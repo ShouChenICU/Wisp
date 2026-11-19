@@ -648,6 +648,7 @@ export default {
   'power.kind.network': '网络',
   'power.kind.cpu': 'CPU',
   'power.kind.screen': '屏幕',
+  'power.kind.audio': '音频',
   'power.held': '持续时长',
   'occ.title': '外设占用',
   'occ.load_failed': '无法读取外设占用：{reason}',

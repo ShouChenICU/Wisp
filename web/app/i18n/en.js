@@ -649,6 +649,7 @@ export default {
   'power.kind.network': 'Network',
   'power.kind.cpu': 'CPU',
   'power.kind.screen': 'Screen',
+  'power.kind.audio': 'Audio',
   'power.held': 'Held for',
   'occ.title': 'Peripheral use',
   'occ.load_failed': 'Couldn\'t read peripheral use: {reason}',

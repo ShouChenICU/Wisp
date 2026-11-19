@@ -18,6 +18,8 @@ const char* to_string(WakeLockKind kind) {
             return "cpu";
         case WakeLockKind::Screen:
             return "screen";
+        case WakeLockKind::Audio:
+            return "audio";
     }
     return "cpu";
 }

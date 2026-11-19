@@ -648,6 +648,7 @@ export default {
   'power.kind.network': 'ネットワーク',
   'power.kind.cpu': 'CPU',
   'power.kind.screen': '画面',
+  'power.kind.audio': 'オーディオ',
   'power.held': '保持時間',
   'occ.title': '周辺機器の使用状況',
   'occ.load_failed': '周辺機器の使用状況を取得できません：{reason}',
