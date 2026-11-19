@@ -387,6 +387,7 @@ wisp_test(NAME voice_service_test SRCS voice/voice_service_test.cpp
 # wisp_media: path rules, error names, tag and header parsing.
 wisp_test(NAME media_path_test SRCS media/path_test.cpp LIBS wisp_media)
 wisp_test(NAME media_errors_test SRCS media/errors_test.cpp LIBS wisp_media)
+wisp_test(NAME media_play_queue_test SRCS media/play_queue_test.cpp LIBS wisp_media wisp_port_sim_os)
 wisp_test(NAME media_tags_test SRCS media/tags_test.cpp LIBS wisp_media wisp_port_sim_os)
 target_compile_definitions(media_tags_test PRIVATE
     WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
