@@ -916,6 +916,11 @@ void MediaLibrary::set_on_removed(std::function<void(const std::string& path)> c
 
 // ---- Writer ---------------------------------------------------------------
 
+bool MediaLibrary::submit(core::IoLane lane, std::function<void()> job) {
+    if (!job) return false;
+    return impl_->post(lane, std::move(job));
+}
+
 Result<std::unique_ptr<MediaLibrary::Writer>> MediaLibrary::begin_write(std::string path) {
     using R = Result<std::unique_ptr<Writer>>;
     WISP_ASSERT_SD_IO_THREAD("MediaLibrary::begin_write");

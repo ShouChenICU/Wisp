@@ -181,6 +181,13 @@ public:
     // full lane); completion shows in state().
     void rescan();
 
+    // Queues `job` on the card's worker as one of the library's own jobs,
+    // so stop() waits for it: for streams a caller drives through a Writer
+    // (wisp/media/library_sink.hpp). False when the library is stopping
+    // or the lane is full; `job` is then dropped unrun. Without a router
+    // it runs inline.
+    bool submit(core::IoLane lane, std::function<void()> job);
+
     // On wisp.sd.io (or wisp.fs without it) only.
     Result<std::unique_ptr<Writer>> begin_write(std::string path);
     Result<os::LargeBuffer> read_now(const std::string& path, uint64_t off, size_t len);
