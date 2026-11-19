@@ -826,6 +826,29 @@ TEST(StorageManager, RemoveTreeRecursiveAndMissingOk) {
     EXPECT_EQ(f.mgr->remove_tree(f.in).error().code, wisp::ErrorCode::InvalidArgument);
 }
 
+TEST(StorageManager, MakeDirsCreatesParentsAndRefusesFiles) {
+    Fixture f(true);
+    ASSERT_TRUE(f.mgr->init());
+    std::string d = f.sd + "/media/music/a/b";
+    ASSERT_TRUE(f.mgr->make_dirs(d));
+    struct stat st{};
+    ASSERT_EQ(stat(d.c_str(), &st), 0);
+    EXPECT_TRUE(S_ISDIR(st.st_mode));
+    EXPECT_TRUE(f.mgr->make_dirs(d));  // already there
+
+    ASSERT_TRUE(f.mgr->write_atomic(f.sd + "/media/file.bin", view("x")));
+    EXPECT_EQ(f.mgr->make_dirs(f.sd + "/media/file.bin/sub").error().code,
+              wisp::ErrorCode::IoError);
+    EXPECT_EQ(f.mgr->make_dirs(f.sd + "/media/../x").error().code,
+              wisp::ErrorCode::InvalidArgument);
+    EXPECT_EQ(f.mgr->make_dirs("/elsewhere/x").error().code, wisp::ErrorCode::InvalidArgument);
+
+    f.sd_dev->online_flag = false;
+    f.mgr->refresh();
+    EXPECT_EQ(f.mgr->make_dirs(f.sd + "/media/music/c").error().code,
+              wisp::ErrorCode::StorageUnavailable);
+}
+
 TEST(StorageManager, RenameRefusesExistingTarget) {
     Fixture f(false);
     ASSERT_TRUE(f.mgr->init());

@@ -1084,6 +1084,26 @@ Result<void> StorageManager::remove_tree(const std::string& raw_path) {
     return Result<void>::ok();
 }
 
+Result<void> StorageManager::make_dirs(const std::string& raw_path) {
+    Result<Medium> picked = medium_for_call(raw_path);
+    if (!picked) {
+        return Result<void>::err(picked.error().code, picked.error().message);
+    }
+    const Medium medium = picked.value();
+    WISP_ASSERT_MEDIUM_THREAD(medium == Medium::Sd, "StorageManager::make_dirs");
+    std::lock_guard<os::Mutex> io(io_mu(medium));
+    const View v = view();
+
+    Result<std::string> checked = checked_path(v, raw_path, /*mutating=*/true);
+    if (!checked) {
+        return Result<void>::err(checked.error().code, checked.error().message);
+    }
+    const std::string& path = checked.value();
+    WISP_TRY(check_locked_medium(v, path, medium));
+    WISP_TRY(check_contained(v, path));
+    return mkdir_p(path);
+}
+
 Result<void> StorageManager::rename(const std::string& raw_from, const std::string& raw_to) {
     Result<Medium> picked = medium_for_call(raw_from);
     if (!picked) {

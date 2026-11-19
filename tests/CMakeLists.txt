@@ -397,6 +397,11 @@ wisp_test(NAME minimp3_decoder_test SRCS sim/minimp3_decoder_test.cpp
 target_compile_definitions(minimp3_decoder_test PRIVATE
     WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
 
+wisp_test(NAME media_library_test SRCS media/library_test.cpp
+          LIBS wisp_media wisp_port_sim_os TIMEOUT 60)
+target_compile_definitions(media_library_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
 # Committed media files (tools/gen_media_test_data.sh).
 wisp_test(NAME media_test_data_test SRCS media/test_data_test.cpp LIBS)
 target_compile_definitions(media_test_data_test PRIVATE
