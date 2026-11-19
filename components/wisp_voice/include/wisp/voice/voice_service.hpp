@@ -79,13 +79,18 @@
 // (log "voice: round backstop"). set_llm_busy() counts because a turn
 // that runs tools for minutes without speaking yet is still alive.
 //
-// Sharing the output (spec 4.4). TonePlayer and PcmPlayer must never have
-// the AudioOut open at once. Install may_play_tone() as the TonePlayer's
-// output guard; it and the speech's player.begin() decide under one mutex,
-// so the decision and the open cannot interleave. An Alarm always wins
-// (speech stops, then the alarm opens the output); a Tone while speech
-// holds the output is skipped. The guard captures this service: clear it
-// (set_output_guard(nullptr)) before destroying the service.
+// Sharing the output (spec 4.4, media-library spec 5). With an
+// AudioArbiter in the deps, the speech takes a Voice lease before
+// player.begin() and keeps it until the player has closed the output
+// again (an end_playback() waits out the chunk being written; otherwise
+// the task drops it at its next pass), so TonePlayer and the media player
+// never have the AudioOut open with it. The arbiter makes the rules: a
+// tone or an alarm sounding holds the speech back up to its tone_wait_ms
+// (then the turn's speech gives way), and an alarm stops the speech
+// through the voice stop this service registers from start() to stop()
+// (stop_speaking()). The mic holds an input lease while it is open
+// (primed or capturing), so music pauses for recording; tones still
+// sound, the start tone included.
 //
 // Events: "voice.state" (source kVoiceSource), the status cell's mirror,
 // one per change of the cell: {"state"}; error carries "reason" and is
@@ -100,9 +105,8 @@
 // and unprime() move a sequence number and wake it (so a prime() the task
 // has not seen yet is still undone by its unprime(), and neither takes
 // the queue's room from a BeginCapture); wake-ups never block (they
-// coalesce into one queued command). The exceptions
-// that do wait are may_play_tone(Alarm) (up to kAlarmWaitMs, on wisp.tone)
-// and stop(). Commands go through an os::Queue (its slots in Mem::Large);
+// coalesce into one queued command). The exception that
+// does wait is stop(). Commands go through an os::Queue (its slots in Mem::Large);
 // the CaptureBuffer is one Mem::Large allocation of max_record_ms made at
 // start().
 //
@@ -127,6 +131,7 @@
 
 #include "wisp/base/fixed_string.hpp"
 #include "wisp/base/result.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/state_cell.hpp"
@@ -193,6 +198,9 @@ struct VoiceDeps {
     TtsClient& tts;
     core::ModelProfileService& models;  // is an asr / tts profile active
     core::TonePlayer* tones = nullptr;
+    // Shares the output with the tones and the media player (see the
+    // file header); outlives the service. Null: nothing is shared.
+    core::AudioArbiter* arbiter = nullptr;
     core::WakeLockRegistry* locks = nullptr;
     std::function<bool()> network_up;
     // A connection is being made or will be
@@ -222,11 +230,8 @@ struct VoiceConfig {
 class VoiceService {
 public:
     // How long capture waits for the start tone to end before opening the
-    // mic, and speech for a tone to end before opening the output.
+    // mic (speech waits for a tone by the arbiter's tone_wait_ms).
     static constexpr uint32_t kToneWaitMs = 300;
-    // How long the output guard waits for speech to close the output
-    // before an alarm.
-    static constexpr uint32_t kAlarmWaitMs = 500;
     static constexpr const char* kHolder = "system.voice";
     static constexpr const char* kLockReason = "voice_turn";
 
@@ -288,12 +293,6 @@ public:
     // state. Any thread; an atomic, so it is cheap enough for every frame.
     uint8_t level() const { return level_.load(std::memory_order_relaxed); }
 
-    // For TonePlayer::set_output_guard() (see the file header): an Alarm
-    // stops the speech and waits up to kAlarmWaitMs for the output to
-    // close, then plays; a Tone is skipped while speech has the output.
-    // Runs on wisp.tone.
-    bool may_play_tone(core::ToneKind kind);
-
 private:
     enum class Cmd : uint8_t { None, BeginCapture, Wake, Quit };
     struct Command {
@@ -344,8 +343,14 @@ private:
     // at once by more.
     bool pump_speech();
     void speak_sentence(const std::string& text, uint32_t index, uint32_t gen);
-    // Opens the player for the turn's first PCM, deciding under out_mu_.
+    // Takes the output lease and opens the player for the turn's first
+    // PCM; false when the arbiter refused or the player did not open.
     bool begin_output(uint32_t rate, const std::function<bool()>& stopped);
+    // Drops the output lease once the player has closed the output.
+    void settle_output();
+    // The mic, with its input lease.
+    Result<void> open_mic();
+    void close_mic();
     // Ends the speech the task was playing; true if it was speaking (the
     // caller publishes idle once the round is settled).
     bool end_playback(bool stop_player);
@@ -399,12 +404,11 @@ private:
     bool llm_busy_ = false;  // speech_mu_
     std::atomic<uint32_t> speech_gen_{0};
 
-    // Who opens the AudioOut next: the guard and begin_output() decide
-    // under it.
-    os::Mutex out_mu_;
-
-    // Task only: the speech it is playing.
+    // Task only: the speech it is playing, and the arbiter's leases (see
+    // the file header).
     uint32_t playing_gen_ = 0;
+    core::AudioArbiter::Lease out_lease_;
+    core::AudioArbiter::Lease mic_lease_;
     bool player_begun_ = false;
     bool draining_ = false;
 

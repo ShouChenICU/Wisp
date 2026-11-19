@@ -36,6 +36,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/app/system_notices.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
 #include "wisp/core/device_service.hpp"
@@ -155,6 +156,10 @@ struct App::Impl {
     // posts to, started once the router and the banners are up, stopped
     // with the agent (whose tools use it) and reset after it.
     std::unique_ptr<core::ReminderScheduler> reminders;
+    // Shares the main speaker between the sounds, the speech and music
+    // (media-library spec 5): built before tones, reset after it and
+    // after the voice.
+    std::unique_ptr<core::AudioArbiter> audio_arbiter;
     // The notification sounds over the main speaker (scene-device spec
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.

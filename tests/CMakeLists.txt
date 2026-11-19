@@ -104,6 +104,8 @@ wisp_test(NAME scene_files_test SRCS core/scene_files_test.cpp
 wisp_test(NAME wakelock_test SRCS core/wakelock_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME audio_arbiter_test SRCS core/audio_arbiter_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME tone_player_test SRCS core/tone_player_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME occupancy_test SRCS core/occupancy_test.cpp LIBS wisp_core wisp_port_sim_os)

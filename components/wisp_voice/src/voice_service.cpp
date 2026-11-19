@@ -130,6 +130,7 @@ Result<void> VoiceService::start() {
     prime_seen_ = prime_seq_.load();
     task_ = os::Task::spawn(task_config(config_), [this] { run(); });
     if (!task_) return Result<void>::err(ErrorCode::NoMemory, "cannot start wisp.voice");
+    if (deps_.arbiter != nullptr) deps_.arbiter->set_voice_stop([this] { stop_speaking(); });
     std::lock_guard<os::Mutex> lock(locks_mu_);
     started_ = true;
     return Result<void>::ok();
@@ -137,6 +138,8 @@ Result<void> VoiceService::start() {
 
 void VoiceService::stop() {
     if (!task_) return;
+    // The arbiter calls into the service: no longer once this returns.
+    if (deps_.arbiter != nullptr) deps_.arbiter->set_voice_stop(nullptr);
     {
         std::lock_guard<os::Mutex> lock(locks_mu_);
         started_ = false;
@@ -350,47 +353,43 @@ void VoiceService::set_llm_busy(bool busy) {
     wake();
 }
 
-bool VoiceService::may_play_tone(core::ToneKind kind) {
-    if (kind == core::ToneKind::Alarm) {
-        // Under out_mu_ only to wait out a begin_output() in progress:
-        // TonePlayer::playing() is already true, so no speech opens the
-        // output after this, and what did open it is stopped next.
-        {
-            std::lock_guard<os::Mutex> lock(out_mu_);
-        }
-        stop_speaking();
-        wait_for([this] { return !deps_.player.active(); }, kAlarmWaitMs);
-        return true;
+bool VoiceService::begin_output(uint32_t rate, const std::function<bool()>& stopped) {
+    // The last stream closing: its lease goes with it (settle_output()).
+    wait_for([this] { return !deps_.player.active(); }, PcmPlayer::kBeginWaitMs);
+    // Taken before the output opens and kept until it has closed again;
+    // the arbiter makes this wait out a tone or an alarm (up to its
+    // tone_wait_ms), and this turn's speech gives way past it.
+    core::AudioArbiter::Lease lease;
+    if (deps_.arbiter != nullptr) {
+        lease = deps_.arbiter->acquire(core::AudioKind::Voice, stopped);
+        if (!lease.valid()) return false;
     }
-    std::lock_guard<os::Mutex> lock(out_mu_);
-    return !deps_.player.active();
+    if (auto r = deps_.player.begin(rate, volume_of(deps_)); !r) {
+        WLOG_W(kTag, "no speech output: %s", r.error().message.c_str());
+        return false;
+    }
+    // Replaces a lease still held for a stream that did not close in time
+    // only now, so that output is never left without one meanwhile.
+    out_lease_ = std::move(lease);
+    return true;
 }
 
-bool VoiceService::begin_output(uint32_t rate, const std::function<bool()>& stopped) {
-    // The last stream closing, outside the lock: the guard must not wait
-    // behind it.
-    wait_for([this] { return !deps_.player.active(); }, PcmPlayer::kBeginWaitMs);
-    const uint64_t deadline = os::now_ms() + kToneWaitMs;
-    for (;;) {
-        {
-            std::lock_guard<os::Mutex> lock(out_mu_);
-            // A sound that has been asked for owns the output from play()
-            // until it has closed it (TonePlayer::playing()); checking
-            // that and opening under out_mu_ is what the guard decides
-            // against.
-            if (deps_.tones == nullptr || !deps_.tones->playing()) {
-                if (auto r = deps_.player.begin(rate, volume_of(deps_)); !r) {
-                    WLOG_W(kTag, "no speech output: %s", r.error().message.c_str());
-                    return false;
-                }
-                return true;
-            }
-        }
-        // An alarm keeps the output; past kToneWaitMs this turn's speech
-        // gives way.
-        if (stopped() || os::now_ms() >= deadline) return false;
-        os::sleep_ms(1);
-    }
+void VoiceService::settle_output() {
+    if (out_lease_.valid() && !player_begun_ && !deps_.player.active()) out_lease_.release();
+}
+
+Result<void> VoiceService::open_mic() {
+    // Music pauses while the mic is open (media-library spec 5.2).
+    if (deps_.arbiter != nullptr && !mic_lease_.valid())
+        mic_lease_ = deps_.arbiter->acquire_input();
+    auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1});
+    if (!opened) mic_lease_.release();
+    return opened;
+}
+
+void VoiceService::close_mic() {
+    deps_.mic->close();
+    mic_lease_.release();
 }
 
 bool VoiceService::wait_for(const std::function<bool()>& done, uint32_t timeout_ms) {
@@ -521,10 +520,15 @@ void VoiceService::run() {
             if (quit_.load()) break;
         }
         more = pump_speech();
+        settle_output();
         if (player_begun_) publish_level(VoiceState::Speaking, deps_.player.level());
         check_backstop();
     }
     if (player_begun_ && end_playback(true)) publish(VoiceState::Idle);
+    // stop() stopped the player; the arbiter gets the leases back before
+    // the task ends.
+    out_lease_.release();
+    mic_lease_.release();
 }
 
 bool VoiceService::read_frame(std::span<int16_t> frame) {
@@ -550,7 +554,7 @@ VoiceService::Primed VoiceService::prime_mic(uint32_t seq) {
     if (player_begun_ || deps_.player.active()) return {};
     if (deps_.tones != nullptr && deps_.tones->playing()) return {};
     if (speech_has_work()) return {};
-    if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {
+    if (auto opened = open_mic(); !opened) {
         WLOG_W(kTag, "prime: mic: %s", opened.error().message.c_str());
         return {};
     }
@@ -589,7 +593,7 @@ VoiceService::Primed VoiceService::prime_mic(uint32_t seq) {
     if (begin && begin->mode == CaptureMode::Hold && !quit_.load()) {
         return {.begin = begin, .mic_open = true};
     }
-    deps_.mic->close();
+    close_mic();
     buf.clear();
     return {.begin = begin, .mic_open = false};
 }
@@ -624,7 +628,7 @@ void VoiceService::capture(const Command& c, bool primed) {
         refused = VoiceError::Offline;
     }
     if (primed && (cancelled_early || refused)) {
-        deps_.mic->close();
+        close_mic();
         buf.clear();
     }
     if (cancelled_early) return finish(nullptr);
@@ -648,7 +652,7 @@ void VoiceService::capture(const Command& c, bool primed) {
             deps_.tones->play(core::ToneKind::Tone, volume_of(deps_));
             wait_for([this] { return !deps_.tones->playing(); }, kToneWaitMs);
         }
-        if (auto opened = deps_.mic->open(hal::AudioFormat{kSampleRate, 1}); !opened) {
+        if (auto opened = open_mic(); !opened) {
             WLOG_W(kTag, "mic: %s", opened.error().message.c_str());
             return failed(VoiceError::MicUnavailable);
         }
@@ -657,7 +661,7 @@ void VoiceService::capture(const Command& c, bool primed) {
         for (uint32_t ms = 0; ms < kMicSettleMs; ms += kFrameMs) {
             std::span<int16_t> frame = buf.free_space();
             if (!read_frame(frame.first(std::min(frame.size(), kFrameSamples)))) {
-                deps_.mic->close();
+                close_mic();
                 return failed(VoiceError::MicUnavailable);
             }
         }
@@ -715,7 +719,7 @@ void VoiceService::capture(const Command& c, bool primed) {
         publish_level(VoiceState::Listening, vad ? vad->level() : level_of(e));
         if (verdict != VadVerdict::Continue) break;
     }
-    deps_.mic->close();
+    close_mic();
     // Signal statistics cover the recording after the pre-roll.
     WLOG_I(kTag,
            "capture ms=%u preroll_ms=%u speech_ms=%u verdict=%d peak=%d dc=%d max_rms=%d "
@@ -904,6 +908,12 @@ bool VoiceService::end_playback(bool stop_player) {
     if (stop_player) deps_.player.stop();
     player_begun_ = false;
     draining_ = false;
+    // The lease outlives the output (see settle_output()): wait out the
+    // chunk being written, so an alarm waiting for it gets the output now.
+    if (out_lease_.valid()) {
+        wait_for([this] { return !deps_.player.active(); }, PcmPlayer::kBeginWaitMs);
+        settle_output();
+    }
     return state_.load() == VoiceState::Speaking;
 }
 

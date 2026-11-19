@@ -479,10 +479,14 @@ Result<void> App::start() {
         });
     }
 
+    // Who may have the main speaker (media-library spec 5), before every
+    // sound source that takes its leases, and reset after them.
+    impl_->audio_arbiter = std::make_unique<core::AudioArbiter>();
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
     impl_->tones = std::make_unique<core::TonePlayer>(
         impl_->registry.by_role<hal::AudioOut>(hal::role::kMain), &impl_->wakelocks);
+    impl_->tones->set_arbiter(impl_->audio_arbiter.get());
     if (auto r = impl_->tones->start(); !r) {
         WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
     }
@@ -649,6 +653,7 @@ Result<void> App::start() {
             .agent = *impl->agent->service(),
             .locks = &impl->wakelocks,
             .tones = impl->tones.get(),
+            .arbiter = impl->audio_arbiter.get(),
             .http = impl->platform.http_client.get(),
             // As the agent sees it: without a Wi-Fi service the host's
             // network is assumed.
@@ -1187,6 +1192,8 @@ void App::stop() {
     impl_->power_manager.reset();
     // After power_manager, whose activity hook calls it.
     impl_->tones.reset();
+    // After every lease holder: the voice and the tones.
+    impl_->audio_arbiter.reset();
     // power_timer, which posts reminders, has stopped.
     impl_->notifications.reset();
 

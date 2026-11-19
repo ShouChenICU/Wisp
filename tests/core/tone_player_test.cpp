@@ -8,14 +8,18 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "support/wait.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/os/os.hpp"
 
 using wisp::Result;
+using wisp::core::AudioArbiter;
+using wisp::core::AudioKind;
 using wisp::core::synth_tone;
 using wisp::core::ToneKind;
 using wisp::core::TonePlayer;
@@ -249,24 +253,31 @@ TEST_F(TonePlayerTest, VolumeScalesAmplitude) {
     EXPECT_EQ(mute->opens(), 0);
 }
 
-TEST_F(TonePlayerTest, OutputGuardSkipsOrDefers) {
+TEST_F(TonePlayerTest, ArbiterSkipsOrDefers) {
     auto out = std::make_shared<RecordingAudioOut>();
     TonePlayer player(out, &locks);
     ASSERT_TRUE(player.start());
+    AudioArbiter arbiter;
+    player.set_arbiter(&arbiter);
+    // Speech holds the output.
+    auto speech = std::make_unique<AudioArbiter::Lease>(arbiter.acquire(AudioKind::Voice));
+    ASSERT_TRUE(speech->valid());
     std::mutex mu;
     std::vector<ToneKind> asked;
     std::atomic<bool> waited{false};
-    player.set_output_guard([&](ToneKind kind) {
+    std::thread closer;
+    arbiter.set_voice_stop([&] {
         {
             std::lock_guard<std::mutex> lock(mu);
-            asked.push_back(kind);
+            asked.push_back(ToneKind::Alarm);
         }
-        if (kind == ToneKind::Tone) return false;
-        // Stands in for stopping speech and waiting for its output to
-        // close: it runs on the tone task, so play() does not wait.
-        wisp::os::sleep_ms(100);
-        waited = true;
-        return true;
+        // Stands in for speech closing its output: the alarm waits for it
+        // on the tone task, so play() does not wait.
+        closer = std::thread([&] {
+            wisp::os::sleep_ms(100);
+            waited = true;
+            speech.reset();
+        });
     });
 
     // Refused: nothing opens the output.
@@ -274,7 +285,7 @@ TEST_F(TonePlayerTest, OutputGuardSkipsOrDefers) {
     ASSERT_TRUE(wait_until([&] { return !player.playing(); }, 1000));
     EXPECT_EQ(out->opens(), 0);
 
-    // Let through after the guard's wait, which play() never sees.
+    // Let through after the arbiter's wait, which play() never sees.
     const uint64_t t0 = wisp::os::now_ms();
     player.play(ToneKind::Alarm, 60);
     EXPECT_LT(wisp::os::now_ms() - t0, 50u);
@@ -282,18 +293,24 @@ TEST_F(TonePlayerTest, OutputGuardSkipsOrDefers) {
     ASSERT_TRUE(wait_until([&] { return out->frames() > 0; }, 2000));
     EXPECT_TRUE(waited.load());
     EXPECT_EQ(out->opens(), 1);
+    EXPECT_TRUE(arbiter.held(AudioKind::Alarm));
     player.silence();
     ASSERT_TRUE(wait_until([&] { return !player.playing(); }, 1000));
+    EXPECT_FALSE(arbiter.held(AudioKind::Alarm));
+    closer.join();
     {
         std::lock_guard<std::mutex> lock(mu);
-        EXPECT_EQ(asked, (std::vector<ToneKind>{ToneKind::Tone, ToneKind::Alarm}));
+        EXPECT_EQ(asked, (std::vector<ToneKind>{ToneKind::Alarm}));
     }
 
-    // Without a guard every sound plays again.
-    player.set_output_guard(nullptr);
+    // Without an arbiter every sound plays again.
+    speech = std::make_unique<AudioArbiter::Lease>(arbiter.acquire(AudioKind::Voice));
+    player.set_arbiter(nullptr);
     player.play(ToneKind::Tone, 60);
     ASSERT_TRUE(wait_until([&] { return !player.playing(); }, 2000));
     EXPECT_EQ(out->opens(), 2);
+    speech.reset();
+    arbiter.set_voice_stop(nullptr);
 }
 
 TEST(TonePlayer, TaskConfigIsPsramStack) {

@@ -23,6 +23,7 @@
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
@@ -159,11 +160,12 @@ struct VoiceServiceTest : ::testing::Test {
         tts = std::make_unique<wisp::voice::TtsClient>(server, *models);
         ASSERT_TRUE(player.start());
         ASSERT_TRUE(tones.start());
+        tones.set_arbiter(&arbiter);
     }
 
     void TearDown() override {
         server.release();
-        tones.set_output_guard(nullptr);
+        tones.set_arbiter(nullptr);
         voice.reset();
         tones.stop();
         player.stop_task();
@@ -203,6 +205,7 @@ struct VoiceServiceTest : ::testing::Test {
                 .tts = *tts,
                 .models = *models,
                 .tones = &tones,
+                .arbiter = &arbiter,
                 .locks = &locks,
                 .network_up = [this] { return net_up.load(); },
                 .network_expected = [this] { return net_expected.load(); },
@@ -319,6 +322,8 @@ struct VoiceServiceTest : ::testing::Test {
     std::shared_ptr<FakeAudioOut> out = std::make_shared<FakeAudioOut>(order);
     wisp::voice::PcmPlayer player{out};
     wisp::core::WakeLockRegistry locks{bus};
+    // Shares the output between the speech and the tones, as in App.
+    wisp::core::AudioArbiter arbiter;
     wisp::core::TonePlayer tones{out, nullptr};
     std::atomic<bool> net_up{true};
     std::atomic<bool> net_expected{false};
@@ -1186,7 +1191,6 @@ TEST_F(VoiceServiceTest, PlaysAtTheProfileRate) {
 TEST_F(VoiceServiceTest, AlarmPreemptsSpeech) {
     add_tts();
     make();
-    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
     server.push_tts(pcm_reply(ramp(4800), /*hold_after=*/1));
     voice->begin_speech();
     voice->speak("一。二。");
@@ -1247,7 +1251,6 @@ TEST_F(VoiceServiceTest, TaskAndLogs) {
 TEST_F(VoiceServiceTest, AlarmWinsTheOutputWhileSpeechOpensIt) {
     add_tts();
     make();
-    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
     // Speech's open() is held half-way, as if the codec were slow.
     std::atomic<bool> in_open{false}, let_go{false};
     out->set_open_hook([&](int index) {
@@ -1283,7 +1286,6 @@ TEST_F(VoiceServiceTest, AlarmWinsTheOutputWhileSpeechOpensIt) {
 TEST_F(VoiceServiceTest, ToneAskedFirstKeepsSpeechOff) {
     add_tts();
     make();
-    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
     // An alarm owns the output; speech that arrives meanwhile gives way.
     out->set_write_ms(5);
     tones.play(ToneKind::Alarm, 60);

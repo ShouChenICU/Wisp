@@ -15,8 +15,9 @@
 // voice/tts_mute and audio/volume are read from SystemSettings::cell()
 // where they are used (a memory read, from any thread), never from
 // Settings, so the voice's tasks never touch flash.
-// The TonePlayer's output guard is the voice's may_play_tone() from
-// start() to stop() (wisp/voice/voice_service.hpp, "Sharing the output").
+// The voice shares the main speaker with the tones through App's
+// AudioArbiter (wisp/voice/voice_service.hpp, "Sharing the output"); the
+// voice registers its stop with it from start() to stop().
 
 #include <cstdint>
 #include <functional>
@@ -26,6 +27,7 @@
 
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/base/result.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
@@ -51,6 +53,8 @@ struct VoiceWiringDeps {
     agent::AgentService& agent;
     core::WakeLockRegistry* locks = nullptr;
     core::TonePlayer* tones = nullptr;
+    // Outlives the wiring; null: the output is not shared.
+    core::AudioArbiter* arbiter = nullptr;
     // Null: every model request fails as a transport error.
     net::HttpClient* http = nullptr;
     // Read on wisp.voice and the callers of the triggers: cached values
