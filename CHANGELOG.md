@@ -2,7 +2,7 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
-## Unreleased
+## 0.7.0 — 2026-11-18
 
 ### Features
 
