@@ -9,7 +9,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/wisp_component.cmake)
 
 wisp_component(
     NAME wisp_media
-    SRCS src/path.cpp src/errors.cpp src/id3.cpp src/mp3_info.cpp src/wav.cpp
+    SRCS src/path.cpp src/errors.cpp src/id3.cpp src/mp3_info.cpp src/wav.cpp src/decoder.cpp
+         src/wav_decoder.cpp
     INCLUDE_DIRS include
     REQUIRES wisp_base wisp_os wisp_hal wisp_core
 )

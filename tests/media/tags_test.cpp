@@ -453,12 +453,70 @@ TEST(MediaTags, GarbageIsNotMp3Info) {
 }
 
 TEST(MediaTags, TruncatedXingFrameDoesNotReadPastTheSpan) {
+    // The span reaches the end of the file, so the cut first frame is
+    // still taken for the stream and its Xing fields are read only as far
+    // as the span goes. 48 kHz mono MPEG-1: the tag starts 21 bytes into
+    // the 384-byte frame and its TOC ends at byte 137.
     const Bytes data = read_file("sine_48k_mono_vbr.mp3");
     const size_t skip = media::id3v2_size(data);
-    for (size_t n = 0; n < 200; ++n) {
-        (void)media::parse_mp3_info(std::span<const uint8_t>(data).subspan(skip, n), data.size(),
-                                    skip);
+    constexpr size_t kTocEnd = 21 + 16 + 100;
+    for (size_t n = 0; n <= 400; ++n) {
+        // A copy of exactly n bytes, so a read past the span is a read past
+        // the allocation.
+        const Bytes part(data.begin() + skip, data.begin() + skip + n);
+        auto r = media::parse_mp3_info(part, skip + n, skip);
+        if (n < 4) {
+            EXPECT_FALSE(r) << n;
+            continue;
+        }
+        ASSERT_TRUE(r) << n << ": " << r.error().message;
+        EXPECT_EQ(r.value().has_toc, n >= kTocEnd) << n;
+        if (n >= 21 + 8) EXPECT_EQ(r.value().tag_frame_bytes, 384u) << n;
     }
+}
+
+TEST(MediaTags, TagFrameIsMeasured) {
+    auto vbr = mp3_info_of_file("sine_48k_mono_vbr.mp3");
+    ASSERT_TRUE(vbr);
+    EXPECT_EQ(vbr.value().tag_frame_bytes, 384u);
+    auto info = mp3_info_of_file("sine_44k_stereo_cbr128.mp3");
+    ASSERT_TRUE(info);
+    EXPECT_GT(info.value().tag_frame_bytes, 0u);
+    auto bare = mp3_info_of_file("sine_22k_noxing.mp3");
+    ASSERT_TRUE(bare);
+    EXPECT_EQ(bare.value().tag_frame_bytes, 0u);
+}
+
+TEST(MediaTags, Mp3SeekByEstimate) {
+    media::Mp3Info i;
+    i.audio_offset = 1000;
+    i.audio_bytes = 25600;
+    i.duration_ms = 10000;
+    EXPECT_EQ(media::mp3_seek_offset(i, 0), 1000u);
+    EXPECT_EQ(media::mp3_seek_offset(i, 5000), 1000u + 12800u);
+    EXPECT_EQ(media::mp3_seek_offset(i, 10000), 1000u + 25600u);
+    EXPECT_EQ(media::mp3_seek_offset(i, 99999), 1000u + 25600u);  // clamped
+    i.tag_frame_bytes = 417;
+    EXPECT_EQ(media::mp3_seek_offset(i, 0), 1417u);
+    EXPECT_EQ(media::mp3_seek_offset(i, 5000), 1000u + 12800u);
+    i.duration_ms = 0;  // unknown: only the start is known
+    EXPECT_EQ(media::mp3_seek_offset(i, 5000), 1417u);
+}
+
+TEST(MediaTags, Mp3SeekByToc) {
+    media::Mp3Info i;
+    i.audio_offset = 1000;
+    i.audio_bytes = 25600;
+    i.duration_ms = 10000;
+    i.has_toc = true;
+    for (size_t k = 0; k < i.toc.size(); ++k) i.toc[k] = static_cast<uint8_t>(k * k / 40);
+    // toc[50] = 62: 62 / 256 of the audio bytes.
+    EXPECT_EQ(media::mp3_seek_offset(i, 5000), 1000u + 62u * 100u);
+    // Halfway between toc[50] = 62 and toc[51] = 65.
+    EXPECT_EQ(media::mp3_seek_offset(i, 5050), 1000u + 6350u);
+    // Past toc[99] = 245 the segment ends at 256.
+    EXPECT_EQ(media::mp3_seek_offset(i, 9950), 1000u + 25050u);
+    EXPECT_EQ(media::mp3_seek_offset(i, 10000), 1000u + 25600u);
 }
 
 TEST(MediaTags, WavHeader) {

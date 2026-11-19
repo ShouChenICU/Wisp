@@ -51,6 +51,10 @@ struct Mp3Info {
     // which is where the TOC offsets start) and the stream bytes from it.
     uint64_t audio_offset = 0;
     uint64_t audio_bytes = 0;
+    // Length of the Xing/Info/VBRI frame at audio_offset, 0 when there is
+    // none. It carries no audio (a decoder would play it as a frame of
+    // silence), so decoding starts after it.
+    uint32_t tag_frame_bytes = 0;
 };
 
 // Parses the stream that starts at file offset `audio_offset` (after the
@@ -59,6 +63,13 @@ struct Mp3Info {
 // audio size. Corrupt when no MPEG Layer III frame is found.
 Result<Mp3Info> parse_mp3_info(std::span<const uint8_t> after_id3, uint64_t file_size,
                                uint64_t audio_offset);
+
+// File offset at which decoding resumes for a seek to `ms` (clamped to
+// the duration): through the Xing table of contents when there is one,
+// else in proportion to the audio bytes (a constant-bit-rate estimate).
+// The offset is not on a frame boundary; the decoder resyncs on the next
+// frame header (spec 4.3). Never inside the tag frame.
+uint64_t mp3_seek_offset(const Mp3Info& info, uint32_t ms);
 
 struct WavInfo {
     uint32_t sample_rate = 0;

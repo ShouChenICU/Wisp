@@ -107,6 +107,7 @@ Result<Mp3Info> parse_mp3_info(std::span<const uint8_t> after_id3, uint64_t file
     constexpr size_t kVbri = 4 + 32;  // fixed, whatever the channel mode
     if (frame.size() >= xing + 8 && (std::memcmp(frame.data() + xing, "Xing", 4) == 0 ||
                                      std::memcmp(frame.data() + xing, "Info", 4) == 0)) {
+        info.tag_frame_bytes = h.length;
         const uint32_t flags = be32(frame.data() + xing + 4);
         size_t pos = xing + 8;
         // A field cut off by the span ends the reading; what came before
@@ -130,6 +131,7 @@ Result<Mp3Info> parse_mp3_info(std::span<const uint8_t> after_id3, uint64_t file
     } else if (frame.size() >= kVbri + 18 && std::memcmp(frame.data() + kVbri, "VBRI", 4) == 0) {
         // "VBRI", version, delay, quality (2 bytes each), then bytes and
         // frames. Its own TOC has a different layout and is not kept.
+        info.tag_frame_bytes = h.length;
         bytes = be32(frame.data() + kVbri + 10);
         frames = be32(frame.data() + kVbri + 14);
     }
@@ -142,6 +144,29 @@ Result<Mp3Info> parse_mp3_info(std::span<const uint8_t> after_id3, uint64_t file
         info.duration_ms = clamp_ms(info.audio_bytes * 8 / h.kbps);
     }
     return Result<Mp3Info>::ok(info);
+}
+
+uint64_t mp3_seek_offset(const Mp3Info& info, uint32_t ms) {
+    const uint64_t start = info.audio_offset + info.tag_frame_bytes;
+    if (info.duration_ms == 0) return start;
+    ms = std::min(ms, info.duration_ms);
+    // Thousandths of a percent of the duration, so the TOC interpolation
+    // stays in integers: 100000 * UINT32_MAX fits in 64 bits.
+    const uint64_t milli_pct = uint64_t{ms} * 100000 / info.duration_ms;
+    uint64_t at = 0;
+    if (info.has_toc) {
+        const size_t i = std::min<uint64_t>(milli_pct / 1000, 99);
+        const uint64_t frac = milli_pct - uint64_t{i} * 1000;
+        const uint64_t a = info.toc[i];
+        const uint64_t b = i < 99 ? info.toc[i + 1] : 256;
+        // Xing TOC entries never decrease; a hostile one that does is
+        // read as a flat segment rather than wrapping around.
+        const uint64_t scaled = a * 1000 + (b > a ? (b - a) * frac : 0);  // 256000 = whole
+        at = info.audio_bytes * scaled / 256000;
+    } else {
+        at = info.audio_bytes * milli_pct / 100000;
+    }
+    return std::max(info.audio_offset + std::min(at, info.audio_bytes), start);
 }
 
 }  // namespace wisp::media

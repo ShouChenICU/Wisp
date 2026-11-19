@@ -80,6 +80,15 @@ wisp_component(
     HOST_LIBS lvgl
 )
 
+# The simulator's MP3 decoder (minimp3), the platform half of
+# media::DecoderFactory. SDL-free, so its tests link it on its own.
+wisp_component(
+    NAME wisp_port_sim_media
+    SRCS media/minimp3_decoder.cpp
+    INCLUDE_DIRS include
+    REQUIRES wisp_base wisp_os wisp_media minimp3
+)
+
 # Simulated HAL devices: SimDisplay/SimTouch/SimImu/SimPower/
 # SimClock/SimButton/SimAudioOut/SimAudioIn/SimStorage/SimHaptic, SimBoard (the
 # wisp::app::Board that constructs them) and the --screenshot PNG
