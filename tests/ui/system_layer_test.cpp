@@ -1797,8 +1797,8 @@ TEST_F(SystemLayerTest, PanelRefusesToOpenUnderOtherPieces) {
     on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
 }
 
-// A press from the top-left corner is in both zones: whichever swipe
-// crosses its trigger first owns it.
+// A press from the top-left corner is in both zones: the way it sets off
+// past the drag slop decides which swipe owns it.
 TEST_F(SystemLayerTest, FirstGestureToCrossItsTriggerWins) {
     start("rect");
     int backs = 0;
@@ -1817,11 +1817,12 @@ TEST_F(SystemLayerTest, FirstGestureToCrossItsTriggerWins) {
     feed({});
     EXPECT_EQ(backs, 1);
     EXPECT_EQ(opens, 0);
-    // Down first: the panel, and the arrow it had started to show goes.
+    // Down first: the panel, with no back arrow, though it then moves far
+    // right too.
     feed({{4, 4, 0}});
     feed({{4, 4, 0}});
-    feed({{14, 10, 0}});
-    on_ui([&] { EXPECT_NE(layer->back_arrow(), nullptr); });
+    feed({{14, 24, 0}});
+    on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
     feed({{16, 40, 0}});
     on_ui([&] { EXPECT_EQ(layer->back_arrow(), nullptr); });
     feed({{80, 60, 0}});
@@ -1829,6 +1830,75 @@ TEST_F(SystemLayerTest, FirstGestureToCrossItsTriggerWins) {
     EXPECT_EQ(backs, 1);
     EXPECT_EQ(opens, 1);
     on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+}
+
+// The first move past the drag slop says what the press is: one that set
+// off sideways is a back swipe or a page drag, never the panel, however far
+// down it goes after (on a circle the whole upper-left arc is in both
+// zones).
+TEST_F(SystemLayerTest, SidewaysPressNeverBecomesThePanel) {
+    for (const ShapeCase& c : kShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius);
+        int backs = 0;
+        int opens = 0;
+        on_ui([&] {
+            layer->set_back_handler([&] { ++backs; });
+            layer->set_panel_handlers({.on_open = [&] { ++opens; }});
+        });
+        // The lowest point of the left edge that is in both zones.
+        int16_t x = 0;
+        int16_t y = 0;
+        for (int32_t yy = shape.height / 2; yy >= 0 && x == 0 && y == 0; --yy) {
+            const wisp::hal::Span span = wisp::hal::row_span(shape, yy);
+            if (span.empty()) continue;
+            const int32_t xx = span.x1 + 2;
+            if (SystemLayer::in_back_zone(shape, xx, yy) &&
+                SystemLayer::in_top_zone(shape, xx, yy)) {
+                x = static_cast<int16_t>(xx);
+                y = static_cast<int16_t>(yy);
+            }
+        }
+        ASSERT_TRUE(x != 0 || y != 0);
+        const int16_t d = static_cast<int16_t>(
+            wisp::hal::share_of_screen(shape, SystemLayer::kBackTriggerPercent));
+        // Right, short of the back trigger, then far down: nothing.
+        feed({{x, y, 0}});
+        feed({{x, y, 0}});
+        feed({{static_cast<int16_t>(x + d / 2 + 4), y, 0}});
+        feed({{static_cast<int16_t>(x + d / 2 + 4), static_cast<int16_t>(y + 3 * d), 0}});
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+        feed({});
+        EXPECT_EQ(opens, 0);
+        EXPECT_EQ(backs, 0);
+        // The same, then on past the back trigger: back.
+        feed({{x, y, 0}});
+        feed({{x, y, 0}});
+        feed({{static_cast<int16_t>(x + d / 2 + 4), y, 0}});
+        feed({{static_cast<int16_t>(x + d / 2 + 4), static_cast<int16_t>(y + 3 * d), 0}});
+        feed({{static_cast<int16_t>(x + 2 * d), static_cast<int16_t>(y + 3 * d), 0}});
+        feed({});
+        EXPECT_EQ(opens, 0);
+        EXPECT_EQ(backs, 1);
+        on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
+    }
+}
+
+// A page drag (Home's Right to Settings) from the top zone stays a page
+// drag when the finger then slides down.
+TEST_F(SystemLayerTest, HorizontalDragFromTopZoneIsNotThePanel) {
+    start("rect");
+    int opens = 0;
+    on_ui([&] { layer->set_panel_handlers({.on_open = [&] { ++opens; }}); });
+    ASSERT_TRUE(SystemLayer::in_top_zone(shape, 240, 10));
+    feed({{240, 10, 0}});
+    feed({{240, 10, 0}});
+    feed({{280, 12, 0}});
+    feed({{300, 120, 0}});
+    feed({});
+    EXPECT_EQ(opens, 0);
+    on_ui([&] { EXPECT_FALSE(layer->panel_open()); });
 }
 
 TEST(TopSwipe, ZoneFollowsRowSpan) {

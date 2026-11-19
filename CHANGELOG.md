@@ -23,6 +23,7 @@ Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](htt
 ### Fixes
 
 - Starting a new conversation (or deleting all of them) clears Home: the last turn's text and the reason it failed no longer stay on screen.
+- A back swipe from the left edge (or a page drag from near the top) that turns downwards part-way no longer opens the pull-down panel instead; on a round screen this caught most back swipes from the upper half.
 
 ## 0.6.0 — 2026-11-16
 

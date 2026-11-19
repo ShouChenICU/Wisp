@@ -1069,7 +1069,9 @@ std::string schema_markdown() {
     out += "\nA swipe down that starts within " + share(ui::SystemLayer::kTopZonePercent) +
            " of the top of the visible screen\n"
            "(measured from the first visible pixel of the column it starts in) is the\n"
-           "system's pull-down gesture, at any angle: the touch reaches the scene like\n"
+           "system's pull-down gesture, at any angle, unless its first 2% (10 px) of\n"
+           "movement went more sideways than down (then it is a back swipe or a\n"
+           "sideways drag, however far down it goes after): the touch reaches the scene like\n"
            "any other until it has moved " +
            share(ui::SystemLayer::kTopTriggerPercent) +
            " down, when the system opens its\n"

@@ -12,6 +12,7 @@
 #include "system_layer_internal.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/ui/dialog.hpp"
+#include "wisp/ui/drag.hpp"
 #include "wisp/ui/overlay.hpp"
 
 namespace wisp::ui {
@@ -436,6 +437,26 @@ void SystemLayer::observe(lv_indev_t* indev, const lv_indev_data_t& data) {
         return;
     }
 
+    // The first move past the drag slop says which way the press set off,
+    // as for a page drag (wisp/ui/drag.hpp). Sideways is a back swipe or
+    // a page drag, never the panel however far down it goes after; down is
+    // the panel's where both zones meet (the upper-left arc of a circle,
+    // a rounded corner).
+    if (!axis_decided_) {
+        const int32_t dx = std::abs(p.x - start_.x);
+        const int32_t dy = p.y - start_.y;
+        const int32_t slop = drag_slop_px(shape_);
+        if (dx >= slop || std::abs(dy) >= slop) {
+            axis_decided_ = true;
+            if (dx > std::abs(dy)) {
+                top_candidate_ = false;
+            } else if (dy > 0 && top_candidate_ && candidate_ && !taken_) {
+                candidate_ = false;
+                if (arrow_ != nullptr) lv_obj_add_flag(arrow_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
     // Whichever gesture crosses its trigger first takes the press; the
     // other one is then over.
     if (candidate_ && !taken_ && is_back_swipe(shape_, start_, p)) {
@@ -560,6 +581,7 @@ void SystemLayer::show_arrow(lv_point_t at, int32_t dx, bool armed) {
 }
 
 void SystemLayer::end_swipe() {
+    axis_decided_ = false;
     candidate_ = false;
     taken_ = false;
     top_candidate_ = false;

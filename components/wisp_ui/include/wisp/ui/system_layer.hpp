@@ -231,7 +231,9 @@ public:
     // Sets what the pull-down panel's rows do. With any handler set, a
     // top-edge swipe opens the panel; with none there is no panel (an open
     // one closes) and no swipe. The swipe is watched like the back gesture:
-    // a press from the top zone (in_top_zone()) reaches the screen below, and once it
+    // a press from the top zone (in_top_zone()) reaches the screen below, and,
+    // unless its first move past the drag slop (wisp/ui/drag.hpp) went more
+    // sideways than down (then it is a back swipe or a page drag), once it
     // has moved kTopTriggerPercent down (is_top_swipe()) it is taken from the
     // widget under it, which gets LV_EVENT_PRESS_LOST. Then on_open is
     // called and the panel comes down over the screen with the finger,
@@ -522,6 +524,7 @@ private:
     lv_indev_t* indev_ = nullptr;  // while hooked
     lv_indev_read_cb_t prev_read_cb_ = nullptr;
     bool pressed_ = false;        // the last read was a press
+    bool axis_decided_ = false;   // the press has moved past the drag slop
     bool candidate_ = false;      // the press started in the back zone
     bool taken_ = false;          // it crossed the trigger and was taken
     bool top_candidate_ = false;  // the press started in the top zone
