@@ -794,7 +794,6 @@ void MediaLibrary::read(std::string path, uint64_t off, size_t len, Done<os::Lar
 }
 
 Result<os::LargeBuffer> MediaLibrary::read_now(const std::string& path, uint64_t off, size_t len) {
-    using R = Result<os::LargeBuffer>;
     WISP_ASSERT_SD_IO_THREAD("MediaLibrary::read_now");
     Impl& m = *impl_;
     Result<std::string> rel = normalize(path);
