@@ -1122,8 +1122,10 @@ TEST(StorageManager, MediumOfPaths) {
 
 TEST(StorageManager, HasSd) {
     Fixture f(/*sd_online=*/true);
+    EXPECT_EQ(f.mgr->sd_root().error().code, wisp::ErrorCode::StorageUnavailable);
     ASSERT_TRUE(f.mgr->init());
     EXPECT_TRUE(f.mgr->has_sd());
+    EXPECT_EQ(f.mgr->sd_root().value(), f.sd);
 
     DeviceRegistry reg;
     EventBus bus;
@@ -1132,6 +1134,7 @@ TEST(StorageManager, HasSd) {
     StorageManager m(reg, bus);
     ASSERT_TRUE(m.init());
     EXPECT_FALSE(m.has_sd());
+    EXPECT_EQ(m.sd_root().error().code, wisp::ErrorCode::StorageUnavailable);
 }
 
 namespace {

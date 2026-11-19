@@ -24,6 +24,7 @@
 
 #include "agent_wiring.hpp"
 #include "factory_reset.hpp"
+#include "media_wiring.hpp"
 #include "nav_keys.hpp"
 #include "net_wiring.hpp"
 #include "notification_router.hpp"
@@ -221,6 +222,18 @@ struct App::Impl {
     // its api()); started once the runtime runs. App::stop() stops it
     // before the scene runtime and resets it once networking is gone.
     os::LargeUnique<AgentWiring> agent;
+    // The media library and the music player (media_wiring.hpp). The
+    // library: built and started right after the storage workers with a
+    // card slot, stopped just before them and reset right after its stop.
+    // The player: built and started right after the notification sounds
+    // with a main speaker; its two subscriptions are released and it is
+    // stopped right after the status shell, before the voice and the
+    // arbiter; the object goes with the library (its removal callback and
+    // the scene lifecycle handler, gone by then, still call it).
+    os::LargeUnique<media::MediaLibrary> media_library;
+    os::LargeUnique<media::MediaPlayer> media_player;
+    core::CellSubscription media_card_sub;
+    core::CellSubscription media_volume_sub;
     // The voice and the conversation controller (voice_wiring.hpp): built
     // right after the agent, started once it runs, stopped before it
     // stops and reset right after.

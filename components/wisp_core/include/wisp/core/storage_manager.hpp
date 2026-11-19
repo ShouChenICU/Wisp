@@ -389,6 +389,10 @@ public:
     // storage.int's normalized mount point ("<int>"). Fails with
     // ErrorCode::StorageUnavailable before init() has succeeded.
     Result<std::string> internal_root() const;
+    // storage.sd's normalized mount point ("<sd>"), whether the card is
+    // online or not. Fails with ErrorCode::StorageUnavailable before init()
+    // has succeeded and without a removable medium.
+    Result<std::string> sd_root() const;
 
     // The medium `path` (normalized first) lives on: Medium::Sd when it is
     // at or under storage.sd's mount point, whether the card is online or

@@ -610,6 +610,12 @@ wisp_test(NAME voice_wiring_test SRCS app/voice_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(voice_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 
+wisp_test(NAME media_wiring_test SRCS app/media_wiring_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_media TIMEOUT 60)
+target_include_directories(media_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+target_compile_definitions(media_wiring_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.
 target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"

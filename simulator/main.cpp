@@ -131,6 +131,7 @@
 #include "wisp/port/sim/image_decoders.hpp"
 #include "wisp/port/sim/imu_script.hpp"
 #include "wisp/port/sim/log_stdout.hpp"
+#include "wisp/port/sim/minimp3_decoder.hpp"
 #include "wisp/port/sim/png_writer.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/port/sim/sim_board.hpp"
@@ -980,6 +981,11 @@ int main(int argc, char** argv) {
         // simulator, so the cost does not matter.
         std::random_device rd;
         for (size_t i = 0; i < len; ++i) out[i] = static_cast<uint8_t>(rd());
+    };
+    // MP3 through minimp3; App adds the WAV decoder (media spec 4.3).
+    platform.audio_decoder = [](wisp::media::Format f) -> std::unique_ptr<wisp::media::Decoder> {
+        if (f == wisp::media::Format::Mp3) return wisp::port::sim::make_minimp3_decoder();
+        return nullptr;
     };
     if (opts.http_port != 0) {
         platform.http_server = std::make_unique<wisp::port::sim::SimHttpServer>("127.0.0.1");

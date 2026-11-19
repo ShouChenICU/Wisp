@@ -35,9 +35,9 @@ TEST(Topics, FindMatchesWholeRegisteredNamesOnly) {
     static_assert(topics::find(topics::kSceneState)->kind == topics::Kind::Notification);
 }
 
-TEST(Topics, TheRegistryHas28Rows) {
-    // Four button patterns and 24 topics.
-    EXPECT_EQ(std::size(topics::kAll), 28u);
+TEST(Topics, TheRegistryHas31Rows) {
+    // Four button patterns and 27 topics.
+    EXPECT_EQ(std::size(topics::kAll), 31u);
     size_t edges = 0;
     for (const topics::Topic& t : topics::kAll) {
         if (t.kind == topics::Kind::InputEdge) {
@@ -47,4 +47,24 @@ TEST(Topics, TheRegistryHas28Rows) {
         }
     }
     EXPECT_EQ(edges, 4u);
+}
+
+// The media topics (media spec 9): two cell mirrors and the error
+// telemetry, all forwarded to the admin console.
+TEST(Topics, MediaTopicsAreRegistered) {
+    const topics::Topic* player = topics::find("media.player");
+    const topics::Topic* library = topics::find("media.library");
+    const topics::Topic* error = topics::find("media.error");
+    ASSERT_NE(player, nullptr);
+    ASSERT_NE(library, nullptr);
+    ASSERT_NE(error, nullptr);
+    EXPECT_EQ(player->name, topics::kMediaPlayer);
+    EXPECT_EQ(library->name, topics::kMediaLibrary);
+    EXPECT_EQ(error->name, topics::kMediaError);
+    EXPECT_EQ(player->kind, topics::Kind::CellMirror);
+    EXPECT_EQ(library->kind, topics::Kind::CellMirror);
+    EXPECT_EQ(error->kind, topics::Kind::Telemetry);
+    EXPECT_TRUE(player->forwarded);
+    EXPECT_TRUE(library->forwarded);
+    EXPECT_TRUE(error->forwarded);
 }

@@ -1209,6 +1209,14 @@ Result<std::string> StorageManager::internal_root() const {
     return Result<std::string>::ok(int_mount_);
 }
 
+Result<std::string> StorageManager::sd_root() const {
+    std::lock_guard<os::Mutex> lock(state_mu_);
+    if (!ready_ || sd_dev_ == nullptr) {
+        return Result<std::string>::err(ErrorCode::StorageUnavailable, "no removable medium");
+    }
+    return Result<std::string>::ok(sd_mount_);
+}
+
 void StorageManager::refresh() {
     WISP_ASSERT_SD_IO_THREAD("StorageManager::refresh");
     // online() may deinit a removed card (EspSdStorage), which is only

@@ -82,6 +82,9 @@ inline constexpr char kAgentState[] = "agent.state";
 inline constexpr char kVoiceState[] = "voice.state";
 inline constexpr char kMemoryChanged[] = "memory.changed";
 inline constexpr char kTodoChanged[] = "todo.changed";
+inline constexpr char kMediaPlayer[] = "media.player";
+inline constexpr char kMediaLibrary[] = "media.library";
+inline constexpr char kMediaError[] = "media.error";
 
 inline constexpr Topic kAll[] = {
     {"button.<name>.down", Kind::InputEdge, false},
@@ -112,6 +115,9 @@ inline constexpr Topic kAll[] = {
     {kVoiceState, Kind::CellMirror, false},
     {kMemoryChanged, Kind::Notification, true},
     {kTodoChanged, Kind::Notification, true},
+    {kMediaPlayer, Kind::CellMirror, true},
+    {kMediaLibrary, Kind::CellMirror, true},
+    {kMediaError, Kind::Telemetry, true},
 };
 
 // The registered entry named exactly `name` (a button topic matches only
