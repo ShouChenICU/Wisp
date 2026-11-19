@@ -386,6 +386,11 @@ wisp_test(NAME voice_service_test SRCS voice/voice_service_test.cpp
 wisp_test(NAME media_path_test SRCS media/path_test.cpp LIBS wisp_media)
 wisp_test(NAME media_errors_test SRCS media/errors_test.cpp LIBS wisp_media)
 
+# Committed media files (tools/gen_media_test_data.sh).
+wisp_test(NAME media_test_data_test SRCS media/test_data_test.cpp LIBS)
+target_compile_definitions(media_test_data_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
 # wisp_shell: the conversation controller and the talk key over the real
 # agent and voice services (shell/shell_fixture.hpp).
 # (agent/conversation_test is the agent's ConversationStore.)

@@ -205,6 +205,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## minimp3
+
+- Project: https://github.com/lieff/minimp3
+- Version: `minimp3.h` and `minimp3_ex.h` at commit
+  `142823796ab8efa55e1bf11406028f3be77ecceb` (SHA-256
+  `f9592be69e8b94044e9da6f45f993c9708000abae38cf6f44b70c699de55b509` and
+  `bdda836f5ea2de782bce7cf122a41a3d76fad57d960dfb47b6765dc631779de0`; the
+  repository's `LICENSE`, SHA-256
+  `6a1ee543e5282cd9061881edf462e6fdab181f328da71fc2c9a6950a80e94d01`),
+  vendored verbatim into `third_party/minimp3/minimp3-1428237/` by
+  `tools/vendor_minimp3.sh`; not modified or forked
+- Used only by the simulator (`wisp_port_sim`) and host tests; it is not
+  part of the firmware
+- License: CC0 1.0 Universal (public-domain dedication; no conditions).
+  The full text is `third_party/minimp3/minimp3-1428237/LICENSE`.
+
 ## Noto Sans CJK SC (via `lv_font_cjk_16.c` and `noto_sans_cjk_sc_subset.ttf`)
 
 - `components/wisp_ui/fonts/lv_font_cjk_16.c` embeds glyph bitmap data
