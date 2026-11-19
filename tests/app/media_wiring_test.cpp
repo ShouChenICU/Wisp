@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "storage_io.hpp"
 #include "support/cell_barrier.hpp"
 #include "support/fake_audio.hpp"
 #include "support/fake_http.hpp"
@@ -336,6 +337,96 @@ TEST(MediaWiring, PublishesPlayerEventsNotPerPositionTick) {
             return false;
         },
         kWaitMs));
+}
+
+// The card taken out while a track plays ends the session at once, through
+// App's card follower: the held chunk is the last one (the reader's ring
+// would otherwise play on for seconds), media.error says card_removed, and
+// the wake locks go after their linger (media spec 6: 10 s).
+TEST(MediaWiring, CardRemovedStopsThePlayer) {
+    MediaApp m(/*with_sd=*/true);
+    put(m.sd() / "media" / "music" / "long.wav", make_wav(10));
+    ASSERT_TRUE(m.start());
+    ASSERT_TRUE(m.library_ready(1));
+    ASSERT_NO_FATAL_FAILURE(m.play_held({"music/long.wav"}));
+    ASSERT_TRUE(m.media_locks_held());
+
+    m.h->sd->online_flag = false;
+    ASSERT_TRUE(wait_until([&] { return wisp::app::queue_storage_refresh(*m.h->app); }, kWaitMs));
+    ASSERT_TRUE(wait_until([&] { return !m.h->app->storage().sd_cell().get().online; }, kWaitMs));
+    // The follower's run (on wisp.bus) has queued the stop on the player.
+    ASSERT_TRUE(wisp::test::slot_barrier(m.h->app->bus(), &m.h->app->bus()));
+    m.out->open_gate();
+    ASSERT_TRUE(wait_until(
+        [&] {
+            PlayerState s = m.st();
+            return s.status == PlayerStatus::Idle && s.queue_length == 0;
+        },
+        kWaitMs));
+    EXPECT_EQ(m.out->frames(), MediaPlayer::kChunkFrames);
+    EXPECT_FALSE(m.out->is_open());
+    std::vector<wisp::core::Event> errs;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            errs = m.h->topic(topics::kMediaError);
+            return !errs.empty();
+        },
+        kWaitMs));
+    EXPECT_EQ(str(errs[0], "reason"), "card_removed");
+    EXPECT_EQ(str(errs[0], "track_id"), "music/long.wav");
+    EXPECT_TRUE(wait_until([&] { return !m.media_locks_held(); }, 12000));
+}
+
+namespace {
+
+// Removes `path` through the library and waits for its answer.
+void remove_through_library(MediaApp& m, const std::string& path) {
+    std::atomic<bool> done{false};
+    m.lib()->remove(path, [&](wisp::Result<void> r) {
+        EXPECT_TRUE(r) << path << ": " << (r ? "" : r.error().message);
+        done = true;
+    });
+    ASSERT_TRUE(wait_until([&] { return done.load(); }, kWaitMs));
+}
+
+// The queue ["<current>", "music/b.wav"] played after `current` was removed
+// through the library while its first chunk was held: the player skips to
+// b.wav at once (the reader's ring still held seconds of the removed file),
+// with no media.error (the skip is not a failed read).
+void expect_skipped(MediaApp& m, const std::string& current) {
+    m.out->open_gate();
+    ASSERT_TRUE(wait_until([&] { return m.st().status == PlayerStatus::Idle; }, kWaitMs));
+    EXPECT_EQ(m.out->frames(), MediaPlayer::kChunkFrames + 8000u) << current;
+    EXPECT_TRUE(m.h->topic(topics::kMediaError).empty());
+}
+
+}  // namespace
+
+// The track playing removed through the library: the player skips it.
+TEST(MediaWiring, RemovedLibraryTrackIsSkipped) {
+    MediaApp m(/*with_sd=*/true);
+    put(m.sd() / "media" / "music" / "long.wav", make_wav(10));
+    put(m.sd() / "media" / "music" / "b.wav", make_wav(1));
+    ASSERT_TRUE(m.start());
+    ASSERT_TRUE(m.library_ready(2));
+    ASSERT_NO_FATAL_FAILURE(m.play_held({"music/long.wav", "music/b.wav"}));
+    ASSERT_NO_FATAL_FAILURE(remove_through_library(m, "music/long.wav"));
+    ASSERT_NO_FATAL_FAILURE(expect_skipped(m, "music/long.wav"));
+}
+
+// The folder of the track playing removed through the library (emptied
+// behind its back first, as a folder must be empty to go): the player
+// skips the track inside it.
+TEST(MediaWiring, RemovedLibraryFolderSkipsItsTrack) {
+    MediaApp m(/*with_sd=*/true);
+    put(m.sd() / "media" / "music" / "sub" / "long.wav", make_wav(10));
+    put(m.sd() / "media" / "music" / "b.wav", make_wav(1));
+    ASSERT_TRUE(m.start());
+    ASSERT_TRUE(m.library_ready(2));
+    ASSERT_NO_FATAL_FAILURE(m.play_held({"music/sub/long.wav", "music/b.wav"}));
+    fs::remove(m.sd() / "media" / "music" / "sub" / "long.wav");
+    ASSERT_NO_FATAL_FAILURE(remove_through_library(m, "music/sub"));
+    ASSERT_NO_FATAL_FAILURE(expect_skipped(m, "music/sub/long.wav"));
 }
 
 // The volume setting reaches the output while it plays.
