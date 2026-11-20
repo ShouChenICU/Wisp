@@ -2500,6 +2500,79 @@ TEST_F(SystemLayerTest, MediaRowIsKeyFocusable) {
     EXPECT_EQ(toggles, 2);
 }
 
+// A rebuild (a new notification, the next track) keeps a focus no key
+// showed without scrolling to it: the finger left the list elsewhere.
+TEST_F(SystemLayerTest, PanelRebuildKeepsTheScrollUnderAHiddenFocus) {
+    start("circle", wisp::ui::Lang::Zh, 0, true, 466);
+    wisp::ui::PanelModel m = media_model();
+    for (int i = 0; i < 8; ++i) {
+        m.notes.push_back({"a", LStr(("x" + std::to_string(i)).c_str()), "A", "More", "Body", ""});
+    }
+    int32_t bottom = 0;
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->update_panel(m);
+        layer->open_panel();
+        // Set in code, without a key read: LVGL leaves it hidden.
+        lv_obj_t* prev = find_button_with_label(media_row(layer->panel()), LV_SYMBOL_PREV);
+        ASSERT_NE(prev, nullptr);
+        lv_group_focus_obj(prev);
+        ASSERT_EQ(focused(), prev);
+        ASSERT_FALSE(lv_obj_has_state(prev, LV_STATE_FOCUS_KEY));
+        lv_obj_scroll_to_y(layer->panel(), LV_COORD_MAX, LV_ANIM_OFF);
+        lv_obj_update_layout(layer->panel());
+        bottom = lv_obj_get_scroll_y(layer->panel());
+        ASSERT_GT(bottom, 0);
+        layer->update_panel(m);
+    });
+    // Long enough for a scroll animation the focus might have started.
+    wisp::os::sleep_ms(600);
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_scroll_y(layer->panel()), bottom);
+        lv_obj_t* prev = find_button_with_label(media_row(layer->panel()), LV_SYMBOL_PREV);
+        EXPECT_EQ(focused(), prev);
+        EXPECT_FALSE(lv_obj_has_state(prev, LV_STATE_FOCUS_KEY));
+    });
+}
+
+// A note's close button dismissed by key hands its shown focus to the
+// close button of the note that takes its place.
+TEST_F(SystemLayerTest, DismissByKeyFocusesTheNextNotesClose) {
+    start("circle", wisp::ui::Lang::Zh, 0, true, 466);
+    wisp::ui::PanelModel m = sample_model();
+    wisp::ui::PanelHandlers h;
+    h.on_open = [] {};
+    h.dismiss_note = [&](const std::string&, const std::string& id) {
+        std::erase_if(m.notes, [&](const wisp::ui::PanelNote& n) { return n.id.c_str() == id; });
+        layer->update_panel(m);
+    };
+    lv_obj_t* close = nullptr;
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        layer->update_panel(m);
+        layer->open_panel();
+        close = find_button_with_label(
+            clickable_of(find_label_containing(layer->panel(), "Note one")), LV_SYMBOL_CLOSE);
+        ASSERT_NE(close, nullptr);
+    });
+    for (int i = 0; i < 12; ++i) {
+        lv_obj_t* f = nullptr;
+        on_ui([&] { f = focused(); });
+        if (f == close) break;
+        nav(NavKey::Next);
+    }
+    on_ui([&] { ASSERT_EQ(focused(), close); });
+    nav(NavKey::Ok);
+    on_ui([&] {
+        EXPECT_EQ(find_label_containing(layer->panel(), "Note one"), nullptr);
+        lv_obj_t* next = find_button_with_label(
+            clickable_of(find_label_containing(layer->panel(), "Note two")), LV_SYMBOL_CLOSE);
+        ASSERT_NE(next, nullptr);
+        EXPECT_EQ(focused(), next);
+        EXPECT_TRUE(lv_obj_has_state(next, LV_STATE_FOCUS_KEY));
+    });
+}
+
 TEST_F(SystemLayerTest, LongTitleEllipsizes) {
     start("circle", wisp::ui::Lang::Zh, 0, false, 466);
     const std::string long_title =

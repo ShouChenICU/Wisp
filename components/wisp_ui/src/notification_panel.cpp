@@ -553,7 +553,8 @@ void SystemLayer::fill_panel() {
     lv_obj_update_layout(panel_);
     const int32_t max_y =
         std::max(int32_t{0}, lv_obj_get_scroll_y(panel_) + lv_obj_get_scroll_bottom(panel_));
-    lv_obj_scroll_to_y(panel_, std::min(scroll_y, max_y), LV_ANIM_OFF);
+    const int32_t kept_y = std::min(scroll_y, max_y);
+    lv_obj_scroll_to_y(panel_, kept_y, LV_ANIM_OFF);
 
     if (focus_part == nullptr) return;
     rescope();
@@ -566,6 +567,11 @@ void SystemLayer::fill_panel() {
             lv_obj_add_state(o, LV_STATE_FOCUS_KEY);
         } else {
             lv_obj_remove_state(o, LV_STATE_FOCUS_KEY);
+            // Focusing scrolls to the control (LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+            // a focus no key showed must not pull the list away from where
+            // the finger left it, as rescope() never does either.
+            lv_obj_stop_scroll_anim(panel_);
+            lv_obj_scroll_to_y(panel_, kept_y, LV_ANIM_OFF);
         }
         break;
     }
