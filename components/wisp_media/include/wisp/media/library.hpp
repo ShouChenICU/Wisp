@@ -107,15 +107,30 @@ public:
     template <class T>
     using Done = std::function<void(Result<T>)>;
 
+    // Shared with every Writer and LibrarySink and outliving the library:
+    // once the library is destroyed, submit() refuses and a Writer still
+    // alive touches nothing when it goes, so a stream whose last owner
+    // lets go late (a request the HTTP proxy drops at shutdown) is safe.
+    struct Token {
+        os::Mutex mu;
+        MediaLibrary* lib = nullptr;  // null once the library is destroyed
+
+        // MediaLibrary::submit() while the library lives; false after.
+        bool submit(core::IoLane lane, std::function<void()> job);
+        // The library has not been destroyed yet.
+        bool alive();
+    };
+
     // A streaming write (uploads, downloads): appends go to a hidden
     // ".<name>.part" beside the target; commit() renames it to
     // ".<name>.done", removes the old file and renames ".done" to the
     // target -- the two-stage rename FAT needs (AGENTS.md section 8). A
     // ".done" left without its target is promoted the next time its folder
     // is listed or scanned; a ".part" nobody writes is removed then.
-    // Every method, the destructor included, runs on wisp.sd.io (or
-    // wisp.fs without it); a writer never outlives its library. Destroyed
-    // without commit(), it aborts.
+    // Every method runs on wisp.sd.io (or wisp.fs without it). Destroyed
+    // without commit() it aborts there; destroyed elsewhere it only drops
+    // its bookkeeping, and once the library is gone (Token) nothing at
+    // all.
     class Writer {
     public:
         ~Writer();
@@ -139,6 +154,7 @@ public:
         void finish();
 
         MediaLibrary& lib_;
+        std::shared_ptr<Token> token_;
         uint32_t gen_;
         std::string rel_, abs_, part_, done_;
         os::LargeBuffer staging_;
@@ -187,6 +203,8 @@ public:
     // or the lane is full; `job` is then dropped unrun. Without a router
     // it runs inline.
     bool submit(core::IoLane lane, std::function<void()> job);
+    // The library's Token (see above).
+    const std::shared_ptr<Token>& token() const { return token_; }
 
     // On wisp.sd.io (or wisp.fs without it) only.
     Result<std::unique_ptr<Writer>> begin_write(std::string path);
@@ -214,6 +232,7 @@ private:
     core::StateCell<MediaLibraryState> state_;
     std::atomic<uint64_t> tag_reads_{0};
     os::LargeUnique<Impl> impl_;
+    std::shared_ptr<Token> token_;
 };
 
 }  // namespace wisp::media

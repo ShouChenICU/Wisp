@@ -26,7 +26,7 @@ void LibrarySink::open(MediaLibrary& lib, std::string path, Opened opened) {
         if (!w)
             return (*cb)(
                 Result<std::shared_ptr<LibrarySink>>::err(w.error().code, w.error().message));
-        std::shared_ptr<LibrarySink> sink(new LibrarySink(lib, std::move(w.value())));
+        std::shared_ptr<LibrarySink> sink(new LibrarySink(lib.token(), std::move(w.value())));
         (*cb)(Result<std::shared_ptr<LibrarySink>>::ok(std::move(sink)));
     });
     if (!queued)
@@ -34,12 +34,14 @@ void LibrarySink::open(MediaLibrary& lib, std::string path, Opened opened) {
                                                         "media library cannot take the write"));
 }
 
-LibrarySink::LibrarySink(MediaLibrary& lib, std::unique_ptr<MediaLibrary::Writer> writer)
-    : lib_(lib), writer_(std::move(writer)) {}
+LibrarySink::LibrarySink(std::shared_ptr<MediaLibrary::Token> token,
+                         std::unique_ptr<MediaLibrary::Writer> writer)
+    : token_(std::move(token)), writer_(std::move(writer)) {}
 
 // A writer still here (finish() never ran) is dropped by its own
-// destructor, which aborts on the worker or, elsewhere, leaves the
-// ".part" for the next listing of its folder.
+// destructor, which aborts on the worker, elsewhere leaves the ".part"
+// for the next listing of its folder, and after the library is gone does
+// nothing.
 LibrarySink::~LibrarySink() = default;
 
 std::optional<Error> LibrarySink::error() const {
@@ -57,11 +59,23 @@ void LibrarySink::cancel() {
 
 bool LibrarySink::dispatch(os::LargeBuffer buf) {
     auto shared = std::make_shared<os::LargeBuffer>(std::move(buf));
-    auto self = shared_from_this();
-    if (lib_.submit(core::IoLane::Bulk, [self, shared] { self->append(*shared); })) return true;
-    std::lock_guard<os::Mutex> lock(mu_);
-    if (!error_) error_ = Error{ErrorCode::Busy, "media library cannot take the write"};
-    return false;
+    std::function<void()> job = [self = shared_from_this(), shared] { self->append(*shared); };
+    // Every chunk and the finish go to the same lane, so they run in
+    // order. A full lane is mostly this sink's own appends or another
+    // stream's, which drain; worth waiting for rather than failing the
+    // transfer, until cancel() or a failure.
+    for (uint32_t waited = 0;; waited += kSubmitRetryMs) {
+        if (token_->submit(core::IoLane::Bulk, job)) return true;
+        {
+            std::lock_guard<os::Mutex> lock(mu_);
+            if (error_ || cancelled_ || waited >= kSubmitGiveUpMs || !token_->alive()) {
+                queued_ -= std::min(queued_, kChunk);
+                if (!error_) error_ = Error{ErrorCode::Busy, "media library cannot take the write"};
+                return false;
+            }
+        }
+        os::sleep_ms(kSubmitRetryMs);
+    }
 }
 
 void LibrarySink::append(const os::LargeBuffer& buf) {
@@ -157,13 +171,19 @@ bool LibrarySink::finish(bool ok, Finished done, uint32_t wait_ms) {
         finished_ = true;
     }
     wake_.give();
-    auto self = shared_from_this();
-    std::function<void()> job = [self, ok, done = std::move(done)] { self->run_finish(ok, done); };
+    std::function<void()> job = [self = shared_from_this(), ok, done = std::move(done)] {
+        self->run_finish(ok, done);
+    };
     if (os::sd_io_allowed()) wait_ms = 0;
     for (uint32_t waited = 0;; waited += kSubmitRetryMs) {
-        if (lib_.submit(core::IoLane::Bulk, job)) return true;
-        if (waited >= wait_ms) break;
+        if (token_->submit(core::IoLane::Bulk, job)) return true;
+        if (waited >= wait_ms || !token_->alive()) break;
         os::sleep_ms(kSubmitRetryMs);
+    }
+    // Not queued: a later call may try again (the header).
+    {
+        std::lock_guard<os::Mutex> lock(mu_);
+        finished_ = false;
     }
     WLOG_W(kTag, "a download's end could not be queued");
     return false;

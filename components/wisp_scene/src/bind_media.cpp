@@ -80,8 +80,9 @@ media::MediaLibrary::Done<T> replier(SceneApi& api, uint32_t id) {
     };
 }
 
-// Whether the scene may do it; otherwise answers why (no library first:
-// a scene without a card learns that, not that it lacks a permission).
+// Whether the scene may do it; otherwise answers why: the permission
+// first (decided by scene.json alone, so a scene without it learns that
+// whether or not a card is in), then the library.
 bool allowed(SceneApi& api, uint32_t id, MediaAccess need) {
     const bool granted = need == MediaAccess::Read ? api.media_access != MediaAccess::None
                                                    : api.media_access == MediaAccess::Write;
@@ -145,7 +146,7 @@ void do_play(lua_State* L, SceneApi& api, uint32_t id, bool has_cb, int names, i
 int play(lua_State* L) {
     int opts = 2;
     int cb = 3;
-    if (lua_type(L, 2) == LUA_TFUNCTION && lua_isnone(L, 3)) {
+    if (lua_type(L, 2) == LUA_TFUNCTION && lua_isnoneornil(L, 3)) {
         cb = 2;
         opts = 0;
     }

@@ -405,6 +405,9 @@ wisp_test(NAME media_library_test SRCS media/library_test.cpp
 target_compile_definitions(media_library_test PRIVATE
     WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
 
+wisp_test(NAME media_library_sink_test SRCS media/library_sink_test.cpp
+          LIBS wisp_media wisp_port_sim_os TIMEOUT 60)
+
 wisp_test(NAME media_player_test SRCS media/player_test.cpp
           LIBS wisp_media wisp_port_sim_media wisp_port_sim_os TIMEOUT 120)
 target_compile_definitions(media_player_test PRIVATE

@@ -7,10 +7,17 @@
 // order), and the producer only copies into PSRAM and queues.
 //
 // Back-pressure: push() waits while more than kMaxQueued bytes wait for
-// the worker, so a fast network never piles the body up in memory; a
-// failure or cancel() ends the wait. A sink never outlives its library
-// (the Writer's own rule); stop() of the library waits for every job a
-// sink queued.
+// the worker, so a fast network never piles the body up in memory, and
+// retries a full lane for up to kSubmitGiveUpMs (the Bulk lane holds only
+// a few jobs and is shared with scans and other downloads); a failure or
+// cancel() ends either wait. push() and finish() may therefore block
+// their caller, the shared SceneHttp task among them, for up to 5 s, as
+// core::FileDownload does.
+//
+// Lifetime: every job goes through the library's Token, so stop() of the
+// library waits for the jobs already queued, and a sink that outlives the
+// library (its last owner, a request the HTTP proxy drops at shutdown,
+// lets go late) queues nothing more and touches nothing when it goes.
 
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +43,8 @@ public:
     static constexpr size_t kMaxQueued = 128 * 1024;
     // How long finish() retries a full lane.
     static constexpr uint32_t kFinishWaitMs = 5000;
+    // How long push() retries a full lane for one chunk.
+    static constexpr uint32_t kSubmitGiveUpMs = 5000;
 
     using Opened = std::function<void(Result<std::shared_ptr<LibrarySink>>)>;
     using Finished = std::function<void(Result<uint64_t>)>;
@@ -62,9 +71,10 @@ public:
     // full lane is retried for up to `wait_ms`, except on the worker
     // itself (a request refused inside open()'s callback), where the lane
     // cannot drain meanwhile and one try is made. False when it was not
-    // queued: `done` is then never called, and what was written is left
-    // for the library's next listing of the folder to remove. Only the
-    // first call does anything (later ones return false).
+    // queued (`done` is then never called): a later call tries again, so
+    // a refused abort from a closing scene leaves the end of the transfer
+    // to the call its request's completion makes. Once one is queued,
+    // later calls do nothing and return false.
     bool finish(bool ok, Finished done, uint32_t wait_ms = kFinishWaitMs);
 
     // Any thread, without touching the card: push() returns false (waking
@@ -76,7 +86,8 @@ public:
     std::optional<Error> error() const;
 
 private:
-    LibrarySink(MediaLibrary& lib, std::unique_ptr<MediaLibrary::Writer> writer);
+    LibrarySink(std::shared_ptr<MediaLibrary::Token> token,
+                std::unique_ptr<MediaLibrary::Writer> writer);
 
     // Queues the append of `buf`; false when it was refused.
     bool dispatch(os::LargeBuffer buf);
@@ -86,7 +97,7 @@ private:
     // With mu_.
     bool stopped_locked() const { return error_.has_value() || cancelled_ || finished_; }
 
-    MediaLibrary& lib_;
+    std::shared_ptr<MediaLibrary::Token> token_;
     // Touched on the worker only (and by the destructor once nothing else
     // holds the sink).
     std::unique_ptr<MediaLibrary::Writer> writer_;

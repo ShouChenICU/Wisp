@@ -177,6 +177,11 @@ public:
     // Stops the runtime (closing the scene in front) and lets go of the
     // system layer, which App::stop() destroys next. Idempotent.
     void stop_runtime();
+    // Stops the scene HTTP proxy (stop() does too): its requests' last
+    // callbacks have run or been dropped when it returns, so App::stop()
+    // calls it before the media library a library download writes into
+    // goes. Idempotent.
+    void stop_http();
     // stop_runtime(), then the proxy, then both workers (drained):
     // wisp.sd.io first, then wisp.fs. Idempotent.
     void stop();

@@ -708,9 +708,27 @@ MediaLibrary::MediaLibrary(MediaLibraryDeps deps)
     : storage_(deps.storage), state_(deps.bus, MediaLibraryState{}, deps.mirror) {
     impl_ = os::make_large<Impl>(*this, deps);
     if (!impl_) std::abort();  // constructed once at boot; nothing works without it
+    token_ = std::allocate_shared<Token>(os::LargeAllocator<Token>());
+    token_->lib = this;
 }
 
-MediaLibrary::~MediaLibrary() { stop(); }
+MediaLibrary::~MediaLibrary() {
+    stop();
+    // Under the token's lock: a Writer's destructor holds it while it
+    // touches the library, so it either finishes first or sees none.
+    std::lock_guard<os::Mutex> lock(token_->mu);
+    token_->lib = nullptr;
+}
+
+bool MediaLibrary::Token::alive() {
+    std::lock_guard<os::Mutex> lock(mu);
+    return lib != nullptr;
+}
+
+bool MediaLibrary::Token::submit(core::IoLane lane, std::function<void()> job) {
+    std::lock_guard<os::Mutex> lock(mu);
+    return lib != nullptr && lib->submit(lane, std::move(job));
+}
 
 void MediaLibrary::start() {
     Impl& m = *impl_;
@@ -959,7 +977,7 @@ Result<std::unique_ptr<MediaLibrary::Writer>> MediaLibrary::begin_write(std::str
 }
 
 MediaLibrary::Writer::Writer(MediaLibrary& lib, uint32_t gen, std::string rel)
-    : lib_(lib), gen_(gen), rel_(std::move(rel)) {
+    : lib_(lib), token_(lib.token_), gen_(gen), rel_(std::move(rel)) {
     auto [parent, name] = split_parent(rel_);
     const std::string dir = lib_.impl_->abs(parent);
     abs_ = dir + "/" + name;
@@ -969,6 +987,13 @@ MediaLibrary::Writer::Writer(MediaLibrary& lib, uint32_t gen, std::string rel)
 
 MediaLibrary::Writer::~Writer() {
     if (finished_) return;
+    std::lock_guard<os::Mutex> lock(token_->mu);
+    if (token_->lib == nullptr) {
+        // The library is gone; its ".part" goes at the next listing of
+        // its folder.
+        WLOG_W(kTag, "writer of %s outlived its library", rel_.c_str());
+        return;
+    }
     if (os::sd_io_allowed()) {
         abort();
     } else {

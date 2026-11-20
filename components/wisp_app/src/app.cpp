@@ -1159,6 +1159,9 @@ void App::stop() {
     // The library's jobs run on the storage workers stopped next: no `done`
     // and no removal callback after its stop(). The player goes with it,
     // the lifecycle inbox (its other caller) gone above.
+    // The scene proxy first: a library download's last callback queues
+    // its finish on the library, which stop() then waits for.
+    if (impl_->scenes) impl_->scenes->stop_http();
     if (impl_->media_library) {
         impl_->media_library->set_on_removed(nullptr);
         impl_->media_library->stop();

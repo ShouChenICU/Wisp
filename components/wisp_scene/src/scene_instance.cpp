@@ -22,11 +22,18 @@ char kSceneTableKey;
 // Every function below runs inside Vm::call() and follows the longjmp
 // rule (vm.hpp): their frames hold only trivially destructible locals.
 
+// Registry key of the string "on_media", interned here (under a
+// protected call) so wants_media() can look the hook up without
+// allocating.
+char kOnMediaKey;
+
 int install_scene_table(lua_State* L) {
     lua_newtable(L);
     lua_pushvalue(L, -1);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &kSceneTableKey);
     lua_setglobal(L, "scene");
+    lua_pushliteral(L, "on_media");
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kOnMediaKey);
     return 0;
 }
 
@@ -313,6 +320,20 @@ std::optional<ScriptError> SceneInstance::sensor(uint32_t id, const core::Sensor
 std::optional<ScriptError> SceneInstance::device(DeviceEvent ev, const DeviceInfo& info) {
     if (!api_.wants(ev)) return std::nullopt;
     return flush(run_device_handlers(*vm_, ev, info));
+}
+
+bool SceneInstance::wants_media() const {
+    if (!vm_) return false;
+    lua_State* L = vm_->L();
+    // Raw lookups of an existing key: nothing here allocates or raises.
+    if (!lua_checkstack(L, 3)) return true;
+    const int top = lua_gettop(L);
+    bool set = false;
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kSceneTableKey) == LUA_TTABLE &&
+        lua_rawgetp(L, LUA_REGISTRYINDEX, &kOnMediaKey) == LUA_TSTRING)
+        set = lua_rawget(L, -2) == LUA_TFUNCTION;
+    lua_settop(L, top);
+    return set;
 }
 
 std::optional<ScriptError> SceneInstance::media(const media::PlayerState& state) {

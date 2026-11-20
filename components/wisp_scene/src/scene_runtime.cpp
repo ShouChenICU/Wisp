@@ -1874,9 +1874,17 @@ void SceneRuntime::media_changed() {
     media_seen_ = now;
     for (uint32_t instance : instances()) {
         Slot* s = find(instance);
-        if (s == nullptr || !s->scene) continue;
+        // Position steps come every second while music plays: a scene
+        // without the hook is not entered at all.
+        if (s == nullptr || !s->scene || !s->scene->wants_media()) continue;
+        // As fire(): one change reaches every scene in the same pass.
         if (s == front_) enforce_limits(false);
+        // Before the step, which may close the slot.
+        const std::string tag = scene_tag(s->id);
+        const uint64_t t0 = os::now_ms();
         run_step(*s, s->scene->media(now));
+        const uint64_t ms = os::now_ms() - t0;
+        if (ms > kSlowMs) WLOG_W(tag.c_str(), "slow message media %" PRIu64 " ms", ms);
     }
 }
 

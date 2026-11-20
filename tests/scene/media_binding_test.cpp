@@ -292,7 +292,7 @@ wisp.media.play({"scene:other/a.wav"}, nil, function(err, res)
   print("other", err, res)
   wisp.media.play({{file = "../x.wav"}}, nil, function(err, res)
     print("bad", err, res)
-    wisp.media.play({{file = "a.wav"}}, function(err, res) print("own", err, res.truncated) end)
+    wisp.media.play({{file = "a.wav"}}, function(err, res) print("own", err, res.truncated) end, nil)
   end)
 end)
 )");

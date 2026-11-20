@@ -334,10 +334,14 @@ void SceneWiring::stop_runtime() {
     }
 }
 
+void SceneWiring::stop_http() {
+    if (http_) http_->stop();
+}
+
 void SceneWiring::stop() {
     stop_runtime();
     sd_sub_.reset();
-    if (http_) http_->stop();
+    stop_http();
     // Both together: a job on either may hand work to the other.
     if (!router_->drain(kDrainMs)) {
         WLOG_W(kTag, "storage workers still busy after %u ms; stopping them",
