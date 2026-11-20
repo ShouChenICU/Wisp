@@ -23,6 +23,7 @@ Wisp is your personal handheld agent. It can chat with you, has a memory of its 
 - **Create apps on demand**: Turn a request into a Lua scene you can use and refine immediately.
 - **Control the device**: Tools for scenes, networking, scripts and settings, with progress on screen.
 - **Remember and remind**: Persistent preferences, to-dos and reminders that wake the screen.
+- **Play your music**: Keep songs on the SD card and play MP3 and WAV from the admin console, the pull-down panel or by voice, even with the screen off.
 - **Choose your models**: OpenAI-compatible chat, ASR and TTS, with switchable profiles, vision for models that see, and MCP servers for more tools.
 - **Manage locally**: LAN admin console, write-only API keys and on-device confirmation for sensitive actions.
 - **Build across boards**: Pluggable hardware and a PC simulator for everyday development.

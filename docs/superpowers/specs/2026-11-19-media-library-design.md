@@ -344,3 +344,25 @@ Device checks (handed to the owner; not claimed as verified):
 ## 11. Documentation
 
 `docs/architecture.md` (new layer, boot and stop order, task `wisp.media`, events, wake lock kind), AGENTS.md section 3 (layer order, third-party rule for minimp3), `docs/testing.md` if CI scope changes, `THIRD_PARTY_NOTICES.md` and `docs/references.md` (minimp3, esp_audio_codec), the generated scene-api and agent docs, `CHANGELOG.md` at release.
+
+## 12. In the code
+
+Where the implementation differs from the text above, or fixes a detail the text left open.
+
+- **`decode_error` has no `ErrorCode` of its own.** `ErrorCode::Corrupt` (`"corrupt"`) was added to `wisp_base`; `media::wire_name(const Error&)` maps `Corrupt` to `decode_error`, `StorageUnavailable` to `media_unavailable`, `NotFound` to `not_found`, `InvalidArgument` to `invalid_path`, `PermissionDenied` to `permission_denied`, `Unsupported` to `unsupported_format`, `Busy` to `busy` and everything else to `io_error`.
+- **Decoder injection.** The factory reaches `App` as `Platform::audio_decoder` (singular; `std::function<std::unique_ptr<media::Decoder>(media::Format)>`) and covers MP3 only. `App` applies `media::with_wav()` itself, so WAV plays even when the field is empty. The simulator's minimp3 decoder lives in its own component `wisp_port_sim_media` (no SDL dependency); the device's `esp_audio_codec` decoder is in `wisp_port_esp`.
+- **Volume.** The player passes `audio/volume` to `AudioOut::set_volume()` when it opens the output and on each settings change; it reads the value through a `std::function<uint8_t()>` given at construction. `PcmPlayer` keeps its own software scaling.
+- **Permission confirmation** for `"media"` happens only on the agent install/update path (`scene_workspace.cpp`). Installs from the admin console do not ask; the admin scene list shows `"media"`.
+- **Scene files on internal storage** are read through `SceneFiles::read()`, library items through `MediaLibrary`; both sit behind `media::ItemReader`, so the player does not know which it plays.
+- **Lanes and priority.** Library calls use the Normal lane of `wisp.sd.io` (its Interactive lane holds the player's reads), not Interactive as 3.3 says. `wisp.media` runs at priority 4, the UI's: no integer lies strictly between the scene task (3) and the UI (4).
+- **Recording.** `core::AudioArbiter` takes an input lease for the microphone (reported as `Voice`). It pauses music but does not block tones or alarms, so the primed start tone and alarms keep their timing.
+- **Player details.** `next`/`prev` while paused stay paused at the new item. Card removal stops any session, including one playing a scene file on internal storage. Commands are dropped with a warning when the 32-slot command queue is full. `MediaPlayerDeps` carries the `EventBus` and a state mirror hook so `media.player` is published like `media.library`.
+- **Library writes.** Temporary names are `.<name>.part` and `.<name>.done` (`StorageManager` rejects `.tmp`/`.new`); leftovers are recovered on list and scan.
+- **`media.read_text`** returns the first 32 KiB (cut on a character boundary) with `truncated: true` instead of an error.
+- **REST errors** use the admin console's envelope `{"error":{"code":<wire name>,"message":...}}`. A request with `Content-Length` 0 answers 411 (the device reports a missing length as 0), so empty uploads are unsupported. `GET /media/player` answers 503 without a player. The router supports a trailing `**` wildcard for file paths.
+- **Scene API.** There is no `DeviceEvent::Media`; `scene.on_media` has its own pending bit. `wisp.media` is not exposed to the agent's `lua.run` VM.
+- **Panel.** `StatusShell` receives the player's state cell and prev/pause/resume/next functions rather than a `MediaPlayer*`.
+- **Screen off.** There are no screen-off volume keys (see 1.3); the arbiter and wake locks behave as in 5 and 6.
+- **Golden recorder.** The simulator's forwarded-stream recorder skips `media.*` events (the boot library events race Wi-Fi events); `media_wiring_test` checks their payloads.
+- **Test data.** The committed files in `tests/data/media/` are small: the 44.1 kHz stereo WAV is 0.25 s (11025 frames) and the float WAV is 8 kHz mono, so all test media stay under 200 KiB. Expected frame counts use these real lengths. The minimp3 tests use a peak threshold of 2000 and a duration tolerance of 100 ms (encoder delay and padding are untrimmed).
+- **Firmware size.** On the 2.16 the app partition is 81.74 % after adding `esp_audio_codec` (about 62 KB), above the 80 % planning line; it is tracked in the device checks.

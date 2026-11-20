@@ -513,3 +513,22 @@ Source: branch `feat/keypad-input` (2026-11-18).
 - Device checks on the 2.16 with the local volume-key patch (plan `docs/superpowers/plans/2026-11-18-device-model-3-keypad-input.md`, device checks): dialogs by keys, settings rows walked and wrapped, back from choice pages, scenes, diagnostics and the panel, waking by a key press clicks nothing. Not run yet.
 - A nav key pressed in deep standby wakes the device (depends on `ButtonService` standby polling reporting nav keys).
 - The interactive simulator check with `--nav-keys` (Page Up/Page Down/Tab/Return/Escape on a real window) was not run: no display where it was written.
+
+## Media library follow-ups
+
+Source: branch `feat/media-library` (2026-11). Out of scope in media spec 1.2, which the owner may want later:
+
+- Cover art and lyrics; AAC, FLAC and OGG; Bluetooth audio; resampling.
+- Persisted playlists and resuming playback across a reboot.
+- Volume keys with the screen off (the 2.16's `vol_down` is the talk key; the 1.75C has no volume keys).
+- Streaming from the network.
+- Mixing music under other sounds (today music pauses and resumes).
+
+Deferred review findings worth tracking:
+
+- Web Media page (`web/app/pages/media.js`): the folder list load has no request sequencing, a stale `GET /media/player` can overwrite newer event state, a missing audio output shows "No SD card", the rescan flag clears early, there is no "finishing" state during an upload commit, and reloads can duplicate after upload or delete.
+- Media REST: 4xx messages may include absolute card paths; a full lane at commit can block httpd for about 10 s and a commit over 15 s answers 503; no encoded-path tests for PUT and mkdir.
+- Pull-down panel: focus restore runs even when focus is hidden, so the list can jump back after a finger scroll.
+- Player and decoders: a seek on the simulator decoder hides damage as end of stream; a failed seek drops the held chunk; MP3 resync on a slow card has not been timed (device check 6).
+- Library: a failed commit may still surface the file; a folder holding only hidden leftovers cannot be removed; `tracks()` holds its mutex across the walk.
+- ID3 parser: v2.4 frame sizes that are not syncsafe stop the walk; a WAV `data` size of 0 is not read as "to end of file".

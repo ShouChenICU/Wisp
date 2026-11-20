@@ -389,6 +389,16 @@ Scene device spec 3; implemented in `scene::SceneRuntime` (the file header of `c
   - The first access to a device goes through pairing (the pairing code has to be read off the device screen and typed in); the token is stored in `<config dir>/scene_tool.json` (default `$XDG_CONFIG_HOME/wisp` or `~/.config/wisp`), with permissions 0600, written by atomic replacement. A 401 means the device has forgotten the token (revoked, or factory reset); pairing again fixes it.
   - The environment variable `WISP_SCENE_TIMEOUT_S` overrides the timeout of each request (default 30 s; the log-follow stream has no timeout and waits however long the device stays quiet).
 
+## Media library and player
+
+Media spec: `docs/superpowers/specs/2026-11-19-media-library-design.md`. `wisp_media` holds two services, both owned by `App` and wired in `components/wisp_app/src/media_wiring.cpp`; neither exists on a board without a card slot.
+
+- `media::MediaLibrary` indexes `/sd/media/music` (tags, durations) and browses `download/` and `document/`. All file work runs as jobs on `wisp.sd.io` (Normal lane); the index is kept in memory with `Mem::Large` types. Paths in every interface are relative to the media root.
+- `media::MediaPlayer` runs the `wisp.media` task: one session with a queue, a `Music` lease of `core::AudioArbiter`, and the `cpu` and `audio` wake locks. It touches no file; library items and a scene's files reach it through `media::ItemReader` jobs.
+- Decoding is behind `media::Decoder`. `App` receives the MP3 factory as `Platform::audio_decoder` (`esp_audio_codec` on the device, minimp3 in the simulator) and adds the portable WAV reader with `media::with_wav()`.
+- Everything else is a thin adapter over the two services: the agent's `media.*` tools, the admin routes under `/media` and `/media/player`, the scene `wisp.media` binding (permission `"media"` in `scene.json`), and the now-playing row in the pull-down panel (`StatusShell`, which gets the player's state cell and control functions). State is published as the cells `MediaLibrary::state()` and `MediaPlayer::state()`, mirrored to the topics `media.library` and `media.player`; failures go out as `media.error`.
+- Card removal reaches both services through the `StorageManager` SD cell: the library unmounts and the player stops.
+
 ## Agent, voice and shell (MVP)
 
 Device layouts follow [the UI style guide](ui-style-guide.md): independent controls
