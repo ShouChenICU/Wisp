@@ -196,6 +196,31 @@ export const IconBrowser = make(
     ${paths('M3 9h18', 'M6.5 6.8h.01', 'M9 6.8h.01')}`,
 );
 
+export const IconMusic = make(
+  () => html`${paths('M9 17.5V5.5l10.5-2v12')}
+    <circle cx="6.5" cy="17.5" r="2.5" />
+    <circle cx="17" cy="15.5" r="2.5" />`,
+);
+export const IconFolder = make(() =>
+  paths('M3.5 7a1.5 1.5 0 0 1 1.5-1.5h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v8.3a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z'),
+);
+export const IconFolderPlus = make(() =>
+  paths(
+    'M3.5 7a1.5 1.5 0 0 1 1.5-1.5h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v8.3a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z',
+    'M12 10.5v5',
+    'M9.5 13h5',
+  ),
+);
+export const IconFile = make(() => paths('M6 3.5h8l4 4V20a.6.6 0 0 1-.6.6H6a.6.6 0 0 1-.6-.6V4.1c0-.3.3-.6.6-.6z', 'M14 3.5V8h4'));
+export const IconSkipBack = make(
+  () => html`<path d="M17.5 5.5v13L8.5 12z" fill="currentColor" />
+    ${paths('M6.5 5.5v13')}`,
+);
+export const IconSkipForward = make(
+  () => html`<path d="M6.5 5.5v13l9-6.5z" fill="currentColor" />
+    ${paths('M17.5 5.5v13')}`,
+);
+
 let glyphCount = 0;
 
 /**

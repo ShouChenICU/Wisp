@@ -113,13 +113,14 @@ function toApiError(status, statusText, data, retryAfter) {
 }
 
 /**
- * POSTs a file as the raw request body (application/octet-stream, with
+ * Sends a file as the raw request body (application/octet-stream, with
  * its Content-Length), reporting upload progress -- fetch() cannot, hence
  * XMLHttpRequest. Same X-Wisp header, errors and 401 handling as api().
  *
  * @param {string} path  path below /api/v1
  * @param {Blob} file
- * @param {{onProgress?: (sent: number, total: number) => void}} [opts]
+ * @param {{onProgress?: (sent: number, total: number) => void,
+ *          method?: 'POST'|'PUT'}} [opts]  `method`: POST by default
  * @returns {{done: Promise<any>, abort: () => void}}  `done` resolves to
  *   the decoded JSON body and rejects with an ApiError (status 0 when the
  *   device was unreachable or the upload was aborted)
@@ -127,7 +128,7 @@ function toApiError(status, statusText, data, retryAfter) {
 export function upload(path, file, opts = {}) {
   const xhr = new XMLHttpRequest();
   const done = new Promise((resolve, reject) => {
-    xhr.open('POST', PREFIX + path);
+    xhr.open(opts.method || 'POST', PREFIX + path);
     xhr.setRequestHeader('X-Wisp', '1');
     xhr.setRequestHeader('Accept', 'application/json');
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
@@ -174,6 +175,56 @@ export function exportUrl(id, withData) {
  */
 export function fileUrl(id, name) {
   return `${PREFIX}/scenes/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`;
+}
+
+/**
+ * A media library path (relative to the card's media folder, "/"-separated)
+ * as a URL path: each segment encoded on its own, so spaces, "#", "?" and
+ * "%" in a name survive while the separators stay.
+ *
+ * @param {string} path  e.g. "music/My Album/01 #1.mp3"
+ * @returns {string}
+ */
+export function mediaPath(path) {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+/**
+ * The URL of a media library file (GET /media/files/{path}), for a download
+ * link: followed rather than fetched, since a track can be far larger than
+ * a page should hold in memory.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+export function mediaFileUrl(path) {
+  return `${PREFIX}/media/files/${mediaPath(path)}`;
+}
+
+// Media errors (media spec 8) worded for the library and player; the
+// generic err.* text of the same code (busy, not_found...) speaks of "the
+// device", these of the card and the file.
+const MEDIA_CODES = new Set([
+  'media_unavailable',
+  'not_found',
+  'invalid_path',
+  'permission_denied',
+  'unsupported_format',
+  'decode_error',
+  'busy',
+  'io_error',
+]);
+
+/**
+ * A localized sentence for a failed media request: media spec 8's codes
+ * get their own wording, anything else goes through describeError().
+ *
+ * @param {ApiError} e
+ * @returns {string}
+ */
+export function describeMediaError(e) {
+  if (e && e.status !== 0 && MEDIA_CODES.has(e.code)) return t('media.err.' + e.code);
+  return describeError(e);
 }
 
 // Several parts of the app want /info at start-up (boot, the shell, the

@@ -67,6 +67,7 @@ import {
   IconLogs,
   IconModel,
   IconMoon,
+  IconMusic,
   IconNote,
   IconPackage,
   IconPower,
@@ -1441,6 +1442,16 @@ function MaintenanceCard({ onBack }) {
           <span class="dev-main">
             <span class="row-title">${t('nav.memory')}</span>
             <span class="row-sub">${t('sys.memory_desc')}</span>
+          </span>
+          <${IconChevronRight} size=${18} />
+        </a>
+      </li>
+      <li>
+        <a class="link-row" href="#/media">
+          <span class="dev-icon tone-accent"><${IconMusic} size=${18} /></span>
+          <span class="dev-main">
+            <span class="row-title">${t('nav.media')}</span>
+            <span class="row-sub">${t('sys.media_desc')}</span>
           </span>
           <${IconChevronRight} size=${18} />
         </a>
