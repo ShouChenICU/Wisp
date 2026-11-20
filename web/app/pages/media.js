@@ -64,8 +64,11 @@ const PLAYABLE = /\.(mp3|wav)$/i;
 // A burst of library events (a rescan touching many files) costs one load.
 const RELOAD_DELAY_MS = 300;
 const SEARCH_DELAY_MS = 300;
-// A rescan's own events end the "scanning" shown after the button; without
-// a card no event may come, so it also ends after this long.
+// A rescan's own events end the "scanning" shown after the button: the
+// first one that reports scanning, then the one that reports it done (an
+// earlier "done", from before the scan began, ends nothing). Without a
+// card, or when the bus drops the scan's events, none may come, so it also
+// ends after this long.
 const RESCAN_HOLD_MS = 10000;
 
 const join = (dir, name) => (dir ? dir + '/' + name : name);
@@ -88,16 +91,35 @@ export function MediaPage() {
   const alive = useRef(true);
   const reloadTimer = useRef(0);
   const holdTimer = useRef(0);
+  // Bumped by every library event and every GET of the state: an answer
+  // older than either (a GET answered after the scan's last event) is
+  // stale and dropped.
+  const librarySeq = useRef(0);
+  // The Rescan button's own scan: 'none', 'requested' (asked, not seen
+  // running yet) or 'running' (an event or answer reported scanning).
+  const rescanPhase = useRef('none');
+
+  function endRescan() {
+    clearTimeout(holdTimer.current);
+    rescanPhase.current = 'none';
+    if (alive.current) setRescanning(false);
+  }
+
+  function applyLibrary(p) {
+    const next = { available: !!p.available, scanning: !!p.scanning, track_count: Number(p.track_count) || 0 };
+    setLibrary(next);
+    if (rescanPhase.current === 'requested' && next.scanning) rescanPhase.current = 'running';
+    return next;
+  }
 
   // The library's state when there is no event yet. GET /media/player
   // carries it; without an audio output that route is 503 and the state
   // stays unknown until the first media.library event.
   async function loadLibrary() {
+    const seq = ++librarySeq.current;
     try {
       const r = await api('GET', '/media/player');
-      if (alive.current && r) {
-        setLibrary({ available: !!r.available, scanning: !!r.scanning, track_count: Number(r.track_count) || 0 });
-      }
+      if (alive.current && r && seq === librarySeq.current) applyLibrary(r);
     } catch {
       // No player, or unreachable: the folder listing shows its own error.
     }
@@ -131,12 +153,11 @@ export function MediaPage() {
           return;
         }
         if (msg.t !== 'event' || msg.topic !== 'media.library') return;
-        const p = msg.payload || {};
-        setLibrary({ available: !!p.available, scanning: !!p.scanning, track_count: Number(p.track_count) || 0 });
-        if (!p.scanning) {
-          clearTimeout(holdTimer.current);
-          setRescanning(false);
-        }
+        ++librarySeq.current;
+        const next = applyLibrary(msg.payload || {});
+        if (!next.scanning && rescanPhase.current === 'running') endRescan();
+        // No card: no scan will run.
+        if (!next.available && rescanPhase.current !== 'none') endRescan();
         bump();
       },
       {
@@ -153,16 +174,16 @@ export function MediaPage() {
 
   async function rescan() {
     setRescanning(true);
+    rescanPhase.current = 'requested';
     clearTimeout(holdTimer.current);
     holdTimer.current = setTimeout(() => {
-      if (alive.current) setRescanning(false);
-      loadLibrary();
+      endRescan();
+      if (alive.current) loadLibrary();
     }, RESCAN_HOLD_MS);
     try {
       await api('POST', '/media/rescan');
     } catch (e) {
-      clearTimeout(holdTimer.current);
-      setRescanning(false);
+      endRescan();
       if (e.status !== 401) toast(describeMediaError(e), 'err');
     }
   }
