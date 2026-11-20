@@ -187,6 +187,8 @@ void NetWiring::start() {
             .agent = deps_.agent,
             .memory = deps_.memory,
             .todos = deps_.todos,
+            .media_library = deps_.media_library,
+            .media_player = deps_.media_player,
         });
         reconcile_http(now);  // http_always_on serves from boot
     }

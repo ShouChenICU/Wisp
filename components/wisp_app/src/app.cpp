@@ -748,6 +748,8 @@ Result<void> App::start() {
         .agent = impl_->agent ? impl_->agent->api() : nullptr,
         .memory = impl_->agent ? impl_->agent->memory() : nullptr,
         .todos = impl_->reminders.get(),
+        .media_library = impl_->media_library.get(),
+        .media_player = impl_->media_player.get(),
         .now_ms = {},  // os::now_ms
         .submit_io = impl_->io_submitter(),
         .on_persist_failed = [impl = impl_.get()] { impl->report_persist_failed(); },

@@ -456,6 +456,12 @@ foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test rout
     add_dependencies(${admin_test} wisp_fixture_wpak)
     target_compile_definitions(${admin_test} PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}")
 endforeach()
+# /media over a real MediaLibrary on a temporary card and a MediaPlayer.
+wisp_test(NAME routes_media_test SRCS admin/routes_media_test.cpp
+          LIBS wisp_admin wisp_media wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+add_dependencies(routes_media_test wisp_fixture_wpak)
+target_compile_definitions(routes_media_test PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}"
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
 # /agent over a real AgentService (the App's adapter, so wisp_app too).
 wisp_test(NAME routes_agent_test SRCS admin/routes_agent_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)

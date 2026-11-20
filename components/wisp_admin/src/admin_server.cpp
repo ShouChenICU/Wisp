@@ -136,9 +136,9 @@ struct RouteMatch {
     bool path_known = false;  // some route has this path, under another method
 };
 
-// `sub` against a route path whose segments are literal or "*" (one
-// non-empty segment, the first captured into `param`, the second into
-// `param2`).
+// `sub` against a route path whose segments are literal, "*" (one
+// non-empty segment) or a final "**" (everything left, slashes included);
+// the first wildcard is captured into `param`, the second into `param2`.
 bool path_matches(std::string_view pattern, std::string_view sub, std::string& param,
                   std::string& param2) {
     int wildcards = 0;
@@ -146,6 +146,11 @@ bool path_matches(std::string_view pattern, std::string_view sub, std::string& p
         if (pattern.empty() || sub.empty() || pattern[0] != '/' || sub[0] != '/') return false;
         pattern.remove_prefix(1);
         sub.remove_prefix(1);
+        if (pattern == "**") {
+            if (sub.empty()) return false;
+            (wildcards++ == 0 ? param : param2) = std::string(sub);
+            return true;
+        }
         const size_t pe = std::min(pattern.find('/'), pattern.size());
         const size_t se = std::min(sub.find('/'), sub.size());
         const std::string_view want = pattern.substr(0, pe);
@@ -199,6 +204,7 @@ AdminServer::AdminServer(AdminDeps deps) : deps_(std::move(deps)) {
     detail::add_scene_file_routes(routes_);
     detail::add_agent_routes(routes_);
     detail::add_memory_routes(routes_);
+    detail::add_media_routes(routes_);
     settings_schema_ = detail::settings_schema_body();
     hub_ = std::make_unique<WsHub>(deps_.bus, deps_.boot_id);
     hub_->start();
@@ -352,6 +358,7 @@ net::StreamHandler AdminServer::stream_handler() {
         if (auto firmware = detail::firmware_stream(deps_, head)) return firmware;
         if (auto agent = detail::agent_stream(deps_, head)) return agent;
         if (auto mcp = detail::mcp_stream(deps_, head)) return mcp;
+        if (auto media = detail::media_stream(deps_, head)) return media;
         return detail::scene_stream(deps_, head);
     };
 }

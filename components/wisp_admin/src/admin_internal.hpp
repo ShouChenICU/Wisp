@@ -34,7 +34,8 @@ struct RequestContext {
     // Paired client id when the request carried a valid wisp_token; empty
     // otherwise (only possible on whitelisted routes).
     std::string client_id;
-    // The path segment a route's "*" matched, still URL-encoded.
+    // The path segment a route's "*" (or the rest a "**") matched, still
+    // URL-encoded.
     std::string param;
     // What a second "*" matched (/scenes/*/files/*), still URL-encoded.
     std::string param2;
@@ -53,7 +54,8 @@ struct Route {
     net::Method method;
     // Path after kApiPrefix. Up to two segments may be "*", each matching
     // exactly one non-empty segment, handed to the handler as
-    // RequestContext::param and param2.
+    // RequestContext::param and param2. A last segment "**" matches the
+    // rest of the path, slashes included (a media library path).
     std::string_view path;
     // Reachable without a token (the pairing whitelist). CSRF still applies.
     bool is_public;
@@ -73,6 +75,7 @@ void add_power_routes(std::vector<Route>& routes);       // /system/power, /syst
 void add_scene_file_routes(std::vector<Route>& routes);  // /scenes/{id}/files
 void add_agent_routes(std::vector<Route>& routes);       // /agent/*
 void add_memory_routes(std::vector<Route>& routes);      // /memory, /todos
+void add_media_routes(std::vector<Route>& routes);       // /media/*
 
 // GET /settings/schema's body (routes_device.cpp): every settings table row
 // flagged kSettingWeb, in table order. Built once by AdminServer.
@@ -98,6 +101,10 @@ std::optional<net::StreamStart> agent_stream(AdminDeps& deps, const net::HttpReq
 // largest configuration the service accepts fits one request. nullopt for
 // every other request, and for one without a body.
 std::optional<net::StreamStart> mcp_stream(AdminDeps& deps, const net::HttpRequest& head);
+
+// A media library upload, PUT /api/v1/media/files/<path> (routes_media.cpp),
+// streamed onto the card. nullopt for every other request.
+std::optional<net::StreamStart> media_stream(AdminDeps& deps, const net::HttpRequest& head);
 
 // The gate a streamed request passes before any of its body is read, the
 // same as AdminServer::handle() applies to every API call: Host (no

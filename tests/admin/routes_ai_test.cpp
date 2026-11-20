@@ -340,11 +340,12 @@ TEST(AdminAi, NoResponseEverContainsApiKey) {
                R"({"kind":"llm","name":"b","preset":"openai","api_key":"sk-NEVERLEAK\n"})"));
     for (const HttpRequest& req : reqs) {
         HttpResponse res = f.srv->handle(req);
-        // This fixture wires no MemoryStore/ReminderScheduler in, so these
-        // two answer their documented 503 "unavailable" (admin_server.hpp);
-        // a fixed, key-free body, not a crash.
+        // This fixture wires no MemoryStore/ReminderScheduler and no media
+        // library or player in, so those routes answer their documented 503
+        // (admin_server.hpp); a fixed, key-free body, not a crash.
         const bool expected_unavailable =
-            res.status == 503 && (req.path == "/api/v1/memory" || req.path == "/api/v1/todos");
+            res.status == 503 && (req.path == "/api/v1/memory" || req.path == "/api/v1/todos" ||
+                                  req.path.starts_with("/api/v1/media/"));
         EXPECT_TRUE(res.status < 500 || expected_unavailable) << req.path << " got " << res.status;
         EXPECT_EQ(res.body.find("NEVERLEAK"), std::string::npos) << req.path << ": " << res.body;
         for (const auto& [k, v] : res.headers) {

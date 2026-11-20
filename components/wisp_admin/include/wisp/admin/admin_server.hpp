@@ -81,6 +81,11 @@
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
 
+namespace wisp::media {
+class MediaLibrary;
+class MediaPlayer;
+}  // namespace wisp::media
+
 namespace wisp::admin {
 
 struct AdminDeps {
@@ -135,9 +140,10 @@ struct AdminDeps {
     // /system/time and POST /system/time/sync answer 503 unavailable.
     net::TimeSyncService* time_sync = nullptr;
     // System wake locks (scene-device spec 4.3): "system.upload" (network)
-    // for a scene upload and "system.ota" (network + cpu) for a firmware
-    // upload, each from its first byte to its end or abort, and
-    // "system.download" (network) while a scene file is being sent.
+    // for a scene or media upload and "system.ota" (network + cpu) for a
+    // firmware upload, each from its first byte to its end or abort, and
+    // "system.download" (network) while a scene or media file is being
+    // sent.
     // Null: none.
     core::WakeLockRegistry* wakelocks = nullptr;
     // GET /system/power (scene-device spec 4.5): {"level", "light_sleep",
@@ -169,6 +175,13 @@ struct AdminDeps {
     // /todos answer 503 unavailable. list() runs on the calling thread;
     // DELETE hops to `worker`.
     core::ReminderScheduler* todos = nullptr;
+    // The media library and the music player (media spec 3.7). Null
+    // library: the /media/files, /media/folders, /media/tracks and
+    // /media/rescan routes answer 503 media_unavailable; null player: the
+    // /media/player routes do. Every card access runs as a library job on
+    // wisp.sd.io while the server's thread waits (routes_media.cpp).
+    media::MediaLibrary* media_library = nullptr;
+    media::MediaPlayer* media_player = nullptr;
     // Monotonic os::now_ms() timebase; the only clock the router uses.
     // Tests inject their own; left empty, AdminServer uses os::now_ms().
     std::function<uint64_t()> now_ms = [] { return os::now_ms(); };
@@ -213,9 +226,10 @@ public:
     // The HttpServer's StreamHandler: takes POST /api/v1/system/firmware
     // (the firmware image, streamed into AdminDeps::firmware), POST
     // /api/v1/scenes (a scene zip, collected in PSRAM and installed when
-    // complete) and POST /api/v1/agent/messages (up to 16 KiB), each
-    // after the same Host, token and X-Wisp checks as any API call and 411
-    // without a Content-Length, and leaves every other request to
+    // complete), POST /api/v1/agent/messages (up to 16 KiB) and PUT
+    // /api/v1/media/files/<path> (a file streamed into the media library),
+    // each after the same Host, token and X-Wisp checks as any API call and
+    // 411 without a Content-Length, and leaves every other request to
     // handle(). Captures this AdminServer, like ws_handlers().
     net::StreamHandler stream_handler();
 
