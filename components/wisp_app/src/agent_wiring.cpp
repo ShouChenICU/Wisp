@@ -552,6 +552,15 @@ AgentWiring::AgentWiring(AgentWiringDeps deps) : deps_(std::move(deps)) {
         check("http",
               agent::add_http_tools(*registry_, agent::HttpToolDeps{.http = *deps_.scene_http}));
     }
+    // Decided once at boot, like the others, so the tool list stays
+    // byte-stable: a card inserted later shows in media.state, not here.
+    if (deps_.media_library != nullptr || deps_.media_player != nullptr) {
+        check("media", agent::add_media_tools(*registry_, agent::MediaToolDeps{
+                                                              .library = deps_.media_library,
+                                                              .player = deps_.media_player,
+                                                              .http = deps_.scene_http,
+                                                          }));
+    }
     check("lua", agent::add_lua_tools(*registry_, agent::LuaToolDeps{.runtime = deps_.runtime}));
     registry_->add_provider(*scene_tools_);
     if (mcp_tools_) registry_->add_provider(*mcp_tools_);

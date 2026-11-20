@@ -140,6 +140,10 @@ std::string system_prompt(const DeviceSnapshot& d, core::LlmSystemMsgs system_ms
     p += "Scenes and connected MCP servers may export tools: find them with tools_find and call "
          "them with tools_call; check for one when a request might be something a scene or a "
          "server can do.\n\n";
+    // A suggestion, not a rule (media spec 7.3): the library takes any
+    // path inside its three folders.
+    p += "Media library (the SD card, media_* tools): music is best saved under music/, "
+         "downloads under download/ and documents under document/.\n\n";
 
     p += "Memory:\n";
     p += first ? "- The <context> block at the start of the latest user message begins with your "

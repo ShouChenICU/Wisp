@@ -165,12 +165,13 @@ The first run downloads the models. Then, on the admin console's Models page:
 
 ## 🤖 What the agent can do
 
-The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **four groups by purpose**:
+The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **five groups by purpose**:
 
 | Group | Tools | What they enable |
 | --- | --- | --- |
 | Scene development & runtime | `scene.*`, `ui.tree`, `ui.screenshot`, `docs.read`, `tools.find`, `tools.call`, `mcp.*` | Read the built-in API reference, create and edit scenes, install or roll back versions, manage their lifecycle, data and files, and inspect widgets and logs for debugging, and, with a vision model, look at the screen. Discover and call tools exported by installed scenes and by MCP servers to add reusable capabilities without changing the firmware, and add, remove or enable MCP servers. |
 | Web & scripting | `http.fetch`, `lua.run` | Access websites, APIs and LAN services over HTTP/HTTPS, extract text from HTML, read long responses in pages, or hand an image to a vision model. Run sandboxed Lua 5.5 scripts to calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for results; memory and execution time are bounded. |
+| Music & media library | `media.*` | Search the tracks on the SD card, play them in order, on repeat or shuffled, and pause, skip or seek; list, read, write and delete files in the card's media library, and download files from the web straight into it. |
 | Memory & to-dos | `memory.*`, `todo.*` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
 | Device & notifications | `device.status`, `device.list`, `device.call`, `settings.*`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; read and control peripherals that describe themselves, such as a vibration motor (when the board has such a device); adjust brightness, volume, screen timeout, deep standby, language, time zone and clock format, or mute spoken replies; review or dismiss notifications. |
 

@@ -1360,6 +1360,8 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .files = scenes.files(),
         .scene_http = scenes.http(),
         .mcp = &impl->mcp,
+        .media_library = impl->media_library.get(),
+        .media_player = impl->media_player.get(),
         .firmware_version = impl->platform.firmware_version,
         .conversation_dir = system.value() + "/agent",
         .memory_path = system.value() + "/memory/notes.json",

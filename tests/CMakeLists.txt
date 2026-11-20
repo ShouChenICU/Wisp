@@ -656,6 +656,10 @@ target_include_directories(docs_test PRIVATE ${WISP_ROOT}/components/wisp_agent/
 wisp_test(NAME html_text_test SRCS agent/html_text_test.cpp LIBS wisp_agent wisp_port_sim_os)
 wisp_test(NAME http_tools_test SRCS agent/http_tools_test.cpp
           LIBS wisp_agent wisp_net wisp_port_sim_os TIMEOUT 60)
+# media.* over a MediaLibrary on a temporary card, a MediaPlayer and a
+# SceneHttp with a fake HttpClient (media spec 7.3).
+wisp_test(NAME tools_media_test SRCS agent/tools_media_test.cpp
+          LIBS wisp_agent wisp_media wisp_net wisp_port_sim_os TIMEOUT 60)
 # lua.run over a real SceneRuntime (agent-tools spec 4.1).
 wisp_test(NAME lua_tools_test SRCS agent/lua_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)

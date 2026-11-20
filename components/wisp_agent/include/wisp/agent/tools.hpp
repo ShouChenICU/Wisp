@@ -21,6 +21,8 @@
 #include "wisp/core/storage_manager.hpp"
 #include "wisp/core/system_settings.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/media/library.hpp"
+#include "wisp/media/player.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/scene/ui_inspector.hpp"
@@ -167,5 +169,23 @@ struct TodoToolDeps {
 // adapters over ReminderScheduler, run on the flash thread
 // (ToolThread::Fs), since the changes write todos.json.
 Result<void> add_todo_tools(ToolRegistry& reg, TodoToolDeps deps);
+
+struct MediaToolDeps {
+    // Each may be null; all must outlive the registry. Without a library
+    // there are no file tools, without a player no playback tools, and
+    // media.download needs both the library and `http`.
+    media::MediaLibrary* library = nullptr;
+    media::MediaPlayer* player = nullptr;
+    net::SceneHttp* http = nullptr;
+};
+
+// media.tracks, list, read_text, write_text, remove, download, play,
+// control and state (media spec 7.3): thin adapters over MediaLibrary and
+// MediaPlayer, without confirmation. Errors carry the media spec's wire
+// names (section 8). media.download streams through SceneHttp's Agent
+// principal into a media::LibrarySink, on ToolThread::Io with
+// kMediaDownloadToolMs; the rest run on ToolThread::Agent and wait for the
+// library's callbacks.
+Result<void> add_media_tools(ToolRegistry& reg, MediaToolDeps deps);
 
 }  // namespace wisp::agent
