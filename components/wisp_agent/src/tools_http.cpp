@@ -93,8 +93,6 @@ bool method_of(std::string_view s, net::Method& m) {
     return true;
 }
 
-// The host out of a URL the Agent principal already accepted (http:// or
-// https://, a parseable authority): no user info, no port, lowercased.
 // text/*, *json*, *xml*, *javascript*, application/x-www-form-urlencoded
 // (spec 3.1); an absent content-type is not evidence either way, so it is
 // treated as text (most APIs that return plain JSON or text do not always
