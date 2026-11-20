@@ -4,10 +4,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "support/fake_audio.hpp"
@@ -208,6 +211,23 @@ protected:
     std::string last_note;
 };
 
+// Runs a tool on its own thread, as the agent loop would, so the test can
+// cancel it while it waits.
+struct Background {
+    std::thread t;
+    Value result;
+    std::atomic<bool> finished{false};
+    Background(wisp::agent::ToolRegistry& tools, ToolCtx& ctx, std::string tool, std::string args)
+        : t([this, &tools, &ctx, tool = std::move(tool), args = std::move(args)] {
+              ToolOutput out = tools.call(tool, args, ctx);
+              result = std::move(out.result);
+              finished = true;
+          }) {}
+    ~Background() {
+        if (t.joinable()) t.join();
+    }
+};
+
 class MediaToolsNoCard : public MediaTools {
 protected:
     void SetUp() override { build(false); }
@@ -224,9 +244,10 @@ TEST_F(MediaTools, TracksQuery) {
     ASSERT_EQ(items.as_list().size(), 2u);
     EXPECT_EQ(str(items.as_list()[0], "id"), "music/six.wav");
     EXPECT_EQ(integer(items.as_list()[0], "duration"), 6);
-    EXPECT_EQ(str(items.as_list()[0], "title"), "six");
+    // Tags are outside data (agent-core spec 6.3); the id stays bare.
+    EXPECT_EQ(str(items.as_list()[0], "title"), "<data source=\"media\">six</data>");
     for (const char* k : {"artist", "album"})
-        EXPECT_EQ(field(items.as_list()[0], k).type(), Value::Type::String) << k;
+        EXPECT_EQ(str(items.as_list()[0], k), "<data source=\"media\"></data>") << k;
 
     const Value page = call("media_tracks", R"({"q":"TWO"})");
     EXPECT_EQ(integer(page, "total"), 1);
@@ -293,6 +314,10 @@ TEST_F(MediaTools, WriteTextThenRemove) {
     // Writes land only inside music/, download/ or document/.
     EXPECT_EQ(str(call("media_write_text", R"({"path":"top.txt","text":"x"})"), "error"),
               "invalid_path");
+    // Read back by media.read_text, so held to the same rule.
+    EXPECT_EQ(
+        str(call("media_write_text", R"({"path":"document/b.txt","text":"a\u0001b"})"), "error"),
+        "unsupported_format");
 
     // A folder that holds something is refused; empty, it goes.
     EXPECT_EQ(str(call("media_remove", R"({"path":"document/todo"})"), "error"), "invalid_path");
@@ -354,6 +379,7 @@ TEST_F(MediaTools, PlayAndControl) {
     const Value s = call("media_state", "{}");
     EXPECT_EQ(str(s, "status"), "playing");
     EXPECT_EQ(str(field(s, "track"), "id"), "music/six.wav");
+    EXPECT_EQ(str(field(s, "track"), "title"), "<data source=\"media\">six</data>");
     EXPECT_EQ(integer(s, "index"), 1);
     EXPECT_EQ(integer(s, "queue_length"), 2);
     EXPECT_EQ(str(s, "mode"), "repeat_all");
@@ -419,4 +445,66 @@ TEST_F(MediaTools, NoDownloadWithoutHttp) {
     EXPECT_NE(reg.find("media.read_text"), nullptr);
     EXPECT_EQ(reg.find("media.play"), nullptr);
     EXPECT_NE(reg.find("media.state"), nullptr);
+}
+
+// Cancelled mid-body: "cancelled" at once, the transfer stopped, what was
+// written removed and the old file kept.
+TEST_F(MediaTools, DownloadCancelledMidBodyLeavesTheTarget) {
+    put("download/f.bin", "old");
+    std::atomic<bool> release{false};
+    std::atomic<bool> stop{false};
+    ctx.cancelled = [&] { return stop.load(); };
+    client.next = {.status = 200, .body = std::string(256 * 1024, 'p')};
+    client.before_piece = [&] {
+        if (client.pieces.load() < 12) return;
+        while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    {
+        Background bg(*tools, ctx, "media_download",
+                      R"({"url":"http://files.example.com/f","path":"download/f.bin"})");
+        ASSERT_TRUE(wait_until([&] { return client.pieces.load() >= 12; }, kWaitMs));
+        ASSERT_TRUE(wait_until(
+            [&] { return fs::exists(fs::path(root()) / "download/.f.bin.part"); }, kWaitMs));
+        stop = true;
+        ASSERT_TRUE(wait_until([&] { return bg.finished.load(); }, kWaitMs));
+        EXPECT_EQ(str(bg.result, "error"), "cancelled") << wisp::to_json(bg.result);
+        release = true;
+    }
+    EXPECT_TRUE(wait_until([&] { return http->idle(); }, kWaitMs));
+    EXPECT_TRUE(client.saw_cancel.load());
+    ASSERT_TRUE(router->drain(kWaitMs));
+    EXPECT_EQ(read_raw(fs::path(root()) / "download/f.bin"), "old");
+    EXPECT_FALSE(fs::exists(fs::path(root()) / "download/.f.bin.part"));
+}
+
+// Cancelled while the writer waits for the card: no request is ever sent
+// and nothing is written.
+TEST_F(MediaTools, DownloadCancelledBeforeTheWriterOpens) {
+    wisp::os::Semaphore held{1, 0}, go{1, 0};
+    ASSERT_TRUE(router->submit(
+        wisp::core::Medium::Sd,
+        [&] {
+            held.give();
+            go.take(wisp::os::kForever);
+        },
+        wisp::core::IoLane::Normal));
+    ASSERT_TRUE(held.take(kWaitMs));
+    std::atomic<bool> stop{false};
+    ctx.cancelled = [&] { return stop.load(); };
+    {
+        Background bg(*tools, ctx, "media_download",
+                      R"({"url":"http://files.example.com/g","path":"download/g.bin"})");
+        // The writer's open is queued behind the held job by now.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        EXPECT_FALSE(bg.finished.load());
+        stop = true;
+        ASSERT_TRUE(wait_until([&] { return bg.finished.load(); }, kWaitMs));
+        EXPECT_EQ(str(bg.result, "error"), "cancelled") << wisp::to_json(bg.result);
+    }
+    go.give();
+    ASSERT_TRUE(router->drain(kWaitMs));
+    EXPECT_TRUE(http->idle());
+    EXPECT_EQ(client.calls(), 0u);
+    EXPECT_FALSE(fs::exists(fs::path(root()) / "download/g.bin"));
+    EXPECT_FALSE(fs::exists(fs::path(root()) / "download/.g.bin.part"));
 }

@@ -39,6 +39,7 @@ namespace {
 
 using detail::arg_str;
 using detail::done;
+using detail::host_of;
 using media::MediaLibrary;
 
 // How long a file tool waits for the card; the registered timeout leaves
@@ -83,31 +84,16 @@ int64_t int_arg(const Value& a, const char* key, int64_t fallback) {
     return v != nullptr && v->type() == Value::Type::Int ? v->as_int() : fallback;
 }
 
+// Tags come from the files, which may come from anywhere (a download):
+// data, never instructions (agent-core spec 6.3). The id stays bare, since
+// media.play takes it back.
 Value track_value(const std::string& id, const std::string& title, const std::string& artist,
                   const std::string& album, uint32_t duration_s) {
     return Value(Map{{"id", Value(id)},
-                     {"title", Value(title)},
-                     {"artist", Value(artist)},
-                     {"album", Value(album)},
+                     {"title", Value(external_data("media", title))},
+                     {"artist", Value(external_data("media", artist))},
+                     {"album", Value(external_data("media", album))},
                      {"duration", Value(static_cast<int64_t>(duration_s))}});
-}
-
-std::string host_of(std::string_view url) {
-    const size_t scheme = url.find("://");
-    const size_t start = scheme == std::string_view::npos ? 0 : scheme + 3;
-    size_t end = url.find_first_of("/?#", start);
-    if (end == std::string_view::npos) end = url.size();
-    std::string_view authority = url.substr(start, end - start);
-    const size_t at = authority.rfind('@');
-    if (at != std::string_view::npos) authority = authority.substr(at + 1);
-    if (authority.empty() || authority.front() != '[') {
-        const size_t colon = authority.rfind(':');
-        if (colon != std::string_view::npos) authority = authority.substr(0, colon);
-    }
-    std::string out(authority);
-    for (char& c : out)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    return out;
 }
 
 // One media.download, shared by the tool, the library's worker and the
@@ -215,8 +201,11 @@ struct Media {
         MediaLibrary* lib = deps.library;
         const std::string path = arg_str(a, "path");
         const std::string& text = arg_str(a, "text");
+        // As media.read_text reads them back.
+        if (!detail::is_text(text))
+            return tool_error("unsupported_format", "not UTF-8 text without control characters");
         os::LargeBuffer data = os::LargeBuffer::allocate(text.size());
-        if (!data.ok() && !text.empty()) return tool_error("no_memory", "no memory for the text");
+        if (!data.ok() && !text.empty()) return tool_error("io_error", "no memory for the text");
         if (!text.empty()) std::copy(text.begin(), text.end(), data.data());
         auto shared = std::make_shared<os::LargeBuffer>(std::move(data));
         auto r = await<void>(
@@ -292,7 +281,9 @@ struct Media {
             };
             std::lock_guard<os::Mutex> lock(d->mu);
             if (d->cancelled) {
-                // The tool gave up while this waited for the worker.
+                // The tool gave up while this waited for the worker. One
+                // try: a refused abort leaves the ".part", which goes at
+                // the next listing of its folder (as for a scene's).
                 sink->finish(false, [](Result<uint64_t>) {}, 0);
                 return;
             }
@@ -316,7 +307,9 @@ struct Media {
                 if (sink) {
                     http.cancel_scene(std::string(net::kAgentHttpId));
                     // No done() after cancel_scene(): without one this
-                    // ends the write, so nothing replaces the target.
+                    // ends the write, so nothing replaces the target. One
+                    // try, as above: a refused abort leaves the ".part"
+                    // for the next listing of its folder.
                     if (!d->http_done) {
                         sink->cancel();
                         sink->finish(false, [](Result<uint64_t>) {}, 0);
@@ -343,11 +336,12 @@ struct Media {
             const std::string& s = v.as_string();
             // Library ids only: a scene's own files are not the agent's to
             // address.
+            Result<std::string> id = media::normalize(s);
             if (std::string_view(s).substr(0, media::kSceneItemPrefix.size()) ==
                     media::kSceneItemPrefix ||
-                !media::normalize(s))
+                !id)
                 return tool_error("invalid_path", "not a library path: " + s);
-            list.push_back(s);
+            list.push_back(std::move(id.value()));
         }
         if (!card()) return unavailable();
         std::optional<media::PlayMode> mode;
