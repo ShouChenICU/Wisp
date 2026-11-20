@@ -250,6 +250,8 @@ const char* strings_en(StrId id) {
             return "{} min";
         case StrId::PanelHours:
             return "{} h";
+        case StrId::MediaUnknownArtist:
+            return "Unknown artist";
         case StrId::AgentStepLimit:
             return "Too many steps; stopped";
         case StrId::AgentTimeLimit:

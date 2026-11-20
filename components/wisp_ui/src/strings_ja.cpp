@@ -253,6 +253,8 @@ const char* strings_ja(StrId id) {
             return "{} 分";
         case StrId::PanelHours:
             return "{} 時間";
+        case StrId::MediaUnknownArtist:
+            return "不明なアーティスト";
         case StrId::AgentStepLimit:
             return "ステップが多すぎるため停止しました";
         case StrId::AgentTimeLimit:

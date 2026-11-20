@@ -251,6 +251,8 @@ const char* strings_zh(StrId id) {
             return "{} 分钟";
         case StrId::PanelHours:
             return "{} 小时";
+        case StrId::MediaUnknownArtist:
+            return "未知歌手";
         case StrId::AgentStepLimit:
             return "步骤太多，已停止";
         case StrId::AgentTimeLimit:

@@ -6,11 +6,13 @@
 #include <cstdlib>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "system_layer_internal.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/ui/dialog.hpp"
 #include "wisp/ui/fonts.hpp"
+#include "wisp/ui/key_nav.hpp"
 #include "wisp/ui/overlay.hpp"
 #include "wisp/ui/system_layer.hpp"
 
@@ -79,7 +81,13 @@ enum class Part : uintptr_t {
     NoteClose,
     NoteAction,
     NoteAction2,
-    ClearAll
+    ClearAll,
+    // The now playing row (media spec 7.4): the row itself does nothing,
+    // like the header; only its buttons act.
+    Media,
+    MediaPrev,
+    MediaToggle,
+    MediaNext
 };
 
 constexpr uintptr_t kPartBits = 4;
@@ -156,7 +164,7 @@ std::string battery_text(const PanelHeader& h) {
 bool SystemLayer::has_panel() const {
     const PanelHandlers& h = panel_handlers_;
     return h.on_open || h.open_scene || h.exit_scene || h.tap_note || h.dismiss_note ||
-           h.note_action || h.clear_all;
+           h.note_action || h.clear_all || h.media_prev || h.media_toggle || h.media_next;
 }
 
 void SystemLayer::set_panel_handlers(PanelHandlers h) {
@@ -376,6 +384,21 @@ void SystemLayer::build_panel() {
 
 void SystemLayer::fill_panel() {
     const int32_t scroll_y = lv_obj_get_scroll_y(panel_);
+    // A key focus on one of the panel's controls goes to the control that
+    // takes its place, by what it does (its part and index): the play
+    // button the player's change turned into a pause button keeps it, so
+    // a second OK acts again instead of the next key choosing afresh.
+    void* focus_part = nullptr;
+    bool focus_shown = false;
+    if (nav_group_ != nullptr && motion_ == PanelMotion::Still) {
+        lv_obj_t* f = lv_group_get_focused(nav_group_);
+        for (lv_obj_t* o = f; o != nullptr; o = lv_obj_get_parent(o)) {
+            if (o != panel_) continue;
+            focus_part = lv_obj_get_user_data(f);
+            focus_shown = lv_obj_has_state(f, LV_STATE_FOCUS_KEY);
+            break;
+        }
+    }
     lv_obj_clean(panel_);
     const PanelModel& m = model_;
 
@@ -428,6 +451,47 @@ void SystemLayer::fill_panel() {
     }
     lv_obj_t* status_label = make_fill_text(header, status.c_str(), theme::kTextDim);
     lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_RIGHT, 0);
+
+    // Now playing: the title and artist, one line each, then previous,
+    // play/pause and next, kGapSm apart and centred in the row (the box's
+    // cross alignment). Not one of the indexed rows (tap_panel_row()).
+    if (m.media.shown) {
+        lv_obj_t* row = make_row(Part::Media, 0);
+        // A tap on the text is not a tap on empty space, but the row has
+        // no action of its own, so it shows no press.
+        lv_obj_set_style_bg_color(row, lv_color_hex(theme::kSurface), LV_STATE_PRESSED);
+        // A key focus on one of its buttons brings the whole row, with the
+        // title, into view.
+        lv_obj_add_flag(row, kFocusRow);
+        lv_obj_t* text = make_box(row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_width(text, 0);
+        lv_obj_set_flex_grow(text, 1);
+        lv_obj_set_style_pad_row(text, 0, 0);
+        for (const auto& [line, color] : {std::pair{&m.media.title, theme::kText},
+                                          std::pair{&m.media.artist, theme::kTextDim}}) {
+            lv_obj_t* label = make_text(text, line->c_str(), color);
+            lv_obj_set_width(label, LV_PCT(100));
+            // Dots only end a label whose height is fixed too; a content
+            // height would wrap the text instead.
+            lv_obj_set_height(
+                label, lv_font_get_line_height(lv_obj_get_style_text_font(label, LV_PART_MAIN)));
+            lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+        }
+        const std::pair<const char*, Part> buttons[] = {
+            {LV_SYMBOL_PREV, Part::MediaPrev},
+            {m.media.playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY, Part::MediaToggle},
+            {LV_SYMBOL_NEXT, Part::MediaNext}};
+        for (const auto& [symbol, part] : buttons) {
+            lv_obj_t* btn = lv_button_create(row);
+            set_button_role(btn, ButtonRole::Secondary);
+            lv_obj_set_size(btn, kPanelRowMinH, kPanelRowMinH);
+            lv_obj_set_style_pad_all(btn, 0, 0);
+            lv_obj_t* icon = lv_label_create(btn);
+            lv_label_set_text(icon, symbol);
+            lv_obj_center(icon);
+            touchable(btn, part, 0);
+        }
+    }
 
     if (!m.scenes.empty()) heading(StrId::PanelBackground);
     for (size_t i = 0; i < m.scenes.size(); ++i) {
@@ -490,6 +554,21 @@ void SystemLayer::fill_panel() {
     const int32_t max_y =
         std::max(int32_t{0}, lv_obj_get_scroll_y(panel_) + lv_obj_get_scroll_bottom(panel_));
     lv_obj_scroll_to_y(panel_, std::min(scroll_y, max_y), LV_ANIM_OFF);
+
+    if (focus_part == nullptr) return;
+    rescope();
+    std::vector<lv_obj_t*> objs;
+    collect_focusable(panel_, objs);
+    for (lv_obj_t* o : objs) {
+        if (lv_obj_get_user_data(o) != focus_part) continue;
+        lv_group_focus_obj(o);
+        if (focus_shown) {
+            lv_obj_add_state(o, LV_STATE_FOCUS_KEY);
+        } else {
+            lv_obj_remove_state(o, LV_STATE_FOCUS_KEY);
+        }
+        break;
+    }
 }
 
 Result<void> SystemLayer::tap_panel_row(size_t index) {
@@ -569,7 +648,12 @@ void SystemLayer::panel_cb(lv_event_t* e) {
     const bool scene_part = part == Part::SceneRow || part == Part::SceneClose;
     const bool note_part = part == Part::NoteRow || part == Part::NoteClose ||
                            part == Part::NoteAction || part == Part::NoteAction2;
-    if ((scene_part && i >= m.scenes.size()) || (note_part && i >= m.notes.size())) return;
+    const bool media_part =
+        part == Part::MediaPrev || part == Part::MediaToggle || part == Part::MediaNext;
+    if ((scene_part && i >= m.scenes.size()) || (note_part && i >= m.notes.size()) ||
+        (media_part && !m.media.shown)) {
+        return;
+    }
 
     // Copies: closing the panel or the handler itself may change both.
     std::function<void()> call;
@@ -587,6 +671,16 @@ void SystemLayer::panel_cb(lv_event_t* e) {
                 close = true;
                 break;
             case Part::Header:
+            case Part::Media:
+                break;
+            case Part::MediaPrev:
+                call = h.media_prev;
+                break;
+            case Part::MediaToggle:
+                call = h.media_toggle;
+                break;
+            case Part::MediaNext:
+                call = h.media_next;
                 break;
             case Part::SceneRow:
                 close = true;

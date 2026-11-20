@@ -5,9 +5,9 @@
 // the notification services. It only wires services together; what each
 // row or banner does is a call into one of them.
 //
-//   - Counts: the shell follows four state cells on the UI thread (the
-//     scenes overview, the notice summary, the power level and the Wi-Fi
-//     station). Each call refreshes: it re-reads the services, so one call
+//   - Counts: the shell follows five state cells on the UI thread (the
+//     scenes overview, the notice summary, the power level, the Wi-Fi
+//     station and the music player). Each call refreshes: it re-reads the services, so one call
 //     that stands for several changes still shows the last, and rebuilds
 //     the panel's model while it is open. A change of counts is logged
 //     "status: background=<n> unread=<m>". The power level at Standby or
@@ -16,7 +16,10 @@
 //   - Panel: the model is built when it opens and on every refresh while
 //     it is open. Its header is the local time (ui::format_clock() in the
 //     Settings time format, "--:--" while the clock is unset), the battery and the Wi-Fi state from
-//     device_status; then the background scenes and the unread notifications, newest first. A
+//     device_status; then, while the player is not idle, the now playing row (media spec 7.4:
+//     the title, the artist or ui::StrId::MediaUnknownArtist, play or pause); then the background
+//     scenes and the unread notifications, newest first. A player call that changes nothing the
+//     row shows (a position tick) does not refresh. A
 //     system notice reads in the UI language: its argument goes in as posted (a scene notice
 //     carries the scene's name already), a wake-lock holder through ui::holder_label():
 //     "scene.<id>" by the scene's name -- the runtime's while it runs, else its manifest's, read on
@@ -29,7 +32,9 @@
 //   - Rows: a scene row brings the scene forward (launch(User)), its close
 //     button exits it; a notification row is NotificationRouter::tap(), its
 //     close button or a swipe dismisses it, its action button is
-//     NotificationRouter::act(); "clear all" clears every one.
+//     NotificationRouter::act(); "clear all" clears every one. The now
+//     playing row's buttons only call the player: previous, next, and
+//     pause or resume by the player's state when tapped.
 //   - Banners: NotificationRouter::set_banner() hands each posted
 //     notification over; it is shown on the UI thread, and a tap on it is
 //     NotificationRouter::tap(). A listed notice's banner follows the
@@ -53,12 +58,23 @@
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/media/player.hpp"
 #include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/scene/scene_runtime.hpp"
 #include "wisp/ui/system_layer.hpp"
 #include "wisp/ui/ui_runtime.hpp"
 
 namespace wisp::app {
+
+// The music player as the panel's now playing row sees it
+// (MediaPlayer::state() and its controls; App wires them to the one
+// MediaPlayer). The controls are called on the UI thread and only post to
+// the player.
+struct StatusShellMedia {
+    // Followed; must outlive the shell's stop(). Null: no row.
+    const core::StateCell<media::PlayerState>* state = nullptr;
+    std::function<void()> prev, pause, resume, next;
+};
 
 struct StatusShellDeps {
     ui::UiRuntime& ui;
@@ -92,6 +108,7 @@ struct StatusShellDeps {
     // stop(). Null: not followed (no standby closing; no Wi-Fi refresh).
     const core::StateCell<hal::PowerLevel>* power = nullptr;
     const core::StateCell<net::WifiSnapshot>* wifi = nullptr;
+    StatusShellMedia media = {};
 };
 
 class StatusShell {
@@ -126,8 +143,8 @@ private:
     std::shared_ptr<State> state_;
     bool started_ = false;
     // The scenes overview, the notice summary, the power level, the Wi-Fi
-    // station.
-    core::CellSubscription subs_[4];
+    // station, the music player.
+    core::CellSubscription subs_[5];
 };
 
 }  // namespace wisp::app

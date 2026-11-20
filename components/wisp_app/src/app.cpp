@@ -776,6 +776,15 @@ Result<void> App::start() {
     // device_status reads (NetWiring::wifi_state()) is set.
     if (impl_->ui && impl_->system_layer) {
         App::Impl* impl = impl_.get();
+        // The now playing row on the one player; none without a speaker.
+        StatusShellMedia media;
+        if (media::MediaPlayer* p = impl_->media_player.get()) {
+            media = {.state = &p->state(),
+                     .prev = [p] { p->prev(); },
+                     .pause = [p] { p->pause(); },
+                     .resume = [p] { p->resume(); },
+                     .next = [p] { p->next(); }};
+        }
         impl_->status_shell = os::make_large<StatusShell>(StatusShellDeps{
             .ui = *impl_->ui,
             .layer = *impl_->system_layer,
@@ -796,6 +805,8 @@ Result<void> App::start() {
             // step of App::stop().
             .power = impl_->power_manager ? &impl_->power_manager->level_cell() : nullptr,
             .wifi = impl_->net->wifi() != nullptr ? &impl_->net->wifi()->wifi_cell() : nullptr,
+            // The player stops and goes after status_shell->stop() too.
+            .media = std::move(media),
         });
         if (impl_->status_shell) {
             impl_->status_shell->start();

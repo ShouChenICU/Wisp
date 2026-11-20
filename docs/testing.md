@@ -84,6 +84,17 @@ WISP_KEYNAV_SCREENSHOTS=/tmp/wisp-keynav \
   --gtest_also_run_disabled_tests --gtest_filter='*SystemLayerPreview*'
 ```
 
+The pull-down panel preview (the now playing row playing, paused on a long
+title, and with its play button focused by a key, on rect 480, circle 466 and
+rounded_rect 480; PNG files) runs the same way:
+
+```bash
+mkdir -p /tmp/wisp-panel
+WISP_PANEL_SCREENSHOTS=/tmp/wisp-panel \
+  build/sim/tests/system_layer_test \
+  --gtest_also_run_disabled_tests --gtest_filter='*NowPlayingPanel*'
+```
+
 For direct CTest use, configure with `-DWISP_FULL_SMOKE=ON` for every simulator
 scenario or `-DWISP_FULL_SMOKE=OFF` for core scenarios. `tools/ci.sh` sets this
 explicitly on each run so a previous full run cannot change the next daily run.

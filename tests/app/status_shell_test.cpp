@@ -20,6 +20,7 @@
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/state_cell.hpp"
 #include "wisp/hal/device.hpp"
+#include "wisp/media/player.hpp"
 #include "wisp/net/wifi_snapshot.hpp"
 #include "wisp/scene/minute_ticker.hpp"
 #include "wisp/ui/clock_text.hpp"
@@ -135,6 +136,11 @@ protected:
                 [this](std::function<void()> job) { return worker.submit(std::move(job)); },
             .power = &power,
             .wifi = &wifi,
+            .media = {.state = &player,
+                      .prev = [this] { media_calls.push_back("prev"); },
+                      .pause = [this] { media_calls.push_back("pause"); },
+                      .resume = [this] { media_calls.push_back("resume"); },
+                      .next = [this] { media_calls.push_back("next"); }},
         });
         shell->start();
     }
@@ -263,6 +269,9 @@ protected:
     wisp::core::StateCell<wisp::hal::PowerLevel> power{bus, wisp::hal::PowerLevel::Active};
     wisp::core::StateCell<wisp::net::WifiSnapshot> wifi{bus,
                                                         wisp::net::WifiSnapshot{.enabled = true}};
+    wisp::core::StateCell<wisp::media::PlayerState> player{bus, wisp::media::PlayerState{}};
+    // The player controls the panel called, on the UI thread.
+    std::vector<std::string> media_calls;
     std::unique_ptr<NotificationService> notes;
     std::unique_ptr<NotificationRouter> router;
     std::unique_ptr<StatusShell> shell;
@@ -750,4 +759,74 @@ TEST_F(StatusShellTest, EnabledButDisconnectedWifiRetainsPanelIndicator) {
     start_shell();
     wifi_disconnected = true;
     on_ui([&] { EXPECT_EQ(shell->panel_model().header.wifi, wisp::ui::tr(StrId::NetOff)); });
+}
+
+// The now playing row (media spec 7.4) follows the player's cell while the
+// panel is open, and its buttons only call the player.
+TEST_F(StatusShellTest, PanelFollowsThePlayer) {
+    using wisp::media::PlayerState;
+    using wisp::media::PlayerStatus;
+    start_shell();
+    open_panel();
+    EXPECT_FALSE(panel_has("Song"));
+    on_ui([&] { EXPECT_FALSE(shell->panel_model().media.shown); });
+
+    PlayerState st;
+    st.status = PlayerStatus::Playing;
+    st.track = {"music/song.mp3", "Song", "", "", 180};
+    player.set(st);
+    ASSERT_TRUE(wait_until([&] { return panel_has("Song"); }, 2000));
+    EXPECT_TRUE(panel_has("未知歌手"));
+    lv_obj_t* pause_btn = nullptr;
+    on_ui([&] {
+        pause_btn = find_button_with_label(layer->panel(), LV_SYMBOL_PAUSE);
+        EXPECT_NE(pause_btn, nullptr);
+        EXPECT_TRUE(shell->panel_model().media.playing);
+    });
+    // A position tick changes nothing the row shows: no rebuild.
+    st.position_s = 1;
+    player.set(st);
+    wisp::os::sleep_ms(50);
+    on_ui([&] { EXPECT_EQ(find_button_with_label(layer->panel(), LV_SYMBOL_PAUSE), pause_btn); });
+
+    auto button = [](const char* symbol) {
+        return [symbol](lv_obj_t* panel) { return find_button_with_label(panel, symbol); };
+    };
+    tap(locate(button(LV_SYMBOL_PAUSE)));
+    st.status = PlayerStatus::Paused;
+    st.pause_reason = wisp::media::PauseReason::User;
+    player.set(st);
+    ASSERT_TRUE(wait_until(
+        [&] {
+            bool found = false;
+            on_ui([&] {
+                found = layer->panel_open() &&
+                        find_button_with_label(layer->panel(), LV_SYMBOL_PLAY) != nullptr;
+            });
+            return found;
+        },
+        2000));
+    tap(locate(button(LV_SYMBOL_PLAY)));
+    tap(locate(button(LV_SYMBOL_PREV)));
+    tap(locate(button(LV_SYMBOL_NEXT)));
+    on_ui([&] {
+        EXPECT_EQ(media_calls, (std::vector<std::string>{"pause", "resume", "prev", "next"}));
+        EXPECT_TRUE(layer->panel_open());
+    });
+
+    // The artist the tags left out, in the UI language.
+    for (const auto& [lang, text] : {std::pair{wisp::ui::Lang::En, "Unknown artist"},
+                                     std::pair{wisp::ui::Lang::Ja, "不明なアーティスト"},
+                                     std::pair{wisp::ui::Lang::Zh, "未知歌手"}}) {
+        wisp::ui::set_lang(lang);
+        on_ui([&] { EXPECT_EQ(shell->panel_model().media.artist, std::string_view(text)); });
+    }
+    st.track.artist = "Someone";
+    player.set(st);
+    ASSERT_TRUE(wait_until([&] { return panel_has("Someone"); }, 2000));
+
+    // Idle: the row goes.
+    player.set(PlayerState{});
+    ASSERT_TRUE(wait_until([&] { return !panel_has("Song"); }, 2000));
+    on_ui([&] { EXPECT_EQ(find_button_with_label(layer->panel(), LV_SYMBOL_PREV), nullptr); });
 }

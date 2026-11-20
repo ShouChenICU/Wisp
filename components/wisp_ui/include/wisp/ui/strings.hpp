@@ -211,6 +211,9 @@ enum class StrId : uint16_t {
     PanelJustNow,
     PanelMinutes,
     PanelHours,
+    // The now playing row's artist when the tags name none (media spec
+    // 7.4).
+    MediaUnknownArtist,
     // Notes the agent adds to the conversation (agent-core spec 3.4);
     // AgentTimeLimit "{}" is the turn's time limit in minutes.
     AgentStepLimit,

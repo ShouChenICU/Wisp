@@ -34,6 +34,18 @@ std::string first_char(std::string_view s) {
     return std::string(s.substr(0, std::min(n, s.size())));
 }
 
+// The now playing row for player state `ps` (media spec 7.4).
+ui::PanelMedia media_of(const media::PlayerState& ps) {
+    ui::PanelMedia pm;
+    if (ps.status == media::PlayerStatus::Idle) return pm;
+    pm.shown = true;
+    pm.title = std::string_view(ps.track.title);
+    pm.artist = ps.track.artist.empty() ? std::string_view(ui::tr(ui::StrId::MediaUnknownArtist))
+                                        : std::string_view(ps.track.artist);
+    pm.playing = ps.status == media::PlayerStatus::Playing;
+    return pm;
+}
+
 std::string wifi_text(const std::string& state) {
     if (state == "connected") return ui::tr(ui::StrId::NetConnected);
     if (state == "connecting" || state == "backoff") return ui::tr(ui::StrId::NetConnecting);
@@ -57,6 +69,10 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     // one not installed: it reads as its id), and the reads on their way.
     std::map<std::string, std::string, std::less<>> names;
     std::set<std::string, std::less<>> reading;
+    // UI thread only: the now playing row the player's cell last gave, so
+    // a position tick (each second of playback) does not rebuild the
+    // open panel when the row shows the same.
+    ui::PanelMedia media_seen;
 
     std::vector<scene::BackgroundScene> background() const {
         return deps.scenes != nullptr ? deps.scenes->background_scenes()
@@ -211,6 +227,7 @@ struct StatusShell::State : std::enable_shared_from_this<StatusShell::State> {
     ui::PanelModel model() {
         ui::PanelModel m;
         m.header = header();
+        if (deps.media.state != nullptr) m.media = media_of(deps.media.state->get());
         m.now_ms = os::now_ms();
         for (const auto& b : background()) {
             m.scenes.push_back({os::LargeString(std::string_view(b.id)),
@@ -297,6 +314,16 @@ void StatusShell::start() {
     if (st.deps.wifi != nullptr) {
         subs_[3] = st.deps.wifi->subscribe([sp](const net::WifiSnapshot&) { sp->refresh(); }, on);
     }
+    if (st.deps.media.state != nullptr) {
+        subs_[4] = st.deps.media.state->subscribe(
+            [sp](const media::PlayerState& ps) {
+                ui::PanelMedia pm = media_of(ps);
+                if (pm == sp->media_seen) return;
+                sp->media_seen = std::move(pm);
+                sp->refresh();
+            },
+            on);
+    }
 
     // Called on the posting thread (the scene task for wisp.notify), so
     // the text is made on the UI thread, which may ask the runtime for
@@ -354,6 +381,18 @@ void StatusShell::start() {
                 router->act(source, id, index);
             };
             h.clear_all = [notes] { notes->clear_all(); };
+            if (const StatusShellMedia& media = st.deps.media; media.state != nullptr) {
+                h.media_prev = media.prev;
+                h.media_next = media.next;
+                // By the state now, not the one the row was drawn from.
+                h.media_toggle = [&media] {
+                    const bool playing = media.state->read([](const media::PlayerState& ps) {
+                        return ps.status == media::PlayerStatus::Playing;
+                    });
+                    const std::function<void()>& fn = playing ? media.pause : media.resume;
+                    if (fn) fn();
+                };
+            }
             st.deps.layer.set_panel_handlers(std::move(h));
             st.refresh();
         })) {
