@@ -657,8 +657,9 @@ wisp.media.mkdir(path, cb)         -- cb(err, true)
   can play no other scene's files. `opts.start` is the 1-based item to start with,
   `opts.mode` one of `sequence`, `repeat_all`, `repeat_one`, `shuffle`. A new `play`
   replaces the queue; it holds at most 1000 items (`truncated` is `true` when more were
-  given). The controls return `true`, or `nil, "media_unavailable"` without a
-  speaker.
+  given). Without an SD card, `play` with any library path gives `media_unavailable`
+  and leaves the queue alone; the scene's own files still play. The controls return
+  `true`, or `nil, "media_unavailable"` without a speaker.
 - `state()`: `status` is `idle`, `playing` or `paused`; `pause_reason` `none`,
   `user` or `system` (an alarm, speech or a tone holds the speaker; playback comes
   back by itself); `duration` and `position` are in seconds; `index` is 1-based and

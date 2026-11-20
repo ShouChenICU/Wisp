@@ -512,6 +512,16 @@ TEST(RoutesMedia, NoCardIs503) {
             503);
         EXPECT_EQ(fx.call(Method::Get, "/api/v1/media/files").status, 200);
     }
+    {
+        // A player without a library: library items are refused, as the
+        // agent's tool and the scene binding do, not queued to fail later.
+        MediaFixture fx(MediaFixture::Options{.with_library = false});
+        HttpResponse play = fx.call(Method::Post, "/api/v1/media/player/play", {},
+                                    R"({"items":["music/two.wav"]})");
+        EXPECT_EQ(play.status, 503);
+        EXPECT_EQ(error_code(play), "media_unavailable");
+        EXPECT_EQ(fx.player->state().get().status, PlayerStatus::Idle);
+    }
 }
 
 TEST(RoutesMedia, UnpairedIsRefused) {

@@ -131,6 +131,17 @@ void do_play(lua_State* L, SceneApi& api, uint32_t id, bool has_cb, int names, i
             items.emplace_back(name);
         }
     }
+    // A library item without a card is refused now, as the agent's tool
+    // and the REST route do, not queued to fail later as card_removed. A
+    // scene's own files may be on internal storage and need no card.
+    const bool library_items = std::any_of(items.begin(), items.end(), [](const std::string& s) {
+        return std::string_view(s).substr(0, media::kSceneItemPrefix.size()) !=
+               media::kSceneItemPrefix;
+    });
+    if (library_items &&
+        (api.media_library == nullptr || !api.media_library->state().get().available)) {
+        return fail(kUnavailable);
+    }
     std::optional<media::PlayMode> m;
     if (mode != 0) m = media::play_mode_from(view_at(L, mode));
     media::PlayQueue::SetResult r =

@@ -428,6 +428,18 @@ TEST_F(MediaToolsNoCard, StateWithoutCard) {
               "media_unavailable");
 }
 
+// A player without a library (no card service) refuses library items
+// too, as the REST route and the scene binding do.
+TEST_F(MediaTools, PlayWithoutTheLibraryIsUnavailable) {
+    wisp::agent::ToolExecutors ex;
+    ex.io = [this](std::function<void()> fn) { return io.post(std::move(fn)); };
+    tools = std::make_unique<wisp::agent::ToolRegistry>(std::move(ex));
+    ASSERT_TRUE(wisp::agent::add_media_tools(*tools, {.player = player.get()}));
+    EXPECT_EQ(str(call("media_play", R"({"items":["music/two.wav"]})"), "error"),
+              "media_unavailable");
+    EXPECT_EQ(player->state().get().status, PlayerStatus::Idle);
+}
+
 // Only what exists is offered: without a library and a player, nothing.
 TEST(MediaToolsRegistration, NothingWithoutServices) {
     wisp::agent::ToolRegistry reg{wisp::agent::ToolExecutors{}};

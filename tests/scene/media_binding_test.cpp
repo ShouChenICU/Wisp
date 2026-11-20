@@ -304,6 +304,42 @@ end)
         << st().track.id;
 }
 
+// Without the library (no card), library items are refused as by the
+// agent's tool and the REST route; a scene's own files may live on
+// internal storage, so they still play.
+TEST_F(BindMedia, LibraryItemsNeedTheLibrary) {
+    configure_deps = [this](wisp::scene::SceneRuntimeDeps& d) {
+        d.files = files.get();
+        d.media_player = player.get();
+    };
+    start();
+    out->close_gate();
+    const std::string wav = make_wav(2);
+    wisp::Result<void> w = wisp::Result<void>::ok();
+    ASSERT_TRUE(worker.run_sync(
+        [&] {
+            w = files->write("own", "a.wav",
+                             {reinterpret_cast<const uint8_t*>(wav.data()), wav.size()});
+        },
+        kWaitMs));
+    ASSERT_TRUE(w) << w.error().message;
+    install_scene("own", "", R"(
+wisp.media.play({"music/two.wav"}, function(err, res)
+  print("lib", err, res)
+  wisp.media.play({{file = "a.wav"}, "music/two.wav"}, function(err, res)
+    print("mixed", err, res)
+    wisp.media.play({{file = "a.wav"}}, function(err, res) print("own", err, res.truncated) end)
+  end)
+end)
+)");
+    ASSERT_TRUE(rt->open("own"));
+    EXPECT_EQ(wait_log("own", 3),
+              (std::vector<std::string>{"lib\tmedia_unavailable\tnil",
+                                        "mixed\tmedia_unavailable\tnil", "own\tnil\tfalse"}));
+    ASSERT_TRUE(wait_until([this] { return st().track.id == "scene:own/a.wav"; }, kWaitMs))
+        << st().track.id;
+}
+
 // on_media runs on each change of the player's state; position-only
 // changes come at most once per second of audio, so each carries a new
 // position.

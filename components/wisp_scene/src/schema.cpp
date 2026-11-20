@@ -816,8 +816,9 @@ void append_device_api(std::string& out) {
         "  `opts.mode` one of `sequence`, `repeat_all`, `repeat_one`, `shuffle`. A new `play`\n";
     out += "  replaces the queue; it holds at most " + num(media::kMaxQueue) +
            " items (`truncated` is `true` when more were\n"
-           "  given). The controls return `true`, or `nil, \"media_unavailable\"` without a\n"
-           "  speaker.\n";
+           "  given). Without an SD card, `play` with any library path gives `media_unavailable`\n"
+           "  and leaves the queue alone; the scene's own files still play. The controls return\n"
+           "  `true`, or `nil, \"media_unavailable\"` without a speaker.\n";
     out +=
         "- `state()`: `status` is `idle`, `playing` or `paused`; `pause_reason` `none`,\n"
         "  `user` or `system` (an alarm, speech or a tone holds the speaker; playback comes\n"
