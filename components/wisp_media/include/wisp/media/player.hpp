@@ -128,12 +128,13 @@ public:
         // whose stack use is not documented: twice that leaves room for
         // either plus the task's own frames. In PSRAM (task_config()).
         size_t stack_bytes = 32 * 1024;
-        // The scene task runs at 3, the UI at 4 and the speech player at
-        // 5; there is no level strictly between the scene task and the
-        // UI, so music shares the UI's level and round-robins with it:
-        // above the scene task, below speech, and a long frame drawn by
-        // the UI cannot starve the output for its whole length.
-        int priority = 4;
+        // Above the UI (4), at the speech player's level (5), for the
+        // same reason as the speech player: each chunk is written straight
+        // to the output, whose DMA ring holds about 33 ms at 44.1 kHz, so a
+        // UI burst (building a page) at the same level starved it into
+        // audible gaps. The audio arbiter never lets music and speech play
+        // at once, so sharing speech's level costs speech nothing.
+        int priority = 5;
     };
 
     // Frames decoded and written at a time: one MPEG Layer III frame.
