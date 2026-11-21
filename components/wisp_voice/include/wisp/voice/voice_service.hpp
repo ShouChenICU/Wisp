@@ -31,7 +31,8 @@
 //
 // A hold is only told from a tap kHoldStartMs after the press, so the
 // press primes the mic: prime() opens it at once (when the task is idle,
-// an asr profile is active and the output is quiet; otherwise it does
+// an asr profile is active, the output is quiet and no music plays, as
+// the mic's input lease would pause it for every tap; otherwise it does
 // nothing and the hold takes the path above), drops kMicSettleMs and
 // keeps recording, holding on to the last preroll_ms (kPrerollMs). It
 // takes no wake lock and publishes nothing. unprime() (the press was a

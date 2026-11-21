@@ -545,6 +545,11 @@ VoiceService::Primed VoiceService::prime_mic(uint32_t seq) {
     if (player_begun_ || deps_.player.active()) return {};
     if (deps_.tones != nullptr && deps_.tones->playing()) return {};
     if (speech_has_work()) return {};
+    // Nor while music plays: the mic's input lease pauses it, so every
+    // press that turns out to be a tap or a page drag would cut the music
+    // for the arbiter's resume delay. A real hold pauses it anyway, on
+    // the unprimed path.
+    if (deps_.arbiter != nullptr && deps_.arbiter->held(core::AudioKind::Music)) return {};
     if (auto opened = open_mic(); !opened) {
         WLOG_W(kTag, "prime: mic: %s", opened.error().message.c_str());
         return {};

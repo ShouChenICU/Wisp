@@ -1550,6 +1550,31 @@ TEST_F(VoiceServiceTest, UnprimeClosesTheMicAndRecordsNothing) {
     EXPECT_EQ(capture_log("preroll_ms"), 0);
 }
 
+TEST_F(VoiceServiceTest, PressWhileMusicPlaysDoesNotPrime) {
+    add_asr();
+    make();
+    server.push_asr(asr_text("早"));
+    auto music = arbiter.try_acquire_music([] {});
+    ASSERT_TRUE(music.valid());
+    // Long enough for a prime to have opened the mic and kept a pre-roll.
+    mic->set_script({silence(kMicSettleMs + 300), sine(400)});
+    voice->prime();
+    std::this_thread::sleep_for(std::chrono::milliseconds(kMicSettleMs + 300));
+    // The music keeps playing through the press: no input lease was taken.
+    EXPECT_FALSE(mic->is_open());
+    EXPECT_TRUE(music.valid());
+
+    // A hold still records, on the unprimed path, and pauses the music.
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    EXPECT_FALSE(music.valid());
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    EXPECT_EQ(mic->opens(), 1);
+    EXPECT_EQ(capture_log("preroll_ms"), 0);
+}
+
 TEST_F(VoiceServiceTest, UnprimeBeforeTheTaskSawThePrime) {
     add_asr();
     add_tts();
