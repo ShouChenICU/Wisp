@@ -9,6 +9,7 @@
 #include "wisp/port/esp/esp_mp3_decoder.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 
 #include "esp_audio_simple_dec.h"
@@ -16,6 +17,7 @@
 #include "wisp/core/log.hpp"
 #include "wisp/media/tags.hpp"
 #include "wisp/os/large.hpp"
+#include "wisp/os/os.hpp"
 
 namespace wisp::port::esp {
 namespace {
@@ -332,3 +334,34 @@ std::unique_ptr<media::Decoder> make_esp_mp3_decoder() {
 }
 
 }  // namespace wisp::port::esp
+
+// esp_audio_codec allocates its decoder state through these hooks, whose
+// weak defaults call malloc()/calloc(). Each block is under
+// CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL, so the defaults put about 30 KiB of
+// MP3 decoder state in internal RAM for as long as a track is open
+// (AGENTS.md section 8, "Small mallocs land in internal RAM"). These strong
+// definitions send it to PSRAM instead. They live in this file because the
+// linker loads it whenever the decoder is used, so they always win over the
+// weak ones in the codec's archive.
+extern "C" {
+
+void* media_lib_module_malloc(const char* /*module*/, size_t size) {
+    return wisp::os::alloc(size, wisp::os::Mem::Large);
+}
+
+void* media_lib_module_calloc(const char* /*module*/, size_t n, size_t size) {
+    if (size != 0 && n > SIZE_MAX / size) return nullptr;
+    void* p = wisp::os::alloc(n * size, wisp::os::Mem::Large);
+    if (p != nullptr) std::memset(p, 0, n * size);
+    return p;
+}
+
+void* media_lib_module_realloc(const char* /*module*/, void* buf, size_t size) {
+    return wisp::os::realloc(buf, size, wisp::os::Mem::Large);
+}
+
+void media_lib_free(void* buf) {
+    if (buf != nullptr) wisp::os::dealloc(buf);
+}
+
+}  // extern "C"

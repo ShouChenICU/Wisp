@@ -63,7 +63,7 @@ Record: time to stop, responsiveness, the rescan time.
 ## 8. Internal RAM budget and stacks
 
 Steps: run `mem` at idle, during playback, during playback with the web Media page open, and during a large web upload while playing. Repeat the worst case of `wisp/app/ram_budget.hpp` (STA+AP, two httpd instances, the WebSocket log stream, a TLS handshake) with music playing.
-Expected: the minimum free internal RAM and the minimum largest block stay inside the budget; the `internal RAM: ...` line at service start is not a warning; `wisp.media` stack high-water mark stays well under its 32 KiB (stack in PSRAM, sized for minimp3's 16 KiB plus the codec). `esp_audio_codec` allocates about 28 KB per stream with plain `malloc`; blocks under 16 KB land in internal RAM, so note how much the codec takes while a track is open.
+Expected: the minimum free internal RAM and the minimum largest block stay inside the budget; the `internal RAM: ...` line at service start is not a warning; `wisp.media` stack high-water mark stays well under its 32 KiB (stack in PSRAM, sized for minimp3's 16 KiB plus the codec). `esp_audio_codec` allocates its stream state (about 30 KB) through the `media_lib_module_*` hooks, which `esp_mp3_decoder.cpp` routes to PSRAM; internal RAM while a track is open should stay within a few KB of idle (I2S DMA and small objects), so a larger drop means the hooks are not being linked.
 Record: the figures from `mem` in each state, the `wisp.media` high-water mark, the lane waits of `wisp.sd.io` and `wisp.fs`. Put the measured data in `docs/hardware/<board>.md`.
 
 ## 9. Large upload over Wi-Fi
