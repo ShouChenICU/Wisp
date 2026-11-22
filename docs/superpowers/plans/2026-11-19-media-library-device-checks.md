@@ -1,6 +1,6 @@
 # Media library: device checks
 
-Handed to the owner. Nothing in this list has been run; every result below is an assumption until recorded. The host side is covered by the simulator tests; these checks need the boards (2.16 and 1.75C) and a real SD card.
+Handed to the owner. Results recorded so far are under "Results"; every other check below has not been run, and its expected result is an assumption until recorded. The host side is covered by the simulator tests; these checks need the boards (2.16 and 1.75C) and a real SD card.
 
 ## Preparation
 
@@ -25,9 +25,9 @@ Record: per file and board, pass or fail, start delay, any log error.
 
 ## 2. Decoder CPU load and UI frame rate
 
-`wisp.media` runs at the UI's priority (4), so decoding can cost UI frames.
+`wisp.media` runs at priority 5, above the UI (spec 12, "Lanes and priority"), so decoding can cost UI frames.
 Steps: play `cbr320_44k.mp3` while the screen animates (home screen, then a scene with animation, then the pull-down panel open). Read `WISP_PERF` in each state and compare with the idle baseline.
-Expected: no audible underruns; the frame rate does not drop noticeably against the baseline agreed in the rendering spec. If it does, lower the task priority to 3 and repeat.
+Expected: no audible underruns; the frame rate does not drop noticeably against the baseline agreed in the rendering spec.
 Record: frame rate idle and while playing in each state, underruns heard, the priority tried.
 
 ## 3. Screen-off playback
@@ -81,3 +81,14 @@ Record: layout problems, anything that lags.
 ## 11. App partition size
 
 The 2.16 app image is 81.74 % of its OTA slot with `esp_audio_codec` (about 62 KB), above the 80 % planning line; the 1.75C is at 60.86 %. Rebuild both boards at the end of the branch and record `wisp.bin` size and percentage. Decide whether a size trim is needed before release.
+
+## Results
+
+2.16, 2026-11-20 and 2026-11-21, owner listening, `cbr320_44k`-class file (320 kbit/s, 44.1 kHz stereo) from the Media page:
+
+- **Formats (1), partial.** 320 kbit/s MP3 plays at the right pitch and speed. The other files have not been tried.
+- **Internal RAM (8), partial.** Before the codec hooks were routed to PSRAM, playing took internal free down to 26487 B with the largest block 15872 B. With the hooks (`esp_mp3_decoder.cpp`): 53591 to 56519 B free and the largest block 31744 B while playing, against 62439 B at service start. `wisp.media` high-water mark 29792 B free of its 32 KiB, so about 3 KB used; shrink it after the seek and WAV checks. The worst-case combination with music has not been run.
+- **CPU (2), partial.** `WISP_PERF` `cpu` 46 to 57 % with the screen on and about 27 % with it off while playing. Decoding takes 5 to 6 ms per chunk and the longest gap between writes was 7 ms. Frame rates against the baseline have not been compared.
+- **Gap on a page drag.** Dragging from the wisp to the scene list cut the music for about 1 s: the touch primed the mic, whose input lease paused the music until the arbiter's resume delay. Fixed by not priming while music plays (spec 12); the owner confirmed the gap is gone.
+
+The 1.75C has no SD slot, so the playback checks do not apply to it.

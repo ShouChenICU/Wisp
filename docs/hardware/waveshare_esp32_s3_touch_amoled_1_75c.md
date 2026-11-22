@@ -171,7 +171,7 @@ idf.py -B build-waveshare_esp32_s3_touch_amoled_1_75c \
 
 ## Device acceptance checklist
 
-The board has prior bring-up measurements recorded above; blank results below remain unverified, including the new interrupt/wake implementation. Fill in the "Result" column (pass/fail + a short note) at acceptance; a failing item goes back to its implementation. For every item that looks at the diagnostics screen, open it with `diag` on the serial console first. The flash commands are in "First flash" above.
+The owner has run Wisp on this board since bring-up and reported it working on the device (confirmed 2026-11-21). The items below were not recorded one by one, so a blank result means no recorded figure, not an open defect. What is still unmeasured: the frame rate with the hotspot on (20), the internal RAM worst case (21), the standby drain on battery (22) and the extended button checks above. Fill in the "Result" column (pass/fail + a short note) at acceptance; a failing item goes back to its implementation. For every item that looks at the diagnostics screen, open it with `diag` on the serial console first. The flash commands are in "First flash" above.
 
 | # | Item | How to test | Expected result | Result |
 |---|---|---|---|---|

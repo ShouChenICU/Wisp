@@ -535,6 +535,22 @@ Follow-up (2026-11-05, not run on the device): most of a TLS session's internal 
 
 **Background scenes, notifications and power (2026-11-06, `feat/scene-device` firmware ae6f55a, STA only)**: idle after boot with no scene open, `internal free` was 79679 B, `largest` 31744 B, `min` 41232 B, and PSRAM free 3.87 MB. Both `internal free` and `largest` are above the idle minimums of `ram_budget.hpp` (60 KB / 20 KB), but about 9 KB below the 88899 B of (a) in the table above; this is the resident cost added by background scenes, the notification centre, power management and `wisp.imu`/`wisp.tone`. With the pomodoro and the weather both in the background, `heap_internal_free` in `WISP_PERF` stayed between 70 and 73 KB. Switching from a panel back to a background scene rebuilt it in 7–41 ms. A full measurement of the three states (including each task's stack high-water mark) has not been done yet.
 
+### Media playback (2026-11-21)
+
+Playing a 320 kbit/s, 44.1 kHz stereo MP3 from the SD card (media library spec, `feat/media-library` firmware), STA only, `mem` every 2 s:
+
+| State | internal free | largest | Note |
+|---|---|---|---|
+| Service start (`internal RAM:` line) | 62439 B | 31744 B | |
+| Playing, codec state in internal RAM (before the hooks) | 26487 B | 15872 B | below both worst-case minimums of `ram_budget.hpp` |
+| Playing, codec state in PSRAM | 53591–56519 B | 31744 B | |
+
+- `esp_audio_codec` allocates through the weak `media_lib_module_*` hooks, whose defaults call `malloc` with blocks under 16 KB, so about 30 KB landed in internal RAM (AGENTS.md section 8). `components/wisp_port_esp/media/esp_mp3_decoder.cpp` overrides them with `os::alloc(Mem::Large)`.
+- `wisp.media`: 32 KiB stack in PSRAM, high-water mark 29792 B free. `wisp.play` 3228 B free of 4 KiB; `wisp.sd.io` 4764 B free of 8 KiB; `wisp_ui` 1928 B free of 10 KiB (unchanged by playback).
+- CPU (`WISP_PERF` `cpu`): 46–57 % with the screen on, about 27 % with it off. One decoded chunk takes 5–6 ms; the longest gap between writes to the output was 7 ms, against the I2S DMA ring of about 33 ms (6 × 240 frames).
+- The mic and the speaker share one I2S port: opening the mic at 16 kHz drives the output at 16 kHz too, so playback cannot continue while the mic is open. This is why the arbiter pauses music for the mic's input lease, and why the mic is not primed on a touch while music plays (media library spec 12).
+- Not measured yet: the worst-case combination with music playing, the frame rate against the baseline, seeks, WAV and low-rate files, card removal and screen-off current (`docs/superpowers/plans/2026-11-19-media-library-device-checks.md`).
+
 ## Performance baselines
 
 ESP-IDF v6.0.3, release build (global `-Os`, `-O2` for the rendering path of LVGL, esp_lcd and wisp_ui), CPU 240 MHz, QSPI 40 MHz. "Programmatic scrolling" was a test command temporarily added to the firmware (not committed) that scrolls the self-check list by 6 px per frame on the UI thread, back and forth for 10 s:

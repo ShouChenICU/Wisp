@@ -59,7 +59,7 @@ cmake -S simulator -B build/sim -G Ninja && cmake --build build/sim
 
 ### 📟 真机
 
-目前支持 **Waveshare ESP32-S3-Touch-AMOLED-2.16**：480×480 AMOLED 触摸屏，配有双麦克风、扬声器、IMU、RTC、电池管理和 SD 卡槽，不需要焊接。另外也支持 **Waveshare ESP32-S3-Touch-AMOLED-1.75C**（466×466 圆形 AMOLED，32 MB flash，无 SD 卡槽），尚待真机验收；构建命令见[它的 README](boards/waveshare_esp32_s3_touch_amoled_1_75c/README.md)（英文）。
+目前支持 **Waveshare ESP32-S3-Touch-AMOLED-2.16**：480×480 AMOLED 触摸屏，配有双麦克风、扬声器、IMU、RTC、电池管理和 SD 卡槽，不需要焊接。另外也支持 **Waveshare ESP32-S3-Touch-AMOLED-1.75C**（466×466 圆形 AMOLED，32 MB flash；无 SD 卡槽，因此没有音乐库），已在真机上测试通过；构建命令见[它的 README](boards/waveshare_esp32_s3_touch_amoled_1_75c/README.md)（英文）。
 
 ```bash
 . ~/esp/esp-idf-v6.0.3/export.sh        # fish 等非 bash 终端请用 bash -c '...' 包起来
@@ -245,6 +245,7 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 | 🧠 | 记忆与提醒 | 偏好笔记、带时间的待办、到点提醒 | ✅ |
 | 🔥 | 系统外壳 | 鬼火主界面、跟手导航、设置、场景列表、对话记录 | ✅ |
 | 🔌 | MCP 客户端 | 通过 Streamable HTTP 接入远程 MCP 服务器，把外部工具交给 Agent | ✅ |
+| 🎵 | 音乐与媒体库 | SD 卡上的音乐、下载和文档库；播放 MP3 和 WAV，熄屏后也不停；可从下拉面板、管理后台的媒体页或用语音控制 | ✅ |
 | 🗣️ | 更自然的语音 | 唤醒词、流式识别与实时字幕、百炼 / 火山 / 讯飞等流式服务 | 📋 |
 | 🐾 | 鬼火互动 | 摸摸头等触摸互动、更多表情、颜色预设、场景内迷你鬼火 | 📋 |
 | ⏰ | 调度与自动化 | 定时任务和事件规则，到点或事件发生时由 Agent 自动执行 | 📋 |
