@@ -2,6 +2,23 @@
 
 Notable changes to Wisp, newest first. Versions follow [Semantic Versioning](https://semver.org/); each one is a `vX.Y.Z` tag on `main`, which is also where the firmware version comes from (`cmake/wisp_version.cmake`). How and when to bump the version is described in `AGENTS.md` section 7.
 
+## 0.8.0 — 2026-11-21
+
+### Features
+
+- A media library on the SD card, `/sd/media` with the folders `music/`, `download/` and `document/`, shared by the user, scenes, the agent and the admin console. The tracks under `music/` (MP3 and WAV) are indexed with their ID3 titles, artists, albums and durations.
+- One system music player with a queue of up to 1000 items and the modes sequence, repeat all, repeat one and shuffle. It keeps playing with the screen off, after the scene that started it closes, and holds the new `audio` wake lock so the speaker stays powered in standby. MP3 is decoded with `esp_audio_codec` on the device and minimp3 in the simulator.
+- Music gives way to alarms, speech, recording and tones (`core::AudioArbiter`) and resumes by itself about 0.8 s after they end; a pause by the user is never resumed automatically.
+- The pull-down panel has a now playing row with previous, play/pause and next.
+- The admin console has a Media page (browse, upload, download, delete and play files) and a now playing card on its Overview page, on the routes under `/api/v1/media/`.
+- Agent tools `media.tracks`, `media.list`, `media.play`, `media.control`, `media.state`, `media.read_text`, `media.write_text`, `media.remove` and `media.download` (downloading from the web straight into the library).
+- Scenes get `wisp.media` (playback, the track index and library files) and `scene.on_media(state)`; reading or writing the library needs `permissions.media` (`"read"` or `"write"`) in `scene.json`, while playback and a scene's own files need none.
+
+### Changes
+
+- The repository has a code of conduct (Contributor Covenant 2.1), a security policy that takes reports through GitHub's private vulnerability reporting, issue forms for bugs and feature requests, and a pull request template.
+- The mic is not primed on a touch while music plays: priming would pause the music for every tap or page drag. A hold to talk still pauses it, without the pre-roll.
+
 ## 0.7.1 — 2026-11-19
 
 ### Fixes
