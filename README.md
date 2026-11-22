@@ -266,6 +266,8 @@ Issues and pull requests are welcome. People and AI coding assistants follow the
 
 📖 **The full process, code requirements and PR checklist are in the [contributing guide](CONTRIBUTING.md).**
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md). Report security problems privately, as [SECURITY.md](SECURITY.md) describes, not in a public issue.
+
 ## 📄 License
 
 Wisp is open source under the [Apache-2.0](LICENSE) license. Third-party projects used or referenced are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`docs/references.md`](docs/references.md).

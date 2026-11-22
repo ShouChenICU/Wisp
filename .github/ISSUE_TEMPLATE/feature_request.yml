@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest something Wisp could do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Many features can be built as a scene, by the agent on the device, without changing the firmware; say why yours needs the firmware.
+        New features and interface changes start with a design spec (see [CONTRIBUTING.md](https://github.com/ShouChenICU/Wisp/blob/main/CONTRIBUTING.md)), so this issue is where the idea is discussed first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you want to do and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: How it could work on the device, in a scene, for the agent or in the admin console.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you considered, including a scene.
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Boards or peripherals it needs, if any.

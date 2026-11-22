@@ -1,0 +1,57 @@
+name: Bug report
+description: Something on the device, in the simulator or in the admin console does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security problem, do not open an issue: see [SECURITY.md](https://github.com/ShouChenICU/Wisp/blob/main/SECURITY.md).
+        Leave API keys, Wi-Fi passwords and personal data out of everything below.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - Waveshare ESP32-S3-Touch-AMOLED-2.16
+        - Waveshare ESP32-S3-Touch-AMOLED-1.75C
+        - Another board
+        - Simulator
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      description: The admin console's System page, or `fw` in the `WISP_BOOT_REPORT` line on the serial console.
+      placeholder: 0.8.0
+    validations:
+      required: true
+  - type: input
+    id: models
+    attributes:
+      label: Model services
+      description: Only if the problem involves chat, speech or MCP. The kind of service and model, never a key.
+      placeholder: e.g. an OpenAI-compatible gateway with qwen-plus; local Whisper for ASR
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The serial console or the admin console's Logs page around the problem; for memory problems, the output of `mem`.
+      render: text

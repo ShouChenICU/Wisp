@@ -2,6 +2,8 @@
 
 Issues and PRs are welcome. Human developers and AI coding assistants follow the same process and rules. **Read [`AGENTS.md`](AGENTS.md) before you start**: the project rules, architecture constraints, coding conventions and workflow are all written there, and it is the authority.
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md). Report security problems privately, as [SECURITY.md](SECURITY.md) describes, not in a public issue. Issues and PRs open with templates that ask for what the sections below require.
+
 ## Process
 
 | Size of change | What to do |

@@ -1267,3 +1267,13 @@ SOFTWARE.
   published algorithms; the file header names the source.
 - License: the page places the algorithms in the public domain. No notice
   is required; this entry only records the origin.
+
+## Contributor Covenant
+
+- Project: https://www.contributor-covenant.org
+  (https://github.com/EthicalSource/contributor_covenant)
+- Version: 2.1
+- License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+- Used by: `CODE_OF_CONDUCT.md`, the upstream text with the contact
+  placeholder filled in; its closing "Attribution" section credits the
+  source as the licence requires.
