@@ -48,6 +48,7 @@ VoiceWiring::VoiceWiring(VoiceWiringDeps deps) : deps_(std::move(deps)) {
         .tts = *tts_,
         .models = deps_.models,
         .tones = deps_.tones,
+        .arbiter = deps_.arbiter,
         .locks = deps_.locks,
         .network_up = deps_.network_up,
         .network_expected = deps_.network_expected,
@@ -103,10 +104,6 @@ Result<void> VoiceWiring::start() {
         return r;
     }
     started_ = true;
-    if (deps_.tones != nullptr) {
-        deps_.tones->set_output_guard(
-            [v = voice_.get()](core::ToneKind kind) { return v->may_play_tone(kind); });
-    }
     conv_->start();
     if (talk_key_) talk_key_->start();
     WLOG_I(kTag, "voice on, talk key %s", talk_button_ ? talk_button_->c_str() : "none");
@@ -118,8 +115,6 @@ void VoiceWiring::stop() {
     started_ = false;
     if (talk_key_) talk_key_->stop();
     conv_->stop();
-    // The guard calls into the voice: gone before it is.
-    if (deps_.tones != nullptr) deps_.tones->set_output_guard(nullptr);
     voice_->stop();
     player_->stop_task();
 }

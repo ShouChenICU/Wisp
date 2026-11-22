@@ -197,6 +197,8 @@ Result<void> App::start() {
                 } else if (t.state == scene::SceneTransition::State::Deleted) {
                     const std::string id = t.id.str();
                     if (impl->recents) impl->recents->forget(id);
+                    // Its private files can no longer play (media spec 4.2).
+                    if (impl->media_player) impl->media_player->forget_scene(id);
                     if (impl->notifications) {
                         impl->notifications->dismiss_source(id, core::DismissReason::Dismiss);
                     }
@@ -229,6 +231,8 @@ Result<void> App::start() {
         // Until the settings cache is attached below (or for good, if it
         // cannot be), settings calls reach flash, so they run on the worker.
         impl_->settings_front.set_worker(&scenes->worker());
+        // The card's media library (media spec 3), once wisp.sd.io runs.
+        impl_->media_library = make_media_library(impl_->storage, scenes->router(), impl_->bus);
     } else {
         WLOG_E("app", "no memory for the scenes; scenes are off");
     }
@@ -479,12 +483,42 @@ Result<void> App::start() {
         });
     }
 
+    // Who may have the main speaker (media-library spec 5), before every
+    // sound source that takes its leases, and reset after them.
+    impl_->audio_arbiter = std::make_unique<core::AudioArbiter>();
+    impl_->audio_arbiter->start();
     // The notification sounds, before PowerManager (its activity hook
     // silences them). Without a speaker they are skipped.
     impl_->tones = std::make_unique<core::TonePlayer>(
         impl_->registry.by_role<hal::AudioOut>(hal::role::kMain), &impl_->wakelocks);
+    impl_->tones->set_arbiter(impl_->audio_arbiter.get());
     if (auto r = impl_->tones->start(); !r) {
         WLOG_W("app", "notification sounds off: %s", r.error().message.c_str());
+    }
+    // The music player (media spec 4), after the sounds that preempt it;
+    // without a speaker there is none.
+    impl_->media_player = make_media_player(MediaPlayerWiring{
+        .out = impl_->registry.by_role<hal::AudioOut>(hal::role::kMain),
+        .arbiter = *impl_->audio_arbiter,
+        .locks = impl_->wakelocks,
+        .bus = impl_->bus,
+        .library = impl_->media_library.get(),
+        .scene_files = scenes != nullptr ? scenes->files() : nullptr,
+        .router = scenes != nullptr ? &scenes->router() : nullptr,
+        .platform_decoder = impl_->platform.audio_decoder,
+        .settings = impl_->system_settings.cell(),
+        .random = impl_->platform.random,
+    });
+    if (media::MediaPlayer* player = impl_->media_player.get()) {
+        if (impl_->storage.has_sd()) {
+            impl_->media_card_sub = follow_card(impl_->storage.sd_cell(), *player);
+        }
+        impl_->media_volume_sub = follow_volume(impl_->system_settings.cell(), *player);
+        if (impl_->media_library) {
+            // On the storage worker; the player only posts a command.
+            impl_->media_library->set_on_removed(
+                [player](const std::string& path) { player->on_file_removed(path); });
+        }
     }
 
     // The IMU's subscribers, before the scene runtime and the self-check
@@ -595,7 +629,8 @@ Result<void> App::start() {
             },
             &impl_->wakelocks, impl_->notifications.get(), impl_->sensors.get(),
             impl_->power_monitor ? &impl_->power_monitor->supply() : nullptr,
-            &impl_->system_settings.cell(), impl_->devices.get());
+            &impl_->system_settings.cell(), impl_->devices.get(), impl_->media_library.get(),
+            impl_->media_player.get());
     }
     scene::SceneRuntime* scene_runtime = scenes != nullptr ? scenes->runtime() : nullptr;
     {
@@ -649,6 +684,7 @@ Result<void> App::start() {
             .agent = *impl->agent->service(),
             .locks = &impl->wakelocks,
             .tones = impl->tones.get(),
+            .arbiter = impl->audio_arbiter.get(),
             .http = impl->platform.http_client.get(),
             // As the agent sees it: without a Wi-Fi service the host's
             // network is assumed.
@@ -712,6 +748,8 @@ Result<void> App::start() {
         .agent = impl_->agent ? impl_->agent->api() : nullptr,
         .memory = impl_->agent ? impl_->agent->memory() : nullptr,
         .todos = impl_->reminders.get(),
+        .media_library = impl_->media_library.get(),
+        .media_player = impl_->media_player.get(),
         .now_ms = {},  // os::now_ms
         .submit_io = impl_->io_submitter(),
         .on_persist_failed = [impl = impl_.get()] { impl->report_persist_failed(); },
@@ -738,6 +776,15 @@ Result<void> App::start() {
     // device_status reads (NetWiring::wifi_state()) is set.
     if (impl_->ui && impl_->system_layer) {
         App::Impl* impl = impl_.get();
+        // The now playing row on the one player; none without a speaker.
+        StatusShellMedia media;
+        if (media::MediaPlayer* p = impl_->media_player.get()) {
+            media = {.state = &p->state(),
+                     .prev = [p] { p->prev(); },
+                     .pause = [p] { p->pause(); },
+                     .resume = [p] { p->resume(); },
+                     .next = [p] { p->next(); }};
+        }
         impl_->status_shell = os::make_large<StatusShell>(StatusShellDeps{
             .ui = *impl_->ui,
             .layer = *impl_->system_layer,
@@ -758,6 +805,8 @@ Result<void> App::start() {
             // step of App::stop().
             .power = impl_->power_manager ? &impl_->power_manager->level_cell() : nullptr,
             .wifi = impl_->net->wifi() != nullptr ? &impl_->net->wifi()->wifi_cell() : nullptr,
+            // The player stops and goes after status_shell->stop() too.
+            .media = std::move(media),
         });
         if (impl_->status_shell) {
             impl_->status_shell->start();
@@ -995,6 +1044,13 @@ void App::stop() {
         impl_->status_shell->stop();
         impl_->status_shell.reset();
     }
+    // The music session ends before the voice and the arbiter go: the task
+    // is joined, the output closed, the lease returned and the wake locks
+    // released. The object stays for the library's removal callback and
+    // the scene lifecycle handler; it ignores commands from here on.
+    impl_->media_card_sub.reset();
+    impl_->media_volume_sub.reset();
+    if (impl_->media_player) impl_->media_player->stop();
     // Nothing reacts to notifications any more (no wake, sound or scene).
     if (impl_->router) {
         impl_->router->stop();
@@ -1113,6 +1169,18 @@ void App::stop() {
         impl_->storage_timer->stop();
         impl_->storage_timer.reset();
     }
+    // The library's jobs run on the storage workers stopped next: no `done`
+    // and no removal callback after its stop(). The player goes with it,
+    // the lifecycle inbox (its other caller) gone above.
+    // The scene proxy first: a library download's last callback queues
+    // its finish on the library, which stop() then waits for.
+    if (impl_->scenes) impl_->scenes->stop_http();
+    if (impl_->media_library) {
+        impl_->media_library->set_on_removed(nullptr);
+        impl_->media_library->stop();
+        impl_->media_library.reset();
+    }
+    impl_->media_player.reset();
     // Nothing calls into the scenes any more: the proxy, then the worker
     // (drained, so the last scene's flush is on disk).
     if (impl_->scenes) {
@@ -1187,6 +1255,8 @@ void App::stop() {
     impl_->power_manager.reset();
     // After power_manager, whose activity hook calls it.
     impl_->tones.reset();
+    // After every lease holder: the voice and the tones.
+    impl_->audio_arbiter.reset();
     // power_timer, which posts reminders, has stopped.
     impl_->notifications.reset();
 
@@ -1303,6 +1373,8 @@ void App::build_agent(const hal::ScreenShape& shape) {
         .files = scenes.files(),
         .scene_http = scenes.http(),
         .mcp = &impl->mcp,
+        .media_library = impl->media_library.get(),
+        .media_player = impl->media_player.get(),
         .firmware_version = impl->platform.firmware_version,
         .conversation_dir = system.value() + "/agent",
         .memory_path = system.value() + "/memory/notes.json",
@@ -1448,6 +1520,10 @@ shell::ConversationController* App::conversation() {
     return impl_->voice ? &impl_->voice->conversation() : nullptr;
 }
 shell::Shell* App::shell() { return impl_->shell.get(); }
+media::MediaLibrary* App::media_library() { return impl_->media_library.get(); }
+
+media::MediaPlayer* App::media_player() { return impl_->media_player.get(); }
+
 core::StorageWorker* App::storage_worker() {
     return impl_->scenes ? &impl_->scenes->worker() : nullptr;
 }

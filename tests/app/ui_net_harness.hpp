@@ -33,6 +33,7 @@
 #include "wisp/hal/audio.hpp"
 #include "wisp/hal/device.hpp"
 #include "wisp/hal/roles.hpp"
+#include "wisp/media/decoder.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/port/sim/settings_json_file.hpp"
 #include "wisp/shell/shell.hpp"
@@ -73,6 +74,8 @@ struct UiNetOptions {
     bool with_sntp = false;
     // Registered as "audio_out.main" when set (the notification sounds).
     std::shared_ptr<wisp::hal::AudioOut> audio_out;
+    // Platform::audio_decoder (the platform's MP3 decoder); empty: none.
+    wisp::media::DecoderFactory audio_decoder;
     // Registered as "imu.main" when set.
     std::shared_ptr<wisp::hal::Imu> imu;
     // Registered as they are (a mic, a talk key, ...).
@@ -211,6 +214,7 @@ struct UiNetHarness {
                                          opts.extra_devices, power, sd, opts.power_key_id);
         if (opts.http_client) platform.http_client = opts.http_client();
         platform.device_clock_ms = opts.device_clock;
+        platform.audio_decoder = opts.audio_decoder;
         if (opts.settings_backend) {
             platform.settings = opts.settings_backend();
         } else {

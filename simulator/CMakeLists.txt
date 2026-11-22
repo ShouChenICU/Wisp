@@ -27,10 +27,14 @@ add_subdirectory(${WISP_ROOT}/components/wisp_hal wisp_hal)
 add_subdirectory(${WISP_ROOT}/components/wisp_core wisp_core)
 add_subdirectory(${WISP_ROOT}/components/wisp_net wisp_net)
 add_subdirectory(${WISP_ROOT}/components/wisp_voice wisp_voice)
+add_subdirectory(${WISP_ROOT}/components/wisp_media wisp_media)
 add_subdirectory(${WISP_ROOT}/components/wisp_admin wisp_admin)
 add_subdirectory(${WISP_ROOT}/components/wisp_ui wisp_ui)
 # Vendored Lua (third_party/lua), used only by wisp_scene.
 add_subdirectory(${WISP_ROOT}/third_party/lua lua)
+# Vendored minimp3 (third_party/minimp3), used only by wisp_port_sim; the
+# firmware excludes it (firmware/CMakeLists.txt).
+add_subdirectory(${WISP_ROOT}/third_party/minimp3 minimp3)
 add_subdirectory(${WISP_ROOT}/components/wisp_scene wisp_scene)
 add_subdirectory(${WISP_ROOT}/components/wisp_agent wisp_agent)
 add_subdirectory(${WISP_ROOT}/components/wisp_shell wisp_shell)
@@ -69,7 +73,7 @@ target_compile_definitions(wisp_sim PRIVATE WISP_VERSION="${WISP_SIM_VERSION}")
 target_link_libraries(wisp_sim PRIVATE
     wisp_app wisp_shell wisp_core wisp_hal wisp_os wisp_base wisp_ui
     wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_dev wisp_port_sim_net
-    wisp_port_sim_ui
+    wisp_port_sim_ui wisp_port_sim_media
     SDL2::SDL2
 )
 

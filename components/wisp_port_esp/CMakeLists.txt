@@ -17,7 +17,9 @@
 # firmware's `mem` console command), the light-sleep statistics behind
 # the `sleep` command (sleep_stats.cpp) and the LVGL JPEG decoder for scene
 # images (ui/esp_jpeg_decoder.cpp, on esp_new_jpeg), and the mapped
-# "fonts" partition behind the vector font (ui/esp_font_partition.cpp).
+# "fonts" partition behind the vector font (ui/esp_font_partition.cpp),
+# and the media player's MP3 decoder (media/esp_mp3_decoder.cpp, on
+# esp_audio_codec).
 # Like wisp_port_sim, this component is never built on the host
 # (ESP_PLATFORM is never defined for it there, and no host CMakeLists adds
 # it) -- only firmware/main pulls it in. (A handful of pure, platform-free headers factored out of the audio/
@@ -43,14 +45,15 @@ wisp_component(
          dev/esp_storage.cpp console_esp.cpp net/esp_wifi.cpp net/captive_dns.cpp
          net/esp_http_server.cpp net/esp_http_client.cpp net/esp_sntp.cpp esp_firmware.cpp
          mem_report.cpp sleep_stats.cpp
-         ui/esp_jpeg_decoder.cpp ui/esp_font_partition.cpp
+         ui/esp_jpeg_decoder.cpp ui/esp_font_partition.cpp media/esp_mp3_decoder.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_media
     IDF_REQUIRES freertos esp_timer heap log esp_lcd esp_lcd_touch esp_driver_i2c esp_driver_gpio
                  esp_codec_dev esp_driver_i2s nvs_flash fatfs sdmmc esp_driver_sdmmc
                  littlefs esp_board_manager esp_driver_usb_serial_jtag esp_driver_uart
                  esp_wifi esp_netif esp_event lwip esp_http_server esp_http_client esp-tls
                  mbedtls mdns app_update esp_partition esp_pm lvgl__lvgl espressif__esp_new_jpeg
+                 espressif__esp_audio_codec
 )
 
 # OS interfaces are first consumed by later portable archives. Force the

@@ -42,7 +42,7 @@ When a change touches a sub-project, read its spec first, then the matching plan
 ## 3. Architecture rules
 
 - **Layering**:
-  - Portable layers: `wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_voice` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_agent` → `wisp_shell` → `wisp_app`.
+  - Portable layers: `wisp_base` → `wisp_os` → `wisp_hal` → `wisp_core` → `wisp_net` → `wisp_voice` → `wisp_media` → `wisp_admin` → `wisp_ui` → `wisp_scene` → `wisp_agent` → `wisp_shell` → `wisp_app`.
   - Third-party source lives unmodified in `third_party/` (for example Lua, brought in by `tools/vendor_lua.sh`, and stb_image_write, by `tools/vendor_stb.sh`). Do not change that source. Only `wisp_scene` may use the Lua headers and the `lua` component; only `wisp_base` may use `stb_image_write.h` and the `stb_image_write` component.
   - Platform layers: `wisp_port_sim` (PC simulator), `wisp_port_esp` (ESP-IDF).
   - Board adaptation goes in `boards/<board>/`; chip drivers go in `drivers/`; a chip's Wisp adapter lives in its driver component (`drivers/<chip>/wisp/`), and a board names its drivers in `boards/<board>/board.cmake`. `wisp_port_esp` requires no component under `drivers/` (`tools/check_layering.py`). Shared board bring-up is the board kit (`boards/common/`, a `BoardSpec` per board); pins live only in the bmgr YAML.

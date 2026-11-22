@@ -358,6 +358,13 @@ public:
     // whatever was not yet removed.
     Result<void> remove_tree(const std::string& path);
 
+    // Creates directory `path` and its missing parents (like `mkdir -p`);
+    // an existing directory is success. The same path, offline-card and
+    // containment rules as remove_tree() (else InvalidArgument or
+    // StorageUnavailable); a non-directory in the way fails with
+    // ErrorCode::IoError.
+    Result<void> make_dirs(const std::string& path);
+
     // Renames the file or directory `from` to `to`, creating `to`'s
     // missing parent directories. Fails with ErrorCode::NotFound if
     // `from` does not exist and ErrorCode::AlreadyExists if `to` does --
@@ -382,6 +389,10 @@ public:
     // storage.int's normalized mount point ("<int>"). Fails with
     // ErrorCode::StorageUnavailable before init() has succeeded.
     Result<std::string> internal_root() const;
+    // storage.sd's normalized mount point ("<sd>"), whether the card is
+    // online or not. Fails with ErrorCode::StorageUnavailable before init()
+    // has succeeded and without a removable medium.
+    Result<std::string> sd_root() const;
 
     // The medium `path` (normalized first) lives on: Medium::Sd when it is
     // at or under storage.sd's mount point, whether the card is online or

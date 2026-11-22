@@ -104,6 +104,8 @@ wisp_test(NAME scene_files_test SRCS core/scene_files_test.cpp
 wisp_test(NAME wakelock_test SRCS core/wakelock_test.cpp LIBS wisp_core wisp_port_sim_os)
 wisp_test(NAME notification_service_test SRCS core/notification_service_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
+wisp_test(NAME audio_arbiter_test SRCS core/audio_arbiter_test.cpp
+          LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME tone_player_test SRCS core/tone_player_test.cpp
           LIBS wisp_core wisp_port_sim_os TIMEOUT 30)
 wisp_test(NAME occupancy_test SRCS core/occupancy_test.cpp LIBS wisp_core wisp_port_sim_os)
@@ -382,6 +384,40 @@ wisp_test(NAME pcm_player_test SRCS voice/pcm_player_test.cpp
 wisp_test(NAME voice_service_test SRCS voice/voice_service_test.cpp
           LIBS wisp_voice wisp_net wisp_core wisp_port_sim_os TIMEOUT 60)
 
+# wisp_media: path rules, error names, tag and header parsing.
+wisp_test(NAME media_path_test SRCS media/path_test.cpp LIBS wisp_media)
+wisp_test(NAME media_errors_test SRCS media/errors_test.cpp LIBS wisp_media)
+wisp_test(NAME media_play_queue_test SRCS media/play_queue_test.cpp LIBS wisp_media wisp_port_sim_os)
+wisp_test(NAME media_tags_test SRCS media/tags_test.cpp LIBS wisp_media wisp_port_sim_os)
+target_compile_definitions(media_tags_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
+wisp_test(NAME media_decoder_test SRCS media/decoder_test.cpp LIBS wisp_media wisp_port_sim_os)
+target_compile_definitions(media_decoder_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+wisp_test(NAME minimp3_decoder_test SRCS sim/minimp3_decoder_test.cpp
+          LIBS wisp_port_sim_media wisp_port_sim_os)
+target_compile_definitions(minimp3_decoder_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
+wisp_test(NAME media_library_test SRCS media/library_test.cpp
+          LIBS wisp_media wisp_port_sim_os TIMEOUT 60)
+target_compile_definitions(media_library_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
+wisp_test(NAME media_library_sink_test SRCS media/library_sink_test.cpp
+          LIBS wisp_media wisp_port_sim_os TIMEOUT 60)
+
+wisp_test(NAME media_player_test SRCS media/player_test.cpp
+          LIBS wisp_media wisp_port_sim_media wisp_port_sim_os TIMEOUT 120)
+target_compile_definitions(media_player_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
+# Committed media files (tools/gen_media_test_data.sh).
+wisp_test(NAME media_test_data_test SRCS media/test_data_test.cpp LIBS)
+target_compile_definitions(media_test_data_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
 # wisp_shell: the conversation controller and the talk key over the real
 # agent and voice services (shell/shell_fixture.hpp).
 # (agent/conversation_test is the agent's ConversationStore.)
@@ -420,6 +456,12 @@ foreach(admin_test filters_test pair_routes_test routes_test routes_ai_test rout
     add_dependencies(${admin_test} wisp_fixture_wpak)
     target_compile_definitions(${admin_test} PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}")
 endforeach()
+# /media over a real MediaLibrary on a temporary card and a MediaPlayer.
+wisp_test(NAME routes_media_test SRCS admin/routes_media_test.cpp
+          LIBS wisp_admin wisp_media wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
+add_dependencies(routes_media_test wisp_fixture_wpak)
+target_compile_definitions(routes_media_test PRIVATE WISP_FIXTURE_WPAK="${WISP_FIXTURE_WPAK}"
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
 # /agent over a real AgentService (the App's adapter, so wisp_app too).
 wisp_test(NAME routes_agent_test SRCS admin/routes_agent_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
@@ -492,6 +534,8 @@ wisp_test(NAME http_binding_test SRCS scene/http_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
 wisp_test(NAME files_binding_test SRCS scene/files_binding_test.cpp
           LIBS wisp_scene wisp_port_sim_os TIMEOUT 60)
+wisp_test(NAME media_binding_test SRCS scene/media_binding_test.cpp
+          LIBS wisp_scene wisp_media wisp_port_sim_os TIMEOUT 60)
 # Task coroutines and wisp.json on a bare Vm (agent-tools spec 4.2, 6);
 # scene_api.hpp is private to wisp_scene.
 wisp_test(NAME lua_task_test SRCS scene/lua_task_test.cpp LIBS wisp_scene wisp_port_sim_os
@@ -577,6 +621,12 @@ wisp_test(NAME voice_wiring_test SRCS app/voice_wiring_test.cpp
           LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings TIMEOUT 60)
 target_include_directories(voice_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
 
+wisp_test(NAME media_wiring_test SRCS app/media_wiring_test.cpp
+          LIBS wisp_app wisp_port_sim_os wisp_port_sim_settings wisp_port_sim_media TIMEOUT 60)
+target_include_directories(media_wiring_test PRIVATE ${WISP_ROOT}/components/wisp_app/src)
+target_compile_definitions(media_wiring_test PRIVATE
+    WISP_MEDIA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/media")
+
 # DocIsUpToDate compares docs/scene-api.md with the schema and writes the
 # expected text into the build directory when they differ.
 target_compile_definitions(schema_test PRIVATE WISP_ROOT="${WISP_ROOT}"
@@ -612,6 +662,10 @@ target_include_directories(docs_test PRIVATE ${WISP_ROOT}/components/wisp_agent/
 wisp_test(NAME html_text_test SRCS agent/html_text_test.cpp LIBS wisp_agent wisp_port_sim_os)
 wisp_test(NAME http_tools_test SRCS agent/http_tools_test.cpp
           LIBS wisp_agent wisp_net wisp_port_sim_os TIMEOUT 60)
+# media.* over a MediaLibrary on a temporary card, a MediaPlayer and a
+# SceneHttp with a fake HttpClient (media spec 7.3).
+wisp_test(NAME tools_media_test SRCS agent/tools_media_test.cpp
+          LIBS wisp_agent wisp_media wisp_net wisp_port_sim_os TIMEOUT 60)
 # lua.run over a real SceneRuntime (agent-tools spec 4.1).
 wisp_test(NAME lua_tools_test SRCS agent/lua_tools_test.cpp
           LIBS wisp_agent wisp_port_sim_os TIMEOUT 90)

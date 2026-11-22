@@ -4,7 +4,10 @@
 // part of the device awake while it holds a lock of some kind:
 //   network  keeps Wi-Fi on: no deep_standby;
 //   cpu      keeps automatic light sleep off;
-//   screen   keeps the screen at active: no dim, no idle screen-off.
+//   screen   keeps the screen at active: no dim, no idle screen-off;
+//   audio    keeps every AudioOut powered at standby and deep_standby, so
+//            playback goes on with the screen off (media spec 6). Only
+//            system code takes it; scenes take screen locks only.
 // WakeLockRegistry only records the locks and reports changes; what each
 // kind does is up to wisp::app::PowerManager, which reads held().
 //
@@ -27,10 +30,15 @@
 
 namespace wisp::core {
 
-enum class WakeLockKind : uint8_t { Network, Cpu, Screen };
+enum class WakeLockKind : uint8_t { Network, Cpu, Screen, Audio };
 
-// "network", "cpu", "screen".
+// "network", "cpu", "screen", "audio".
 const char* to_string(WakeLockKind kind);
+
+// The media player's holder for its cpu and audio locks. Long music is
+// expected and audible, so its locks earn no wakelock_long reminder
+// (app::post_wakelock_reminders()).
+inline constexpr char kMediaWakeLockHolder[] = "system.media";
 
 struct WakeLockInfo {
     uint32_t id = 0;

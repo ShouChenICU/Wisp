@@ -1066,3 +1066,19 @@ TEST(AttachImages, ViewsSurviveAMove) {
 }
 
 }  // namespace
+
+// Media spec 7.3: one fixed suggestion, the same in every language.
+TEST(Prompt, MentionsMediaLibraryOnce) {
+    constexpr std::string_view kLine =
+        "Media library (the SD card, media_* tools): music is best saved under music/, "
+        "downloads under download/ and documents under document/.\n";
+    for (const char* lang : {"zh", "ja", "en"}) {
+        DeviceSnapshot d = snapshot();
+        d.lang = lang;
+        const std::string p = system_prompt(d);
+        const size_t at = p.find(kLine);
+        ASSERT_NE(at, std::string::npos) << lang;
+        EXPECT_EQ(p.find(kLine, at + 1), std::string::npos) << lang;
+        EXPECT_EQ(p.find("music/"), at + kLine.find("music/")) << lang;
+    }
+}

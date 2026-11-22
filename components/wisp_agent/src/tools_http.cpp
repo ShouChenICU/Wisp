@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "tool_io.hpp"
 #include "tools_json.hpp"
 #include "wisp/agent/html_text.hpp"
 #include "wisp/agent/limits.hpp"
@@ -36,6 +37,8 @@
 namespace wisp::agent {
 
 namespace {
+
+using detail::host_of;
 
 char lower_char(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
 
@@ -88,30 +91,6 @@ bool method_of(std::string_view s, net::Method& m) {
         return false;
     }
     return true;
-}
-
-// The host out of a URL the Agent principal already accepted (http:// or
-// https://, a parseable authority): no user info, no port, lowercased.
-std::string host_of(std::string_view url) {
-    const size_t scheme = url.find("://");
-    const size_t start = scheme == std::string_view::npos ? 0 : scheme + 3;
-    size_t end = url.find_first_of("/?#", start);
-    if (end == std::string_view::npos) end = url.size();
-    std::string_view authority = url.substr(start, end - start);
-    const size_t at = authority.rfind('@');
-    if (at != std::string_view::npos) authority = authority.substr(at + 1);
-    // A bracketed IPv6 literal ("[::1]:8080"): keep the brackets, whole,
-    // and do not let the literal's own colons be mistaken for the port
-    // separator (SceneHttp refuses these requests outright, but the note
-    // and the wrap source for that refusal must still not be garbage).
-    if (!authority.empty() && authority.front() == '[') {
-        const size_t close = authority.find(']');
-        return lower_str(close == std::string_view::npos ? authority
-                                                         : authority.substr(0, close + 1));
-    }
-    const size_t colon = authority.rfind(':');
-    if (colon != std::string_view::npos) authority = authority.substr(0, colon);
-    return lower_str(authority);
 }
 
 // text/*, *json*, *xml*, *javascript*, application/x-www-form-urlencoded

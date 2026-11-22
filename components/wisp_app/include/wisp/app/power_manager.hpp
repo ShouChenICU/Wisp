@@ -37,7 +37,11 @@
 // (wisp/port/esp/i2s_power.hpp; there the output refuses with Busy while
 // its input is still on). ErrorCode::Unsupported is ignored. Busy (a
 // device still in use) is logged once and asked again on every tick and
-// level change until it agrees. StorageManager, PowerMonitor and
+// level change until it agrees. While an audio wake lock is held, every
+// AudioOut (by interface, whatever its caps) is left powered at Standby
+// and DeepStandby so playback goes on with the screen off; taking or
+// dropping that lock below Dim powers the outputs up or down at once, in
+// the lock-change job (media spec 6). StorageManager, PowerMonitor and
 // ButtonService are services, not devices, and keep their own standby
 // calls (set_standby(true/false)); button input policy and PMU sampling
 // cadence remain independent.
@@ -259,6 +263,10 @@ private:
     void walk_devices(hal::PowerLevel level, Dir dir);
     // Asks the Busy devices again. Caller holds transition_mutex_.
     void retry_busy();
+    // Below Dim, powers every AudioOut up when an audio lock appeared since
+    // the last walk, or down to that walk's level when it went. Caller
+    // holds transition_mutex_.
+    void sync_audio_outputs();
     // Managed devices in `dir` order; with `only`, just those ids.
     std::vector<std::shared_ptr<hal::Device>> ordered_devices(
         Dir dir, const std::vector<std::string>* only) const;
@@ -345,6 +353,9 @@ private:
     // Busy (in no particular order).
     hal::PowerLevel device_level_ = hal::PowerLevel::Active;
     std::vector<std::string> busy_;
+    // Below Dim: the AudioOut devices were left on (or powered back up)
+    // for an audio lock rather than walked to device_level_.
+    bool audio_kept_ = false;
 
     // True from just before the panel is put to sleep until just after it
     // wakes; brightness changes in between are only remembered.

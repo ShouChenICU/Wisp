@@ -272,6 +272,9 @@ public:
     void close_gate() { gate_open_ = false; }
     void open_gate() { gate_open_ = true; }
     void set_fail_open(bool fail) { fail_open_ = fail; }
+    // open() at this sample rate fails (0: none), as a codec that does not
+    // support it.
+    void set_fail_rate(uint32_t rate) { fail_rate_ = rate; }
     // Called at the start of every open() with its 0-based index; set it
     // before anything opens.
     void set_open_hook(std::function<void(int)> hook) { open_hook_ = std::move(hook); }
@@ -289,6 +292,9 @@ public:
             return Result<void>::err(ErrorCode::AlreadyExists, "output already open");
         }
         if (fail_open_) return Result<void>::err(ErrorCode::DeviceFailure, "no codec");
+        if (fail_rate_ != 0 && format.sample_rate == fail_rate_) {
+            return Result<void>::err(ErrorCode::Unsupported, "rate not supported");
+        }
         formats_.push_back(format);
         open_ = true;
         return Result<void>::ok();
@@ -312,9 +318,10 @@ public:
         ++closes_;
     }
 
-    Result<void> set_volume(uint8_t) override {
+    Result<void> set_volume(uint8_t percent) override {
         std::lock_guard<std::mutex> lock(mu_);
         ++set_volume_calls_;
+        last_volume_ = percent;
         return Result<void>::ok();
     }
 
@@ -350,6 +357,11 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         return set_volume_calls_;
     }
+    // The last set_volume() value; -1 before any.
+    int last_volume() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return last_volume_;
+    }
     // A write() is waiting at the closed gate.
     bool writer_waiting() const { return writers_waiting_.load() > 0; }
 
@@ -359,6 +371,7 @@ private:
     std::atomic<uint32_t> write_ms_{0};
     std::atomic<bool> gate_open_{true};
     std::atomic<bool> fail_open_{false};
+    std::atomic<uint32_t> fail_rate_{0};
     std::atomic<int> writers_waiting_{0};
     std::atomic<int> open_calls_{0};
     std::function<void(int)> open_hook_;
@@ -371,6 +384,7 @@ private:
     int overlapping_opens_ = 0;
     int writes_ = 0;
     int set_volume_calls_ = 0;
+    int last_volume_ = -1;
 };
 
 }  // namespace wisp::test::audio

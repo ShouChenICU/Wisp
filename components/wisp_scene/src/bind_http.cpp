@@ -29,7 +29,11 @@
 //       url into the scene's file `name` (wisp.files) through
 //       SceneApi::files_download; opts as for get. cb(err, nil) or
 //       cb(nil, {status, size, deferred}), with the callback kept by
-//       bind_files.cpp. A bad name is "bad_name", through cb.
+//       bind_files.cpp. A bad name is "bad_name", through cb. With
+//       opts.media = "<path>" (media spec 3.5) the body goes into that
+//       media library file through SceneApi::media_download instead, and
+//       `name` is not used; it needs media_access Write
+//       ("permission_denied") and a writable path ("invalid_path").
 //   wisp.http.request(opts, cb) (agent-tools spec 6): opts = {method, url,
 //       headers, body, timeout_ms, follow}; method GET (the default),
 //       POST, PUT, PATCH, DELETE or HEAD in any case; body as for post (a
@@ -64,6 +68,7 @@
 
 #include "scene_api.hpp"
 #include "wisp/core/log.hpp"
+#include "wisp/media/path.hpp"
 #include "wisp/scene/lua_json.hpp"
 
 namespace wisp::scene {
@@ -332,8 +337,27 @@ int request(lua_State* L) {
     return submit(L, a, 2, waits);
 }
 
-// The C++ part of download(): non-raising Lua calls only.
-void do_download(lua_State* L, SceneApi& api, uint32_t id, int headers) {
+// The C++ part of download(): non-raising Lua calls only. With `media`
+// (the stack index of opts.media) the body goes into that library file
+// (media spec 3.5), which needs permissions.media "write".
+void do_download(lua_State* L, SceneApi& api, uint32_t id, int headers, int media) {
+    if (media != 0) {
+        auto fail = [&](const char* code) {
+            FilesResult r;
+            r.error = code;
+            api.media_reply(id, std::move(r));
+        };
+        if (api.media_access != core::MediaAccess::Write) return fail("permission_denied");
+        const std::string_view path = view_at(L, media);
+        if (!media::normalize_for_write(path)) return fail("invalid_path");
+        if (!api.media_download) return fail("media_unavailable");
+        net::SceneHttpRequest req;
+        req.principal = api.http_principal;
+        req.method = net::Method::Get;
+        fill_request(L, req, 1, headers, caps_for(api.http_principal));
+        api.media_download(id, std::move(req), std::string(path));
+        return;
+    }
     const std::string_view name = view_at(L, 2);
     if (!core::valid_file_name(name)) return api.files_fail(id, "bad_name");
     net::SceneHttpRequest req;
@@ -341,6 +365,18 @@ void do_download(lua_State* L, SceneApi& api, uint32_t id, int headers) {
     req.method = net::Method::Get;
     fill_request(L, req, 1, headers, caps_for(api.http_principal));
     api.files_download(id, std::move(req), std::string(name));
+}
+
+// opts.media (at `opts`, may be 0 or nil): its stack index, or 0.
+int check_media(lua_State* L, int opts) {
+    if (opts == 0 || !lua_istable(L, opts)) return 0;
+    const int type = lua_getfield(L, opts, "media");
+    if (type == LUA_TNIL) {
+        lua_pop(L, 1);
+        return 0;
+    }
+    if (type != LUA_TSTRING) luaL_argerror(L, opts, "opts.media must be a media library path");
+    return lua_gettop(L);
 }
 
 // download(url, name, [opts], [cb]); without cb only in a task, which
@@ -357,11 +393,12 @@ int download(lua_State* L) {
     if (opts != 0 && !lua_isnoneornil(L, opts)) luaL_checktype(L, opts, LUA_TTABLE);
     const bool waits = detail::take_callback(L, cb);
     SceneApi& api = detail::api_of(L);
-    if (!api.files_download || !api.files_fail)
-        return luaL_error(L, "wisp.http.download is not available");
     const int headers = check_opts(L, opts);
+    const int media = check_media(L, opts);
+    if (media != 0 ? !api.media_reply : (!api.files_download || !api.files_fail))
+        return luaL_error(L, "wisp.http.download is not available");
     const uint32_t id = detail::register_files_callback(L, api, cb);
-    do_download(L, api, id, headers);
+    do_download(L, api, id, headers, media);
     return waits ? detail::wait_files(L, id) : 0;
 }
 

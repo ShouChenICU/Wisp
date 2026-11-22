@@ -16,9 +16,9 @@ wisp_component(
          src/net_cards.cpp src/factory_reset.cpp src/firmware_confirm.cpp src/console.cpp
          src/ram_budget.cpp src/scene_wiring.cpp src/scene_section.cpp src/system_notices.cpp src/bench.cpp
          src/notification_router.cpp src/status_shell.cpp src/agent_wiring.cpp src/voice_wiring.cpp
-         src/nav_keys.cpp
+         src/nav_keys.cpp src/media_wiring.cpp
     INCLUDE_DIRS include
-    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_voice wisp_admin wisp_ui wisp_scene
+    REQUIRES wisp_base wisp_os wisp_hal wisp_core wisp_net wisp_voice wisp_media wisp_admin wisp_ui wisp_scene
              wisp_agent wisp_shell
 )
 

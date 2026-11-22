@@ -125,10 +125,22 @@ struct PanelHeader {
     os::LargeString wifi;
 };
 
+// The now playing row below the header (media spec 7.4), shown while the
+// player is not idle: the title and artist (already filled in, the
+// artist's fallback in the UI language) and whether it plays, which picks
+// the pause or the play icon.
+struct PanelMedia {
+    bool shown = false;
+    os::LargeString title, artist;
+    bool playing = false;
+    bool operator==(const PanelMedia&) const = default;
+};
+
 // Everything the panel shows. Notes are newest first; `now_ms` is the time
 // the scenes' since_ms are measured against.
 struct PanelModel {
     PanelHeader header;
+    PanelMedia media;
     os::LargeVector<PanelScene> scenes;
     os::LargeVector<PanelNote> notes;
     uint64_t now_ms = 0;
@@ -146,6 +158,8 @@ struct PanelHandlers {
     // An action button: `index` 0 for action_label's, 1 for action2_label's.
     std::function<void(const std::string& source, const std::string& id, int index)> note_action;
     std::function<void()> clear_all;
+    // The now playing row's buttons; each leaves the panel open.
+    std::function<void()> media_prev, media_toggle, media_next;
     // The panel went, whichever way it was closed or slid back up, once
     // for each on_open that built it (never from the destructor).
     std::function<void()> on_close;

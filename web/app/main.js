@@ -2,7 +2,7 @@
 //
 // Layout (spec 7.2): below 768 px a top bar plus a bottom tab bar with
 // six tabs, the sub-pages (PARENT) being reached from their tab's page: the
-// scene, memory and log pages from the system page, the MCP servers page
+// scene, memory, media and log pages from the system page, the MCP servers page
 // from the models page; from 768 px a left sidebar that lists them on
 // their own. Both are rendered and CSS shows the one that fits, so
 // resizing never remounts the page.
@@ -21,6 +21,7 @@ import {
   IconLogout,
   IconLogs,
   IconModel,
+  IconMusic,
   IconNote,
   IconOverview,
   IconPackage,
@@ -39,6 +40,7 @@ import { McpServersPage } from './pages/mcp_servers.js';
 import { SystemPage, confirmLogout } from './pages/system.js';
 import { ScenesPage } from './pages/scenes.js';
 import { MemoryPage } from './pages/memory.js';
+import { MediaPage } from './pages/media.js';
 
 route('/pair', PairPage);
 route('/chat', ChatPage);
@@ -51,6 +53,7 @@ route('/system', SystemPage);
 route('/logs', LogsPage);
 route('/scenes', ScenesPage);
 route('/memory', MemoryPage);
+route('/media', MediaPage);
 
 /**
  * Navigation entries; `wide` ones only appear in the sidebar. `href` (a
@@ -66,12 +69,13 @@ const NAV = [
   { path: '/system', label: 'nav.system', icon: IconSystem },
   { path: '/scenes', label: 'nav.scenes', icon: IconPackage, wide: true },
   { path: '/memory', label: 'nav.memory', icon: IconNote, wide: true },
+  { path: '/media', label: 'nav.media', icon: IconMusic, wide: true },
   { path: '/logs', label: 'nav.logs', icon: IconLogs, wide: true },
 ];
 const TITLE_KEYS = Object.fromEntries(NAV.map((n) => [n.path, n.label]));
 const title = (path) => (TITLE_KEYS[path] ? t(TITLE_KEYS[path]) : 'Wisp');
 // Pages the tab bar does not list, and the tab they live under.
-const PARENT = { '/logs': '/system', '/scenes': '/system', '/memory': '/system', '/mcp': '/models' };
+const PARENT = { '/logs': '/system', '/scenes': '/system', '/memory': '/system', '/media': '/system', '/mcp': '/models' };
 const hrefOf = (path) => '#' + (NAV.find((n) => n.path === path)?.href || path);
 
 function App() {

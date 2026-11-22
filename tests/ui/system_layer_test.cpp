@@ -2308,6 +2308,299 @@ TEST_F(SystemLayerTest, PanelUpdatesWhileOpen) {
     });
 }
 
+// --- The now playing row (media spec 7.4) ---
+
+// The sample model with the player not idle.
+wisp::ui::PanelModel media_model(bool playing = true, const char* title = "Song title",
+                                 const char* artist = "Some artist") {
+    wisp::ui::PanelModel m = sample_model();
+    m.media = {true, title, artist, playing};
+    return m;
+}
+
+// The now playing row: the clickable box holding the title.
+lv_obj_t* media_row(lv_obj_t* panel, const char* title = "Song title") {
+    return clickable_of(find_label_containing(panel, title));
+}
+
+TEST_F(SystemLayerTest, MediaRowInsideVisibleAreaOnEveryShape) {
+    for (const auto& c :
+         {ShapeCase{"rect", 0}, ShapeCase{"rounded_rect", 70}, ShapeCase{"circle", 0}}) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius, false,
+              std::strcmp(c.shape, "circle") == 0 ? 466 : kSide);
+        on_ui([&] {
+            layer->set_panel_handlers({.on_open = [] {}});
+            layer->update_panel(media_model());
+            layer->open_panel();
+            lv_obj_t* panel = layer->panel();
+            ASSERT_NE(panel, nullptr);
+            lv_obj_update_layout(lv_layer_top());
+            lv_obj_t* row = media_row(panel);
+            ASSERT_NE(row, nullptr);
+            // Right below the header.
+            EXPECT_EQ(lv_obj_get_index(row), 1);
+            lv_area_t box, ra;
+            lv_obj_get_coords(panel, &box);
+            lv_obj_get_coords(row, &ra);
+            EXPECT_TRUE(fully_visible(shape, ra)) << area_str(ra);
+            EXPECT_TRUE(inside(ra, {box.x1, box.y1, box.x2, box.y2})) << area_str(ra);
+
+            lv_obj_t* buttons[] = {find_button_with_label(row, LV_SYMBOL_PREV),
+                                   find_button_with_label(row, LV_SYMBOL_PAUSE),
+                                   find_button_with_label(row, LV_SYMBOL_NEXT)};
+            lv_area_t ba[3];
+            for (int i = 0; i < 3; ++i) {
+                ASSERT_NE(buttons[i], nullptr) << i;
+                lv_obj_get_coords(buttons[i], &ba[i]);
+                EXPECT_TRUE(fully_visible(shape, ba[i])) << area_str(ba[i]);
+                EXPECT_TRUE(inside(ba[i], {ra.x1, ra.y1, ra.x2, ra.y2})) << area_str(ba[i]);
+                EXPECT_GE(lv_area_get_height(&ba[i]), SystemLayer::kPanelRowMinH);
+                EXPECT_GE(lv_area_get_width(&ba[i]), SystemLayer::kPanelRowMinH);
+                // Centred in the full row.
+                EXPECT_LE(std::abs((ba[i].y1 + ba[i].y2) - (ra.y1 + ra.y2)), 1)
+                    << area_str(ba[i]) << " in " << area_str(ra);
+            }
+            for (int i = 0; i + 1 < 3; ++i) {
+                EXPECT_GE(ba[i + 1].x1 - ba[i].x2 - 1, wisp::ui::theme::kGapSm) << i;
+            }
+            // The title and artist, left of the buttons with a gap, on the
+            // visible part of the screen.
+            for (const char* text : {"Song title", "Some artist"}) {
+                lv_obj_t* label = find_label_containing(row, text);
+                ASSERT_NE(label, nullptr) << text;
+                lv_area_t la;
+                lv_obj_get_coords(label, &la);
+                EXPECT_TRUE(fully_visible(shape, la)) << text << " " << area_str(la);
+                EXPECT_GE(ba[0].x1 - la.x2 - 1, wisp::ui::theme::kGapSm) << text;
+                EXPECT_GE(la.x1, ra.x1 + wisp::ui::theme::kGapSm) << text;
+            }
+        });
+    }
+}
+
+TEST_F(SystemLayerTest, MediaRowButtonsCallHandlers) {
+    start("circle");
+    std::vector<std::string> calls;
+    wisp::ui::PanelHandlers h;
+    h.on_open = [&] { layer->update_panel(media_model(false)); };
+    h.media_prev = [&] { calls.push_back("prev"); };
+    h.media_toggle = [&] { calls.push_back("toggle"); };
+    h.media_next = [&] { calls.push_back("next"); };
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        layer->open_panel();
+    });
+    auto at = [&](const char* symbol) {
+        lv_point_t p{-1, -1};
+        on_ui([&] {
+            lv_obj_t* b = find_button_with_label(media_row(layer->panel()), symbol);
+            ASSERT_NE(b, nullptr) << symbol;
+            lv_obj_update_layout(lv_layer_top());
+            p = center_of(b);
+        });
+        return p;
+    };
+    // Paused: the middle button plays.
+    tap(at(LV_SYMBOL_PLAY));
+    tap(at(LV_SYMBOL_PREV));
+    tap(at(LV_SYMBOL_NEXT));
+    EXPECT_EQ(calls, (std::vector<std::string>{"toggle", "prev", "next"}));
+    // Each leaves the panel open, and a tap on the row's text does nothing.
+    lv_point_t text{};
+    on_ui([&] {
+        EXPECT_TRUE(layer->panel_open());
+        text = center_of(find_label_containing(layer->panel(), "Song title"));
+    });
+    tap(text);
+    ASSERT_TRUE(panel_settled());
+    on_ui([&] { EXPECT_TRUE(layer->panel_open()); });
+    EXPECT_EQ(calls.size(), 3u);
+}
+
+TEST_F(SystemLayerTest, MediaRowHiddenWhenIdle) {
+    start("circle");
+    std::vector<std::string> calls;
+    wisp::ui::PanelHandlers h;
+    h.on_open = [] {};
+    h.open_scene = [&](const std::string& id) { calls.push_back("open " + id); };
+    h.tap_note = [&](const std::string& s, const std::string& id) {
+        calls.push_back("tap " + s + "/" + id);
+    };
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        wisp::ui::PanelModel idle = media_model();
+        idle.media.shown = false;
+        layer->update_panel(idle);
+        layer->open_panel();
+        EXPECT_EQ(find_label_containing(layer->panel(), "Song title"), nullptr);
+        EXPECT_EQ(find_button_with_label(layer->panel(), LV_SYMBOL_PREV), nullptr);
+
+        // It comes and goes with the model while the panel is open.
+        layer->update_panel(media_model());
+        EXPECT_NE(media_row(layer->panel()), nullptr);
+        // The indexed rows are still the scenes, then the notifications.
+        ASSERT_TRUE(layer->tap_panel_row(0));
+        layer->update_panel(media_model());
+        layer->open_panel();
+        ASSERT_TRUE(layer->tap_panel_row(2));
+        layer->update_panel(idle);
+        layer->open_panel();
+        EXPECT_EQ(find_button_with_label(layer->panel(), LV_SYMBOL_NEXT), nullptr);
+    });
+    EXPECT_EQ(calls, (std::vector<std::string>{"open a", "tap system/w1"}));
+}
+
+TEST_F(SystemLayerTest, MediaRowIsKeyFocusable) {
+    start("circle", wisp::ui::Lang::Zh, 0, true, 466);
+    int toggles = 0;
+    wisp::ui::PanelHandlers h;
+    h.on_open = [&] { layer->update_panel(media_model()); };
+    h.media_toggle = [&] { ++toggles; };
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        layer->open_panel();
+    });
+    lv_obj_t* prev = nullptr;
+    lv_obj_t* toggle = nullptr;
+    lv_obj_t* next = nullptr;
+    on_ui([&] {
+        lv_obj_t* row = media_row(layer->panel());
+        ASSERT_NE(row, nullptr);
+        // A key focus on a button brings the whole row into view.
+        EXPECT_TRUE(lv_obj_has_flag(row, wisp::ui::kFocusRow));
+        prev = find_button_with_label(row, LV_SYMBOL_PREV);
+        toggle = find_button_with_label(row, LV_SYMBOL_PAUSE);
+        next = find_button_with_label(row, LV_SYMBOL_NEXT);
+        // The first controls the keys reach, in order.
+        const std::vector<lv_obj_t*> objs = group_objs();
+        ASSERT_GE(objs.size(), 3u);
+        EXPECT_EQ(objs[0], prev);
+        EXPECT_EQ(objs[1], toggle);
+        EXPECT_EQ(objs[2], next);
+    });
+    nav(NavKey::Next);  // only shows the focus
+    on_ui([&] { EXPECT_EQ(focused(), prev); });
+    nav(NavKey::Next);
+    on_ui([&] { EXPECT_EQ(focused(), toggle); });
+    nav(NavKey::Ok);
+    EXPECT_EQ(toggles, 1);
+    // The player's change rebuilds the row: the focus stays on the middle
+    // button, now a play button, so the next OK toggles again.
+    on_ui([&] {
+        EXPECT_TRUE(layer->panel_open());
+        layer->update_panel(media_model(false));
+        lv_obj_t* play = find_button_with_label(media_row(layer->panel()), LV_SYMBOL_PLAY);
+        ASSERT_NE(play, nullptr);
+        EXPECT_EQ(focused(), play);
+        EXPECT_TRUE(lv_obj_has_state(play, LV_STATE_FOCUS_KEY));
+    });
+    nav(NavKey::Ok);
+    EXPECT_EQ(toggles, 2);
+}
+
+// A rebuild (a new notification, the next track) keeps a focus no key
+// showed without scrolling to it: the finger left the list elsewhere.
+TEST_F(SystemLayerTest, PanelRebuildKeepsTheScrollUnderAHiddenFocus) {
+    start("circle", wisp::ui::Lang::Zh, 0, true, 466);
+    wisp::ui::PanelModel m = media_model();
+    for (int i = 0; i < 8; ++i) {
+        m.notes.push_back({"a", LStr(("x" + std::to_string(i)).c_str()), "A", "More", "Body", ""});
+    }
+    int32_t bottom = 0;
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->update_panel(m);
+        layer->open_panel();
+        // Set in code, without a key read: LVGL leaves it hidden.
+        lv_obj_t* prev = find_button_with_label(media_row(layer->panel()), LV_SYMBOL_PREV);
+        ASSERT_NE(prev, nullptr);
+        lv_group_focus_obj(prev);
+        ASSERT_EQ(focused(), prev);
+        ASSERT_FALSE(lv_obj_has_state(prev, LV_STATE_FOCUS_KEY));
+        lv_obj_scroll_to_y(layer->panel(), LV_COORD_MAX, LV_ANIM_OFF);
+        lv_obj_update_layout(layer->panel());
+        bottom = lv_obj_get_scroll_y(layer->panel());
+        ASSERT_GT(bottom, 0);
+        layer->update_panel(m);
+    });
+    // Long enough for a scroll animation the focus might have started.
+    wisp::os::sleep_ms(600);
+    on_ui([&] {
+        EXPECT_EQ(lv_obj_get_scroll_y(layer->panel()), bottom);
+        lv_obj_t* prev = find_button_with_label(media_row(layer->panel()), LV_SYMBOL_PREV);
+        EXPECT_EQ(focused(), prev);
+        EXPECT_FALSE(lv_obj_has_state(prev, LV_STATE_FOCUS_KEY));
+    });
+}
+
+// A note's close button dismissed by key hands its shown focus to the
+// close button of the note that takes its place.
+TEST_F(SystemLayerTest, DismissByKeyFocusesTheNextNotesClose) {
+    start("circle", wisp::ui::Lang::Zh, 0, true, 466);
+    wisp::ui::PanelModel m = sample_model();
+    wisp::ui::PanelHandlers h;
+    h.on_open = [] {};
+    h.dismiss_note = [&](const std::string&, const std::string& id) {
+        std::erase_if(m.notes, [&](const wisp::ui::PanelNote& n) { return n.id.c_str() == id; });
+        layer->update_panel(m);
+    };
+    lv_obj_t* close = nullptr;
+    on_ui([&] {
+        layer->set_panel_handlers(h);
+        layer->update_panel(m);
+        layer->open_panel();
+        close = find_button_with_label(
+            clickable_of(find_label_containing(layer->panel(), "Note one")), LV_SYMBOL_CLOSE);
+        ASSERT_NE(close, nullptr);
+    });
+    for (int i = 0; i < 12; ++i) {
+        lv_obj_t* f = nullptr;
+        on_ui([&] { f = focused(); });
+        if (f == close) break;
+        nav(NavKey::Next);
+    }
+    on_ui([&] { ASSERT_EQ(focused(), close); });
+    nav(NavKey::Ok);
+    on_ui([&] {
+        EXPECT_EQ(find_label_containing(layer->panel(), "Note one"), nullptr);
+        lv_obj_t* next = find_button_with_label(
+            clickable_of(find_label_containing(layer->panel(), "Note two")), LV_SYMBOL_CLOSE);
+        ASSERT_NE(next, nullptr);
+        EXPECT_EQ(focused(), next);
+        EXPECT_TRUE(lv_obj_has_state(next, LV_STATE_FOCUS_KEY));
+    });
+}
+
+TEST_F(SystemLayerTest, LongTitleEllipsizes) {
+    start("circle", wisp::ui::Lang::Zh, 0, false, 466);
+    const std::string long_title =
+        "A very long song title that goes on and on well past the width of the row";
+    const std::string long_artist = "这位歌手的名字非常非常长，长到一行放不下还要继续写下去";
+    on_ui([&] {
+        layer->set_panel_handlers({.on_open = [] {}});
+        layer->update_panel(media_model(true, long_title.c_str(), long_artist.c_str()));
+        layer->open_panel();
+        lv_obj_update_layout(lv_layer_top());
+        lv_obj_t* row = media_row(layer->panel(), "A very long");
+        ASSERT_NE(row, nullptr);
+        lv_area_t prev;
+        lv_obj_get_coords(find_button_with_label(row, LV_SYMBOL_PREV), &prev);
+        for (const char* needle : {"A very long", "这位歌手"}) {
+            lv_obj_t* label = find_label_containing(row, needle);
+            ASSERT_NE(label, nullptr) << needle;
+            EXPECT_EQ(lv_label_get_long_mode(label), LV_LABEL_LONG_MODE_DOTS) << needle;
+            lv_area_t la;
+            lv_obj_get_coords(label, &la);
+            // One line, ended before the buttons.
+            const lv_font_t* f = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+            EXPECT_LE(lv_area_get_height(&la), lv_font_get_line_height(f)) << needle;
+            EXPECT_LT(la.x2, prev.x1) << needle;
+        }
+    });
+}
+
 // The model is let go once the panel closes, however it closes: a closed
 // panel keeps none of the notes it showed.
 TEST_F(SystemLayerTest, PanelModelIsClearedOnClose) {
@@ -3871,6 +4164,44 @@ TEST_F(SystemLayerPreview, DISABLED_FocusedDialog) {
                 wisp::port::sim::write_png_rgb888(path, shot.value().data(), c.side, c.side))
                 << path;
         }
+    }
+}
+
+// A manual preview (docs/testing.md): the pull-down panel with the now
+// playing row, playing a short title (panel-<shape>-playing.png), paused
+// on a long Chinese title (panel-<shape>-long.png), and with the play
+// button focused by a key (panel-<shape>-focus.png), in the directory
+// WISP_PANEL_SCREENSHOTS names.
+TEST_F(SystemLayerPreview, DISABLED_NowPlayingPanel) {
+    const char* dir = std::getenv("WISP_PANEL_SCREENSHOTS");
+    if (dir == nullptr) GTEST_SKIP() << "WISP_PANEL_SCREENSHOTS is not set";
+    const std::pair<const char*, wisp::ui::PanelModel> models[] = {
+        {"playing", media_model(true, "Moon River", "Audrey Hepburn")},
+        {"long", media_model(false, "一首名字非常非常长的歌曲，长到一行根本放不下", "未知歌手")}};
+    for (const KeyShapeCase& c : kKeyShapeCases) {
+        SCOPED_TRACE(c.shape);
+        TearDown();
+        start(c.shape, wisp::ui::Lang::Zh, c.corner_radius, true, c.side);
+        auto save = [&](const char* name) {
+            auto shot = ui->snapshot_rgb888();
+            ASSERT_TRUE(shot);
+            const std::string path = std::string(dir) + "/panel-" + c.shape + "-" + name + ".png";
+            ASSERT_TRUE(
+                wisp::port::sim::write_png_rgb888(path, shot.value().data(), c.side, c.side))
+                << path;
+        };
+        for (const auto& [name, model] : models) {
+            on_ui([&] {
+                layer->close_panel();
+                layer->set_panel_handlers({.on_open = [] {}});
+                layer->update_panel(model);
+                layer->open_panel();
+            });
+            save(name);
+        }
+        nav(NavKey::Next);
+        nav(NavKey::Next);
+        save("focus");
     }
 }
 

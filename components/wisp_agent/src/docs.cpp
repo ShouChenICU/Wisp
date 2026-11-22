@@ -259,9 +259,9 @@ Result<void> add_docs_tools(ToolRegistry& reg) {
         .name = "docs.read",
         .description = "The scene API reference by topic: widgets, widget/<name>, lua, "
                        "lua/<module> (store, http, timer, device, scene, log, notify, power, "
-                       "sensor, files), screen, examples, example/<id>. An unknown topic "
-                       "lists them all. Long topics come in pages: pass the result's next_offset "
-                       "to read on.",
+                       "sensor, files, media), screen, examples, example/<id>. An unknown "
+                       "topic lists them all. Long topics come in pages: pass the result's "
+                       "next_offset to read on.",
         .schema_json =
             R"({"type":"object","properties":{"topic":{"type":"string",)"
             R"("maxLength":64},"offset":{"type":"integer","minimum":0}},"required":["topic"]})",

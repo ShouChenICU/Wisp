@@ -23,6 +23,7 @@
 #include "support/wait.hpp"
 #include "wisp/agent/agent_service.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/log.hpp"
 #include "wisp/core/model_profiles.hpp"
 #include "wisp/core/tone_player.hpp"
@@ -89,7 +90,7 @@ protected:
         if (h && voice_sub != 0) h->bus.unsubscribe(voice_sub);
         if (conv) conv->stop();
         conv.reset();
-        tones.set_output_guard(nullptr);
+        tones.set_arbiter(nullptr);
         voice.reset();
         if (agent) agent->stop();
         agent.reset();
@@ -151,6 +152,7 @@ protected:
                 .tts = *tts,
                 .models = *h->models,
                 .tones = &tones,
+                .arbiter = &arbiter,
                 .locks = h->locks.get(),
                 .network_up = [] { return true; },
                 .volume = [] { return uint8_t{100}; },
@@ -158,7 +160,7 @@ protected:
             },
             voice_config);
         ASSERT_TRUE(voice->start());
-        tones.set_output_guard([v = voice.get()](core::ToneKind k) { return v->may_play_tone(k); });
+        tones.set_arbiter(&arbiter);
 
         conv = std::make_unique<shell::ConversationController>(shell::ConversationDeps{
             .agent = *agent,
@@ -280,6 +282,7 @@ protected:
     std::shared_ptr<audio::FakeAudioIn> mic =
         std::make_shared<audio::FakeAudioIn>(std::vector<audio::Segment>{}, order, &virtual_ms);
     std::shared_ptr<audio::FakeAudioOut> out = std::make_shared<audio::FakeAudioOut>(order);
+    core::AudioArbiter arbiter;
     voice::PcmPlayer player{out};
     core::TonePlayer tones{out, nullptr};
     std::unique_ptr<agent::AgentService> agent;

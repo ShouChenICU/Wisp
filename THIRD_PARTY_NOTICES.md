@@ -205,6 +205,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## minimp3
+
+- Project: https://github.com/lieff/minimp3
+- Version: `minimp3.h` and `minimp3_ex.h` at commit
+  `142823796ab8efa55e1bf11406028f3be77ecceb` (SHA-256
+  `f9592be69e8b94044e9da6f45f993c9708000abae38cf6f44b70c699de55b509` and
+  `bdda836f5ea2de782bce7cf122a41a3d76fad57d960dfb47b6765dc631779de0`; the
+  repository's `LICENSE`, SHA-256
+  `6a1ee543e5282cd9061881edf462e6fdab181f328da71fc2c9a6950a80e94d01`),
+  vendored verbatim into `third_party/minimp3/minimp3-1428237/` by
+  `tools/vendor_minimp3.sh`; not modified or forked
+- Used only by the simulator (`wisp_port_sim`) and host tests; it is not
+  part of the firmware
+- License: CC0 1.0 Universal (public-domain dedication; no conditions).
+  The full text is `third_party/minimp3/minimp3-1428237/LICENSE`.
+
 ## Noto Sans CJK SC (via `lv_font_cjk_16.c` and `noto_sans_cjk_sc_subset.ttf`)
 
 - `components/wisp_ui/fonts/lv_font_cjk_16.c` embeds glyph bitmap data
@@ -865,12 +881,13 @@ license file under `firmware/managed_components/`:
 | `espressif/cmake_utilities` | 0.5.3 | `firmware/main` (pinned), esp_board_manager (build-time CMake helpers only) | Apache-2.0 |
 | `espressif/mdns` | 1.14.0 | `firmware/main` (direct dependency; the `wisp.local` responder started by `wisp::port::esp::EspWifi`, `components/wisp_port_esp/net/esp_wifi.cpp`) | Apache-2.0 |
 | `espressif/esp_new_jpeg` | 1.0.2 | `firmware/main` (direct dependency; baseline JPEG for `ui.image`, decoded by `wisp::port::esp::install_image_decoders()`, `components/wisp_port_esp/ui/esp_jpeg_decoder.cpp`; a prebuilt library) | ESPRESSIF MIT License (below) |
+| `espressif/esp_audio_codec` | 2.6.2 | `firmware/main` (direct dependency; MP3 decoding for the media player, `wisp::port::esp::make_esp_mp3_decoder()`, `components/wisp_port_esp/media/esp_mp3_decoder.cpp`; prebuilt libraries, of which only the MP3 decoder and its simple-decoder parser are registered and linked) | Espressif Modified MIT License (`LicenseRef-Espressif-Modified-MIT`, the same text as esp_board_manager's below, copyright 2025) |
 | `joltwallet/littlefs` | 1.23.1 | `firmware/main` (direct dependency, backs `wisp::port::esp::EspInternalStorage`, `components/wisp_port_esp/dev/esp_storage.cpp`) | MIT (ESP-IDF wrapper) + BSD-3-Clause (vendored littlefs core) -- both texts below |
 
 The Apache-2.0 components are under the same license as this project
 (full text in `LICENSE`).
 
-esp_board_manager's (and esp_boards'/esp_codec_dev's) license restricts use to Espressif products, which
+esp_board_manager's (and esp_boards'/esp_codec_dev's/esp_audio_codec's) license restricts use to Espressif products, which
 matches its role here (it is only linked into the ESP32 firmware, never
 into the portable layers or the simulator). Copied verbatim from
 `firmware/managed_components/espressif__esp_board_manager/LICENSE`:

@@ -1,5 +1,6 @@
 // Overview (spec 7.3): battery, Wi-Fi, storage, uptime and firmware at a
-// glance. A snapshot comes from REST; while the tab is visible the page
+// glance, and the "Now playing" card while music plays (media spec 3.7).
+// A snapshot comes from REST; while the tab is visible the page
 // also follows the device's events and patches the snapshot in place.
 
 import { html, useEffect, useRef, useState } from '../../vendor/htm-preact-3.1.1.mjs';
@@ -8,6 +9,7 @@ import { t } from '../i18n/index.js';
 import { subscribe } from '../ws.js';
 import { Card } from '../components/card.js';
 import { Badge } from '../components/badge.js';
+import { NowPlayingCard } from '../components/now_playing.js';
 import { SignalBars, Ssid, allRejected, reasonText } from '../components/wifi.js';
 import {
   IconAlert,
@@ -225,6 +227,8 @@ export function OverviewPage() {
         </button>
       </div>
     </header>
+
+    <${NowPlayingCard} />
 
     ${error && !snap
       ? html`<${Card} title=${t('ov.load_failed')} icon=${IconAlert} tone="err">

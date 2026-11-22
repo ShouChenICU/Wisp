@@ -75,6 +75,11 @@ public:
     std::optional<ScriptError> sensor(uint32_t id, const core::SensorBatch& batch);
     // The wisp.device.on(ev) handlers, if the scene added any.
     std::optional<ScriptError> device(DeviceEvent ev, const DeviceInfo& info);
+    // scene.on_media(state) if the scene set it (media spec 7.1), with a
+    // fresh time budget.
+    std::optional<ScriptError> media(const media::PlayerState& state);
+    // Whether scene.on_media is set now; looked up without running Lua.
+    bool wants_media() const;
 
     // The agent's scene.eval (agent-core spec 4.2): compiles `lua` as the
     // chunk "eval" and runs it with a fresh budget of `budget_ms`, then

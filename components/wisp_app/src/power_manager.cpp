@@ -86,7 +86,8 @@ PowerManager::PowerManager(PowerManagerDeps deps)
 
     // A lock change can move the level without waiting for the next tick:
     // a network lock leaves deep standby, a cpu lock stops light sleep, a
-    // screen lock ends dim.
+    // screen lock ends dim, an audio lock powers the outputs up or down
+    // below Dim.
     locks_.set_on_change([this] { schedule_lock_eval(); });
 
     if (buttons_ != nullptr) {
@@ -368,7 +369,35 @@ void PowerManager::evaluate(std::optional<uint64_t> now_ms) {
     } else {
         retry_busy();  // a level change has just asked every device anyway
     }
+    sync_audio_outputs();
     update_light_sleep();
+}
+
+void PowerManager::sync_audio_outputs() {
+    if (screen_lit(device_level_)) {
+        return;  // every device is up anyway; the lock only matters below Dim
+    }
+    const bool keep = locks_.held(core::WakeLockKind::Audio);
+    if (keep == audio_kept_) {
+        return;
+    }
+    audio_kept_ = keep;
+    // Only the outputs move: up to Active while the lock is held, back to
+    // the walked level per their caps once it goes.
+    const hal::PowerLevel level = keep ? hal::PowerLevel::Active : device_level_;
+    for (const auto& device : ordered_devices(keep ? Dir::Up : Dir::Down, nullptr)) {
+        if (device->interface() != hal::Interface::AudioOut) {
+            continue;
+        }
+        const std::string& id = device->info().id;
+        // A Busy left over from the walk down must not be retried at the
+        // standby level while the lock keeps the output up.
+        busy_.erase(std::remove(busy_.begin(), busy_.end(), id), busy_.end());
+        if (power_device(*device, level, /*first_try=*/true) && !keep) {
+            busy_.push_back(id);
+        }
+    }
+    busy_pending_.store(!busy_.empty());
 }
 
 void PowerManager::go_to(hal::PowerLevel target, uint64_t now_ms,
@@ -535,8 +564,14 @@ bool PowerManager::power_device(hal::Device& device, hal::PowerLevel level, bool
 
 void PowerManager::walk_devices(hal::PowerLevel level, Dir dir) {
     device_level_ = level;
+    // Below Dim an audio lock keeps the outputs where they are (on); see
+    // sync_audio_outputs() for a lock that changes there.
+    audio_kept_ = !screen_lit(level) && locks_.held(core::WakeLockKind::Audio);
     busy_.clear();
     for (const auto& device : ordered_devices(dir, nullptr)) {
+        if (audio_kept_ && device->interface() == hal::Interface::AudioOut) {
+            continue;
+        }
         if (power_device(*device, level, /*first_try=*/true)) {
             busy_.push_back(device->info().id);
         }

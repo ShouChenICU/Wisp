@@ -120,4 +120,31 @@ inline bool is_text(std::string_view s) {
     return true;
 }
 
+// The lowercase host of `url`, without user info or port, for the system
+// note of a tool that makes a request (agent-tools spec 3.1) and the data
+// wrapper's source. A bracketed IPv6 literal ("[::1]:8080") keeps its
+// brackets, whole, so the literal's own colons are not taken for the port
+// separator (SceneHttp refuses these requests outright, but the note and
+// the wrap source for that refusal must still not be garbage).
+inline std::string host_of(std::string_view url) {
+    const size_t scheme = url.find("://");
+    const size_t start = scheme == std::string_view::npos ? 0 : scheme + 3;
+    size_t end = url.find_first_of("/?#", start);
+    if (end == std::string_view::npos) end = url.size();
+    std::string_view authority = url.substr(start, end - start);
+    const size_t at = authority.rfind('@');
+    if (at != std::string_view::npos) authority = authority.substr(at + 1);
+    if (!authority.empty() && authority.front() == '[') {
+        const size_t close = authority.find(']');
+        if (close != std::string_view::npos) authority = authority.substr(0, close + 1);
+    } else {
+        const size_t colon = authority.rfind(':');
+        if (colon != std::string_view::npos) authority = authority.substr(0, colon);
+    }
+    std::string out(authority);
+    for (char& c : out)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return out;
+}
+
 }  // namespace wisp::agent::detail

@@ -213,6 +213,9 @@ inline const std::vector<std::string>& every_authenticated_get_route() {
         "/api/v1/memory",
         "/api/v1/todos",
         "/api/v1/settings/schema",
+        "/api/v1/media/files",
+        "/api/v1/media/tracks",
+        "/api/v1/media/player",
     };
     return paths;
 }

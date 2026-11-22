@@ -140,6 +140,10 @@ std::string system_prompt(const DeviceSnapshot& d, core::LlmSystemMsgs system_ms
     p += "Scenes and connected MCP servers may export tools: find them with tools_find and call "
          "them with tools_call; check for one when a request might be something a scene or a "
          "server can do.\n\n";
+    // A suggestion, not a rule (media spec 7.3): the library takes any
+    // path inside its three folders.
+    p += "Media library (the SD card, media_* tools): music is best saved under music/, "
+         "downloads under download/ and documents under document/.\n\n";
 
     p += "Memory:\n";
     p += first ? "- The <context> block at the start of the latest user message begins with your "
@@ -168,7 +172,7 @@ std::string system_prompt(const DeviceSnapshot& d, core::LlmSystemMsgs system_ms
     p += ".\n"
          "- Reactive values: state, computed, bind; helpers ui.show_if, ui.ref.\n"
          "- Lua modules: wisp.device, wisp.store, wisp.timer, wisp.http, wisp.scene, wisp.log, "
-         "wisp.notify, wisp.power, wisp.sensor, wisp.files.\n"
+         "wisp.notify, wisp.power, wisp.sensor, wisp.files, wisp.media.\n"
          "- Look details up with docs_read instead of guessing. Topics: widgets, "
          "widget/<name>, lua, lua/<module>, screen, examples, example/<id>. Long topics come "
          "in pages; pass next_offset to read on.\n"

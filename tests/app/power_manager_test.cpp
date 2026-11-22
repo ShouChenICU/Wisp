@@ -1389,6 +1389,85 @@ TEST(PowerManager, BusyDeviceIsRetriedOnTheNextTick) {
     EXPECT_TRUE(warns.lines().empty());
 }
 
+// Media spec 6: an audio lock keeps every AudioOut powered below Dim, so
+// music plays with the screen off; the input and the other devices still
+// follow their caps.
+TEST(PowerManager, AudioLockKeepsAudioOutPoweredInStandby) {
+    Headless h;
+    auto display = h.add_probe("display.main", "off");
+    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
+    auto out = h.add_probe<AudioOutProbe>("audio_out.main", "off");
+    h.locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Audio, "playing");
+
+    h.go_deep();
+    ASSERT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+    EXPECT_EQ(h.log->take(), (Strings{"display.main:standby", "audio_in.main:standby",
+                                      "display.main:deep_standby", "audio_in.main:deep_standby"}));
+    EXPECT_TRUE(out->powered());
+    EXPECT_FALSE(in->powered());
+    EXPECT_FALSE(display->powered());
+
+    h.pm->exit_standby();
+    EXPECT_EQ(h.log->take(),
+              (Strings{"audio_out.main:active", "audio_in.main:active", "display.main:active"}));
+    EXPECT_TRUE(out->powered());
+}
+
+TEST(PowerManager, AudioLockAcquiredInStandbyPowersOutputUp) {
+    Headless h;
+    auto in = h.add_probe<AudioInProbe>("audio_in.main", "off");
+    auto out = h.add_probe<AudioOutProbe>("audio_out.main", "off");
+    h.pm->enter_standby();
+    h.log->take();
+    ASSERT_FALSE(out->powered());
+
+    h.locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Audio, "playing");
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:active"}));
+    EXPECT_TRUE(out->powered());
+    EXPECT_FALSE(in->powered());
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+
+    // Going deep afterwards leaves the kept output alone.
+    h.go_deep();
+    EXPECT_EQ(h.log->take(), (Strings{"audio_in.main:deep_standby"}));
+    EXPECT_TRUE(out->powered());
+}
+
+TEST(PowerManager, AudioLockReleasedInStandbyPowersOutputDown) {
+    Headless h;
+    h.add_probe<AudioInProbe>("audio_in.main", "off");
+    auto out = h.add_probe<AudioOutProbe>("audio_out.main", "off");
+    uint32_t id = h.locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Audio, "playing");
+    h.go_deep();
+    ASSERT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+    h.log->take();
+    ASSERT_TRUE(out->powered());
+
+    h.locks.release(id);
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:deep_standby"}));
+    EXPECT_FALSE(out->powered());
+    EXPECT_EQ(h.pm->level(), PowerLevel::DeepStandby);
+
+    // A Busy output on release is retried like any other device.
+    id = h.locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Audio, "playing");
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:active"}));
+    out->busy = 1;
+    h.locks.release(id);
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:deep_standby"}));
+    EXPECT_TRUE(out->powered());
+    h.pm->tick(wisp::os::now_ms() + 400000);
+    EXPECT_EQ(h.log->take(), (Strings{"audio_out.main:deep_standby"}));
+    EXPECT_FALSE(out->powered());
+}
+
+TEST(PowerManager, AudioLockDoesNotKeepTheScreenOn) {
+    Headless h;
+    h.locks.acquire(wisp::core::kMediaWakeLockHolder, WakeLockKind::Audio, "playing");
+    uint64_t t0 = h.start_idle();
+    h.pm->tick(t0 + 60050);
+    EXPECT_EQ(h.pm->level(), PowerLevel::Standby);
+}
+
 TEST(PowerManager, DeepStandbyAfterDeepAfterS) {
     Headless h(/*screen_off_s=*/60, /*deep_after_s=*/300);
     auto off = h.add_probe("imu.main", "off");

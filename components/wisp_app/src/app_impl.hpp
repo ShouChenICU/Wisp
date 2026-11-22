@@ -24,6 +24,7 @@
 
 #include "agent_wiring.hpp"
 #include "factory_reset.hpp"
+#include "media_wiring.hpp"
 #include "nav_keys.hpp"
 #include "net_wiring.hpp"
 #include "notification_router.hpp"
@@ -36,6 +37,7 @@
 #include "wisp/app/app.hpp"
 #include "wisp/app/power_manager.hpp"
 #include "wisp/app/system_notices.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/button_service.hpp"
 #include "wisp/core/cached_settings.hpp"
 #include "wisp/core/device_service.hpp"
@@ -155,6 +157,10 @@ struct App::Impl {
     // posts to, started once the router and the banners are up, stopped
     // with the agent (whose tools use it) and reset after it.
     std::unique_ptr<core::ReminderScheduler> reminders;
+    // Shares the main speaker between the sounds, the speech and music
+    // (media-library spec 5): built before tones, reset after it and
+    // after the voice.
+    std::unique_ptr<core::AudioArbiter> audio_arbiter;
     // The notification sounds over the main speaker (scene-device spec
     // 5.4). Built before power_manager, whose activity hook silences it,
     // and reset after it.
@@ -216,6 +222,18 @@ struct App::Impl {
     // its api()); started once the runtime runs. App::stop() stops it
     // before the scene runtime and resets it once networking is gone.
     os::LargeUnique<AgentWiring> agent;
+    // The media library and the music player (media_wiring.hpp). The
+    // library: built and started right after the storage workers with a
+    // card slot, stopped just before them and reset right after its stop.
+    // The player: built and started right after the notification sounds
+    // with a main speaker; its two subscriptions are released and it is
+    // stopped right after the status shell, before the voice and the
+    // arbiter; the object goes with the library (its removal callback and
+    // the scene lifecycle handler, gone by then, still call it).
+    os::LargeUnique<media::MediaLibrary> media_library;
+    os::LargeUnique<media::MediaPlayer> media_player;
+    core::CellSubscription media_card_sub;
+    core::CellSubscription media_volume_sub;
     // The voice and the conversation controller (voice_wiring.hpp): built
     // right after the agent, started once it runs, stopped before it
     // stops and reset right after.

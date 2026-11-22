@@ -211,6 +211,9 @@ enum class StrId : uint16_t {
     PanelJustNow,
     PanelMinutes,
     PanelHours,
+    // The now playing row's artist when the tags name none (media spec
+    // 7.4).
+    MediaUnknownArtist,
     // Notes the agent adds to the conversation (agent-core spec 3.4);
     // AgentTimeLimit "{}" is the turn's time limit in minutes.
     AgentStepLimit,
@@ -247,6 +250,10 @@ enum class StrId : uint16_t {
     // hosts, joined with AgentListSep.
     AgentConfirmHosts,
     AgentListSep,
+    // The line of that question when a scene gets the media permission
+    // or has it raised (media spec 7.2), "{}" the scene's name.
+    AgentConfirmMediaRead,
+    AgentConfirmMediaWrite,
     // Scene operation notes (agent-core spec 4.2), "{}" the scene's name;
     // AgentNoteDataWritten and AgentNoteFileRemoved have a second "{}",
     // the key or the file name (tr_fill_n()).

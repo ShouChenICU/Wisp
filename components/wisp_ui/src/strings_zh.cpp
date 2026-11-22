@@ -251,6 +251,8 @@ const char* strings_zh(StrId id) {
             return "{} 分钟";
         case StrId::PanelHours:
             return "{} 小时";
+        case StrId::MediaUnknownArtist:
+            return "未知歌手";
         case StrId::AgentStepLimit:
             return "步骤太多，已停止";
         case StrId::AgentTimeLimit:
@@ -295,6 +297,10 @@ const char* strings_zh(StrId id) {
             return "「{}」将可以访问 ";
         case StrId::AgentListSep:
             return "、";
+        case StrId::AgentConfirmMediaRead:
+            return "「{}」将可以读取媒体库";
+        case StrId::AgentConfirmMediaWrite:
+            return "「{}」将可以读写媒体库";
         case StrId::AgentNoteOpened:
             return "打开了「{}」";
         case StrId::AgentNoteClosed:

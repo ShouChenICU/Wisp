@@ -3279,3 +3279,259 @@ textarea {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- Media library and Now playing (media spec 3.7) ---------- */
+
+.media-card,
+.np-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+
+.media-card > .card-head,
+.np-card > .card-head {
+  margin-bottom: 0;
+}
+
+/* On a phone the head holds the title and two buttons; the buttons keep
+   their icons and drop their words before anything overflows. */
+@media (max-width: 479.98px) {
+  .media-card .card-actions .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .media-card .card-actions .btn {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+  }
+}
+
+.media-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+  min-width: 0;
+}
+
+.crumbs {
+  min-width: 0;
+}
+
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--gap-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.crumbs li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.crumbs [aria-current='page'] {
+  font-weight: 600;
+  padding: 2px 4px;
+}
+
+.crumb-sep {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.media-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.media-form .input {
+  flex: 1 1 200px;
+}
+
+.media-form-actions {
+  display: flex;
+  gap: var(--gap-sm);
+  margin-left: auto;
+}
+
+.media-form .field-hint {
+  flex-basis: 100%;
+}
+
+.media-upload {
+  display: grid;
+  gap: var(--gap-sm);
+}
+
+.media-upload .field-row {
+  justify-content: flex-start;
+}
+
+.media-upload-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-card .alert .btn-icon {
+  flex: none;
+  margin: -4px -4px -4px auto;
+}
+
+.media-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.media-row {
+  gap: var(--gap-sm);
+  padding: 6px 0;
+}
+
+.media-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  padding: 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+button.media-open {
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+
+button.media-open:hover {
+  background: var(--surface-2);
+}
+
+button.media-open:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.media-open .row-main {
+  flex: 1;
+}
+
+.media-chevron {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.media-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.media-skel {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.media-search {
+  flex: none;
+  max-width: 100%;
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .media-search {
+    width: 320px;
+  }
+}
+
+.media-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+  font-size: var(--fs-sm);
+}
+
+.np-body {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  min-width: 0;
+}
+
+.np-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.np-title,
+.np-artist {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.np-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.np-artist {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.np-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.np-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.np-fill {
+  transition: width 1s linear;
+}
+
+.np-times {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}

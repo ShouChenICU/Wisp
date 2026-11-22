@@ -15,6 +15,7 @@
 #include "wisp/core/scene_store.hpp"
 #include "wisp/core/topics.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/media/errors.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/scene/minute_ticker.hpp"
 #include "wisp/scene/scene_view.hpp"
@@ -252,6 +253,15 @@ Result<void> SceneRuntime::start() {
                     note_device(kClockSet);
             });
     }
+    if (deps_.media_player != nullptr) {
+        media_seen_ = deps_.media_player->state().get();
+        media_sub_ = deps_.media_player->state().subscribe(
+            [this, last = media_seen_](const media::PlayerState& now) mutable {
+                if (now == last) return;
+                last = now;
+                note_device(kMedia);
+            });
+    }
     return Result<void>::ok();
 }
 
@@ -261,6 +271,7 @@ void SceneRuntime::stop() {
     supply_sub_.reset();
     settings_sub_.reset();
     time_sub_.reset();
+    media_sub_.reset();
     if (!started_ || !running_.exchange(false)) return;
     if (task_) {
         // The task keeps taking messages, so this always gets in.
@@ -734,6 +745,7 @@ void SceneRuntime::take_device_changes() {
     if ((bits & kBattery) != 0) device_event(DeviceEvent::Battery);
     if ((bits & kLang) != 0) device_event(DeviceEvent::Lang);
     if ((bits & kClockSet) != 0) clock_set();
+    if ((bits & kMedia) != 0) media_changed();
     close_if_asked();
 }
 
@@ -1588,6 +1600,8 @@ SceneRuntime::Slot* SceneRuntime::add_slot(SceneMessage& m, LaunchReason reason,
     if (deps_.http != nullptr) wire_http(s);
     if (deps_.sensors != nullptr) wire_sensors(s);
     if (deps_.files != nullptr) wire_files(s);
+    wire_media_api(api, s.id, s.instance, s.box, s.files_gate, &s.package->manifest.http_hosts,
+                   s.package->manifest.media);
     // Opened in front with the screen off: the timers of a scene that does
     // not declare "background" wait for it to come on. A headless scene is
     // in no front: its timers (and its tools' wisp.sleep) always run.
@@ -1767,15 +1781,130 @@ void SceneRuntime::wire_files_api(SceneApi& api, const std::string& id, uint32_t
     };
 }
 
+void SceneRuntime::wire_media_api(SceneApi& api, const std::string& id, uint32_t instance,
+                                  const std::shared_ptr<CompletionBox>& box,
+                                  std::shared_ptr<FilesGate>& gate,
+                                  const std::vector<std::string>* hosts, core::MediaAccess access) {
+    api.media_player = deps_.media_player;
+    api.media_library = deps_.media_library;
+    api.media_access = access;
+    // As wire_files_api()'s: from the storage worker, the proxy's task or
+    // this task, into this instance's box; unseen once the box is closed.
+    auto deliver = [link = link_, box, id, instance](uint32_t cb, FilesResult r) {
+        link->complete(*box, id, instance, cb, true, CompletionBox::Payload(std::move(r)));
+    };
+    api.media_reply = deliver;
+    if (deps_.http == nullptr || deps_.media_library == nullptr) return;
+    if (!gate) gate = std::allocate_shared<FilesGate>(os::LargeAllocator<FilesGate>());
+    net::SceneHttp& http = *deps_.http;
+    media::MediaLibrary& lib = *deps_.media_library;
+    std::optional<std::vector<std::string>> checked;
+    if (hosts != nullptr) checked = *hosts;
+    api.media_download = [&http, &lib, deliver, gate, id, instance, hosts = std::move(checked)](
+                             uint32_t cb, net::SceneHttpRequest req, std::string path) {
+        auto fail = [deliver, cb](std::string code) {
+            FilesResult r;
+            r.error = std::move(code);
+            deliver(cb, std::move(r));
+        };
+        // Checked here first, as for a scene file, so a refused URL never
+        // starts a write in the library.
+        if (std::string code = hosts ? net::SceneHttp::check_url(req.url, *hosts) : std::string();
+            !code.empty())
+            return fail(std::move(code));
+        req.scene_id = id;
+        req.instance = instance;
+        req.download = true;
+        auto shared_req = std::allocate_shared<net::SceneHttpRequest>(
+            os::LargeAllocator<net::SceneHttpRequest>(), std::move(req));
+        // On the library's worker: the writer is open, then the request goes.
+        auto opened = [&http, deliver, fail, gate, cb,
+                       shared_req](Result<std::shared_ptr<media::LibrarySink>> r) {
+            if (!r) return fail(media::wire_name(r.error()));
+            std::shared_ptr<media::LibrarySink> sink = std::move(r.value());
+            // On the proxy's task once the transfer is over (or inside
+            // http.submit() on the library's worker for a refusal, under
+            // the gate's lock: so nothing here takes it, and the finish
+            // job, which does, runs later).
+            auto done = [deliver, fail, gate, sink, cb](net::SceneHttpResult res) {
+                auto result = std::allocate_shared<net::SceneHttpResult>(
+                    os::LargeAllocator<net::SceneHttpResult>(), std::move(res));
+                const int status = result->status;
+                const bool ok = result->error.empty() && status >= 200 && status < 300;
+                auto finished = [deliver, gate, sink, cb, result, ok,
+                                 status](Result<uint64_t> kept) {
+                    gate->forget(sink.get());
+                    FilesResult out;
+                    if (std::optional<Error> own = sink->error(); own) {
+                        out.error = media::wire_name(*own);
+                    } else if (!result->error.empty()) {
+                        out.error = result->error;
+                    } else if (!kept) {
+                        out.error = media::wire_name(kept.error());
+                    } else {
+                        out.payload =
+                            FilesDownloaded{status, ok ? kept.value() : 0, result->deferred};
+                    }
+                    deliver(cb, std::move(out));
+                };
+                if (!sink->finish(ok, std::move(finished))) fail("busy");
+            };
+            {
+                std::lock_guard<os::Mutex> lock(gate->mu);
+                if (gate->open) {
+                    gate->sinks.push_back(sink);
+                    shared_req->on_body = [sink](std::span<const uint8_t> chunk) {
+                        return sink->push(chunk);
+                    };
+                    http.submit(std::move(*shared_req), std::move(done));
+                    return;
+                }
+            }
+            // The scene closed while this waited for the worker.
+            sink->finish(false, [](Result<uint64_t>) {}, 0);
+        };
+        media::LibrarySink::open(lib, std::move(path), std::move(opened));
+    };
+}
+
+void SceneRuntime::media_changed() {
+    if (deps_.media_player == nullptr) return;
+    const media::PlayerState now = deps_.media_player->state().get();
+    if (now == media_seen_) return;
+    media_seen_ = now;
+    for (uint32_t instance : instances()) {
+        Slot* s = find(instance);
+        // Position steps come every second while music plays: a scene
+        // without the hook is not entered at all.
+        if (s == nullptr || !s->scene || !s->scene->wants_media()) continue;
+        // As fire(): one change reaches every scene in the same pass.
+        if (s == front_) enforce_limits(false);
+        // Before the step, which may close the slot.
+        const std::string tag = scene_tag(s->id);
+        const uint64_t t0 = os::now_ms();
+        run_step(*s, s->scene->media(now));
+        const uint64_t ms = os::now_ms() - t0;
+        if (ms > kSlowMs) WLOG_W(tag.c_str(), "slow message media %" PRIu64 " ms", ms);
+    }
+}
+
 void SceneRuntime::cancel_files(Slot& s) { close_gate(s.files_gate); }
 
 void SceneRuntime::close_gate(const std::shared_ptr<FilesGate>& gate) {
     if (!gate) return;
     std::vector<std::shared_ptr<core::FileDownload>> active;
+    std::vector<std::shared_ptr<media::LibrarySink>> sinks;
     {
         std::lock_guard<os::Mutex> lock(gate->mu);
         gate->open = false;
         active.swap(gate->active);
+        sinks.swap(gate->sinks);
+    }
+    // One try each (no wait), as below: what a refused finish leaves goes
+    // at the next listing of its folder.
+    for (auto& sink : sinks) {
+        sink->cancel();
+        sink->finish(false, [](Result<uint64_t>) {}, 0);
     }
     for (auto& dl : active) {
         dl->cancel();

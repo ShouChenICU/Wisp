@@ -30,6 +30,17 @@ a new dependency's unpinned transitive components show up locally instead of as
 a changed lock in firmware CI. A local firmware build that changes the lock is
 the same failure: pin the component rather than restoring the file.
 
+Media tests (`tests/media/`, plus the media cases in `tests/core`, `tests/admin`,
+`tests/agent`, `tests/scene`, `tests/app` and `tests/ui`) run on the host. The player
+tests decode real files through minimp3 and write to a simulated audio output on a
+fake clock. The media files are committed in `tests/data/media/` (a few seconds of
+sine wave as MP3 and WAV, a float WAV and garbage); CI and the tests need neither
+`ffmpeg` nor `lame`. To change the set, edit `tools/gen_media_test_data.sh` (it needs
+`ffmpeg` and `lame`), run it and commit the outputs; keep the files under 200 KiB in
+total. `tools/ci.sh` does not build the firmware, so the device decoder
+(`esp_audio_codec`) is covered only by the firmware CI builds and by the device
+checks in `docs/superpowers/plans/2026-11-19-media-library-device-checks.md`.
+
 Tool self-tests can be selected with `WISP_CI_BASE=<revision> bash tools/ci.sh`.
 The selector compares the merge base with HEAD and local tracked edits, and
 includes new files under tools. Tool changes and known input changes select their
@@ -82,6 +93,17 @@ mkdir -p /tmp/wisp-keynav
 WISP_KEYNAV_SCREENSHOTS=/tmp/wisp-keynav \
   build/sim/tests/system_layer_test \
   --gtest_also_run_disabled_tests --gtest_filter='*SystemLayerPreview*'
+```
+
+The pull-down panel preview (the now playing row playing, paused on a long
+title, and with its play button focused by a key, on rect 480, circle 466 and
+rounded_rect 480; PNG files) runs the same way:
+
+```bash
+mkdir -p /tmp/wisp-panel
+WISP_PANEL_SCREENSHOTS=/tmp/wisp-panel \
+  build/sim/tests/system_layer_test \
+  --gtest_also_run_disabled_tests --gtest_filter='*NowPlayingPanel*'
 ```
 
 For direct CTest use, configure with `-DWISP_FULL_SMOKE=ON` for every simulator

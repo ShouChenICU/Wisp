@@ -187,7 +187,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                 core::NotificationService* notices, core::SensorService* sensors,
                                 const core::StateCell<core::PowerSupply>* supply,
                                 const core::StateCell<core::SettingsSnapshot>* settings,
-                                core::DeviceService* devices) {
+                                core::DeviceService* devices, media::MediaLibrary* media_library,
+                                media::MediaPlayer* media_player) {
     if (!repo_) return;
     if (deps_.platform.http_client) {
         http_ = os::make_large<net::SceneHttp>(*deps_.platform.http_client);
@@ -209,6 +210,8 @@ void SceneWiring::build_runtime(ui::UiRuntime& ui, ui::SystemLayer& system,
                                .background_list_path = {},
                                .sensors = sensors,
                                .files = files_.get(),
+                               .media_library = media_library,
+                               .media_player = media_player,
                                .supply = supply,
                                .settings = settings,
                                .devices = devices,
@@ -331,10 +334,14 @@ void SceneWiring::stop_runtime() {
     }
 }
 
+void SceneWiring::stop_http() {
+    if (http_) http_->stop();
+}
+
 void SceneWiring::stop() {
     stop_runtime();
     sd_sub_.reset();
-    if (http_) http_->stop();
+    stop_http();
     // Both together: a job on either may hand work to the other.
     if (!router_->drain(kDrainMs)) {
         WLOG_W(kTag, "storage workers still busy after %u ms; stopping them",

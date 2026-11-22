@@ -107,4 +107,10 @@ inline constexpr uint32_t kLuaRunToolMs = 305000;
 inline constexpr uint32_t kLuaRunDefaultTimeoutMs = 30000;
 inline constexpr uint32_t kLuaRunDefaultMemoryKb = 1024;
 
+// media.read_text's cap (media spec 7.3) and media.download's registered
+// timeout: past SceneHttp's own download deadline
+// (SceneHttpRequest::kDownloadTimeoutMs), with room for the commit.
+inline constexpr size_t kMediaReadTextMax = 32 * 1024;
+inline constexpr uint32_t kMediaDownloadToolMs = 600000;
+
 }  // namespace wisp::agent

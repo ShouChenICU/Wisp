@@ -253,6 +253,8 @@ const char* strings_ja(StrId id) {
             return "{} 分";
         case StrId::PanelHours:
             return "{} 時間";
+        case StrId::MediaUnknownArtist:
+            return "不明なアーティスト";
         case StrId::AgentStepLimit:
             return "ステップが多すぎるため停止しました";
         case StrId::AgentTimeLimit:
@@ -301,6 +303,10 @@ const char* strings_ja(StrId id) {
             return "「{}」が次のサイトにアクセスできるようになります：";
         case StrId::AgentListSep:
             return "、";
+        case StrId::AgentConfirmMediaRead:
+            return "「{}」がメディアライブラリを読めるようになります";
+        case StrId::AgentConfirmMediaWrite:
+            return "「{}」がメディアライブラリを読み書きできるようになります";
         case StrId::AgentNoteOpened:
             return "「{}」を開きました";
         case StrId::AgentNoteClosed:

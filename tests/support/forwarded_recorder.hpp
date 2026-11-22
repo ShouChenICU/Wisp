@@ -32,11 +32,14 @@ namespace wisp::test {
 inline constexpr char kNormalisedExpiry[] = "<now+ttl>";
 
 // Whether the recorder keeps `topic`: a CellMirror topic that the
-// WebSocket forwards.
+// WebSocket forwards, except the media topics. Those were born behind
+// their cells (media spec 9), so there is no earlier wire format to keep,
+// and the library's frames at boot race the Wi-Fi ones on another task;
+// app/media_wiring_test.cpp pins their payloads.
 inline bool pinned_topic(std::string_view topic) {
     const core::topics::Topic* t = core::topics::find(topic);
     return t != nullptr && t->kind == core::topics::Kind::CellMirror &&
-           admin::WsHub::forwards(topic);
+           admin::WsHub::forwards(topic) && !topic.starts_with("media.");
 }
 
 // The pinned topics, in registry order.

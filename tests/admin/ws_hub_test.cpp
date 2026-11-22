@@ -431,6 +431,8 @@ TEST(WsHub, ForwardedFlagsMatchTheRegistry) {
 TEST(WsHub, ForwardsMatchesWholePrefixes) {
     EXPECT_TRUE(WsHub::forwards("net.wifi.state"));
     EXPECT_TRUE(WsHub::forwards("todo.changed"));
+    EXPECT_TRUE(WsHub::forwards("media.player"));
+    EXPECT_FALSE(WsHub::forwards("mediax.player"));
     EXPECT_FALSE(WsHub::forwards("voice.state"));
     EXPECT_FALSE(WsHub::forwards("netx.y"));
     EXPECT_FALSE(WsHub::forwards("button.power.down"));

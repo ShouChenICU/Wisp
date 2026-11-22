@@ -62,6 +62,8 @@
 #include "wisp/core/system_settings.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/media/library.hpp"
+#include "wisp/media/player.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/llm_client.hpp"
 #include "wisp/net/mcp_client.hpp"
@@ -197,6 +199,10 @@ struct AgentWiringDeps {
     // With scene_http, the MCP provider and the mcp.* tools; null (or no
     // scene_http): neither. Must outlive the AgentWiring.
     core::McpServerService* mcp = nullptr;
+    // The card's media library and the music player (media.* tools, media
+    // spec 7.3); either may be null. Both must outlive the AgentWiring.
+    media::MediaLibrary* media_library = nullptr;
+    media::MediaPlayer* media_player = nullptr;
     // The MCP client's clientInfo.version (Platform::firmware_version).
     std::string firmware_version{};
     // <System>/agent, <System>/memory/notes.json and <scene data

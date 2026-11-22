@@ -117,6 +117,25 @@
 //       names and arguments that are not strings or integers raise
 //       argument errors. The calls share wisp.http's kMaxCallsInFlight
 //       (register_files_callback() checks and counts it).
+//   wisp.media (bind_media.cpp; media spec 7.1), over media::MediaPlayer
+//       and media::MediaLibrary:
+//       play(items, [opts], [cb]) -> cb(err, {truncated =}): items are
+//       library paths and {file = name}, which becomes
+//       "scene:<scene_id>/<name>" (a string naming a scene item is
+//       invalid_path, so a scene plays only its own files); opts.start
+//       (1-based) and opts.mode. pause(), resume(), next(), prev(),
+//       seek(sec), set_mode(m), stop() -> true, or nil,
+//       "media_unavailable" without a player. state() -> the player's
+//       state as a table (push_media_state()). None needs a permission.
+//       tracks(query, cb), list(dir, cb), stat(path, cb),
+//       read(path, offset, len, cb) need media_access Read or Write;
+//       write(path, data, cb), remove(path, cb), mkdir(path, cb) need
+//       Write. A refused call answers "permission_denied" through its
+//       callback, decided before the library is asked. err is a
+//       media::wire_name(). The library calls are awaitable and share
+//       kMaxCallsInFlight with wisp.files; their results come back
+//       through media_reply as FilesResults for run_files_callback().
+//       scene.on_media(state) is the runtime's (SceneInstance::media()).
 //   wisp.json (bind_json.cpp; agent-tools spec 4.2): encode(v) -> string,
 //       or nil and not_serializable | too_deep | too_large; decode(s) ->
 //       value, or nil and bad_json | too_deep. The rules are lua_json.hpp's
@@ -161,12 +180,15 @@
 #include "wisp/core/device_service.hpp"
 #include "wisp/core/notification_service.hpp"
 #include "wisp/core/scene_files.hpp"
+#include "wisp/core/scene_manifest.hpp"
 #include "wisp/core/scene_store.hpp"
 #include "wisp/core/sensor_service.hpp"
 #include "wisp/core/settings_schema.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/display.hpp"
 #include "wisp/hal/display_geometry.hpp"
+#include "wisp/media/library.hpp"
+#include "wisp/media/player.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -210,8 +232,11 @@ struct FilesDownloaded {
 
 // A wisp.files job's answer: an error code, or the payload (monostate is
 // `true`, a buffer is read()'s data).
-using FilesPayload = std::variant<std::monostate, os::LargeBuffer, core::SceneFileList,
-                                  core::SceneFilesInfo, FilesDownloaded>;
+// The media types are wisp.media's answers (bind_media.cpp).
+using FilesPayload =
+    std::variant<std::monostate, os::LargeBuffer, core::SceneFileList, core::SceneFilesInfo,
+                 FilesDownloaded, std::vector<media::MediaEntry>, media::MediaEntry,
+                 media::TrackPage, media::PlayQueue::SetResult>;
 struct FilesResult {
     std::string error;
     FilesPayload payload;
@@ -260,6 +285,19 @@ struct SceneApi {
     // result comes back like files_run's. Empty: download raises.
     std::function<void(uint32_t id, net::SceneHttpRequest req, std::string name)> files_download;
     uint32_t next_files_id = 1;
+    // wisp.media: the player and the library (null: their calls answer
+    // "media_unavailable"), what scene.json's permissions.media grants,
+    // and how a result for callback `id` (register_files_callback()) comes
+    // back to run_files_callback(id) on the scene task; from any thread,
+    // and always as a later message. Empty media_reply: wisp.media raises.
+    media::MediaPlayer* media_player = nullptr;
+    media::MediaLibrary* media_library = nullptr;
+    core::MediaAccess media_access = core::MediaAccess::None;
+    std::function<void(uint32_t id, FilesResult r)> media_reply;
+    // wisp.http.download with opts.media: `req` (url, headers) into the
+    // library file `path` (already checked against media_access); the
+    // result comes back like files_download's. Empty: "media_unavailable".
+    std::function<void(uint32_t id, net::SceneHttpRequest req, std::string path)> media_download;
     // wisp.http, wisp.http.download and wisp.files calls whose callback (or
     // waiting task) is registered and has not run; at most kMaxCallsInFlight.
     uint32_t calls_in_flight = 0;
@@ -387,6 +425,12 @@ void install_power(lua_State* L, int wisp);
 void install_notify(lua_State* L, int wisp);
 void install_sensor(lua_State* L, int wisp);
 void install_files(lua_State* L, int wisp);
+void install_media(lua_State* L, int wisp);
+// Pushes the player's state as wisp.media.state() reports it.
+void push_media_state(lua_State* L, const media::PlayerState& s);
+// Pushes a wisp.media payload (a media type of FilesPayload) and returns
+// how many values; 0 (nothing pushed) for any other payload.
+int push_media_payload(lua_State* L, const FilesPayload& p);
 // Sets wisp.json.
 void install_json(lua_State* L, int wisp);
 // Sets wisp.tools.

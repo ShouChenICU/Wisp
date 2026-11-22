@@ -149,6 +149,10 @@ struct NetWiringDeps {
     // 503.
     core::MemoryStore* memory = nullptr;
     core::ReminderScheduler* todos = nullptr;
+    // AdminDeps::media_library / media_player (see there); null: their
+    // routes answer 503.
+    media::MediaLibrary* media_library = nullptr;
+    media::MediaPlayer* media_player = nullptr;
     // The clock the "wisp.net" loop hands WifiService, the NetworkWindow
     // and the admin services; empty: os::now_ms. Tests move it to reach
     // the network window's 15 minutes.

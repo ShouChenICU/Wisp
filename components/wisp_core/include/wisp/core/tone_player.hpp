@@ -19,13 +19,12 @@
 // synthesizes into a buffer it owns and writes to the output; it never
 // reads Settings.
 //
-// Sharing the output (MVP spec 4.4): speech plays through the same
-// AudioOut, and the two must never have it open at once. The output guard,
-// when set, is asked on this task before every sound opens the output:
-// false skips the sound (a Tone while speech plays), true lets it play
-// (an Alarm, after the guard has stopped the speech and waited for its
-// output to close). It runs on wisp.tone, so it may wait without making
-// play() wait; it must not touch flash.
+// Sharing the output (media-library spec 5): speech and music play
+// through the same AudioOut. With an AudioArbiter set, every sound takes
+// a lease (Tone or Alarm) on this task before it opens the output and
+// holds it until the output is closed again: a refused Tone is skipped,
+// an Alarm waits there while the arbiter stops the speech. play() never
+// waits for it.
 //
 // Threads: play(), silence() and playing() may be called from any thread,
 // and never wait, but not while start() or stop() runs: whoever calls them
@@ -42,6 +41,7 @@
 #include <span>
 
 #include "wisp/base/result.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/wakelock.hpp"
 #include "wisp/hal/audio.hpp"
 #include "wisp/os/os.hpp"
@@ -97,8 +97,10 @@ public:
     // A sound was asked for and has not ended yet.
     bool playing() const;
 
-    // See the file header. Any thread; null removes the guard.
-    void set_output_guard(std::function<bool(ToneKind)> may_play);
+    // See the file header. Null: the sounds take no lease. The arbiter
+    // outlives the player's task, or is replaced by null before it goes.
+    // Any thread; a sound already past its acquire keeps its lease.
+    void set_arbiter(AudioArbiter* arbiter);
 
 private:
     struct Request {
@@ -118,14 +120,14 @@ private:
     std::unique_ptr<os::Task> task_;
     os::Semaphore wake_{1, 0};
 
-    // Guards pending_, guard_ and the moves of playing_ to false.
+    // Guards pending_ and the moves of playing_ to false.
     mutable os::Mutex mu_;
     std::optional<Request> pending_;
-    std::shared_ptr<const std::function<bool(ToneKind)>> guard_;
     // Moves on with every play() and silence(): the sound in progress
     // stops when it is no longer the one it started with.
     std::atomic<uint32_t> generation_{0};
     std::atomic<bool> playing_{false};
+    std::atomic<AudioArbiter*> arbiter_{nullptr};
     std::atomic<bool> quit_{false};
     bool open_warned_ = false;  // task only
 

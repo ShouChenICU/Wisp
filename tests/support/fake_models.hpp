@@ -37,6 +37,9 @@ struct FakeTtsReply {
     std::vector<std::vector<uint8_t>> chunks;
     int hold_after = -1;
     net::TransportError fail = net::TransportError::None;
+    // The hold does not notice an abort (a client whose socket has not
+    // timed out yet): only release() ends it.
+    bool deaf = false;
 };
 
 class FakeModelServer : public net::HttpClient {
@@ -133,12 +136,12 @@ private:
     // Blocks like a client stuck mid-transfer; the error when the watch
     // ended it (or plain Cancelled when there is no watch and `cancelled`
     // said to stop), nullopt after release().
-    std::optional<net::TransportError> hold(const net::HttpClientRequest& req) {
+    std::optional<net::TransportError> hold(const net::HttpClientRequest& req, bool deaf = false) {
         auto shut = std::make_shared<std::atomic<bool>>(false);
-        if (req.watch != nullptr) req.watch->attach([shut] { *shut = true; });
+        if (req.watch != nullptr && !deaf) req.watch->attach([shut] { *shut = true; });
         ++held_;
         while (!released_.load() && !shut->load()) {
-            if (req.watch == nullptr && req.cancelled && req.cancelled()) {
+            if (req.watch == nullptr && !deaf && req.cancelled && req.cancelled()) {
                 *shut = true;
                 break;
             }
@@ -186,7 +189,7 @@ private:
         net::HttpClientResponse res{.status = reply.status};
         for (size_t i = 0; i <= reply.chunks.size(); ++i) {
             if (reply.hold_after >= 0 && static_cast<size_t>(reply.hold_after) == i) {
-                if (auto stopped = hold(req)) return {.transport = *stopped};
+                if (auto stopped = hold(req, reply.deaf)) return {.transport = *stopped};
             }
             if (i == reply.chunks.size()) {
                 if (reply.fail != net::TransportError::None) return {.transport = reply.fail};

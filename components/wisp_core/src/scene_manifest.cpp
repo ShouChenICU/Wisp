@@ -485,6 +485,18 @@ Result<SceneManifest> parse_scene_manifest(std::string_view json) {
                 m.devices.push_back(d.as_string());
             }
         }
+        if (const Value* media = perms->find("media")) {
+            const std::string_view v = media->type() == Value::Type::String
+                                           ? std::string_view(media->as_string())
+                                           : std::string_view();
+            if (v == "read") {
+                m.media = MediaAccess::Read;
+            } else if (v == "write") {
+                m.media = MediaAccess::Write;
+            } else {
+                return invalid("permissions.media must be \"read\" or \"write\"");
+            }
+        }
     }
 
     if (const Value* bg = root.find("background")) {
@@ -584,6 +596,18 @@ const char* to_string(FilesWant w) {
             break;
     }
     return "auto";
+}
+
+const char* to_string(MediaAccess a) {
+    switch (a) {
+        case MediaAccess::Read:
+            return "read";
+        case MediaAccess::Write:
+            return "write";
+        case MediaAccess::None:
+            break;
+    }
+    return "none";
 }
 
 }  // namespace wisp::core

@@ -23,6 +23,7 @@ Wisp is your personal handheld agent. It can chat with you, has a memory of its 
 - **Create apps on demand**: Turn a request into a Lua scene you can use and refine immediately.
 - **Control the device**: Tools for scenes, networking, scripts and settings, with progress on screen.
 - **Remember and remind**: Persistent preferences, to-dos and reminders that wake the screen.
+- **Play your music**: Keep songs on the SD card and play MP3 and WAV from the admin console, the pull-down panel or by voice, even with the screen off.
 - **Choose your models**: OpenAI-compatible chat, ASR and TTS, with switchable profiles, vision for models that see, and MCP servers for more tools.
 - **Manage locally**: LAN admin console, write-only API keys and on-device confirmation for sensitive actions.
 - **Build across boards**: Pluggable hardware and a PC simulator for everyday development.
@@ -58,7 +59,7 @@ The mouse stands in for your finger. <kbd>P</kbd> is the power key, <kbd>+</kbd>
 
 ### 📟 Device
 
-Supported now: **Waveshare ESP32-S3-Touch-AMOLED-2.16**. It has a 480×480 AMOLED touchscreen, two microphones, a speaker, an IMU, an RTC, battery management and an SD slot, with no soldering needed. Also supported, pending acceptance on the device: **Waveshare ESP32-S3-Touch-AMOLED-1.75C** (466×466 round AMOLED, 32 MB flash, no SD slot); build it with the per-board commands in [its README](boards/waveshare_esp32_s3_touch_amoled_1_75c/README.md).
+Supported now: **Waveshare ESP32-S3-Touch-AMOLED-2.16**. It has a 480×480 AMOLED touchscreen, two microphones, a speaker, an IMU, an RTC, battery management and an SD slot, with no soldering needed. Also supported and tested on the device: **Waveshare ESP32-S3-Touch-AMOLED-1.75C** (466×466 round AMOLED, 32 MB flash; no SD slot, so no music library); build it with the per-board commands in [its README](boards/waveshare_esp32_s3_touch_amoled_1_75c/README.md).
 
 ```bash
 . ~/esp/esp-idf-v6.0.3/export.sh        # in fish and other non-bash shells, wrap in bash -c '...'
@@ -165,12 +166,13 @@ The first run downloads the models. Then, on the admin console's Models page:
 
 ## 🤖 What the agent can do
 
-The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **four groups by purpose**:
+The model reasons through your configured OpenAI-compatible service; Wisp executes its tool calls on the device. The core tools fall into **five groups by purpose**:
 
 | Group | Tools | What they enable |
 | --- | --- | --- |
 | Scene development & runtime | `scene.*`, `ui.tree`, `ui.screenshot`, `docs.read`, `tools.find`, `tools.call`, `mcp.*` | Read the built-in API reference, create and edit scenes, install or roll back versions, manage their lifecycle, data and files, and inspect widgets and logs for debugging, and, with a vision model, look at the screen. Discover and call tools exported by installed scenes and by MCP servers to add reusable capabilities without changing the firmware, and add, remove or enable MCP servers. |
 | Web & scripting | `http.fetch`, `lua.run` | Access websites, APIs and LAN services over HTTP/HTTPS, extract text from HTML, read long responses in pages, or hand an image to a vision model. Run sandboxed Lua 5.5 scripts to calculate, process JSON, chain requests, download files and read or write the agent's own files. HTTP and file operations can wait for results; memory and execution time are bounded. |
+| Music & media library | `media.*` | Search the tracks on the SD card, play them in order, on repeat or shuffled, and pause, skip or seek; list, read, write and delete files in the card's media library, and download files from the web straight into it. |
 | Memory & to-dos | `memory.*`, `todo.*` | Remember preferences, maintain task lists, and set due times or recurring reminders that wake the screen and ring. |
 | Device & notifications | `device.status`, `device.list`, `device.call`, `settings.*`, `notify.list`, `notify.dismiss` | Check battery, network, storage and peripherals; read and control peripherals that describe themselves, such as a vibration motor (when the board has such a device); adjust brightness, volume, screen timeout, deep standby, language, time zone and clock format, or mute spoken replies; review or dismiss notifications. |
 
@@ -243,6 +245,7 @@ More in the [architecture notes](docs/architecture.md), the [scene API](docs/sce
 | 🧠 | Memory & reminders | Preference notes, to-dos with due times, reminders | ✅ |
 | 🔥 | Shell | Wisp home screen, finger-following navigation, settings, scene list, history | ✅ |
 | 🔌 | MCP client | Connect to remote MCP servers over streamable HTTP, giving the agent outside tools | ✅ |
+| 🎵 | Music & media library | A library on the SD card for music, downloads and documents; MP3 and WAV playback that keeps going with the screen off; control from the pull-down panel, the admin console's Media page or by voice | ✅ |
 | 🗣️ | More natural voice | Wake word, streaming recognition with live captions, streaming providers such as Bailian, Volcano and iFlytek | 📋 |
 | 🐾 | Wisp interaction | Touch play such as patting its head, more expressions, colour presets, a mini wisp inside scenes | 📋 |
 | ⏰ | Scheduling & automation | Timed jobs and event rules that the agent runs on its own | 📋 |

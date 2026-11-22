@@ -32,6 +32,8 @@ const char* to_string(ErrorCode code) {
             return "permission_denied";
         case ErrorCode::RateLimited:
             return "rate_limited";
+        case ErrorCode::Corrupt:
+            return "corrupt";
     }
     return "unknown";
 }

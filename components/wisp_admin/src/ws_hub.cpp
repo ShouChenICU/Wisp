@@ -24,8 +24,8 @@ constexpr const char* kTag = "ws";
 // memory.* and todo.* events carry a count only (MemoryStore,
 // ReminderScheduler), never note or todo text, so forwarding them is no
 // privacy issue.
-constexpr const char* kForwardedPrefixes[] = {"memory.",  "net.",    "power.", "scene.",
-                                              "storage.", "system.", "todo."};
+constexpr const char* kForwardedPrefixes[] = {"media.", "memory.",  "net.",    "power.",
+                                              "scene.", "storage.", "system.", "todo."};
 
 constexpr const char* kPing = R"({"t":"ping"})";
 

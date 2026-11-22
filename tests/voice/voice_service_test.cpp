@@ -23,6 +23,7 @@
 #include "support/temp_dir.hpp"
 #include "support/wait.hpp"
 #include "wisp/base/value.hpp"
+#include "wisp/core/audio_arbiter.hpp"
 #include "wisp/core/device_registry.hpp"
 #include "wisp/core/event_bus.hpp"
 #include "wisp/core/log.hpp"
@@ -159,11 +160,12 @@ struct VoiceServiceTest : ::testing::Test {
         tts = std::make_unique<wisp::voice::TtsClient>(server, *models);
         ASSERT_TRUE(player.start());
         ASSERT_TRUE(tones.start());
+        tones.set_arbiter(&arbiter);
     }
 
     void TearDown() override {
         server.release();
-        tones.set_output_guard(nullptr);
+        tones.set_arbiter(nullptr);
         voice.reset();
         tones.stop();
         player.stop_task();
@@ -203,6 +205,7 @@ struct VoiceServiceTest : ::testing::Test {
                 .tts = *tts,
                 .models = *models,
                 .tones = &tones,
+                .arbiter = &arbiter,
                 .locks = &locks,
                 .network_up = [this] { return net_up.load(); },
                 .network_expected = [this] { return net_expected.load(); },
@@ -317,6 +320,9 @@ struct VoiceServiceTest : ::testing::Test {
     std::shared_ptr<FakeAudioIn> mic = std::make_shared<FakeAudioIn>(
         std::vector<wisp::test::audio::Segment>{}, order, &virtual_ms);
     std::shared_ptr<FakeAudioOut> out = std::make_shared<FakeAudioOut>(order);
+    // Shares the output between the speech and the tones, as in App;
+    // outlives the players, which hold its leases.
+    wisp::core::AudioArbiter arbiter;
     wisp::voice::PcmPlayer player{out};
     wisp::core::WakeLockRegistry locks{bus};
     wisp::core::TonePlayer tones{out, nullptr};
@@ -1186,7 +1192,6 @@ TEST_F(VoiceServiceTest, PlaysAtTheProfileRate) {
 TEST_F(VoiceServiceTest, AlarmPreemptsSpeech) {
     add_tts();
     make();
-    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
     server.push_tts(pcm_reply(ramp(4800), /*hold_after=*/1));
     voice->begin_speech();
     voice->speak("一。二。");
@@ -1211,6 +1216,39 @@ TEST_F(VoiceServiceTest, AlarmPreemptsSpeech) {
     ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
     EXPECT_EQ(out->overlapping_opens(), 0);
     EXPECT_EQ(count(kTtsPath), 1u);
+}
+
+// The speech's lease goes with its output, not with the voice task: an
+// alarm sounds as soon as the stopped player has closed, and a tone after
+// it plays, while wisp.voice is still stuck in a TTS request.
+TEST_F(VoiceServiceTest, AlarmAndToneFollowTheClosedOutputNotTheVoiceTask) {
+    add_tts();
+    make();
+    FakeTtsReply reply = pcm_reply(ramp(4800), /*hold_after=*/1);
+    reply.deaf = true;
+    server.push_tts(reply);
+    voice->begin_speech();
+    voice->speak("一。二。");
+    ASSERT_TRUE(wait_until([&] { return voice->speaking() && server.held() == 1; }, 2000));
+    ASSERT_EQ(out->opens(), 1);
+
+    out->set_write_ms(5);
+    const uint64_t t0 = wisp::os::now_ms();
+    tones.play(ToneKind::Alarm, 60);
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 2; }, 1000));
+    EXPECT_LT(wisp::os::now_ms() - t0, 250u);
+    EXPECT_EQ(server.held(), 1);  // the voice task has not moved on
+    tones.silence();
+    ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
+
+    tones.play(ToneKind::Tone, 60);
+    ASSERT_TRUE(wait_until([&] { return out->opens() == 3; }, 1000));
+    ASSERT_TRUE(wait_until([&] { return !tones.playing(); }, 1000));
+    EXPECT_EQ(server.held(), 1);
+
+    server.release();
+    ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(out->overlapping_opens(), 0);
 }
 
 TEST_F(VoiceServiceTest, TaskAndLogs) {
@@ -1247,7 +1285,6 @@ TEST_F(VoiceServiceTest, TaskAndLogs) {
 TEST_F(VoiceServiceTest, AlarmWinsTheOutputWhileSpeechOpensIt) {
     add_tts();
     make();
-    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
     // Speech's open() is held half-way, as if the codec were slow.
     std::atomic<bool> in_open{false}, let_go{false};
     out->set_open_hook([&](int index) {
@@ -1283,7 +1320,6 @@ TEST_F(VoiceServiceTest, AlarmWinsTheOutputWhileSpeechOpensIt) {
 TEST_F(VoiceServiceTest, ToneAskedFirstKeepsSpeechOff) {
     add_tts();
     make();
-    tones.set_output_guard([this](ToneKind k) { return voice->may_play_tone(k); });
     // An alarm owns the output; speech that arrives meanwhile gives way.
     out->set_write_ms(5);
     tones.play(ToneKind::Alarm, 60);
@@ -1511,6 +1547,31 @@ TEST_F(VoiceServiceTest, UnprimeClosesTheMicAndRecordsNothing) {
     EXPECT_EQ(mic->opens(), 2);
     voice->cancel_capture();
     ASSERT_TRUE(wait_idle());
+    EXPECT_EQ(capture_log("preroll_ms"), 0);
+}
+
+TEST_F(VoiceServiceTest, PressWhileMusicPlaysDoesNotPrime) {
+    add_asr();
+    make();
+    server.push_asr(asr_text("早"));
+    auto music = arbiter.try_acquire_music([] {});
+    ASSERT_TRUE(music.valid());
+    // Long enough for a prime to have opened the mic and kept a pre-roll.
+    mic->set_script({silence(kMicSettleMs + 300), sine(400)});
+    voice->prime();
+    std::this_thread::sleep_for(std::chrono::milliseconds(kMicSettleMs + 300));
+    // The music keeps playing through the press: no input lease was taken.
+    EXPECT_FALSE(mic->is_open());
+    EXPECT_TRUE(music.valid());
+
+    // A hold still records, on the unprimed path, and pauses the music.
+    ASSERT_TRUE(voice->begin_capture(CaptureMode::Hold));
+    ASSERT_TRUE(wait_until([&] { return voice->state() == VoiceState::Listening; }, 2000));
+    EXPECT_FALSE(music.valid());
+    ASSERT_TRUE(wait_until([&] { return mic->script_done(); }, 3000));
+    voice->end_capture();
+    ASSERT_TRUE(wait_until([&] { return !got_transcripts().empty(); }, 3000));
+    EXPECT_EQ(mic->opens(), 1);
     EXPECT_EQ(capture_log("preroll_ms"), 0);
 }
 

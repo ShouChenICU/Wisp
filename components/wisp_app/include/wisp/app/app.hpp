@@ -43,6 +43,10 @@
 //      is built before networking -- the admin routes reach it -- and
 //      started once the home screen is up, the screen a scene replaces
 //      and returns to.
+//   Media (media spec 2; src/media_wiring.hpp): with a card slot, the
+//      MediaLibrary over <sd>/media, started right after the storage
+//      workers; with an AudioOut of role main, the MediaPlayer ("wisp.media"),
+//      started right after the notification sounds.
 //   4b. Networking (connectivity spec 4.1; src/net_wiring.hpp): builds
 //      PairingService and -- when a Wi-Fi device with role main is
 //      registered -- WifiService, whose tick() runs on a "wisp.net" task
@@ -89,6 +93,7 @@
 #include "wisp/core/firmware_update.hpp"
 #include "wisp/core/settings.hpp"
 #include "wisp/core/storage_manager.hpp"
+#include "wisp/media/decoder.hpp"
 #include "wisp/net/http.hpp"
 #include "wisp/net/pairing_service.hpp"
 #include "wisp/net/time_sync.hpp"
@@ -116,6 +121,11 @@ class StorageRouter;
 class DeviceService;
 class StorageWorker;
 }  // namespace wisp::core
+
+namespace wisp::media {
+class MediaLibrary;
+class MediaPlayer;
+}  // namespace wisp::media
 
 namespace wisp::scene {
 class SceneRuntime;
@@ -294,6 +304,13 @@ struct Platform {
     // built-in command is ignored.
     std::vector<ConsoleCommand> console_commands;
 
+    // The platform's audio decoders (media spec 4.3): MP3 is the
+    // platform's (minimp3 in the simulator, esp_audio_codec on the device);
+    // App completes it with the portable WAV decoder (media::with_wav()).
+    // Called on the player task "wisp.media". Empty: MP3 is reported as
+    // unsupported_format.
+    media::DecoderFactory audio_decoder;
+
     // Scenes (scene-runtime-core spec 6.2, 6.4). Empty: installed scenes
     // live in <int>/scenes, code and data together. Set (the simulator's
     // --scenes-dir): dev mode -- the code comes straight from this working
@@ -414,6 +431,14 @@ public:
     // is null without one. nullptr under the same conditions as
     // storage_worker().
     core::StorageRouter* storage_router();
+    // The media library on the card (media spec 3): built and started with
+    // a card slot (StorageManager::has_sd()) and the storage workers;
+    // nullptr otherwise, and before start() or after stop().
+    media::MediaLibrary* media_library();
+    // The music player (media spec 4): built and started with an AudioOut
+    // of role main; nullptr otherwise, and before start() or after stop().
+    // Without a card it still plays a scene's files on internal storage.
+    media::MediaPlayer* media_player();
     // The agent (agent-core spec 2), built and started with a screen and a
     // scene runtime; nullptr otherwise, and before start() or after stop().
     agent::AgentService* agent();

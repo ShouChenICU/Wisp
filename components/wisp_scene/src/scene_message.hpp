@@ -24,6 +24,7 @@
 #include "wisp/core/scene_files.hpp"
 #include "wisp/core/scene_repository.hpp"
 #include "wisp/core/scene_store.hpp"
+#include "wisp/media/library_sink.hpp"
 #include "wisp/net/scene_http.hpp"
 #include "wisp/os/large.hpp"
 #include "wisp/os/os.hpp"
@@ -196,10 +197,16 @@ struct SceneRuntime::FilesGate {
     os::Mutex mu;
     bool open = true;
     std::vector<std::shared_ptr<core::FileDownload>> active;
+    // Downloads into the media library (wire_media_api()).
+    std::vector<std::shared_ptr<media::LibrarySink>> sinks;
 
     void forget(const core::FileDownload* dl) {
         std::lock_guard<os::Mutex> lock(mu);
         std::erase_if(active, [dl](const auto& p) { return p.get() == dl; });
+    }
+    void forget(const media::LibrarySink* sink) {
+        std::lock_guard<os::Mutex> lock(mu);
+        std::erase_if(sinks, [sink](const auto& p) { return p.get() == sink; });
     }
 };
 

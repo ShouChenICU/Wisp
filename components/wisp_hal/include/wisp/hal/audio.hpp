@@ -15,8 +15,9 @@ struct AudioFormat {
 
 // caps keys (AudioOut and AudioIn): "standby" (string, optional: "off"
 // when set_power() releases the audio hardware at Standby/DeepStandby;
-// see StandbyPolicy in wisp/hal/device.hpp). Playing or recording below
-// Dim is not supported.
+// see StandbyPolicy in wisp/hal/device.hpp). Playing below Dim requires an
+// "audio" wake lock (wisp/core/wakelock.hpp); recording below Dim is not
+// supported.
 // AudioIn also: "channels" (list of strings, optional: one role per
 // physical capture channel, "mic" or "ref" for the speaker signal looped
 // back; read() still delivers the mono mix of the "mic" channels).

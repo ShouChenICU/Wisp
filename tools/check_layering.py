@@ -3,8 +3,8 @@
 docs/architecture.md):
 
   - The portable layers (wisp_base, wisp_os, wisp_hal, wisp_core,
-    wisp_net, wisp_voice, wisp_admin, wisp_ui, wisp_scene, wisp_agent,
-    wisp_shell, wisp_app) must
+    wisp_net, wisp_voice, wisp_media, wisp_admin, wisp_ui, wisp_scene,
+    wisp_agent, wisp_shell, wisp_app) must
     never #include a platform header:
     anything starting with esp_, freertos/, driver/, hal/ (ESP-IDF's, as
     opposed to wisp_hal's own wisp/hal/ headers), soc/, rom/, lwip/,
@@ -16,8 +16,9 @@ docs/architecture.md):
     portable code may use them directly (docs/architecture.md).
   - Each portable layer must only #include headers from its own layer
     or a strictly lower one in AGENTS.md's order (wisp_base < wisp_os
-    < wisp_hal < wisp_core < wisp_net < wisp_voice < wisp_admin < wisp_ui
-    < wisp_scene < wisp_agent < wisp_shell < wisp_app; wisp_net's and
+    < wisp_hal < wisp_core < wisp_net < wisp_voice < wisp_media
+    < wisp_admin < wisp_ui < wisp_scene < wisp_agent < wisp_shell
+    < wisp_app; wisp_net's and
     wisp_admin's places are fixed by spec 2.2 of the connectivity-admin
     design, wisp_scene's by spec 2.2 of the scene-runtime-core design,
     wisp_agent's by spec 2 of the agent-core design, wisp_voice's and
@@ -83,6 +84,7 @@ COMPONENTS = (
     "wisp_core",
     "wisp_net",
     "wisp_voice",
+    "wisp_media",
     "wisp_admin",
     "wisp_ui",
     "wisp_scene",
@@ -102,6 +104,7 @@ LAYER_INCLUDE_PREFIX = {
     "wisp_core": "wisp/core/",
     "wisp_net": "wisp/net/",
     "wisp_voice": "wisp/voice/",
+    "wisp_media": "wisp/media/",
     "wisp_admin": "wisp/admin/",
     "wisp_ui": "wisp/ui/",
     "wisp_scene": "wisp/scene/",
@@ -156,13 +159,19 @@ THIRD_PARTY_HEADERS = {
     "lua.hpp": _LUA_OWNERS,
     "luaconf.h": _LUA_OWNERS,
     "stb_image_write.h": ("wisp_base",),
+    "minimp3.h": ("wisp_port_sim",),
+    "minimp3_ex.h": ("wisp_port_sim",),
 }
 
 # Non-wisp_* components a portable layer may list in REQUIRES (as
 # opposed to IDF_REQUIRES): the vendored third_party/ components, which
 # build the same way under idf.py (EXTRA_COMPONENT_DIRS) and on the host
 # (add_subdirectory), keyed by the one layer allowed to require each.
-THIRD_PARTY_REQUIRES = {"wisp_scene": {"lua"}, "wisp_base": {"stb_image_write"}}
+THIRD_PARTY_REQUIRES = {
+    "wisp_scene": {"lua"},
+    "wisp_base": {"stb_image_write"},
+    "wisp_port_sim": {"minimp3"},
+}
 
 # The only files that may call nvs_*/esp_partition_*/esp_ota_* or include
 # their headers, each with the reason it needs raw flash access.

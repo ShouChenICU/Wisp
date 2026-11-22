@@ -16,6 +16,8 @@ void post_wakelock_reminders(core::WakeLockRegistry& locks, core::NotificationSe
         // Held on purpose while external power is there, and released as
         // soon as it goes: no battery to warn about.
         if (lock.holder == kPoweredWifiHolder) continue;
+        // Long music is expected and audible (media spec 6).
+        if (lock.holder == core::kMediaWakeLockHolder) continue;
         if (lock.holder.rfind("scene.", 0) == 0) {
             notes.post_system(core::notice::kWakeLockLong, lock.holder,
                               core::notice::kActionReleaseLock, std::to_string(lock.id));
