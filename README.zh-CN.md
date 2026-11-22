@@ -266,6 +266,8 @@ Wisp 不绑定某一块板子。和板子有关的东西只放在 `boards/<板�
 
 📖 **完整的流程、代码要求和 PR 清单见 [贡献指南](CONTRIBUTING.md)（英文）。**
 
+所有参与者都要遵守[行为准则](CODE_OF_CONDUCT.md)（英文）。发现安全问题请按 [SECURITY.md](SECURITY.md)（英文）私下报告，不要公开提 issue。
+
 ## 📄 许可
 
 本项目以 [Apache-2.0](LICENSE) 许可开源。用到和参考的第三方项目登记在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 和 [`docs/references.md`](docs/references.md)。

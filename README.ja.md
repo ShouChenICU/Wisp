@@ -266,6 +266,8 @@ Issue と Pull Request を歓迎します。人も AI コーディングアシ�
 
 📖 **詳しい流れ、コードの要件、PR チェックリストは[コントリビュートガイド](CONTRIBUTING.md)（英語）にあります。**
 
+参加する人はみな[行動規範](CODE_OF_CONDUCT.md)（英語）に従います。セキュリティの問題は公開の issue ではなく、[SECURITY.md](SECURITY.md)（英語）の手順で非公開で報告してください。
+
 ## 📄 ライセンス
 
 Wisp は [Apache-2.0](LICENSE) ライセンスのオープンソースです。利用・参考にしたサードパーティのプロジェクトは [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) と [`docs/references.md`](docs/references.md) に記載しています。
